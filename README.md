@@ -1,14 +1,18 @@
 # Kanna
 
-Local-only desktop chat UI for Claude Code.
+A web-first chat UI for using Claude Code in style. Remote access coming soon.
 
-Point it at a folder, open the app locally, and work in multiple persistent chats tied to that project. No auth. No cloud sync. No hosted database. Just you, your code, and Claude.
+## Quickstart
 
-## Overview
+```bash
+bun install -g kanna-code
+```
 
-Kanna is a full-stack TypeScript application that gives you a rich, persistent chat interface for working with the Claude Agent SDK. It runs entirely on your machine — a Bun-powered backend manages state via event sourcing while a React frontend delivers a fluid, real-time experience over WebSockets.
+Then run from anywhere:
 
-Think of it as a local workbench: you open a project folder, spin up as many chat sessions as you like, and Claude can read, write, and reason about your code through agentic tool use. Every message, every tool call, every plan review is persisted locally as an append-only event log, so your history survives restarts, refreshes, and power outages.
+```bash
+kanna
+```
 
 ## Features
 

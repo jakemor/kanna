@@ -3,6 +3,10 @@
   "type": "module",
   "version": "0.1.1",
   "description": "Local-only project chat UI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jakemor/kanna.git"
+  },
   "bin": {
     "kanna": "./bin/kanna"
   },

@@ -1,6 +1,6 @@
 import { query, type CanUseTool, type PermissionResult, type Query } from "@anthropic-ai/claude-agent-sdk"
 import type { ClientCommand } from "../shared/protocol"
-import { SDK_CLIENT_APP } from "../shared/branding"
+
 import type { KannaStatus, PendingToolSnapshot } from "../shared/types"
 import { EventStore } from "./event-store"
 import { generateTitleForChat } from "./generate-title"

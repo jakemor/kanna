@@ -1,10 +1,12 @@
 import process from "node:process"
 import { spawn, spawnSync } from "node:child_process"
-import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, SDK_CLIENT_APP } from "../shared/branding"
+import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX } from "../shared/branding"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { startKannaServer } from "./server"
 
-const VERSION = SDK_CLIENT_APP.split("/")[1] ?? "0.0.0"
+// Read version from package.json at the package root
+const pkg = await Bun.file(new URL("../../package.json", import.meta.url)).json()
+const VERSION: string = pkg.version ?? "0.0.0"
 
 interface CliOptions {
   port: number

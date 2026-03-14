@@ -2,7 +2,9 @@ export const APP_NAME = "Kanna"
 export const CLI_COMMAND = "kanna"
 export const DATA_ROOT_NAME = ".kanna"
 export const PACKAGE_NAME = "kanna-code"
-export const SDK_CLIENT_APP = "kanna/0.1.0"
+// Read version from package.json — JSON import works in both Bun and Vite
+import pkg from "../../package.json"
+export const SDK_CLIENT_APP = `kanna/${pkg.version}`
 export const LOG_PREFIX = "[kanna]"
 export const DEFAULT_NEW_PROJECT_ROOT = `~/${APP_NAME}`
 

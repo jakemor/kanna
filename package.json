@@ -1,7 +1,7 @@
 {
   "name": "kanna-code",
   "type": "module",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A beautiful web UI for Claude Code",
   "license": "MIT",
   "keywords": [

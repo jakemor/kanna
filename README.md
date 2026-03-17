@@ -5,7 +5,7 @@
 <h1 align="center">Kanna</h1>
 
 <p align="center">
-  <strong>A beautiful web UI for Claude Code.</strong>
+  <strong>A beautiful web UI for the Claude Code & Codex CLIs</strong>
 </p>
 
 <p align="center">

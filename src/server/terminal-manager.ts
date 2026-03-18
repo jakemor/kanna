@@ -1,8 +1,6 @@
 import path from "node:path"
 import process from "node:process"
 import defaultShell, { detectDefaultShell } from "default-shell"
-import { Terminal } from "@xterm/headless"
-import { SerializeAddon } from "@xterm/addon-serialize"
 import type { TerminalEvent, TerminalSnapshot } from "../shared/protocol"
 
 const DEFAULT_COLS = 80
@@ -10,6 +8,7 @@ const DEFAULT_ROWS = 24
 const DEFAULT_SCROLLBACK = 1_000
 const MIN_SCROLLBACK = 500
 const MAX_SCROLLBACK = 5_000
+const MAX_HISTORY_BYTES = 2_000_000
 
 interface CreateTerminalArgs {
   projectPath: string
@@ -31,8 +30,9 @@ interface TerminalSession {
   exitCode: number | null
   process: Bun.Subprocess | null
   terminal: Bun.Terminal
-  headless: Terminal
-  serializeAddon: SerializeAddon
+  history: string[]
+  historyLineCount: number
+  historyBytes: number
 }
 
 function clampScrollback(value: number) {
@@ -76,6 +76,39 @@ function createTerminalEnv() {
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
   }
+}
+
+function countNewlines(value: string) {
+  let count = 0
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) === 10) {
+      count += 1
+    }
+  }
+  return count
+}
+
+function trimHistory(session: TerminalSession) {
+  while (
+    session.history.length > 1 &&
+    (session.historyLineCount > session.scrollback || session.historyBytes > MAX_HISTORY_BYTES)
+  ) {
+    const removed = session.history.shift()
+    if (!removed) break
+    session.historyLineCount -= countNewlines(removed)
+    session.historyBytes -= Buffer.byteLength(removed, "utf8")
+  }
+
+  session.historyLineCount = Math.max(0, session.historyLineCount)
+  session.historyBytes = Math.max(0, session.historyBytes)
+}
+
+function appendHistory(session: TerminalSession, chunk: string) {
+  if (!chunk) return
+  session.history.push(chunk)
+  session.historyLineCount += countNewlines(chunk)
+  session.historyBytes += Buffer.byteLength(chunk, "utf8")
+  trimHistory(session)
 }
 
 function killTerminalProcessTree(subprocess: Bun.Subprocess | null) {
@@ -147,9 +180,8 @@ export class TerminalManager {
       existing.scrollback = clampScrollback(args.scrollback)
       existing.cols = normalizeTerminalDimension(args.cols, existing.cols)
       existing.rows = normalizeTerminalDimension(args.rows, existing.rows)
-      existing.headless.options.scrollback = existing.scrollback
-      existing.headless.resize(existing.cols, existing.rows)
       existing.terminal.resize(existing.cols, existing.rows)
+      trimHistory(existing)
       return this.snapshotOf(existing)
     }
 
@@ -158,9 +190,6 @@ export class TerminalManager {
     const rows = normalizeTerminalDimension(args.rows, DEFAULT_ROWS)
     const scrollback = clampScrollback(args.scrollback)
     const title = path.basename(shell) || "shell"
-    const headless = new Terminal({ cols, rows, scrollback, allowProposedApi: true })
-    const serializeAddon = new SerializeAddon()
-    headless.loadAddon(serializeAddon)
 
     const session: TerminalSession = {
       terminalId: args.terminalId,
@@ -173,13 +202,16 @@ export class TerminalManager {
       status: "running",
       exitCode: null,
       process: null,
+      history: [],
+      historyLineCount: 0,
+      historyBytes: 0,
       terminal: new Bun.Terminal({
         cols,
         rows,
         name: "xterm-256color",
         data: (_terminal, data) => {
           const chunk = Buffer.from(data).toString("utf8")
-          headless.write(chunk)
+          appendHistory(session, chunk)
           this.emit({
             type: "terminal.output",
             terminalId: args.terminalId,
@@ -187,8 +219,6 @@ export class TerminalManager {
           })
         },
       }),
-      headless,
-      serializeAddon,
     }
 
     try {
@@ -199,8 +229,6 @@ export class TerminalManager {
       })
     } catch (error) {
       session.terminal.close()
-      session.serializeAddon.dispose()
-      session.headless.dispose()
       throw error
     }
 
@@ -268,7 +296,6 @@ export class TerminalManager {
     if (!session) return
     session.cols = normalizeTerminalDimension(cols, session.cols)
     session.rows = normalizeTerminalDimension(rows, session.rows)
-    session.headless.resize(session.cols, session.rows)
     session.terminal.resize(session.cols, session.rows)
   }
 
@@ -279,8 +306,6 @@ export class TerminalManager {
     this.sessions.delete(terminalId)
     killTerminalProcessTree(session.process)
     session.terminal.close()
-    session.serializeAddon.dispose()
-    session.headless.dispose()
   }
 
   closeByCwd(cwd: string) {
@@ -305,7 +330,7 @@ export class TerminalManager {
       cols: session.cols,
       rows: session.rows,
       scrollback: session.scrollback,
-      serializedState: session.serializeAddon.serialize({ scrollback: session.scrollback }),
+      history: [...session.history],
       status: session.status,
       exitCode: session.exitCode,
     }

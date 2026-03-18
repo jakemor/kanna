@@ -32,7 +32,7 @@ async function waitFor(check: () => boolean, timeoutMs: number, intervalMs = 25)
   throw new Error(`Timed out after ${timeoutMs}ms`)
 }
 
-async function createSession(terminalId: string) {
+async function createSession(terminalId: string, scrollback = 1_000) {
   const manager = new TerminalManager()
   let output = ""
   manager.onEvent((event) => {
@@ -46,7 +46,7 @@ async function createSession(terminalId: string) {
     terminalId,
     cols: 80,
     rows: 24,
-    scrollback: 1_000,
+    scrollback,
   })
 
   manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
@@ -108,6 +108,50 @@ describeIfSupported("TerminalManager", () => {
       await waitFor(() => manager.getSnapshot(terminalId)?.status === "exited", COMMAND_TIMEOUT_MS)
 
       expect(manager.getSnapshot(terminalId)?.exitCode).toBe(0)
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  test("retains replay history after output and process exit", async () => {
+    const terminalId = "terminal-history-retained"
+    const { manager, getOutput } = await createSession(terminalId)
+
+    try {
+      manager.write(terminalId, "printf '__KANNA_HISTORY__\\n'\r")
+      await waitFor(() => getOutput().includes("__KANNA_HISTORY__"), COMMAND_TIMEOUT_MS)
+
+      manager.write(terminalId, "\x04")
+      await waitFor(() => manager.getSnapshot(terminalId)?.status === "exited", COMMAND_TIMEOUT_MS)
+
+      const snapshot = manager.getSnapshot(terminalId)
+      expect(snapshot?.history.join("")).toContain("__KANNA_HISTORY__")
+      expect(snapshot?.status).toBe("exited")
+      expect(snapshot?.exitCode).toBe(0)
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  test("trims replay history to configured scrollback", async () => {
+    const terminalId = "terminal-history-trimmed"
+    const { manager } = await createSession(terminalId, 500)
+
+    try {
+      manager.write(
+        terminalId,
+        'python3 - <<\'PY\'\nfor i in range(650):\n    print(f"line-{i}")\nPY\r'
+      )
+
+      await waitFor(() => (manager.getSnapshot(terminalId)?.history.join("").includes("line-649") ?? false), COMMAND_TIMEOUT_MS)
+
+      const snapshot = manager.getSnapshot(terminalId)
+      const history = snapshot?.history.join("") ?? ""
+      const lineMatches = history.match(/^line-\d+$/gm) ?? []
+
+      expect(lineMatches).toContain("line-649")
+      expect(lineMatches).not.toContain("line-0")
+      expect(lineMatches.length).toBeLessThanOrEqual(500)
     } finally {
       manager.close(terminalId)
     }

@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react"
-import { FitAddon } from "@xterm/addon-fit"
-import { SerializeAddon } from "@xterm/addon-serialize"
-import { Terminal, type ITheme } from "@xterm/xterm"
+import { FitAddon, Terminal, type ITheme } from "ghostty-web"
 import type { TerminalSnapshot } from "../../../shared/protocol"
 import type { KannaSocket, SocketStatus } from "../../app/socket"
 import { useTheme } from "../../hooks/useTheme"
@@ -22,7 +20,6 @@ const TERMINAL_THEME_LIGHT: ITheme = {
   cursor: "rgba(15,23,42,0.5)",
   cursorAccent: "#ffffff",
   selectionBackground: "rgba(221,228,236,0.55)",
-  selectionInactiveBackground: "rgba(221,228,236,0.38)",
   black: "#0f172a",
   red: "#dc2626",
   green: "#16a34a",
@@ -47,7 +44,6 @@ const TERMINAL_THEME_DARK: ITheme = {
   cursor: "rgba(248,250,252,0.5)",
   cursorAccent: "#0f172a",
   selectionBackground: "rgba(248,250,252,0.28)",
-  selectionInactiveBackground: "rgba(248,250,252,0.18)",
   black: "#0f172a",
   red: "#f87171",
   green: "#4ade80",
@@ -71,10 +67,6 @@ function getTerminalSize(terminal: Terminal) {
     cols: Math.max(1, terminal.cols || 80),
     rows: Math.max(1, terminal.rows || 24),
   }
-}
-
-function refreshTerminal(terminal: Terminal) {
-  terminal.refresh(0, Math.max(0, terminal.rows - 1))
 }
 
 function syncTerminalSize(
@@ -109,11 +101,12 @@ export function TerminalPane({
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
-  const replayStateRef = useRef<string | null>(null)
+  const historyRef = useRef<string[]>([])
   const hasCreatedRef = useRef(false)
   const createAttemptRef = useRef(0)
   const lastAppliedSnapshotKeyRef = useRef<string | null>(null)
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
+  const resizeReplayTimerRef = useRef<number | null>(null)
   const [metadata, setMetadata] = useState<Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode"> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const terminalTheme = resolvedTheme === "dark" ? TERMINAL_THEME_DARK : TERMINAL_THEME_LIGHT
@@ -124,6 +117,26 @@ export function TerminalPane({
       cols,
       rows,
     }).catch(() => {})
+  }
+  const rebuildFromHistory = () => {
+    const terminal = terminalRef.current
+    if (!terminal || historyRef.current.length === 0) return
+    if (terminal.buffer.active.type !== "normal") return
+
+    terminal.reset()
+    for (const chunk of historyRef.current) {
+      terminal.write(chunk)
+    }
+  }
+  const scheduleHistoryRebuild = () => {
+    if (resizeReplayTimerRef.current !== null) {
+      window.clearTimeout(resizeReplayTimerRef.current)
+    }
+
+    resizeReplayTimerRef.current = window.setTimeout(() => {
+      resizeReplayTimerRef.current = null
+      rebuildFromHistory()
+    }, 180)
   }
   const scheduleResizeSync = () => {
     const sync = () => {
@@ -150,9 +163,7 @@ export function TerminalPane({
       theme: terminalTheme,
     })
     const fitAddon = new FitAddon()
-    const serializeAddon = new SerializeAddon()
     terminal.loadAddon(fitAddon)
-    terminal.loadAddon(serializeAddon)
 
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
@@ -161,11 +172,7 @@ export function TerminalPane({
 
     if (element) {
       terminal.open(element)
-      if (replayStateRef.current) {
-        terminal.write(replayStateRef.current)
-      }
       syncTerminalSize(terminal, fitAddon, lastSizeRef, false, () => {})
-      refreshTerminal(terminal)
       scheduleResizeSync()
     }
 
@@ -193,7 +200,8 @@ export function TerminalPane({
       const terminalInstance = terminalRef.current
       const fitAddonInstance = fitAddonRef.current
       if (!terminalInstance || !fitAddonInstance) return
-      syncTerminalSize(terminalInstance, fitAddonInstance, lastSizeRef, hasCreatedRef.current, (cols, rows) => {
+      const previousSize = lastSizeRef.current
+      const nextSize = syncTerminalSize(terminalInstance, fitAddonInstance, lastSizeRef, hasCreatedRef.current, (cols, rows) => {
         void socket.command({
           type: "terminal.resize",
           terminalId,
@@ -201,6 +209,10 @@ export function TerminalPane({
           rows,
         }).catch(() => {})
       })
+      const changed = !previousSize || previousSize.cols !== nextSize.cols || previousSize.rows !== nextSize.rows
+      if (changed) {
+        scheduleHistoryRebuild()
+      }
     })
 
     if (element) {
@@ -208,10 +220,13 @@ export function TerminalPane({
     }
 
     return () => {
+      if (resizeReplayTimerRef.current !== null) {
+        window.clearTimeout(resizeReplayTimerRef.current)
+        resizeReplayTimerRef.current = null
+      }
       observer.disconnect()
       resizeDisposable.dispose()
       dataDisposable.dispose()
-      replayStateRef.current = serializeAddon.serialize()
       terminal.dispose()
       terminalRef.current = null
       fitAddonRef.current = null
@@ -228,7 +243,6 @@ export function TerminalPane({
     const terminal = terminalRef.current
     if (!terminal) return
     terminal.options.theme = terminalTheme
-    refreshTerminal(terminal)
   }, [terminalTheme])
 
   useEffect(() => {
@@ -237,14 +251,17 @@ export function TerminalPane({
     const terminal = terminalRef.current
     if (!terminal) return
 
+    historyRef.current = []
+    if (resizeReplayTimerRef.current !== null) {
+      window.clearTimeout(resizeReplayTimerRef.current)
+      resizeReplayTimerRef.current = null
+    }
     hasCreatedRef.current = false
     createAttemptRef.current += 1
     lastAppliedSnapshotKeyRef.current = null
-    replayStateRef.current = null
     setMetadata(null)
     setError(null)
     terminal.reset()
-    refreshTerminal(terminal)
     void socket.command({
       type: "terminal.close",
       terminalId,
@@ -269,32 +286,31 @@ export function TerminalPane({
         scrollback: snapshot.scrollback,
         status: snapshot.status,
         exitCode: snapshot.exitCode,
-        serializedState: snapshot.serializedState,
+        history: snapshot.history,
       })
       if (lastAppliedSnapshotKeyRef.current === snapshotKey) {
+        historyRef.current = [...snapshot.history]
         setMetadata({
           cwd: snapshot.cwd,
           shell: snapshot.shell,
           status: snapshot.status,
           exitCode: snapshot.exitCode,
         })
-        replayStateRef.current = snapshot.serializedState || null
         return
       }
       lastAppliedSnapshotKeyRef.current = snapshotKey
+      historyRef.current = [...snapshot.history]
       setMetadata({
         cwd: snapshot.cwd,
         shell: snapshot.shell,
         status: snapshot.status,
         exitCode: snapshot.exitCode,
       })
-      replayStateRef.current = snapshot.serializedState || null
       terminal.options.scrollback = snapshot.scrollback
       terminal.reset()
-      if (snapshot.serializedState) {
-        terminal.write(snapshot.serializedState)
+      for (const chunk of snapshot.history) {
+        terminal.write(chunk)
       }
-      refreshTerminal(terminal)
     }
 
     const ensureSession = () => {
@@ -366,6 +382,7 @@ export function TerminalPane({
         const terminal = terminalRef.current
         if (!terminal) return
         if (event.type === "terminal.output") {
+          historyRef.current = [...historyRef.current, event.data]
           terminal.write(event.data)
           return
         }

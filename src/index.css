@@ -263,19 +263,17 @@
   }
 
   .kanna-terminal,
-  .kanna-terminal .xterm,
-  .kanna-terminal .xterm-scrollable-element,
-  .kanna-terminal .xterm-viewport,
-  .kanna-terminal .xterm-screen,
-  .kanna-terminal .xterm-helpers,
-  .kanna-terminal .xterm-helper-textarea,
-  .kanna-terminal .composition-view {
+  .kanna-terminal canvas,
+  .kanna-terminal textarea {
     background: transparent !important;
     background-color: transparent !important;
   }
 
-  .kanna-terminal .xterm-screen canvas {
+  .kanna-terminal canvas {
     background: transparent !important;
+    display: block;
+    width: 100%;
+    height: 100%;
   }
 
   /* Custom scrollbar styling */

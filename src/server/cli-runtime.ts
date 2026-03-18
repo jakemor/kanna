@@ -1,5 +1,6 @@
 import process from "node:process"
-import { spawn, spawnSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
+import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import { PROD_SERVER_PORT } from "../shared/ports"
 
@@ -193,65 +194,15 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   }
 }
 
-function spawnDetached(command: string, args: string[]) {
-  spawn(command, args, { stdio: "ignore", detached: true }).unref()
-}
-
-function hasCommand(command: string) {
-  const result = spawnSync("sh", ["-lc", `command -v ${command}`], { stdio: "ignore" })
-  return result.status === 0
-}
-
-function canOpenMacApp(appName: string) {
-  const result = spawnSync("open", ["-Ra", appName], { stdio: "ignore" })
-  return result.status === 0
-}
-
 export function openUrl(url: string) {
   const platform = process.platform
   if (platform === "darwin") {
-    const appCandidates = [
-      "Google Chrome",
-      "Chromium",
-      "Brave Browser",
-      "Microsoft Edge",
-      "Arc",
-    ]
-
-    for (const appName of appCandidates) {
-      if (!canOpenMacApp(appName)) continue
-      spawnDetached("open", ["-a", appName, "--args", `--app=${url}`])
-      console.log(`${LOG_PREFIX} opened in app window via ${appName}`)
-      return
-    }
-
     spawnDetached("open", [url])
-    console.log(`${LOG_PREFIX} opened in default browser`)
-    return
-  }
-  if (platform === "win32") {
-    const browserCommands = ["chrome", "msedge", "brave", "chromium"]
-    for (const command of browserCommands) {
-      if (!hasCommand(command)) continue
-      spawnDetached(command, [`--app=${url}`])
-      console.log(`${LOG_PREFIX} opened in app window via ${command}`)
-      return
-    }
-
+  } else if (platform === "win32") {
     spawnDetached("cmd", ["/c", "start", "", url])
-    console.log(`${LOG_PREFIX} opened in default browser`)
-    return
+  } else {
+    spawnDetached("xdg-open", [url])
   }
-
-  const browserCommands = ["google-chrome", "chromium", "brave-browser", "microsoft-edge"]
-  for (const command of browserCommands) {
-    if (!hasCommand(command)) continue
-    spawnDetached(command, [`--app=${url}`])
-    console.log(`${LOG_PREFIX} opened in app window via ${command}`)
-    return
-  }
-
-  spawnDetached("xdg-open", [url])
   console.log(`${LOG_PREFIX} opened in default browser`)
 }
 

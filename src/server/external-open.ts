@@ -1,23 +1,9 @@
 import process from "node:process"
-import { spawn, spawnSync } from "node:child_process"
 import type { ClientCommand } from "../shared/protocol"
 import { resolveLocalPath } from "./paths"
+import { canOpenMacApp, hasCommand, spawnDetached } from "./process-utils"
 
 type OpenExternalAction = Extract<ClientCommand, { type: "system.openExternal" }>["action"]
-
-function spawnDetached(command: string, args: string[]) {
-  spawn(command, args, { stdio: "ignore", detached: true }).unref()
-}
-
-function hasCommand(command: string) {
-  const result = spawnSync("sh", ["-lc", `command -v ${command}`], { stdio: "ignore" })
-  return result.status === 0
-}
-
-function canOpenMacApp(appName: string) {
-  const result = spawnSync("open", ["-Ra", appName], { stdio: "ignore" })
-  return result.status === 0
-}
 
 export function openExternal(localPath: string, action: OpenExternalAction) {
   const resolvedPath = resolveLocalPath(localPath)

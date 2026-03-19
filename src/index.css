@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&display=swap");
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -149,7 +150,7 @@
   }
 
   .font-logo {
-    font-family: "Manrope", sans-serif;
+    font-family: "Bricolage Grotesque", sans-serif;
     font-weight: 800;
   }
 
@@ -280,6 +281,27 @@
 
   [data-panel][data-terminal-open] {
     overflow: hidden;
+  }
+
+  [data-terminal-visual] {
+    transition:
+      opacity var(--terminal-toggle-duration, 350ms) cubic-bezier(0.4, 0, 0.2, 1),
+      filter var(--terminal-toggle-duration, 350ms) cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: opacity, filter;
+  }
+
+  [data-terminal-visual][data-terminal-animated="false"] {
+    transition: none;
+  }
+
+  [data-terminal-visual][data-terminal-open="false"] {
+    opacity: 0;
+    filter: blur(12px);
+  }
+
+  [data-terminal-visual][data-terminal-open="true"] {
+    opacity: 1;
+    filter: blur(0);
   }
 
   /* Custom scrollbar styling */

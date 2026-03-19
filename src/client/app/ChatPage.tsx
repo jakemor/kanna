@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import { ArrowDown, Flower } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
 import type { GroupImperativeHandle } from "react-resizable-panels"
@@ -27,6 +27,7 @@ export function ChatPage() {
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
   const mainPanelGroupRef = useRef<GroupImperativeHandle | null>(null)
   const terminalPanelRef = useRef<HTMLDivElement | null>(null)
+  const terminalVisualRef = useRef<HTMLDivElement | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const animationTimeoutRef = useRef<number | null>(null)
   const isAnimatingTerminalToggleRef = useRef(false)
@@ -185,11 +186,15 @@ export function ChatPage() {
     ) {
       group.setLayout({ chat: targetLayout[0], terminal: targetLayout[1] })
       terminalPanelRef.current?.setAttribute("data-terminal-open", showTerminalPane ? "true" : "false")
+      terminalVisualRef.current?.setAttribute("data-terminal-open", showTerminalPane ? "true" : "false")
+      terminalVisualRef.current?.setAttribute("data-terminal-animated", "false")
       return
     }
 
     isAnimatingTerminalToggleRef.current = true
     terminalPanelRef.current?.setAttribute("data-terminal-open", showTerminalPane ? "true" : "false")
+    terminalVisualRef.current?.setAttribute("data-terminal-open", showTerminalPane ? "true" : "false")
+    terminalVisualRef.current?.setAttribute("data-terminal-animated", "true")
     group.setLayout({ chat: currentLayout[0], terminal: currentLayout[1] })
     const startTime = performance.now()
 
@@ -378,8 +383,14 @@ export function ChatPage() {
             elementRef={terminalPanelRef}
           >
             <div
+              ref={terminalVisualRef}
               className="h-full min-h-0 overflow-hidden"
               data-terminal-open={showTerminalPane ? "true" : "false"}
+              data-terminal-animated="false"
+              data-terminal-visual
+              style={{
+                "--terminal-toggle-duration": `${TERMINAL_TOGGLE_ANIMATION_DURATION_MS}ms`,
+              } as CSSProperties}
             >
               <TerminalWorkspace
                 projectId={projectId}

@@ -16,6 +16,7 @@ interface ProjectLookup {
 interface ProjectRuntime {
   subscriberCount: number
   watchers: Map<string, FSWatcher>
+  failedWatchDirectories: Set<string>
   pendingInvalidations: Set<string>
   invalidateTimer: Timer | null
 }
@@ -35,6 +36,12 @@ interface DirectoryCandidate {
   relativePath: string
   kind: "file" | "directory" | "symlink"
   extension?: string
+}
+
+let watchDirectory: typeof watch = watch
+
+export function setWatchDirectoryForTesting(next: typeof watch | null) {
+  watchDirectory = next ?? watch
 }
 
 export class FileTreeManager {
@@ -206,6 +213,7 @@ export class FileTreeManager {
     const runtime: ProjectRuntime = {
       subscriberCount: 0,
       watchers: new Map(),
+      failedWatchDirectories: new Set(),
       pendingInvalidations: new Set(),
       invalidateTimer: null,
     }
@@ -217,14 +225,26 @@ export class FileTreeManager {
     const runtime = this.projectRuntimes.get(projectId)
     if (!runtime || runtime.subscriberCount === 0) return
     if (runtime.watchers.has(directoryPath)) return
+    if (runtime.failedWatchDirectories.has(directoryPath)) return
 
     const project = this.requireProject(projectId)
     const absolutePath = resolveProjectPath(project.localPath, directoryPath)
-    const watcher = watch(absolutePath, { persistent: false }, () => {
-      this.queueInvalidation(projectId, directoryPath)
-    })
+    let watcher: FSWatcher
+    try {
+      watcher = watchDirectory(absolutePath, { persistent: false }, () => {
+        this.queueInvalidation(projectId, directoryPath)
+      })
+    } catch (error) {
+      runtime.failedWatchDirectories.add(directoryPath)
+      console.warn(
+        `[kanna] failed to watch ${absolutePath}; continuing without realtime file updates`,
+        error instanceof Error ? error.message : String(error)
+      )
+      return
+    }
 
     watcher.on("error", () => {
+      runtime.failedWatchDirectories.add(directoryPath)
       this.queueInvalidation(projectId, directoryPath)
       watcher.close()
       runtime.watchers.delete(directoryPath)

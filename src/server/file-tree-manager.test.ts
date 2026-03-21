@@ -3,11 +3,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
-import { FileTreeManager } from "./file-tree-manager"
+import { FileTreeManager, setWatchDirectoryForTesting } from "./file-tree-manager"
 
 const TEMP_DIRECTORIES: string[] = []
 
 afterEach(async () => {
+  setWatchDirectoryForTesting(null)
   while (TEMP_DIRECTORIES.length > 0) {
     const directory = TEMP_DIRECTORIES.pop()
     if (!directory) continue
@@ -85,6 +86,31 @@ describe("FileTreeManager", () => {
 
     disposeInvalidate()
     manager.dispose()
+  })
+
+  test("continues when file watching cannot be established", async () => {
+    const root = await createTempProject()
+    await writeFile(path.join(root, "initial.ts"), "export const value = 1\n")
+
+    setWatchDirectoryForTesting(() => {
+      const error = new Error("too many open files")
+      ;(error as NodeJS.ErrnoException).code = "EMFILE"
+      throw error
+    })
+
+    const manager = new FileTreeManager({
+      getProject: (projectId) => (projectId === "project-1" ? { localPath: root } : null),
+    })
+
+    expect(() => manager.subscribe("project-1")).not.toThrow()
+
+    const page = await manager.readDirectory({
+      projectId: "project-1",
+      directoryPath: "",
+    })
+
+    expect(page.error).toBeUndefined()
+    expect(page.entries.map((entry) => entry.name)).toEqual(["initial.ts"])
   })
 })
 

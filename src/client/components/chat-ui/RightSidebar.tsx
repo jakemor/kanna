@@ -104,6 +104,24 @@ const CONFIG_EXTENSIONS = new Set(["toml", "yaml", "yml", "ini", "conf"])
 const SPREADSHEET_EXTENSIONS = new Set(["csv", "tsv", "xlsx"])
 const ARCHIVE_EXTENSIONS = new Set(["zip", "tar", "gz", "tgz", "bz2", "xz", "7z"])
 
+type RightSidebarContentMode = "empty-project" | "empty-error" | "tree"
+
+export function getRightSidebarContentMode(args: {
+  projectId: string | null
+  rootError: string | null
+  rootEntryCount: number
+}) : RightSidebarContentMode {
+  if (!args.projectId) {
+    return "empty-project"
+  }
+
+  if (args.rootError && args.rootEntryCount === 0) {
+    return "empty-error"
+  }
+
+  return "tree"
+}
+
 export function RightSidebar({ projectId, isVisible, socket, onOpenFile, onOpenInFinder, onClose }: RightSidebarProps) {
   const [snapshot, setSnapshot] = useState<FileTreeSnapshot | null>(null)
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
@@ -283,6 +301,12 @@ export function RightSidebar({ projectId, isVisible, socket, onOpenFile, onOpenI
   )
   const windowedRows = visibleRows.slice(startIndex, endIndex)
   const rootState = directories[""] ?? EMPTY_DIRECTORY_STATE
+  const contentMode = getRightSidebarContentMode({
+    projectId,
+    rootError: rootState.error,
+    rootEntryCount: rootState.entries.length,
+  })
+
   async function handleEntryActivate(entry: FileTreeEntry) {
     if (entry.kind === "directory") {
       toggleDirectory(entry.relativePath)
@@ -336,12 +360,10 @@ export function RightSidebar({ projectId, isVisible, socket, onOpenFile, onOpenI
           </button>
         </div>
 
-        {!projectId ? (
+        {contentMode === "empty-project" ? (
           <EmptyState message="Open a project to browse files." />
-        ) : !isVisible ? (
-          <EmptyState message="File browser paused while the sidebar is closed." />
-        ) : rootState.error && rootState.entries.length === 0 ? (
-          <EmptyState message={rootState.error} />
+        ) : contentMode === "empty-error" ? (
+          <EmptyState message={rootState.error ?? "Could not load the project tree."} />
         ) : (
           <ScrollArea
             ref={scrollRef}

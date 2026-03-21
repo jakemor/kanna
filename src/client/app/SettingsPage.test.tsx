@@ -98,6 +98,7 @@ describe("resolveSettingsSectionId", () => {
   test("accepts known settings sections", () => {
     expect(resolveSettingsSectionId("general")).toBe("general")
     expect(resolveSettingsSectionId("changelog")).toBe("changelog")
+    expect(resolveSettingsSectionId("keybindings")).toBe("keybindings")
   })
 
   test("rejects unknown settings sections", () => {

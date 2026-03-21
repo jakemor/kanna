@@ -12,8 +12,12 @@ export function getDataRootName() {
   return DATA_ROOT_NAME
 }
 
+export function getDataRootDir(homeDir: string) {
+  return `${homeDir}/${DATA_ROOT_NAME}`
+}
+
 export function getDataDir(homeDir: string) {
-  return `${homeDir}/${DATA_ROOT_NAME}/data`
+  return `${getDataRootDir(homeDir)}/data`
 }
 
 export function getDataDirDisplay() {

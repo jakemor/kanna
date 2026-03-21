@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import type { KeybindingsSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import { createWsRouter } from "./ws-router"
@@ -22,6 +23,10 @@ describe("ws-router", () => {
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => ({ bindings: { toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"], toggleRightSidebar: ["ctrl+b"], openInFinder: ["cmd+alt+f"], openInEditor: ["cmd+shift+o"], addSplitTerminal: ["cmd+shift+j"] }, warning: null }),
+        onChange: () => () => {},
       } as never,
       fileTree: {
         getSnapshot: () => ({ projectId: "project-1", rootPath: "/tmp/project-1", pageSize: 200, supportsRealtime: true }),
@@ -61,6 +66,10 @@ describe("ws-router", () => {
         getSnapshot: () => null,
         onEvent: () => () => {},
         write: () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => ({ bindings: { toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"], toggleRightSidebar: ["ctrl+b"], openInFinder: ["cmd+alt+f"], openInEditor: ["cmd+shift+o"], addSplitTerminal: ["cmd+shift+j"] }, warning: null }),
+        onChange: () => () => {},
       } as never,
       fileTree: {
         getSnapshot: () => ({ projectId: "project-1", rootPath: "/tmp/project-1", pageSize: 200, supportsRealtime: true }),
@@ -127,6 +136,10 @@ describe("ws-router", () => {
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => ({ bindings: { toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"], toggleRightSidebar: ["ctrl+b"], openInFinder: ["cmd+alt+f"], openInEditor: ["cmd+shift+o"], addSplitTerminal: ["cmd+shift+j"] }, warning: null }),
+        onChange: () => () => {},
       } as never,
       fileTree: fileTree as never,
       refreshDiscovery: async () => [],
@@ -202,6 +215,104 @@ describe("ws-router", () => {
       v: PROTOCOL_VERSION,
       type: "ack",
       id: "tree-sub-1",
+    })
+  })
+
+  test("subscribes to keybindings snapshots and writes keybindings through the router", async () => {
+    const initialSnapshot: KeybindingsSnapshot = {
+      bindings: {
+        toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
+        toggleRightSidebar: ["ctrl+b"],
+        openInFinder: ["cmd+alt+f"],
+        openInEditor: ["cmd+shift+o"],
+        addSplitTerminal: ["cmd+shift+j"],
+      },
+      warning: null,
+    }
+    const keybindings = {
+      snapshot: initialSnapshot,
+      getSnapshot() {
+        return this.snapshot
+      },
+      onChange: () => () => {},
+      async write(bindings: KeybindingsSnapshot["bindings"]) {
+        this.snapshot = { bindings, warning: null }
+        return this.snapshot
+      },
+    }
+
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: keybindings as never,
+      fileTree: {
+        getSnapshot: () => ({ projectId: "project-1", rootPath: "/tmp/project-1", pageSize: 200, supportsRealtime: true }),
+        onInvalidate: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "subscribe",
+        id: "keybindings-sub-1",
+        topic: { type: "keybindings" },
+      })
+    )
+
+    expect(ws.sent[0]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "keybindings-sub-1",
+      snapshot: {
+        type: "keybindings",
+        data: keybindings.snapshot,
+      },
+    })
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "keybindings-write-1",
+        command: {
+          type: "settings.writeKeybindings",
+          bindings: {
+            toggleEmbeddedTerminal: ["cmd+k"],
+            toggleRightSidebar: ["ctrl+shift+b"],
+            openInFinder: ["cmd+shift+g"],
+            openInEditor: ["cmd+shift+p"],
+            addSplitTerminal: ["cmd+alt+j"],
+          },
+        },
+      })
+    )
+
+    await Promise.resolve()
+    expect(ws.sent[1]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "keybindings-write-1",
+        result: {
+          bindings: {
+            toggleEmbeddedTerminal: ["cmd+k"],
+            toggleRightSidebar: ["ctrl+shift+b"],
+            openInFinder: ["cmd+shift+g"],
+            openInEditor: ["cmd+shift+p"],
+            addSplitTerminal: ["cmd+alt+j"],
+          },
+          warning: null,
+        },
     })
   })
 })

@@ -19,6 +19,45 @@ type UseTerminalToggleAnimationResult = {
   terminalVisualRef: RefObject<HTMLDivElement | null>
 }
 
+type ResolveTerminalAnimationStateArgs = {
+  previousProjectId: string | null
+  projectId: string | null
+  previousShouldRenderTerminalLayout: boolean
+  previousShowTerminalPane: boolean
+  showTerminalPane: boolean
+  terminalLayout: ProjectTerminalLayout
+  liveLayout: [number, number]
+}
+
+type ResolvedTerminalAnimationState = {
+  currentLayout: [number, number]
+  shouldSkipAnimation: boolean
+  targetLayout: [number, number]
+}
+
+export function resolveTerminalAnimationState({
+  previousProjectId,
+  projectId,
+  previousShouldRenderTerminalLayout,
+  previousShowTerminalPane,
+  showTerminalPane,
+  terminalLayout,
+  liveLayout,
+}: ResolveTerminalAnimationStateArgs): ResolvedTerminalAnimationState {
+  const didProjectChange = previousProjectId !== null && previousProjectId !== projectId
+  const isInitialOpen = showTerminalPane && !previousShowTerminalPane
+  const isInitialRender = !previousShouldRenderTerminalLayout
+  const isInitialProjectRender = previousProjectId === null && projectId !== null
+  const targetLayout: [number, number] = showTerminalPane ? terminalLayout.mainSizes : [100, 0]
+  const currentLayout: [number, number] = isInitialOpen || isInitialRender ? [100, 0] : liveLayout
+
+  return {
+    currentLayout,
+    shouldSkipAnimation: didProjectChange || (isInitialProjectRender && isInitialRender),
+    targetLayout,
+  }
+}
+
 export function useTerminalToggleAnimation({
   chatInputRef,
   projectId,
@@ -93,17 +132,18 @@ export function useTerminalToggleAnimation({
     }
 
     const previousProjectId = previousProjectIdRef.current
-    const didProjectChange = previousProjectId !== null && previousProjectId !== projectId
-    const isInitialOpen = showTerminalPane && !previousShowTerminalPaneRef.current
-    const isInitialRender = !previousShouldRenderTerminalLayoutRef.current
-    const targetLayout: [number, number] = showTerminalPane ? terminalLayout.mainSizes : [100, 0]
-    const shouldSkipAnimation = didProjectChange || (isInitialRender && showTerminalPane)
-    const currentLayout: [number, number] = isInitialOpen || isInitialRender
-      ? [100, 0]
-      : [
+    const { currentLayout, shouldSkipAnimation, targetLayout } = resolveTerminalAnimationState({
+      previousProjectId,
+      projectId,
+      previousShouldRenderTerminalLayout: previousShouldRenderTerminalLayoutRef.current,
+      previousShowTerminalPane: previousShowTerminalPaneRef.current,
+      showTerminalPane,
+      terminalLayout,
+      liveLayout: [
         group.getLayout().chat ?? terminalLayout.mainSizes[0],
         group.getLayout().terminal ?? terminalLayout.mainSizes[1],
-      ]
+      ],
+    })
 
     previousShouldRenderTerminalLayoutRef.current = shouldRenderTerminalLayout
     previousShowTerminalPaneRef.current = showTerminalPane

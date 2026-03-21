@@ -7,6 +7,7 @@ import type { DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { FileTreeManager } from "./file-tree-manager"
+import { KeybindingsManager } from "./keybindings"
 import { ensureProjectDirectory } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
@@ -19,6 +20,7 @@ interface CreateWsRouterArgs {
   store: EventStore
   agent: AgentCoordinator
   terminals: TerminalManager
+  keybindings: KeybindingsManager
   fileTree: FileTreeManager
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
@@ -33,6 +35,7 @@ export function createWsRouter({
   store,
   agent,
   terminals,
+  keybindings,
   fileTree,
   refreshDiscovery,
   getDiscoveredProjects,
@@ -64,6 +67,18 @@ export function createWsRouter({
         snapshot: {
           type: "local-projects",
           data,
+        },
+      }
+    }
+
+    if (topic.type === "keybindings") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "keybindings",
+          data: keybindings.getSnapshot(),
         },
       }
     }
@@ -156,12 +171,30 @@ export function createWsRouter({
     }
   })
 
+  const disposeKeybindingEvents = keybindings.onChange(() => {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "keybindings") continue
+        send(ws, createEnvelope(id, topic))
+      }
+    }
+  })
+
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
     try {
       switch (command.type) {
         case "system.ping": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "settings.readKeybindings": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: keybindings.getSnapshot() })
+          return
+        }
+        case "settings.writeKeybindings": {
+          const snapshot = await keybindings.write(command.bindings)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
         case "project.open": {
@@ -329,6 +362,7 @@ export function createWsRouter({
     dispose() {
       disposeTerminalEvents()
       disposeFileTreeEvents()
+      disposeKeybindingEvents()
     },
   }
 }

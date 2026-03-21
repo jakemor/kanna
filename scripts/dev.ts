@@ -11,7 +11,10 @@ function spawnLabeledProcess(label: string, args: string[]) {
   const child = spawn(bunBin, args, {
     cwd,
     stdio: "inherit",
-    env: process.env,
+    env: {
+      ...process.env,
+      KANNA_DISABLE_SELF_UPDATE: "1",
+    },
   })
 
   child.on("spawn", () => {

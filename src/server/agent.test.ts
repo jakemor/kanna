@@ -106,6 +106,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
       generateTitle: async () => "Generated title",
     })
@@ -114,7 +115,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "first message",
+      message: { text: "first message" },
       model: "gpt-5.4",
     })
 
@@ -168,6 +169,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
       generateTitle: async () => {
         await titleGate
@@ -179,7 +181,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "first message",
+      message: { text: "first message" },
       model: "gpt-5.4",
     })
 
@@ -236,6 +238,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -243,7 +246,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "first",
+      message: { text: "first" },
     })
 
     await waitFor(() => store.turnFinishedCount === 1)
@@ -254,7 +257,7 @@ describe("AgentCoordinator codex integration", () => {
     await coordinator.send({
       type: "chat.send",
       chatId: "chat-1",
-      content: "second",
+      message: { text: "second" },
     })
 
     await waitFor(() => store.turnFinishedCount === 2)
@@ -321,6 +324,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -328,7 +332,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "opt in",
+      message: { text: "opt in" },
       modelOptions: {
         codex: {
           reasoningEffort: "xhigh",
@@ -443,6 +447,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -450,7 +455,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "plan this",
+      message: { text: "plan this" },
       planMode: true,
     })
 
@@ -535,6 +540,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -542,7 +548,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "ask me something",
+      message: { text: "ask me something" },
     })
 
     await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "ask_user_question")
@@ -629,6 +635,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -636,7 +643,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "plan this",
+      message: { text: "plan this" },
       planMode: true,
     })
 

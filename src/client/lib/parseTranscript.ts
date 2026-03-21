@@ -1,5 +1,12 @@
 import { hydrateToolResult } from "../../shared/tools"
-import type { HydratedToolCall, HydratedTranscriptMessage, NormalizedToolCall, TranscriptEntry } from "../../shared/types"
+import type {
+  ChatAttachment,
+  HydratedChatAttachment,
+  HydratedToolCall,
+  HydratedTranscriptMessage,
+  NormalizedToolCall,
+  TranscriptEntry,
+} from "../../shared/types"
 
 function createTimestamp(createdAt: number): string {
   return new Date(createdAt).toISOString()
@@ -39,6 +46,15 @@ function getStructuredToolResultFromDebug(entry: Extract<TranscriptEntry, { kind
   }
 }
 
+function hydrateAttachments(attachments: ChatAttachment[] | undefined): HydratedChatAttachment[] | undefined {
+  if (!attachments?.length) return undefined
+
+  return attachments.map((attachment) => ({
+    ...attachment,
+    previewUrl: `/attachments/${attachment.relativePath.split("/").map(encodeURIComponent).join("/")}`,
+  }))
+}
+
 export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedTranscriptMessage[] {
   const pendingToolCalls = new Map<string, { hydrated: HydratedToolCall; normalized: NormalizedToolCall }>()
   const messages: HydratedTranscriptMessage[] = []
@@ -50,6 +66,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           ...createBaseMessage(entry),
           kind: "user_prompt",
           content: entry.content,
+          attachments: hydrateAttachments(entry.attachments),
         })
         break
       case "system_init":

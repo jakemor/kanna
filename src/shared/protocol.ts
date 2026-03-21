@@ -1,5 +1,6 @@
 import type {
   AgentProvider,
+  ChatUserMessage,
   ChatSnapshot,
   FileTreeDirectoryPage,
   FileTreeSnapshot,
@@ -61,7 +62,7 @@ export type ClientCommand =
       chatId?: string
       projectId?: string
       provider?: AgentProvider
-      content: string
+      message: ChatUserMessage
       model?: string
       modelOptions?: ModelOptions
       effort?: string

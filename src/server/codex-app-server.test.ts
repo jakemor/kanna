@@ -181,6 +181,69 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBeNull()
   })
 
+  test("sends local image inputs to turn/start", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { turn: { id: "turn-1", status: "completed", error: null } },
+        })
+        child.writeServerMessage({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "completed", error: null },
+          },
+        })
+      }
+    })
+
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => process as never,
+    })
+
+    await manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken: null,
+    })
+
+    const turn = await manager.startTurn({
+      chatId: "chat-1",
+      model: "gpt-5.4",
+      content: "Inspect this image",
+      attachments: [{ filePath: "/tmp/project/screenshot.png", mimeType: "image/png" }],
+      planMode: false,
+      onToolRequest: async () => ({}),
+    })
+
+    await collectStream(turn.stream)
+
+    const turnStart = process.messages.find((message: any) => message.method === "turn/start") as
+      | { method: "turn/start"; params: { input: Array<Record<string, unknown>> } }
+      | undefined
+
+    expect(turnStart?.params.input).toEqual([
+      {
+        type: "text",
+        text: "Inspect this image",
+        text_elements: [],
+      },
+      {
+        type: "localImage",
+        path: "/tmp/project/screenshot.png",
+      },
+    ])
+  })
+
   test("generateStructured returns the final assistant JSON and stops the transient session", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {

@@ -51,7 +51,17 @@ export interface TextUserInput {
   text_elements: []
 }
 
-export type CodexUserInput = TextUserInput
+export interface ImageUserInput {
+  type: "image"
+  url: string
+}
+
+export interface LocalImageUserInput {
+  type: "localImage"
+  path: string
+}
+
+export type CodexUserInput = TextUserInput | ImageUserInput | LocalImageUserInput
 
 export interface CollaborationMode {
   mode: "default" | "plan"
@@ -256,11 +266,7 @@ export type ServerRequest =
 export interface UserMessageItem {
   type: "userMessage"
   id: string
-  content: Array<{
-    type: "text"
-    text: string
-    text_elements: []
-  }>
+  content: CodexUserInput[]
 }
 
 export interface ReasoningItem {

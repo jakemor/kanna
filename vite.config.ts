@@ -16,6 +16,9 @@ export default defineConfig({
       "/health": {
         target: `http://localhost:${DEV_SERVER_PORT}`,
       },
+      "/attachments": {
+        target: `http://localhost:${DEV_SERVER_PORT}`,
+      },
     },
   },
   build: {

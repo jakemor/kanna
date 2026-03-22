@@ -8,6 +8,7 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { ensureProjectDirectory } from "./paths"
+import { importProjectHistory } from "./recovery"
 import { TerminalManager } from "./terminal-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 
@@ -171,15 +172,43 @@ export function createWsRouter({
         case "project.open": {
           await ensureProjectDirectory(command.localPath)
           const project = await store.openProject(command.localPath)
+          const imported = await importProjectHistory({
+            store,
+            projectId: project.id,
+            localPath: project.localPath,
+          })
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          send(ws, {
+            v: PROTOCOL_VERSION,
+            type: "ack",
+            id,
+            result: {
+              projectId: project.id,
+              chatId: imported.newestChatId,
+              importedChats: imported.importedChats,
+            },
+          })
           break
         }
         case "project.create": {
           await ensureProjectDirectory(command.localPath)
           const project = await store.openProject(command.localPath, command.title)
+          const imported = await importProjectHistory({
+            store,
+            projectId: project.id,
+            localPath: project.localPath,
+          })
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          send(ws, {
+            v: PROTOCOL_VERSION,
+            type: "ack",
+            id,
+            result: {
+              projectId: project.id,
+              chatId: imported.newestChatId,
+              importedChats: imported.importedChats,
+            },
+          })
           break
         }
         case "project.remove": {

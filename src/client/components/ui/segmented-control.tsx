@@ -38,7 +38,7 @@ export function SegmentedControl<T extends string>({
   return (
     <div
       className={cn(
-        "inline-flex items-center rounded-full border border-border p-0.5 ",
+        "inline-flex items-center rounded-lg border border-border p-[3px] ",
         className,
       )}
     >
@@ -59,7 +59,7 @@ export function SegmentedControl<T extends string>({
             disabled={option.disabled}
             aria-pressed={isActive}
             className={cn(
-              "rounded-full border transition-colors",
+              "rounded-[4px] border transition-colors",
               icon ? "grid grid-cols-[auto_auto] items-center gap-2" : "inline-flex items-center gap-1.5",
               sizeClasses[size],
               isActive

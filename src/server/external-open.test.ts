@@ -1,5 +1,14 @@
-import { describe, expect, test } from "bun:test"
-import { buildEditorCommand, tokenizeCommandTemplate } from "./external-open"
+import { mkdtemp, writeFile, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { afterEach, describe, expect, test } from "bun:test"
+import { buildEditorCommand, openExternal, tokenizeCommandTemplate } from "./external-open"
+
+const tempPaths: string[] = []
+
+afterEach(async () => {
+  await Promise.all(tempPaths.splice(0).map((tempPath) => rm(tempPath, { recursive: true, force: true })))
+})
 
 describe("tokenizeCommandTemplate", () => {
   test("keeps quoted arguments together", () => {
@@ -55,6 +64,25 @@ describe("buildEditorCommand", () => {
     ).toEqual({
       command: "my-editor",
       args: ["/Users/jake/Projects/kanna/src/client/app/App.tsx", "--line", "12"],
+    })
+  })
+
+  test("rejects when the editor executable cannot be spawned", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "kanna-open-external-"))
+    tempPaths.push(tempDir)
+    const filePath = path.join(tempDir, "App.tsx")
+    await writeFile(filePath, "export {}\n")
+
+    await expect(openExternal({
+      type: "system.openExternal",
+      localPath: filePath,
+      action: "open_editor",
+      editor: {
+        preset: "custom",
+        commandTemplate: "definitely-missing-kanna-editor {path}",
+      },
+    })).rejects.toMatchObject({
+      code: "ENOENT",
     })
   })
 })

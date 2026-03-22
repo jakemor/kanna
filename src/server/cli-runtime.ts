@@ -201,11 +201,11 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 export function openUrl(url: string) {
   const platform = process.platform
   if (platform === "darwin") {
-    spawnDetached("open", [url])
+    void spawnDetached("open", [url]).catch(() => {})
   } else if (platform === "win32") {
-    spawnDetached("cmd", ["/c", "start", "", url])
+    void spawnDetached("cmd", ["/c", "start", "", url]).catch(() => {})
   } else {
-    spawnDetached("xdg-open", [url])
+    void spawnDetached("xdg-open", [url]).catch(() => {})
   }
   console.log(`${LOG_PREFIX} opened in default browser`)
 }

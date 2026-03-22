@@ -6,15 +6,17 @@ import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import { SettingsPage } from "./SettingsPage"
 import { useKannaState } from "./useKannaState"
+import { useViewportCssVars } from "./useViewportCssVars"
 
 function KannaLayout() {
   const location = useLocation()
   const params = useParams()
   const state = useKannaState(params.chatId ?? null)
   const showMobileOpenButton = location.pathname === "/" || location.pathname.startsWith("/settings")
+  useViewportCssVars()
 
   return (
-    <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
+    <div className="flex h-[var(--app-shell-height)] min-h-[var(--app-shell-height)] overflow-hidden">
       <KannaSidebar
         data={state.sidebarData}
         activeChatId={state.activeChatId}

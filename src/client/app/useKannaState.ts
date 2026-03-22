@@ -279,12 +279,17 @@ export function useKannaState(activeChatId: string | null): KannaState {
   async function handleOpenLocalProject(localPath: string) {
     try {
       setStartingLocalPath(localPath)
-      const result = await socket.command<{ projectId: string }>({ type: "project.open", localPath })
+      const result = await socket.command<{ projectId: string; chatId?: string | null }>({ type: "project.open", localPath })
       setRightSidebarVisibility(result.projectId, false)
       setSelectedProjectId(result.projectId)
-      const chat = await socket.command<{ chatId: string }>({ type: "chat.create", projectId: result.projectId })
-      setPendingChatId(chat.chatId)
-      navigate(`/chat/${chat.chatId}`)
+      if (result.chatId) {
+        setPendingChatId(result.chatId)
+        navigate(`/chat/${result.chatId}`)
+      } else {
+        const chat = await socket.command<{ chatId: string }>({ type: "chat.create", projectId: result.projectId })
+        setPendingChatId(chat.chatId)
+        navigate(`/chat/${chat.chatId}`)
+      }
       setSidebarOpen(false)
       setCommandError(null)
     } catch (error) {
@@ -315,16 +320,21 @@ export function useKannaState(activeChatId: string | null): KannaState {
   async function handleCreateProject(project: { mode: "new" | "existing"; localPath: string; title: string }) {
     try {
       setStartingLocalPath(project.localPath)
-      const result = await socket.command<{ projectId: string }>(
+      const result = await socket.command<{ projectId: string; chatId?: string | null }>(
         project.mode === "new"
           ? { type: "project.create", localPath: project.localPath, title: project.title }
           : { type: "project.open", localPath: project.localPath }
       )
       setRightSidebarVisibility(result.projectId, false)
       setSelectedProjectId(result.projectId)
-      const chat = await socket.command<{ chatId: string }>({ type: "chat.create", projectId: result.projectId })
-      setPendingChatId(chat.chatId)
-      navigate(`/chat/${chat.chatId}`)
+      if (result.chatId) {
+        setPendingChatId(result.chatId)
+        navigate(`/chat/${result.chatId}`)
+      } else {
+        const chat = await socket.command<{ chatId: string }>({ type: "chat.create", projectId: result.projectId })
+        setPendingChatId(chat.chatId)
+        navigate(`/chat/${chat.chatId}`)
+      }
       setSidebarOpen(false)
       setCommandError(null)
     } catch (error) {

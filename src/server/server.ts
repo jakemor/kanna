@@ -7,7 +7,6 @@ import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { FileTreeManager } from "./file-tree-manager"
 import { GitManager } from "./git-manager"
 import { getMachineDisplayName } from "./machine-name"
-import { recoverProviderState } from "./recovery"
 import { TerminalManager } from "./terminal-manager"
 import { createWsRouter, type ClientState } from "./ws-router"
 
@@ -24,10 +23,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const store = new EventStore()
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
-  await recoverProviderState({
-    store,
-    log: (message) => console.log(message),
-  })
   let discoveredProjects: DiscoveredProject[] = []
 
   async function refreshDiscovery() {

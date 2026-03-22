@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { AgentProvider, TranscriptEntry } from "../shared/types"
-import { recoverProviderState } from "./recovery"
+import { importProjectHistory } from "./recovery"
 
 const tempDirs: string[] = []
 
@@ -24,50 +24,38 @@ afterEach(() => {
 })
 
 class MemoryRecoveryStore {
-  readonly projects = new Map<string, { id: string; localPath: string; title: string }>()
   readonly chats = new Map<string, {
     id: string
     projectId: string
     title: string
     provider: AgentProvider | null
     sessionToken: string | null
+    updatedAt: number
+    lastMessageAt?: number
   }>()
   readonly messages = new Map<string, TranscriptEntry[]>()
   readonly hiddenProjectPaths = new Set<string>()
-  private projectCount = 0
   private chatCount = 0
 
-  listProjects() {
-    return [...this.projects.values()]
-  }
-
   listChatsByProject(projectId: string) {
-    return [...this.chats.values()].filter((chat) => chat.projectId === projectId)
+    return [...this.chats.values()]
+      .filter((chat) => chat.projectId === projectId)
+      .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))
   }
 
   isProjectHidden(localPath: string) {
     return this.hiddenProjectPaths.has(localPath)
   }
 
-  async openProject(localPath: string, title?: string) {
-    const existing = [...this.projects.values()].find((project) => project.localPath === localPath)
-    if (existing) return existing
-    const project = {
-      id: `project-${++this.projectCount}`,
-      localPath,
-      title: title ?? path.basename(localPath),
-    }
-    this.projects.set(project.id, project)
-    return project
-  }
-
   async createChat(projectId: string) {
+    const timestamp = this.chatCount + 1
     const chat = {
       id: `chat-${++this.chatCount}`,
       projectId,
       title: "New Chat",
       provider: null,
       sessionToken: null,
+      updatedAt: timestamp,
     }
     this.chats.set(chat.id, chat)
     return chat
@@ -98,17 +86,27 @@ class MemoryRecoveryStore {
     const existing = this.messages.get(chatId) ?? []
     existing.push(entry)
     this.messages.set(chatId, existing)
+    const chat = this.chats.get(chatId)
+    if (!chat) return
+    chat.updatedAt = Math.max(chat.updatedAt, entry.createdAt)
+    if (entry.kind === "user_prompt") {
+      chat.lastMessageAt = entry.createdAt
+    }
   }
 }
 
-describe("recoverProviderState", () => {
-  test("imports Claude and Codex sessions into an empty store", async () => {
+describe("importProjectHistory", () => {
+  test("imports only the selected project's chats and picks the newest recovered chat", async () => {
     const homeDir = makeTempDir()
     const projectDir = path.join(homeDir, "workspace", "kanna")
+    const otherDir = path.join(homeDir, "workspace", "other")
     const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
+    const otherClaudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(otherDir))
     const codexSessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "21")
     mkdirSync(projectDir, { recursive: true })
+    mkdirSync(otherDir, { recursive: true })
     mkdirSync(claudeProjectDir, { recursive: true })
+    mkdirSync(otherClaudeProjectDir, { recursive: true })
     mkdirSync(codexSessionsDir, { recursive: true })
 
     writeFileSync(path.join(claudeProjectDir, "claude-session.jsonl"), [
@@ -118,7 +116,10 @@ describe("recoverProviderState", () => {
         timestamp: "2026-03-21T06:07:40.619Z",
         cwd: projectDir,
         sessionId: "claude-session-1",
-        message: { role: "user", content: "Recover this Claude chat" },
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Recover this Claude chat" }],
+        },
       }),
       JSON.stringify({
         type: "assistant",
@@ -129,6 +130,17 @@ describe("recoverProviderState", () => {
           role: "assistant",
           content: [{ type: "text", text: "Claude reply" }],
         },
+      }),
+    ].join("\n"))
+
+    writeFileSync(path.join(otherClaudeProjectDir, "other-session.jsonl"), [
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-user-2",
+        timestamp: "2026-03-21T05:00:00.000Z",
+        cwd: otherDir,
+        sessionId: "claude-session-2",
+        message: { role: "user", content: "Other project chat" },
       }),
     ].join("\n"))
 
@@ -160,17 +172,16 @@ describe("recoverProviderState", () => {
     ].join("\n"))
 
     const store = new MemoryRecoveryStore()
-    const result = await recoverProviderState({ store, homeDir })
-
-    expect(result).toEqual({
-      skipped: false,
-      reason: "recovered",
-      projectsImported: 1,
-      chatsImported: 2,
-      messagesImported: 4,
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      localPath: projectDir,
+      homeDir,
     })
 
-    expect(store.listProjects()).toHaveLength(1)
+    expect(result.importedChats).toBe(2)
+    expect(result.importedMessages).toBe(4)
+    expect(result.newestChatId).toBe("chat-2")
     expect([...store.chats.values()].map((chat) => ({
       provider: chat.provider,
       title: chat.title,
@@ -187,69 +198,9 @@ describe("recoverProviderState", () => {
         sessionToken: "codex-session-1",
       },
     ])
-
-    expect(store.messages.get("chat-1")?.map((entry) => entry.kind)).toEqual(["user_prompt", "assistant_text"])
-    expect(store.messages.get("chat-2")?.map((entry) => entry.kind)).toEqual(["user_prompt", "assistant_text"])
   })
 
-  test("skips recovery when the store already has chats", async () => {
-    const homeDir = makeTempDir()
-    const projectDir = path.join(homeDir, "workspace", "kanna")
-    const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
-    mkdirSync(projectDir, { recursive: true })
-    mkdirSync(claudeProjectDir, { recursive: true })
-
-    writeFileSync(path.join(claudeProjectDir, "claude-session.jsonl"), JSON.stringify({
-      type: "user",
-      uuid: "claude-user-1",
-      timestamp: "2026-03-21T06:07:40.619Z",
-      cwd: projectDir,
-      sessionId: "claude-session-1",
-      message: { role: "user", content: "Recover this Claude chat" },
-    }))
-
-    const store = new MemoryRecoveryStore()
-    const project = await store.openProject(projectDir, "kanna")
-    await store.createChat(project.id)
-
-    const result = await recoverProviderState({ store, homeDir })
-
-    expect(result.reason).toBe("existing-state")
-    expect(store.chats.size).toBe(1)
-  })
-
-  test("ignores malformed provider files and reports no-sessions when nothing valid exists", async () => {
-    const homeDir = makeTempDir()
-    const projectDir = path.join(homeDir, "workspace", "kanna")
-    const codexSessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "21")
-    mkdirSync(projectDir, { recursive: true })
-    mkdirSync(codexSessionsDir, { recursive: true })
-
-    writeFileSync(path.join(codexSessionsDir, "bad.jsonl"), [
-      JSON.stringify({
-        timestamp: "2026-03-21T10:00:03.410Z",
-        type: "session_meta",
-        payload: {
-          id: "codex-session-1",
-          cwd: "./relative",
-        },
-      }),
-      `not-json`,
-    ].join("\n"))
-
-    const store = new MemoryRecoveryStore()
-    const result = await recoverProviderState({ store, homeDir })
-
-    expect(result).toEqual({
-      skipped: true,
-      reason: "no-sessions",
-      projectsImported: 0,
-      chatsImported: 0,
-      messagesImported: 0,
-    })
-  })
-
-  test("skips recovery for hidden project paths", async () => {
+  test("does not duplicate already imported sessions on reopen", async () => {
     const homeDir = makeTempDir()
     const projectDir = path.join(homeDir, "workspace", "kanna")
     const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
@@ -268,17 +219,102 @@ describe("recoverProviderState", () => {
     ].join("\n"))
 
     const store = new MemoryRecoveryStore()
-    store.hiddenProjectPaths.add(projectDir)
+    const firstImport = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      localPath: projectDir,
+      homeDir,
+    })
+    const secondImport = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      localPath: projectDir,
+      homeDir,
+    })
 
-    const result = await recoverProviderState({ store, homeDir })
+    expect(firstImport.importedChats).toBe(1)
+    expect(secondImport.importedChats).toBe(0)
+    expect(store.chats.size).toBe(1)
+  })
+
+  test("skips Claude sessions that have no real user-authored prompt", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(claudeProjectDir, { recursive: true })
+
+    writeFileSync(path.join(claudeProjectDir, "claude-session.jsonl"), [
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-user-1",
+        timestamp: "2026-03-21T06:07:40.619Z",
+        cwd: projectDir,
+        sessionId: "claude-session-1",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ignored" }],
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        uuid: "claude-assistant-1",
+        timestamp: "2026-03-21T06:07:44.090Z",
+        sessionId: "claude-session-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Claude reply" }],
+        },
+      }),
+    ].join("\n"))
+
+    const store = new MemoryRecoveryStore()
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      localPath: projectDir,
+      homeDir,
+    })
 
     expect(result).toEqual({
-      skipped: true,
-      reason: "no-sessions",
-      projectsImported: 0,
-      chatsImported: 0,
-      messagesImported: 0,
+      importedChatIds: [],
+      importedChats: 0,
+      importedMessages: 0,
+      newestChatId: null,
     })
-    expect(store.projects.size).toBe(0)
+  })
+
+  test("skips import for hidden project paths", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(claudeProjectDir, { recursive: true })
+
+    writeFileSync(path.join(claudeProjectDir, "claude-session.jsonl"), JSON.stringify({
+      type: "user",
+      uuid: "claude-user-1",
+      timestamp: "2026-03-21T06:07:40.619Z",
+      cwd: projectDir,
+      sessionId: "claude-session-1",
+      message: { role: "user", content: "Recover this Claude chat" },
+    }))
+
+    const store = new MemoryRecoveryStore()
+    store.hiddenProjectPaths.add(projectDir)
+
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      localPath: projectDir,
+      homeDir,
+    })
+
+    expect(result).toEqual({
+      importedChatIds: [],
+      importedChats: 0,
+      importedMessages: 0,
+      newestChatId: null,
+    })
   })
 })

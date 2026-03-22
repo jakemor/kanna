@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import { GitManager } from "./git-manager"
 import { createWsRouter } from "./ws-router"
+
+const tempDirs: string[] = []
+
+function makeTempDir() {
+  const directory = mkdtempSync(path.join(tmpdir(), "kanna-ws-router-"))
+  tempDirs.push(directory)
+  return directory
+}
 
 class FakeWebSocket {
   readonly sent: unknown[] = []
@@ -12,6 +23,12 @@ class FakeWebSocket {
 
   send(message: string) {
     this.sent.push(JSON.parse(message))
+  }
+}
+
+function cleanupTempDirs() {
+  for (const directory of tempDirs.splice(0)) {
+    rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -259,6 +276,119 @@ describe("ws-router", () => {
         v: PROTOCOL_VERSION,
         type: "ack",
         id: "project-hide-1",
+      },
+    ])
+  })
+
+  test("project.open returns the newest existing chat when the project already has history", async () => {
+    const chatState = new Map<string, {
+      id: string
+      projectId: string
+      provider: "claude" | "codex" | null
+      sessionToken: string | null
+      title: string
+      updatedAt: number
+      lastMessageAt?: number
+    }>()
+
+    chatState.set("chat-existing", {
+      id: "chat-existing",
+      projectId: "project-1",
+      provider: "claude",
+      sessionToken: "session-1",
+      title: "Recovered chat",
+      updatedAt: 10,
+      lastMessageAt: 10,
+    })
+
+    const store = {
+      state: createEmptyState(),
+      unhideProject: async () => {},
+      openProject: async () => ({ id: "project-1", localPath: "/tmp/project-1", title: "project-1" }),
+      isProjectHidden: () => false,
+      listChatsByProject: () => [...chatState.values()].sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt)),
+      createChat: async (projectId: string) => {
+        const next = {
+          id: `chat-${chatState.size + 1}`,
+          projectId,
+          provider: null,
+          sessionToken: null,
+          title: "New Chat",
+          updatedAt: chatState.size + 1,
+        }
+        chatState.set(next.id, next)
+        return next
+      },
+      renameChat: async (chatId: string, title: string) => {
+        const chat = chatState.get(chatId)
+        if (chat) chat.title = title
+      },
+      setChatProvider: async (chatId: string, provider: "claude" | "codex") => {
+        const chat = chatState.get(chatId)
+        if (chat) chat.provider = provider
+      },
+      setSessionToken: async (chatId: string, sessionToken: string | null) => {
+        const chat = chatState.get(chatId)
+        if (chat) chat.sessionToken = sessionToken
+      },
+      appendMessage: async (chatId: string, entry: any) => {
+        const chat = chatState.get(chatId)
+        if (!chat) return
+        chat.updatedAt = entry.createdAt
+        if (entry.kind === "user_prompt") {
+          chat.lastMessageAt = entry.createdAt
+        }
+      },
+    }
+
+    const router = createWsRouter({
+      store: store as never,
+      agent: { getActiveStatuses: () => new Map() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      fileTree: {
+        getSnapshot: () => ({ projectId: "project-1", rootPath: "/tmp/project-1", pageSize: 200, supportsRealtime: true }),
+        onInvalidate: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+    })
+    const ws = new FakeWebSocket()
+    const homeDir = makeTempDir()
+    const originalHome = process.env.HOME
+    process.env.HOME = homeDir
+
+    try {
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "project-open-1",
+          command: { type: "project.open", localPath: "/tmp/project-1" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } finally {
+      process.env.HOME = originalHome
+      cleanupTempDirs()
+    }
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "project-open-1",
+        result: {
+          projectId: "project-1",
+          chatId: "chat-existing",
+          importedChats: 0,
+        },
       },
     ])
   })

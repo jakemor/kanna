@@ -161,6 +161,19 @@ describe("runCli", () => {
     expect(calls.openUrl).toEqual([])
   })
 
+  test("skips self-update in local checkout mode", async () => {
+    const { calls, deps } = createDeps({
+      allowSelfUpdate: false,
+    })
+
+    const result = await runCli(["--no-open"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(calls.fetchLatestVersion).toEqual([])
+    expect(calls.installLatest).toEqual([])
+    expect(calls.relaunch).toEqual([])
+  })
+
   test("fails fast on unsupported Bun versions", async () => {
     const { calls, deps } = createDeps({
       bunVersion: "1.3.1",

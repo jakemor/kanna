@@ -9,6 +9,7 @@ import { openExternal } from "./external-open"
 import { FileTreeManager } from "./file-tree-manager"
 import { GitManager } from "./git-manager"
 import { ensureProjectDirectory } from "./paths"
+import { importProjectHistory } from "./recovery"
 import { TerminalManager } from "./terminal-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import { applyThreadEstimate, mergeUsageSnapshots, reconstructClaudeUsage, reconstructCodexUsageFromFile } from "./usage"
@@ -185,16 +186,44 @@ export function createWsRouter({
           await ensureProjectDirectory(command.localPath)
           await store.unhideProject(command.localPath)
           const project = await store.openProject(command.localPath)
+          const imported = await importProjectHistory({
+            store,
+            projectId: project.id,
+            localPath: project.localPath,
+          })
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          send(ws, {
+            v: PROTOCOL_VERSION,
+            type: "ack",
+            id,
+            result: {
+              projectId: project.id,
+              chatId: imported.newestChatId,
+              importedChats: imported.importedChats,
+            },
+          })
           break
         }
         case "project.create": {
           await ensureProjectDirectory(command.localPath)
           await store.unhideProject(command.localPath)
           const project = await store.openProject(command.localPath, command.title)
+          const imported = await importProjectHistory({
+            store,
+            projectId: project.id,
+            localPath: project.localPath,
+          })
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          send(ws, {
+            v: PROTOCOL_VERSION,
+            type: "ack",
+            id,
+            result: {
+              projectId: project.id,
+              chatId: imported.newestChatId,
+              importedChats: imported.importedChats,
+            },
+          })
           break
         }
         case "project.remove": {

@@ -4,13 +4,16 @@ import path from "node:path"
 import type { AgentProvider, TranscriptEntry } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import { normalizeClaudeStreamMessage } from "./agent"
-import type { DiscoveredProject } from "./discovery"
 
 interface RecoveryStore {
-  listProjects(): Array<{ id: string; localPath: string; title: string }>
-  listChatsByProject(projectId: string): Array<{ id: string }>
+  listChatsByProject(projectId: string): Array<{
+    id: string
+    provider: AgentProvider | null
+    sessionToken: string | null
+    lastMessageAt?: number
+    updatedAt: number
+  }>
   isProjectHidden(localPath: string): boolean
-  openProject(localPath: string, title?: string): Promise<{ id: string }>
   createChat(projectId: string): Promise<{ id: string }>
   renameChat(chatId: string, title: string): Promise<void>
   setChatProvider(chatId: string, provider: AgentProvider): Promise<void>
@@ -27,12 +30,11 @@ interface RecoveryChat {
   entries: TranscriptEntry[]
 }
 
-export interface RecoveryResult {
-  skipped: boolean
-  reason: "existing-state" | "no-sessions" | "recovered"
-  projectsImported: number
-  chatsImported: number
-  messagesImported: number
+export interface ProjectImportResult {
+  importedChatIds: string[]
+  importedChats: number
+  importedMessages: number
+  newestChatId: string | null
 }
 
 function parseJsonRecord(line: string): Record<string, unknown> | null {
@@ -71,38 +73,67 @@ function makeEntryId(prefix: string, sessionToken: string, index: number) {
   return `${prefix}:${sessionToken}:${index}`
 }
 
+function textFromClaudeContentArray(content: unknown[]): string {
+  return content
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return ""
+      const record = item as Record<string, unknown>
+      return record.type === "text" && typeof record.text === "string" ? record.text : ""
+    })
+    .filter((part) => part.trim())
+    .join("\n")
+}
+
+function claudeUserEntriesFromRecord(record: Record<string, unknown>, timestamp: number, messageId: string): TranscriptEntry[] {
+  const message = record.message
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return []
+  }
+
+  const messageRecord = message as Record<string, unknown>
+  let content = ""
+  if (typeof messageRecord.content === "string") {
+    content = messageRecord.content
+  } else if (Array.isArray(messageRecord.content)) {
+    content = textFromClaudeContentArray(messageRecord.content)
+  }
+
+  const trimmed = content.trim()
+  if (!trimmed) {
+    return []
+  }
+
+  if (trimmed.startsWith("This session is being continued")) {
+    return [{
+      _id: messageId,
+      messageId,
+      createdAt: timestamp,
+      kind: "compact_summary",
+      summary: trimmed,
+    }]
+  }
+
+  return [{
+    _id: messageId,
+    messageId,
+    createdAt: timestamp,
+    kind: "user_prompt",
+    content: trimmed,
+  }]
+}
+
 function claudeEntriesFromRecord(record: Record<string, unknown>): TranscriptEntry[] {
   const timestamp = typeof record.timestamp === "string" ? Date.parse(record.timestamp) : Number.NaN
   if (Number.isNaN(timestamp)) {
     return []
   }
 
-  const messageId = typeof record.uuid === "string" ? record.uuid : makeEntryId("claude-message", String(record.sessionId ?? "session"), 0)
+  const messageId = typeof record.uuid === "string"
+    ? record.uuid
+    : makeEntryId("claude-message", String(record.sessionId ?? "session"), 0)
 
   if (record.type === "user") {
-    const message = record.message
-    if (message && typeof message === "object" && !Array.isArray(message)) {
-      const messageRecord = message as Record<string, unknown>
-      if (typeof messageRecord.content === "string" && messageRecord.content.trim()) {
-        const content = messageRecord.content
-        if (content.startsWith("This session is being continued")) {
-          return [{
-            _id: messageId,
-            messageId,
-            createdAt: timestamp,
-            kind: "compact_summary",
-            summary: content,
-          }]
-        }
-        return [{
-          _id: messageId,
-          messageId,
-          createdAt: timestamp,
-          kind: "user_prompt",
-          content,
-        }]
-      }
-    }
+    return claudeUserEntriesFromRecord(record, timestamp, messageId)
   }
 
   const entries = normalizeClaudeStreamMessage(record).filter((entry) => {
@@ -118,16 +149,30 @@ function claudeEntriesFromRecord(record: Record<string, unknown>): TranscriptEnt
   }))
 }
 
-function readClaudeRecoveryChats(homeDir: string): RecoveryChat[] {
+function firstUserPrompt(entries: TranscriptEntry[]): string | null {
+  const entry = entries.find((candidate) => candidate.kind === "user_prompt" && candidate.content.trim())
+  if (!entry || entry.kind !== "user_prompt") {
+    return null
+  }
+  return entry.content.trim()
+}
+
+function firstLine(value: string, fallback: string) {
+  const line = value.split("\n").map((part) => part.trim()).find(Boolean)
+  if (!line) return fallback
+  return line.length > 80 ? `${line.slice(0, 77)}...` : line
+}
+
+function readClaudeProjectChats(homeDir: string, localPath: string): RecoveryChat[] {
   const projectsDir = path.join(homeDir, ".claude", "projects")
   const chats: RecoveryChat[] = []
+  const normalizedPath = path.normalize(localPath)
 
   for (const sessionFile of collectFiles(projectsDir, ".jsonl")) {
     const lines = readFileSync(sessionFile, "utf8").split("\n")
     const entries: TranscriptEntry[] = []
     let sessionToken: string | null = null
-    let localPath: string | null = null
-    let firstUserPrompt: string | null = null
+    let sessionLocalPath: string | null = null
     let modifiedAt = statSync(sessionFile).mtimeMs
 
     for (const line of lines) {
@@ -138,33 +183,32 @@ function readClaudeRecoveryChats(homeDir: string): RecoveryChat[] {
       if (!sessionToken && typeof record.sessionId === "string") {
         sessionToken = record.sessionId
       }
-      if (!localPath && typeof record.cwd === "string" && path.isAbsolute(record.cwd)) {
-        localPath = record.cwd
-      }
-
-      const normalizedEntries = claudeEntriesFromRecord(record)
-      for (const entry of normalizedEntries) {
-        entries.push(entry)
-        if (!firstUserPrompt && entry.kind === "user_prompt" && entry.content.trim()) {
-          firstUserPrompt = entry.content.trim()
-        }
+      if (!sessionLocalPath && typeof record.cwd === "string" && path.isAbsolute(record.cwd)) {
+        sessionLocalPath = path.normalize(record.cwd)
       }
 
       const timestamp = typeof record.timestamp === "string" ? Date.parse(record.timestamp) : Number.NaN
       if (!Number.isNaN(timestamp)) {
         modifiedAt = Math.max(modifiedAt, timestamp)
       }
+
+      entries.push(...claudeEntriesFromRecord(record))
     }
 
-    if (!sessionToken || !localPath || entries.length === 0) {
+    if (!sessionToken || sessionLocalPath !== normalizedPath || entries.length === 0) {
+      continue
+    }
+
+    const prompt = firstUserPrompt(entries)
+    if (!prompt) {
       continue
     }
 
     chats.push({
       provider: "claude",
       sessionToken,
-      localPath,
-      title: firstUserPrompt || path.basename(localPath) || "Recovered Chat",
+      localPath: sessionLocalPath,
+      title: prompt,
       modifiedAt,
       entries,
     })
@@ -257,7 +301,7 @@ function codexEntriesFromRecord(record: Record<string, unknown>, index: number):
         _id: makeEntryId("codex-user", String(index), index),
         createdAt: timestamp + index,
         kind: "user_prompt",
-        content: payloadRecord.message,
+        content: payloadRecord.message.trim(),
       }]
     }
 
@@ -285,17 +329,17 @@ function codexEntriesFromRecord(record: Record<string, unknown>, index: number):
   return []
 }
 
-function readCodexRecoveryChats(homeDir: string): RecoveryChat[] {
+function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat[] {
   const sessionsDir = path.join(homeDir, ".codex", "sessions")
   const chats: RecoveryChat[] = []
+  const normalizedPath = path.normalize(localPath)
 
   for (const sessionFile of collectFiles(sessionsDir, ".jsonl")) {
     const lines = readFileSync(sessionFile, "utf8").split("\n")
     const entries: TranscriptEntry[] = []
     let sessionToken: string | null = null
-    let localPath: string | null = null
+    let sessionLocalPath: string | null = null
     let modifiedAt = statSync(sessionFile).mtimeMs
-    let firstUserPrompt: string | null = null
 
     lines.forEach((line, index) => {
       if (!line.trim()) return
@@ -309,8 +353,8 @@ function readCodexRecoveryChats(homeDir: string): RecoveryChat[] {
           if (!sessionToken && typeof payloadRecord.id === "string") {
             sessionToken = payloadRecord.id
           }
-          if (!localPath && typeof payloadRecord.cwd === "string" && path.isAbsolute(payloadRecord.cwd)) {
-            localPath = payloadRecord.cwd
+          if (!sessionLocalPath && typeof payloadRecord.cwd === "string" && path.isAbsolute(payloadRecord.cwd)) {
+            sessionLocalPath = path.normalize(payloadRecord.cwd)
           }
         }
       }
@@ -320,23 +364,23 @@ function readCodexRecoveryChats(homeDir: string): RecoveryChat[] {
         modifiedAt = Math.max(modifiedAt, timestamp)
       }
 
-      for (const entry of codexEntriesFromRecord(record, index)) {
-        entries.push(entry)
-        if (!firstUserPrompt && entry.kind === "user_prompt" && entry.content.trim()) {
-          firstUserPrompt = entry.content.trim()
-        }
-      }
+      entries.push(...codexEntriesFromRecord(record, index))
     })
 
-    if (!sessionToken || !localPath || entries.length === 0) {
+    if (!sessionToken || sessionLocalPath !== normalizedPath || entries.length === 0) {
+      continue
+    }
+
+    const prompt = firstUserPrompt(entries)
+    if (!prompt) {
       continue
     }
 
     chats.push({
       provider: "codex",
       sessionToken,
-      localPath,
-      title: firstUserPrompt || path.basename(localPath) || "Recovered Chat",
+      localPath: sessionLocalPath,
+      title: prompt,
       modifiedAt,
       entries,
     })
@@ -345,99 +389,66 @@ function readCodexRecoveryChats(homeDir: string): RecoveryChat[] {
   return chats
 }
 
-function firstLine(value: string, fallback: string) {
-  const line = value.split("\n").map((part) => part.trim()).find(Boolean)
-  if (!line) return fallback
-  return line.length > 80 ? `${line.slice(0, 77)}...` : line
+function collectProjectChats(homeDir: string, localPath: string) {
+  return [
+    ...readClaudeProjectChats(homeDir, localPath),
+    ...readCodexProjectChats(homeDir, localPath),
+  ]
 }
 
-async function importRecoveryChats(store: RecoveryStore, chats: RecoveryChat[]): Promise<RecoveryResult> {
-  if (store.listProjects().some((project) => store.listChatsByProject(project.id).length > 0)) {
-    return {
-      skipped: true,
-      reason: "existing-state",
-      projectsImported: 0,
-      chatsImported: 0,
-      messagesImported: 0,
-    }
-  }
-
-  if (chats.length === 0) {
-    return {
-      skipped: true,
-      reason: "no-sessions",
-      projectsImported: 0,
-      chatsImported: 0,
-      messagesImported: 0,
-    }
-  }
-
-  const visibleChats = chats.filter((chat) => !store.isProjectHidden(chat.localPath))
-  if (visibleChats.length === 0) {
-    return {
-      skipped: true,
-      reason: "no-sessions",
-      projectsImported: 0,
-      chatsImported: 0,
-      messagesImported: 0,
-    }
-  }
-
-  const projectIdsByPath = new Map<string, string>()
-  let projectsImported = 0
-  let chatsImported = 0
-  let messagesImported = 0
-
-  for (const chat of visibleChats.sort((a, b) => a.modifiedAt - b.modifiedAt)) {
-    let projectId = projectIdsByPath.get(chat.localPath)
-    if (!projectId) {
-      const project = await store.openProject(chat.localPath, path.basename(chat.localPath) || chat.localPath)
-      projectId = project.id
-      projectIdsByPath.set(chat.localPath, projectId)
-      projectsImported += 1
-    }
-
-    const createdChat = await store.createChat(projectId)
-    await store.renameChat(createdChat.id, firstLine(chat.title, "Recovered Chat"))
-    await store.setChatProvider(createdChat.id, chat.provider)
-    await store.setSessionToken(createdChat.id, chat.sessionToken)
-    for (const entry of chat.entries) {
-      await store.appendMessage(createdChat.id, entry)
-      messagesImported += 1
-    }
-    chatsImported += 1
-  }
-
-  return {
-    skipped: false,
-    reason: "recovered",
-    projectsImported,
-    chatsImported,
-    messagesImported,
-  }
-}
-
-export async function recoverProviderState(args: {
+export async function importProjectHistory(args: {
   store: RecoveryStore
+  projectId: string
+  localPath: string
   homeDir?: string
   log?: (message: string) => void
-}): Promise<RecoveryResult> {
-  const homeDir = args.homeDir ?? homedir()
-  const claudeChats = readClaudeRecoveryChats(homeDir)
-  const codexChats = readCodexRecoveryChats(homeDir)
-  const result = await importRecoveryChats(args.store, [...claudeChats, ...codexChats])
+}): Promise<ProjectImportResult> {
+  const normalizedPath = path.normalize(args.localPath)
+  if (args.store.isProjectHidden(normalizedPath)) {
+    return {
+      importedChatIds: [],
+      importedChats: 0,
+      importedMessages: 0,
+      newestChatId: null,
+    }
+  }
 
-  args.log?.(
-    `[kanna] recovery ${result.reason} (claude=${claudeChats.length}, codex=${codexChats.length}, importedChats=${result.chatsImported}, importedMessages=${result.messagesImported})`
+  const chats = collectProjectChats(args.homeDir ?? homedir(), normalizedPath)
+  const existingChats = args.store.listChatsByProject(args.projectId)
+  const existingSessionKeys = new Set(
+    existingChats
+      .filter((chat) => chat.provider && chat.sessionToken)
+      .map((chat) => `${chat.provider}:${chat.sessionToken}`)
   )
 
-  return result
-}
+  const importedChatIds: string[] = []
+  let importedMessages = 0
 
-export function deriveRecoveredProjects(homeDir: string = homedir()): DiscoveredProject[] {
-  return [...readClaudeRecoveryChats(homeDir), ...readCodexRecoveryChats(homeDir)].map((chat) => ({
-    localPath: chat.localPath,
-    title: path.basename(chat.localPath) || chat.localPath,
-    modifiedAt: chat.modifiedAt,
-  }))
+  for (const chat of chats
+    .filter((candidate) => !existingSessionKeys.has(`${candidate.provider}:${candidate.sessionToken}`))
+    .sort((a, b) => a.modifiedAt - b.modifiedAt)) {
+    const createdChat = await args.store.createChat(args.projectId)
+    await args.store.renameChat(createdChat.id, firstLine(chat.title, "Recovered Chat"))
+    await args.store.setChatProvider(createdChat.id, chat.provider)
+    await args.store.setSessionToken(createdChat.id, chat.sessionToken)
+
+    for (const entry of chat.entries) {
+      await args.store.appendMessage(createdChat.id, entry)
+      importedMessages += 1
+    }
+
+    importedChatIds.push(createdChat.id)
+  }
+
+  const newestChatId = args.store.listChatsByProject(args.projectId)[0]?.id ?? null
+  args.log?.(
+    `[kanna] project import path=${normalizedPath} discovered=${chats.length} imported=${importedChatIds.length} messages=${importedMessages}`
+  )
+
+  return {
+    importedChatIds,
+    importedChats: importedChatIds.length,
+    importedMessages,
+    newestChatId,
+  }
 }

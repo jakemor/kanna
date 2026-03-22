@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import process from "node:process"
 import {
   fetchLatestPackageVersion,
@@ -9,12 +10,15 @@ import {
 import { startKannaServer } from "./server"
 
 // Read version from package.json at the package root
-const pkg = await Bun.file(new URL("../../package.json", import.meta.url)).json()
+const packageRootUrl = new URL("../../", import.meta.url)
+const pkg = await Bun.file(new URL("package.json", packageRootUrl)).json()
 const VERSION: string = pkg.version ?? "0.0.0"
+const ALLOW_SELF_UPDATE = !existsSync(new URL(".git", packageRootUrl))
 
 const result = await runCli(process.argv.slice(2), {
   version: VERSION,
   bunVersion: Bun.version,
+  allowSelfUpdate: ALLOW_SELF_UPDATE,
   startServer: startKannaServer,
   fetchLatestVersion: fetchLatestPackageVersion,
   installLatest: installLatestPackage,

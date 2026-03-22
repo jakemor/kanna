@@ -26,6 +26,7 @@ export type CliRunResult = StartedCli | ExitedCli
 export interface CliRuntimeDeps {
   version: string
   bunVersion: string
+  allowSelfUpdate?: boolean
   startServer: (options: CliOptions) => Promise<{ port: number; stop: () => Promise<void> }>
   fetchLatestVersion: (packageName: string) => Promise<string>
   installLatest: (packageName: string) => boolean
@@ -186,9 +187,11 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 1 }
   }
 
-  const relaunchExitCode = await maybeSelfUpdate(argv, deps)
-  if (relaunchExitCode !== null) {
-    return { kind: "exited", code: relaunchExitCode }
+  if (deps.allowSelfUpdate !== false) {
+    const relaunchExitCode = await maybeSelfUpdate(argv, deps)
+    if (relaunchExitCode !== null) {
+      return { kind: "exited", code: relaunchExitCode }
+    }
   }
 
   const { port, stop } = await deps.startServer(parsedArgs.options)

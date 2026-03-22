@@ -42,11 +42,62 @@ function useKannaSocket() {
   return socketRef.current as KannaSocket
 }
 
+function logKannaState(message: string, details?: unknown) {
+  if (details === undefined) {
+    console.info(`[useKannaState] ${message}`)
+    return
+  }
+
+  console.info(`[useKannaState] ${message}`, details)
+}
+
 export function shouldPinTranscriptToBottom(distanceFromBottom: number) {
   return distanceFromBottom < 120
 }
 
 const FIXED_TRANSCRIPT_PADDING_BOTTOM = 320
+
+export interface ProjectRequest {
+  mode: "new" | "existing"
+  localPath: string
+  title: string
+}
+
+export type StartChatIntent =
+  | { kind: "project_id"; projectId: string }
+  | { kind: "local_path"; localPath: string }
+  | { kind: "project_request"; project: ProjectRequest }
+
+export function resolveComposeIntent(params: {
+  selectedProjectId: string | null
+  sidebarProjectId?: string | null
+  fallbackLocalProjectPath?: string | null
+}): StartChatIntent | null {
+  const projectId = params.selectedProjectId ?? params.sidebarProjectId ?? null
+  if (projectId) {
+    return { kind: "project_id", projectId }
+  }
+
+  if (params.fallbackLocalProjectPath) {
+    return { kind: "local_path", localPath: params.fallbackLocalProjectPath }
+  }
+
+  return null
+}
+
+export function getActiveChatSnapshot(chatSnapshot: ChatSnapshot | null, activeChatId: string | null): ChatSnapshot | null {
+  if (!chatSnapshot) return null
+  if (!activeChatId) return null
+  if (chatSnapshot.runtime.chatId !== activeChatId) {
+    logKannaState("stale snapshot masked", {
+      routeChatId: activeChatId,
+      snapshotChatId: chatSnapshot.runtime.chatId,
+      snapshotProvider: chatSnapshot.runtime.provider,
+    })
+    return null
+  }
+  return chatSnapshot
+}
 
 export interface KannaState {
   socket: KannaSocket
@@ -83,7 +134,7 @@ export interface KannaState {
   scrollToBottom: () => void
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
-  handleCreateProject: (project: { mode: "new" | "existing"; localPath: string; title: string }) => Promise<void>
+  handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleCancel: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
@@ -158,13 +209,22 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   useEffect(() => {
     if (!activeChatId) {
+      logKannaState("clearing chat snapshot for non-chat route")
       setChatSnapshot(null)
       setChatReady(true)
       return
     }
 
+    logKannaState("subscribing to chat", { activeChatId })
+    setChatSnapshot(null)
     setChatReady(false)
     return socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId }, (snapshot) => {
+      logKannaState("chat snapshot received", {
+        activeChatId,
+        snapshotChatId: snapshot?.runtime.chatId ?? null,
+        snapshotProvider: snapshot?.runtime.provider ?? null,
+        snapshotStatus: snapshot?.runtime.status ?? null,
+      })
       setChatSnapshot(snapshot)
       setChatReady(true)
       setCommandError(null)
@@ -215,10 +275,24 @@ export function useKannaState(activeChatId: string | null): KannaState {
     return () => observer.disconnect()
   }, [])
 
-  const messages = useMemo(() => processTranscriptMessages(chatSnapshot?.messages ?? []), [chatSnapshot?.messages])
+  const activeChatSnapshot = useMemo(
+    () => getActiveChatSnapshot(chatSnapshot, activeChatId),
+    [activeChatId, chatSnapshot]
+  )
+  useEffect(() => {
+    logKannaState("active snapshot resolved", {
+      routeChatId: activeChatId,
+      rawSnapshotChatId: chatSnapshot?.runtime.chatId ?? null,
+      rawSnapshotProvider: chatSnapshot?.runtime.provider ?? null,
+      activeSnapshotChatId: activeChatSnapshot?.runtime.chatId ?? null,
+      activeSnapshotProvider: activeChatSnapshot?.runtime.provider ?? null,
+      pendingChatId,
+    })
+  }, [activeChatId, activeChatSnapshot, chatSnapshot, pendingChatId])
+  const messages = useMemo(() => processTranscriptMessages(activeChatSnapshot?.messages ?? []), [activeChatSnapshot?.messages])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
-  const runtime = chatSnapshot?.runtime ?? null
-  const availableProviders = chatSnapshot?.availableProviders ?? PROVIDERS
+  const runtime = activeChatSnapshot?.runtime ?? null
+  const availableProviders = activeChatSnapshot?.availableProviders ?? PROVIDERS
   const isProcessing = isProcessingStatus(runtime?.status)
   const canCancel = canCancelStatus(runtime?.status)
   const transcriptPaddingBottom = FIXED_TRANSCRIPT_PADDING_BOTTOM
@@ -257,57 +331,64 @@ export function useKannaState(activeChatId: string | null): KannaState {
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
   }
 
-  async function handleCreateChat(projectId: string) {
+  async function createChatForProject(projectId: string) {
+    useChatPreferencesStore.getState().initializeComposerForNewChat()
+    const result = await socket.command<{ chatId: string }>({ type: "chat.create", projectId })
+    setSelectedProjectId(projectId)
+    setPendingChatId(result.chatId)
+    navigate(`/chat/${result.chatId}`)
+    setSidebarOpen(false)
+    setCommandError(null)
+  }
+
+  async function resolveProjectIdForStartChat(intent: StartChatIntent): Promise<{ projectId: string; localPath?: string }> {
+    if (intent.kind === "project_id") {
+      return { projectId: intent.projectId }
+    }
+
+    if (intent.kind === "local_path") {
+      const result = await socket.command<{ projectId: string }>({ type: "project.open", localPath: intent.localPath })
+      return { projectId: result.projectId, localPath: intent.localPath }
+    }
+
+    const result = await socket.command<{ projectId: string }>(
+      intent.project.mode === "new"
+        ? { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
+        : { type: "project.open", localPath: intent.project.localPath }
+    )
+    return { projectId: result.projectId, localPath: intent.project.localPath }
+  }
+
+  async function startChatFromIntent(intent: StartChatIntent) {
     try {
-      useChatPreferencesStore.getState().initializeComposerForNewChat()
-      const result = await socket.command<{ chatId: string }>({ type: "chat.create", projectId })
-      setSelectedProjectId(projectId)
-      setPendingChatId(result.chatId)
-      navigate(`/chat/${result.chatId}`)
-      setSidebarOpen(false)
+      const localPath = intent.kind === "project_id"
+        ? null
+        : intent.kind === "local_path"
+          ? intent.localPath
+          : intent.project.localPath
+      if (localPath) {
+        setStartingLocalPath(localPath)
+      }
+
+      const { projectId } = await resolveProjectIdForStartChat(intent)
+      await createChatForProject(projectId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setStartingLocalPath(null)
     }
+  }
+
+  async function handleCreateChat(projectId: string) {
+    await startChatFromIntent({ kind: "project_id", projectId })
   }
 
   async function handleOpenLocalProject(localPath: string) {
-    try {
-      setStartingLocalPath(localPath)
-      const result = await socket.command<{ projectId: string }>({ type: "project.open", localPath })
-      setSelectedProjectId(result.projectId)
-      useChatPreferencesStore.getState().initializeComposerForNewChat()
-      const chat = await socket.command<{ chatId: string }>({ type: "chat.create", projectId: result.projectId })
-      setPendingChatId(chat.chatId)
-      navigate(`/chat/${chat.chatId}`)
-      setSidebarOpen(false)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setStartingLocalPath(null)
-    }
+    await startChatFromIntent({ kind: "local_path", localPath })
   }
 
-  async function handleCreateProject(project: { mode: "new" | "existing"; localPath: string; title: string }) {
-    try {
-      setStartingLocalPath(project.localPath)
-      const result = await socket.command<{ projectId: string }>(
-        project.mode === "new"
-          ? { type: "project.create", localPath: project.localPath, title: project.title }
-          : { type: "project.open", localPath: project.localPath }
-      )
-      setSelectedProjectId(result.projectId)
-      useChatPreferencesStore.getState().initializeComposerForNewChat()
-      const chat = await socket.command<{ chatId: string }>({ type: "chat.create", projectId: result.projectId })
-      setPendingChatId(chat.chatId)
-      navigate(`/chat/${chat.chatId}`)
-      setSidebarOpen(false)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setStartingLocalPath(null)
-    }
+  async function handleCreateProject(project: ProjectRequest) {
+    await startChatFromIntent({ kind: "project_request", project })
   }
 
   async function handleSend(
@@ -462,15 +543,13 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }
 
   function handleCompose() {
-    const projectId = selectedProjectId ?? sidebarData.projectGroups[0]?.groupKey
-    if (projectId) {
-      void handleCreateChat(projectId)
-      return
-    }
-
-    const firstLocalProject = localProjects?.projects[0]?.localPath
-    if (firstLocalProject) {
-      void handleOpenLocalProject(firstLocalProject)
+    const intent = resolveComposeIntent({
+      selectedProjectId,
+      sidebarProjectId: sidebarData.projectGroups[0]?.groupKey,
+      fallbackLocalProjectPath,
+    })
+    if (intent) {
+      void startChatFromIntent(intent)
       return
     }
 

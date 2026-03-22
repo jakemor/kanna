@@ -12,7 +12,7 @@ import { Textarea } from "../ui/textarea"
 import { cn } from "../../lib/utils"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 
@@ -29,6 +29,55 @@ interface Props {
   availableProviders: ProviderCatalogEntry[]
 }
 
+function logChatInput(message: string, details?: unknown) {
+  if (details === undefined) {
+    console.info(`[ChatInput] ${message}`)
+    return
+  }
+
+  console.info(`[ChatInput] ${message}`, details)
+}
+
+function createLockedComposerState(
+  provider: AgentProvider,
+  composerState: ComposerState,
+  providerDefaults: ReturnType<typeof useChatPreferencesStore.getState>["providerDefaults"]
+): ComposerState {
+  if (provider === "claude") {
+    if (composerState.provider === "claude") {
+      return {
+        provider: "claude",
+        model: composerState.model,
+        modelOptions: { ...composerState.modelOptions },
+        planMode: composerState.planMode,
+      }
+    }
+
+    return {
+      provider: "claude",
+      model: providerDefaults.claude.model,
+      modelOptions: { ...providerDefaults.claude.modelOptions },
+      planMode: providerDefaults.claude.planMode,
+    }
+  }
+
+  if (composerState.provider === "codex") {
+    return {
+      provider: "codex",
+      model: composerState.model,
+      modelOptions: { ...composerState.modelOptions },
+      planMode: composerState.planMode,
+    }
+  }
+
+  return {
+    provider: "codex",
+    model: providerDefaults.codex.model,
+    modelOptions: { ...providerDefaults.codex.modelOptions },
+    planMode: providerDefaults.codex.planMode,
+  }
+}
+
 const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput({
   onSubmit,
   onCancel,
@@ -41,19 +90,24 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   const { getDraft, setDraft, clearDraft } = useChatInputStore()
   const {
     composerState,
+    providerDefaults,
     setComposerModel,
     setComposerModelOptions,
     setComposerPlanMode,
     resetComposerFromProvider,
-    initializeComposerForNewChat,
   } = useChatPreferencesStore()
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
+  const [lockedComposerState, setLockedComposerState] = useState<ComposerState | null>(() => (
+    activeProvider ? createLockedComposerState(activeProvider, composerState, providerDefaults) : null
+  ))
 
-  const selectedProvider = activeProvider ?? composerState.provider
-  const providerPrefs = composerState
   const providerLocked = activeProvider !== null
+  const providerPrefs = providerLocked
+    ? lockedComposerState ?? createLockedComposerState(activeProvider, composerState, providerDefaults)
+    : composerState
+  const selectedProvider = providerLocked ? activeProvider : composerState.provider
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
 
@@ -90,18 +144,47 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   }, [chatId])
 
   useEffect(() => {
-    if (chatId !== null) return
-    if (activeProvider !== null) return
-    initializeComposerForNewChat()
-  }, [activeProvider, chatId, initializeComposerForNewChat])
+    if (activeProvider === null) {
+      setLockedComposerState(null)
+      return
+    }
+
+    setLockedComposerState(createLockedComposerState(activeProvider, composerState, providerDefaults))
+  }, [activeProvider, chatId])
 
   useEffect(() => {
-    if (activeProvider === null) return
-    if (composerState.provider === activeProvider) return
-    resetComposerFromProvider(activeProvider)
-  }, [activeProvider, composerState.provider, resetComposerFromProvider])
+    logChatInput("resolved provider state", {
+      chatId: chatId ?? null,
+      activeProvider,
+      composerProvider: composerState.provider,
+      composerModel: composerState.model,
+      effectiveProvider: providerPrefs.provider,
+      effectiveModel: providerPrefs.model,
+      selectedProvider,
+      providerLocked,
+      lockedComposerProvider: lockedComposerState?.provider ?? null,
+    })
+  }, [activeProvider, chatId, composerState.model, composerState.provider, lockedComposerState?.provider, providerLocked, providerPrefs.model, providerPrefs.provider, selectedProvider])
 
   function setReasoningEffort(reasoningEffort: string) {
+    if (providerLocked) {
+      setLockedComposerState((current) => {
+        const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+        if (next.provider === "claude") {
+          return {
+            ...next,
+            modelOptions: { ...next.modelOptions, reasoningEffort: reasoningEffort as ClaudeReasoningEffort },
+          }
+        }
+
+        return {
+          ...next,
+          modelOptions: { ...next.modelOptions, reasoningEffort: reasoningEffort as CodexReasoningEffort },
+        }
+      })
+      return
+    }
+
     if (selectedProvider === "claude") {
       setComposerModelOptions({ reasoningEffort: reasoningEffort as ClaudeReasoningEffort })
       return
@@ -125,6 +208,12 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
       modelOptions,
       planMode: showPlanMode ? providerPrefs.planMode : false,
     }
+    logChatInput("submit settings", {
+      chatId: chatId ?? null,
+      activeProvider,
+      composerProvider: providerPrefs.provider,
+      submitOptions,
+    })
 
     setValue("")
     if (chatId) clearDraft(chatId)
@@ -215,14 +304,48 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
           if (providerLocked) return
           resetComposerFromProvider(provider)
         }}
-        onModelChange={(_, model) => setComposerModel(model)}
+        onModelChange={(_, model) => {
+          if (providerLocked) {
+            setLockedComposerState((current) => {
+              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+              return { ...next, model }
+            })
+            return
+          }
+
+          setComposerModel(model)
+        }}
         onClaudeReasoningEffortChange={(effort) => setReasoningEffort(effort)}
         onCodexReasoningEffortChange={(effort) => setReasoningEffort(effort)}
-        onCodexFastModeChange={(fastMode) => setComposerModelOptions({ fastMode })}
+        onCodexFastModeChange={(fastMode) => {
+          if (providerLocked) {
+            setLockedComposerState((current) => {
+              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+              if (next.provider === "claude") return next
+              return {
+                ...next,
+                modelOptions: { ...next.modelOptions, fastMode },
+              }
+            })
+            return
+          }
+
+          setComposerModelOptions({ fastMode })
+        }}
         planMode={providerPrefs.planMode}
-        onPlanModeChange={(planMode) => setComposerPlanMode(planMode)}
+        onPlanModeChange={(planMode) => {
+          if (providerLocked) {
+            setLockedComposerState((current) => {
+              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+              return { ...next, planMode }
+            })
+            return
+          }
+
+          setComposerPlanMode(planMode)
+        }}
         includePlanMode={showPlanMode}
-        className="max-w-[840px] mx-auto mt-2 animate-fade-in"
+        className="max-w-[840px] mx-auto mt-2"
       />
     </div>
   )

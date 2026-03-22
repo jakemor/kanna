@@ -25,13 +25,32 @@ function clampSize(size: number) {
 
 function createDefaultProjectLayout(): ProjectRightSidebarLayout {
   return {
-    isVisible: true,
+    isVisible: false,
     size: RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   }
 }
 
 function getProjectLayout(projects: Record<string, ProjectRightSidebarLayout>, projectId: string): ProjectRightSidebarLayout {
   return projects[projectId] ?? createDefaultProjectLayout()
+}
+
+export function migrateRightSidebarStore(persistedState: unknown) {
+  if (!persistedState || typeof persistedState !== "object") {
+    return { projects: {} }
+  }
+
+  const state = persistedState as { projects?: Record<string, Partial<ProjectRightSidebarLayout>> }
+  const projects = Object.fromEntries(
+    Object.entries(state.projects ?? {}).map(([projectId, layout]) => [
+      projectId,
+      {
+        isVisible: false,
+        size: clampSize(layout.size ?? DEFAULT_RIGHT_SIDEBAR_SIZE),
+      },
+    ])
+  )
+
+  return { projects }
 }
 
 export const useRightSidebarStore = create<RightSidebarState>()(
@@ -66,13 +85,14 @@ export const useRightSidebarStore = create<RightSidebarState>()(
     }),
     {
       name: "right-sidebar-layouts",
-      version: 1,
+      version: 2,
+      migrate: migrateRightSidebarStore,
     }
   )
 )
 
 export const DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT: ProjectRightSidebarLayout = {
-  isVisible: true,
+  isVisible: false,
   size: RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
 }
 

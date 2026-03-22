@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { ArrowDown, Flower } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
 import { ChatInput } from "../components/chat-ui/ChatInput"
@@ -9,6 +9,7 @@ import { ProcessingMessage } from "../components/messages/ProcessingMessage"
 import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { ScrollArea } from "../components/ui/scroll-area"
+import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
   DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
@@ -52,6 +53,8 @@ export function ChatPage() {
   const setRightSidebarSize = useRightSidebarStore((store) => store.setSize)
   const scrollback = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
+  const keybindings = state.keybindings
+  const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
 
   const hasTerminals = terminalLayout.terminals.length > 0
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
@@ -111,22 +114,46 @@ export function ChatPage() {
   }, [state.activeChatId, state.messages.length])
 
   useEffect(() => {
-    function handleToggleKeydown(event: KeyboardEvent) {
+    function handleGlobalKeydown(event: KeyboardEvent) {
       if (!projectId) return
-      if (!event.metaKey || event.key.toLowerCase() !== "j") return
+      if (actionMatchesEvent(resolvedKeybindings, "toggleEmbeddedTerminal", event)) {
+        event.preventDefault()
+        if (hasTerminals) {
+          toggleVisibility(projectId)
+          return
+        }
 
-      event.preventDefault()
-      if (hasTerminals) {
-        toggleVisibility(projectId)
+        addTerminal(projectId)
         return
       }
 
-      addTerminal(projectId)
+      if (actionMatchesEvent(resolvedKeybindings, "toggleRightSidebar", event)) {
+        event.preventDefault()
+        toggleRightSidebar(projectId)
+        return
+      }
+
+      if (actionMatchesEvent(resolvedKeybindings, "openInFinder", event)) {
+        event.preventDefault()
+        void state.handleOpenExternal("open_finder")
+        return
+      }
+
+      if (actionMatchesEvent(resolvedKeybindings, "openInEditor", event)) {
+        event.preventDefault()
+        void state.handleOpenExternal("open_editor")
+        return
+      }
+
+      if (actionMatchesEvent(resolvedKeybindings, "addSplitTerminal", event)) {
+        event.preventDefault()
+        addTerminal(projectId)
+      }
     }
 
-    window.addEventListener("keydown", handleToggleKeydown)
-    return () => window.removeEventListener("keydown", handleToggleKeydown)
-  }, [addTerminal, hasTerminals, projectId, toggleVisibility])
+    window.addEventListener("keydown", handleGlobalKeydown)
+    return () => window.removeEventListener("keydown", handleGlobalKeydown)
+  }, [addTerminal, hasTerminals, projectId, resolvedKeybindings, toggleRightSidebar, toggleVisibility])
 
   useEffect(() => {
     if (state.messages.length === 0) return
@@ -215,6 +242,10 @@ export function ChatPage() {
             void state.handleOpenExternal(action)
           }}
           editorLabel={state.editorLabel}
+          finderShortcut={resolvedKeybindings.bindings.openInFinder}
+          editorShortcut={resolvedKeybindings.bindings.openInEditor}
+          terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}
+          rightSidebarShortcut={resolvedKeybindings.bindings.toggleRightSidebar}
         />
 
         <ScrollArea
@@ -406,6 +437,7 @@ export function ChatPage() {
                         connectionStatus={state.connectionStatus}
                         scrollback={scrollback}
                         minColumnWidth={minColumnWidth}
+                        splitTerminalShortcut={resolvedKeybindings.bindings.addSplitTerminal}
                         focusRequestVersion={terminalFocusRequestVersion}
                         onRemoveTerminal={(currentProjectId, terminalId) => {
                           void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
@@ -445,11 +477,6 @@ export function ChatPage() {
               } as CSSProperties}
             >
               <RightSidebar
-                projectId={projectId}
-                isVisible={showRightSidebar}
-                socket={state.socket}
-                onOpenFile={state.handleOpenLocalLink}
-                onOpenInFinder={(path) => state.handleOpenExternalPath("open_finder", path)}
                 onClose={() => toggleRightSidebar(projectId)}
               />
             </div>
@@ -502,6 +529,7 @@ export function ChatPage() {
                   connectionStatus={state.connectionStatus}
                   scrollback={scrollback}
                   minColumnWidth={minColumnWidth}
+                  splitTerminalShortcut={resolvedKeybindings.bindings.addSplitTerminal}
                   focusRequestVersion={terminalFocusRequestVersion}
                   onRemoveTerminal={(currentProjectId, terminalId) => {
                     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})

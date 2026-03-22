@@ -1,6 +1,8 @@
-import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react"
 import {
   BookText,
+  Command,
+  Code,
   Info,
   Loader2,
   Monitor,
@@ -11,12 +13,14 @@ import {
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useNavigate, useOutletContext, useParams } from "react-router-dom"
-import { SDK_CLIENT_APP } from "../../shared/branding"
+import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/branding"
+import { DEFAULT_KEYBINDINGS, type KeybindingAction } from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
 import { buttonVariants } from "../components/ui/button"
 import type { EditorPreset } from "../../shared/protocol"
 import { SegmentedControl } from "../components/ui/segmented-control"
 import { useTheme, type ThemePreference } from "../hooks/useTheme"
+import { KEYBINDING_ACTION_LABELS, formatKeybindingInput, getResolvedKeybindings, parseKeybindingInput } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
   DEFAULT_TERMINAL_MIN_COLUMN_WIDTH,
@@ -36,6 +40,13 @@ const sidebarItems = [
     icon: Settings2,
     subtitle: "Manage appearance, editor behavior, and embedded terminal defaults.",
   },
+  {
+    id: "keybindings",
+    label: "Keybindings",
+    icon: Command,
+    subtitle: "Edit global app shortcuts stored in the active keybindings file.",
+  },
+  // always last
   {
     id: "changelog",
     label: "Changelog",
@@ -88,6 +99,11 @@ type ChangelogCache = {
 type FetchReleases = (input: string, init?: RequestInit) => Promise<Response>
 
 let changelogCache: ChangelogCache | null = null
+const KEYBINDING_ACTIONS = Object.keys(KEYBINDING_ACTION_LABELS) as KeybindingAction[]
+
+export function getKeybindingsSubtitle(filePathDisplay: string) {
+  return `Edit global app shortcuts stored in ${filePathDisplay}.`
+}
 
 export function resetSettingsPageChangelogCache() {
   changelogCache = null
@@ -275,7 +291,7 @@ function SettingsRow({
   alignStart = false,
 }: {
   title: string
-  description: string
+  description: ReactNode
   children: ReactNode
   bordered?: boolean
   alignStart?: boolean
@@ -314,9 +330,14 @@ export function SettingsPage() {
   const setMinColumnWidth = useTerminalPreferencesStore((store) => store.setMinColumnWidth)
   const setEditorPreset = useTerminalPreferencesStore((store) => store.setEditorPreset)
   const setEditorCommandTemplate = useTerminalPreferencesStore((store) => store.setEditorCommandTemplate)
+  const keybindings = state.keybindings
+  const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
+  const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
   const [minColumnWidthDraft, setMinColumnWidthDraft] = useState(String(minColumnWidth))
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
+  const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
+  const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
 
   useEffect(() => {
     setScrollbackDraft(String(scrollbackLines))
@@ -329,6 +350,15 @@ export function SettingsPage() {
   useEffect(() => {
     setEditorCommandDraft(editorCommandTemplate)
   }, [editorCommandTemplate])
+
+  useEffect(() => {
+    setKeybindingDrafts(Object.fromEntries(
+      KEYBINDING_ACTIONS.map((action) => [
+        action,
+        formatKeybindingInput(resolvedKeybindings.bindings[action]),
+      ])
+    ))
+  }, [resolvedKeybindings])
 
   useEffect(() => {
     if (!sectionId) return
@@ -403,6 +433,36 @@ export function SettingsPage() {
     setEditorCommandTemplate(editorCommandDraft)
   }
 
+  async function commitKeybindings() {
+    try {
+      setKeybindingsError(null)
+      await state.socket.command({
+        type: "settings.writeKeybindings",
+        bindings: buildKeybindingPayload(keybindingDrafts),
+      })
+    } catch (error) {
+      setKeybindingsError(error instanceof Error ? error.message : "Unable to save keybindings.")
+    }
+  }
+
+  async function restoreDefaultKeybinding(action: keyof typeof KEYBINDING_ACTION_LABELS) {
+    const nextDrafts = {
+      ...keybindingDrafts,
+      [action]: formatKeybindingInput(DEFAULT_KEYBINDINGS[action]),
+    }
+    setKeybindingDrafts(nextDrafts)
+
+    try {
+      setKeybindingsError(null)
+      await state.socket.command({
+        type: "settings.writeKeybindings",
+        bindings: buildKeybindingPayload(nextDrafts),
+      })
+    } catch (error) {
+      setKeybindingsError(error instanceof Error ? error.message : "Unable to save keybindings.")
+    }
+  }
+
   function retryChangelog() {
     changelogCache = null
     setChangelogStatus("loading")
@@ -425,6 +485,10 @@ export function SettingsPage() {
     .replaceAll("{line}", "12")
     .replaceAll("{column}", "1")
   const selectedSection = sidebarItems.find((item) => item.id === selectedPage) ?? sidebarItems[0]
+  const selectedSectionSubtitle =
+    selectedPage === "keybindings"
+      ? getKeybindingsSubtitle(keybindingsFilePathDisplay)
+      : selectedSection.subtitle
   const showFooter = !isConnecting
 
   return (
@@ -467,11 +531,28 @@ export function SettingsPage() {
             ) : (
               <div className="mx-auto max-w-4xl">
                 <div className="pb-6">
-                  <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
-                    {selectedSection.label}
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
+                      {selectedSection.label}
+                    </div>
+                    {selectedPage === "keybindings" ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void state.handleOpenExternalPath("open_editor", keybindingsFilePathDisplay)
+                        }}
+                        className={cn(
+                          buttonVariants({ variant: "outline", size: "sm" }),
+                          "gap-2 rounded-lg"
+                        )}
+                      >
+                        <Code className="h-4 w-4" />
+                        <span>Open in {state.editorLabel}</span>
+                      </button>
+                    ) : null}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
-                    {selectedSection.subtitle}
+                    {selectedSectionSubtitle}
                   </div>
                 </div>
 
@@ -582,6 +663,70 @@ export function SettingsPage() {
                       </SettingsRow>
                     </div>
                   </>
+                ) : selectedPage === "keybindings" ? (
+                  <div className="border-b border-border">
+                    {keybindingsError ? (
+                      <div className="mb-4 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                        {keybindingsError}
+                      </div>
+                    ) : null}
+                    {resolvedKeybindings.warning ? (
+                      <div className="mb-4 rounded-2xl border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
+                        {resolvedKeybindings.warning}
+                      </div>
+                    ) : null}
+                    {KEYBINDING_ACTIONS.map((action, index) => {
+                      const defaultValue = formatKeybindingInput(DEFAULT_KEYBINDINGS[action])
+                      const currentValue = keybindingDrafts[action] ?? ""
+                      const showRestore = currentValue !== defaultValue
+
+                      return (
+                        <SettingsRow
+                          key={action}
+                          title={KEYBINDING_ACTION_LABELS[action]}
+                          description={(
+                            <>
+                              <span>Comma-separated shortcuts.</span>
+                              {showRestore ? (
+                                <>
+                                  <span> </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void restoreDefaultKeybinding(action)
+                                    }}
+                                    className="inline rounded text-foreground hover:text-foreground/80"
+                                  >
+                                    Restore: {defaultValue}
+                                  </button>
+                                </>
+                              ) : null}
+                            </>
+                          )}
+                          bordered={index !== 0}
+                          alignStart
+                        >
+                          <div className="flex min-w-0 max-w-[420px] flex-1 flex-col items-stretch gap-2">
+                            <input
+                              type="text"
+                              value={currentValue}
+                              onChange={(event) => {
+                                const nextValue = event.target.value
+                                setKeybindingDrafts((current) => ({ ...current, [action]: nextValue }))
+                              }}
+                              onBlur={() => {
+                                void commitKeybindings()
+                              }}
+                              onKeyDown={(event) => handleTextInputKeyDown(event, () => {
+                                void commitKeybindings()
+                              })}
+                              className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none"
+                            />
+                          </div>
+                        </SettingsRow>
+                      )
+                    })}
+                  </div>
                 ) : (
                   <ChangelogSection
                     status={changelogStatus}
@@ -630,4 +775,14 @@ export function SettingsPage() {
       ) : null}
     </div>
   )
+}
+
+function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
+  return {
+    toggleEmbeddedTerminal: parseKeybindingInput(source.toggleEmbeddedTerminal ?? ""),
+    toggleRightSidebar: parseKeybindingInput(source.toggleRightSidebar ?? ""),
+    openInFinder: parseKeybindingInput(source.openInFinder ?? ""),
+    openInEditor: parseKeybindingInput(source.openInEditor ?? ""),
+    addSplitTerminal: parseKeybindingInput(source.addSplitTerminal ?? ""),
+  }
 }

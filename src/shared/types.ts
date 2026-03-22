@@ -167,28 +167,25 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
-export type FileTreeEntryKind = "file" | "directory" | "symlink"
+export type KeybindingAction =
+  | "toggleEmbeddedTerminal"
+  | "toggleRightSidebar"
+  | "openInFinder"
+  | "openInEditor"
+  | "addSplitTerminal"
 
-export interface FileTreeEntry {
-  name: string
-  relativePath: string
-  kind: FileTreeEntryKind
-  extension?: string
+export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
+  toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
+  toggleRightSidebar: ["cmd+b", "ctrl+b"],
+  openInFinder: ["cmd+alt+f", "ctrl+alt+f"],
+  openInEditor: ["cmd+shift+o", "ctrl+shift+o"],
+  addSplitTerminal: ["cmd+/", "ctrl+/"],
 }
 
-export interface FileTreeDirectoryPage {
-  directoryPath: string
-  entries: FileTreeEntry[]
-  nextCursor: string | null
-  hasMore: boolean
-  error?: string
-}
-
-export interface FileTreeSnapshot {
-  projectId: string
-  rootPath: string
-  pageSize: number
-  supportsRealtime: true
+export interface KeybindingsSnapshot {
+  bindings: Record<KeybindingAction, string[]>
+  warning: string | null
+  filePathDisplay: string
 }
 
 export interface McpServerInfo {
@@ -284,46 +281,46 @@ interface ToolCallBase<TKind extends string, TInput> {
 }
 
 export interface AskUserQuestionToolCall
-  extends ToolCallBase<"ask_user_question", { questions: AskUserQuestionItem[] }> {}
+  extends ToolCallBase<"ask_user_question", { questions: AskUserQuestionItem[] }> { }
 
 export interface ExitPlanModeToolCall
-  extends ToolCallBase<"exit_plan_mode", { plan?: string; summary?: string }> {}
+  extends ToolCallBase<"exit_plan_mode", { plan?: string; summary?: string }> { }
 
 export interface TodoWriteToolCall
-  extends ToolCallBase<"todo_write", { todos: TodoItem[] }> {}
+  extends ToolCallBase<"todo_write", { todos: TodoItem[] }> { }
 
 export interface SkillToolCall
-  extends ToolCallBase<"skill", { skill: string }> {}
+  extends ToolCallBase<"skill", { skill: string }> { }
 
 export interface GlobToolCall
-  extends ToolCallBase<"glob", { pattern: string }> {}
+  extends ToolCallBase<"glob", { pattern: string }> { }
 
 export interface GrepToolCall
-  extends ToolCallBase<"grep", { pattern: string; outputMode?: string }> {}
+  extends ToolCallBase<"grep", { pattern: string; outputMode?: string }> { }
 
 export interface BashToolCall
-  extends ToolCallBase<"bash", { command: string; description?: string; timeoutMs?: number; runInBackground?: boolean }> {}
+  extends ToolCallBase<"bash", { command: string; description?: string; timeoutMs?: number; runInBackground?: boolean }> { }
 
 export interface WebSearchToolCall
-  extends ToolCallBase<"web_search", { query: string }> {}
+  extends ToolCallBase<"web_search", { query: string }> { }
 
 export interface ReadFileToolCall
-  extends ToolCallBase<"read_file", { filePath: string }> {}
+  extends ToolCallBase<"read_file", { filePath: string }> { }
 
 export interface WriteFileToolCall
-  extends ToolCallBase<"write_file", { filePath: string; content: string }> {}
+  extends ToolCallBase<"write_file", { filePath: string; content: string }> { }
 
 export interface EditFileToolCall
-  extends ToolCallBase<"edit_file", { filePath: string; oldString: string; newString: string }> {}
+  extends ToolCallBase<"edit_file", { filePath: string; oldString: string; newString: string }> { }
 
 export interface SubagentTaskToolCall
-  extends ToolCallBase<"subagent_task", { subagentType?: string }> {}
+  extends ToolCallBase<"subagent_task", { subagentType?: string }> { }
 
 export interface McpGenericToolCall
-  extends ToolCallBase<"mcp_generic", { server: string; tool: string; payload: Record<string, unknown> }> {}
+  extends ToolCallBase<"mcp_generic", { server: string; tool: string; payload: Record<string, unknown> }> { }
 
 export interface UnknownToolCall
-  extends ToolCallBase<"unknown_tool", { payload: Record<string, unknown> }> {}
+  extends ToolCallBase<"unknown_tool", { payload: Record<string, unknown> }> { }
 
 export type NormalizedToolCall =
   | AskUserQuestionToolCall

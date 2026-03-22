@@ -1,5 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { compareVersions, parseArgs, runCli } from "./cli-runtime"
+
+const originalRuntimeProfile = process.env.KANNA_RUNTIME_PROFILE
+
+afterEach(() => {
+  if (originalRuntimeProfile === undefined) {
+    delete process.env.KANNA_RUNTIME_PROFILE
+  } else {
+    process.env.KANNA_RUNTIME_PROFILE = originalRuntimeProfile
+  }
+})
 
 function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
@@ -109,6 +119,16 @@ describe("runCli", () => {
     expect(calls.relaunch).toEqual([])
     expect(calls.startServer).toEqual([{ port: 4000, openBrowser: false, strictPort: false }])
     expect(calls.openUrl).toEqual([])
+    expect(calls.log).toContain("[kanna] data dir: ~/.kanna/data")
+  })
+
+  test("logs the dev data dir when the dev runtime profile is active", async () => {
+    process.env.KANNA_RUNTIME_PROFILE = "dev"
+    const { calls, deps } = createDeps()
+
+    await runCli(["--port", "4000", "--no-open"], deps)
+
+    expect(calls.log).toContain("[kanna] data dir: ~/.kanna-dev/data")
   })
 
   test("fails fast on unsupported Bun versions", async () => {

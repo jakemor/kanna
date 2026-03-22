@@ -1,5 +1,5 @@
 import path from "node:path"
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, unlink, writeFile } from "node:fs/promises"
 import {
   MAX_CHAT_ATTACHMENTS,
   MAX_CHAT_IMAGE_BYTES,
@@ -47,7 +47,7 @@ export function buildAttachmentPreviewUrl(relativePath: string): string {
 }
 
 function parseBase64DataUrl(dataUrl: string): { mimeType: string; bytes: Buffer } | null {
-  const match = /^data:([^,;]+)(?:;charset=[^,;]+)?;base64,([a-z0-9+/=\r\n ]+)$/i.exec(dataUrl.trim())
+  const match = /^data:([^,;]+)(?:;[^,;=]+=[^,;]*)*;base64,([a-z0-9+/=\r\n ]+)$/i.exec(dataUrl.trim())
   if (!match) return null
 
   const mimeType = match[1].toLowerCase()
@@ -79,54 +79,61 @@ export async function persistChatAttachments(input: {
   }
 
   const persisted: ChatImageAttachment[] = []
+  const writtenFilePaths: string[] = []
 
-  for (const [index, attachment] of uploads.entries()) {
-    if (attachment.type !== "image") {
-      throw new Error("Unsupported attachment type.")
-    }
-    if (!attachment.name.trim()) {
-      throw new Error("Attachment name is required.")
-    }
-    if (!attachment.mimeType.trim() || !SUPPORTED_CHAT_IMAGE_MIME_TYPES_SET.has(attachment.mimeType.toLowerCase() as typeof SUPPORTED_CHAT_IMAGE_MIME_TYPES[number])) {
-      throw new Error(`Unsupported image type: ${attachment.mimeType}`)
-    }
-    if (attachment.sizeBytes <= 0 || attachment.sizeBytes > MAX_CHAT_IMAGE_BYTES) {
-      throw new Error(`Image attachment '${attachment.name}' is empty or too large.`)
-    }
-    if (!attachment.dataUrl.trim() || attachment.dataUrl.length > MAX_CHAT_IMAGE_DATA_URL_CHARS) {
-      throw new Error(`Image attachment '${attachment.name}' payload is invalid or too large.`)
-    }
+  try {
+    for (const [index, attachment] of uploads.entries()) {
+      if (attachment.type !== "image") {
+        throw new Error("Unsupported attachment type.")
+      }
+      if (!attachment.name.trim()) {
+        throw new Error("Attachment name is required.")
+      }
+      if (!attachment.mimeType.trim() || !SUPPORTED_CHAT_IMAGE_MIME_TYPES_SET.has(attachment.mimeType.toLowerCase() as typeof SUPPORTED_CHAT_IMAGE_MIME_TYPES[number])) {
+        throw new Error(`Unsupported image type: ${attachment.mimeType}`)
+      }
+      if (attachment.sizeBytes <= 0 || attachment.sizeBytes > MAX_CHAT_IMAGE_BYTES) {
+        throw new Error(`Image attachment '${attachment.name}' is empty or too large.`)
+      }
+      if (!attachment.dataUrl.trim() || attachment.dataUrl.length > MAX_CHAT_IMAGE_DATA_URL_CHARS) {
+        throw new Error(`Image attachment '${attachment.name}' payload is invalid or too large.`)
+      }
 
-    const parsed = parseBase64DataUrl(attachment.dataUrl)
-    if (!parsed || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
-      throw new Error(`Invalid image attachment payload for '${attachment.name}'.`)
-    }
-    if (parsed.bytes.byteLength !== attachment.sizeBytes) {
-      throw new Error(`Image attachment '${attachment.name}' size did not match payload.`)
-    }
+      const parsed = parseBase64DataUrl(attachment.dataUrl)
+      if (!parsed || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
+        throw new Error(`Invalid image attachment payload for '${attachment.name}'.`)
+      }
+      if (parsed.bytes.byteLength !== attachment.sizeBytes) {
+        throw new Error(`Image attachment '${attachment.name}' size did not match payload.`)
+      }
 
-    const extension = extensionForMimeType(parsed.mimeType)
-    if (!extension) {
-      throw new Error(`Unsupported image type: ${attachment.mimeType}`)
+      const extension = extensionForMimeType(parsed.mimeType)
+      if (!extension) {
+        throw new Error(`Unsupported image type: ${attachment.mimeType}`)
+      }
+
+      const relativePath = `${input.chatId}/${input.messageEntry._id}/${index}${extension}`
+      const filePath = resolveAttachmentPath(input.attachmentsDir, relativePath)
+      if (!filePath) {
+        throw new Error(`Failed to resolve persisted path for '${attachment.name}'.`)
+      }
+
+      await mkdir(path.dirname(filePath), { recursive: true })
+      await writeFile(filePath, parsed.bytes)
+      writtenFilePaths.push(filePath)
+
+      persisted.push({
+        type: "image",
+        id: `${input.messageEntry._id}:${index}`,
+        name: attachment.name.trim(),
+        mimeType: parsed.mimeType,
+        sizeBytes: parsed.bytes.byteLength,
+        relativePath,
+      })
     }
-
-    const relativePath = `${input.chatId}/${input.messageEntry._id}/${index}${extension}`
-    const filePath = resolveAttachmentPath(input.attachmentsDir, relativePath)
-    if (!filePath) {
-      throw new Error(`Failed to resolve persisted path for '${attachment.name}'.`)
-    }
-
-    await mkdir(path.dirname(filePath), { recursive: true })
-    await writeFile(filePath, parsed.bytes)
-
-    persisted.push({
-      type: "image",
-      id: `${input.messageEntry._id}:${index}`,
-      name: attachment.name.trim(),
-      mimeType: parsed.mimeType,
-      sizeBytes: parsed.bytes.byteLength,
-      relativePath,
-    })
+  } catch (error) {
+    await Promise.allSettled(writtenFilePaths.map((filePath) => unlink(filePath)))
+    throw error
   }
 
   return persisted

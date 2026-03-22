@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ModelOptions, type ProviderCatalogEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -54,6 +54,7 @@ export interface KannaState {
   sidebarData: SidebarData
   localProjects: LocalProjectsSnapshot | null
   chatSnapshot: ChatSnapshot | null
+  keybindings: KeybindingsSnapshot | null
   connectionStatus: SocketStatus
   sidebarReady: boolean
   localProjectsReady: boolean
@@ -112,6 +113,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarData, setSidebarData] = useState<SidebarData>({ projectGroups: [] })
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
+  const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
   const [sidebarReady, setSidebarReady] = useState(false)
   const [localProjectsReady, setLocalProjectsReady] = useState(false)
@@ -143,6 +145,13 @@ export function useKannaState(activeChatId: string | null): KannaState {
     return socket.subscribe<LocalProjectsSnapshot>({ type: "local-projects" }, (snapshot) => {
       setLocalProjects(snapshot)
       setLocalProjectsReady(true)
+      setCommandError(null)
+    })
+  }, [socket])
+
+  useEffect(() => {
+    return socket.subscribe<KeybindingsSnapshot>({ type: "keybindings" }, (snapshot) => {
+      setKeybindings(snapshot)
       setCommandError(null)
     })
   }, [socket])
@@ -510,6 +519,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     sidebarData,
     localProjects,
     chatSnapshot,
+    keybindings,
     connectionStatus,
     sidebarReady,
     localProjectsReady,

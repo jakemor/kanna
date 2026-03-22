@@ -1,7 +1,6 @@
 import type {
   ClientCommand,
   ClientEnvelope,
-  FileTreeEvent,
   ServerEnvelope,
   SubscriptionTopic,
   TerminalEvent,
@@ -113,20 +112,6 @@ export class KannaSocket {
       this.subscriptions.delete(id)
       this.enqueue({ v: 1, type: "unsubscribe", id })
     }
-  }
-
-  subscribeFileTree(
-    projectId: string,
-    handlers: {
-      onSnapshot: SnapshotListener<{ projectId: string; rootPath: string; pageSize: number; supportsRealtime: true }>
-      onEvent?: EventListener<FileTreeEvent>
-    }
-  ) {
-    return this.subscribe(
-      { type: "file-tree", projectId },
-      handlers.onSnapshot,
-      handlers.onEvent
-    )
   }
 
   subscribeTerminal(

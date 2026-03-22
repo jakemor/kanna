@@ -5,6 +5,7 @@ import {
   fetchGithubReleases,
   formatPublishedDate,
   getCachedChangelog,
+  getKeybindingsSubtitle,
   resetSettingsPageChangelogCache,
   resolveSettingsSectionId,
   setCachedChangelog,
@@ -98,6 +99,7 @@ describe("resolveSettingsSectionId", () => {
   test("accepts known settings sections", () => {
     expect(resolveSettingsSectionId("general")).toBe("general")
     expect(resolveSettingsSectionId("changelog")).toBe("changelog")
+    expect(resolveSettingsSectionId("keybindings")).toBe("keybindings")
   })
 
   test("rejects unknown settings sections", () => {
@@ -106,6 +108,14 @@ describe("resolveSettingsSectionId", () => {
     expect(resolveSettingsSectionId("page-3")).toBeNull()
     expect(resolveSettingsSectionId("nope")).toBeNull()
     expect(resolveSettingsSectionId(undefined)).toBeNull()
+  })
+})
+
+describe("getKeybindingsSubtitle", () => {
+  test("renders the active keybindings path", () => {
+    expect(getKeybindingsSubtitle("~/.kanna-dev/keybindings.json")).toBe(
+      "Edit global app shortcuts stored in ~/.kanna-dev/keybindings.json."
+    )
   })
 })
 

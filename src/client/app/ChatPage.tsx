@@ -9,6 +9,7 @@ import { ProcessingMessage } from "../components/messages/ProcessingMessage"
 import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { ScrollArea } from "../components/ui/scroll-area"
+import { useMediaQuery } from "../hooks/useMediaQuery"
 import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
@@ -39,6 +40,7 @@ export function ChatPage() {
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
+  const isDesktopViewport = useMediaQuery("(min-width: 768px)")
   const projectId = state.runtime?.projectId ?? null
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
@@ -60,7 +62,8 @@ export function ChatPage() {
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarLayout.isVisible)
-  const shouldRenderRightSidebarLayout = Boolean(projectId)
+  const showMobileRightSidebarOverlay = Boolean(projectId && !isDesktopViewport && showRightSidebar)
+  const shouldRenderRightSidebarLayout = Boolean(projectId && isDesktopViewport)
   const {
     isAnimating: isTerminalAnimating,
     mainPanelGroupRef,
@@ -215,6 +218,11 @@ export function ChatPage() {
     }
 
     return Math.min(RIGHT_SIDEBAR_MAX_SIZE_PERCENT, Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size))
+  }
+
+  const closeMobileRightSidebar = () => {
+    if (!projectId) return
+    toggleRightSidebar(projectId)
   }
 
   const chatCard = (
@@ -544,6 +552,21 @@ export function ChatPage() {
       ) : (
         chatCard
       )}
+
+      {showMobileRightSidebarOverlay ? (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/40 md:hidden"
+            onClick={closeMobileRightSidebar}
+          />
+          <div className="fixed inset-0 z-50 flex flex-col bg-background md:hidden">
+            <RightSidebar
+              onClose={closeMobileRightSidebar}
+              className="h-[var(--app-shell-height)]"
+            />
+          </div>
+        </>
+      ) : null}
 
     </div>
   )

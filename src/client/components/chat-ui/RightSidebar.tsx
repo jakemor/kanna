@@ -1,12 +1,14 @@
 import { X } from "lucide-react"
+import { cn } from "../../lib/utils"
 
 interface RightSidebarProps {
   onClose: () => void
+  className?: string
 }
 
-export function RightSidebar({ onClose }: RightSidebarProps) {
+export function RightSidebar({ onClose, className }: RightSidebarProps) {
   return (
-    <div className="h-full min-h-0 border-l border-border bg-background md:min-w-[300px]">
+    <div className={cn("h-full min-h-0 bg-background md:min-w-[300px] md:border-l md:border-border", className)}>
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
           <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">Diffs</div>

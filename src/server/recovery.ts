@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import type { Dirent } from "node:fs"
+import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import type { AgentProvider, TranscriptEntry } from "../shared/types"
@@ -47,16 +48,19 @@ function parseJsonRecord(line: string): Record<string, unknown> | null {
   }
 }
 
-function collectFiles(directory: string, extension: string): string[] {
-  if (!existsSync(directory)) {
+async function collectFiles(directory: string, extension: string): Promise<string[]> {
+  let entries: Dirent[]
+  try {
+    entries = await readdir(directory, { withFileTypes: true, encoding: "utf8" }) as Dirent[]
+  } catch {
     return []
   }
 
   const files: string[] = []
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+  for (const entry of entries) {
     const fullPath = path.join(directory, entry.name)
     if (entry.isDirectory()) {
-      files.push(...collectFiles(fullPath, extension))
+      files.push(...await collectFiles(fullPath, extension))
       continue
     }
     if (entry.isFile() && entry.name.endsWith(extension)) {
@@ -161,17 +165,33 @@ function firstLine(value: string, fallback: string) {
   return line.length > 80 ? `${line.slice(0, 77)}...` : line
 }
 
-function readClaudeProjectChats(homeDir: string, localPath: string): RecoveryChat[] {
-  const projectsDir = path.join(homeDir, ".claude", "projects")
-  const chats: RecoveryChat[] = []
-  const normalizedPath = path.normalize(localPath)
+function encodeClaudeProjectPath(localPath: string) {
+  return `-${localPath.replace(/\//g, "-")}`
+}
 
-  for (const sessionFile of collectFiles(projectsDir, ".jsonl")) {
-    const lines = readFileSync(sessionFile, "utf8").split("\n")
+async function readClaudeProjectChats(homeDir: string, localPath: string, log?: (message: string) => void): Promise<RecoveryChat[]> {
+  const projectsDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(localPath))
+  const chats: RecoveryChat[] = []
+  const sessionFiles = await collectFiles(projectsDir, ".jsonl")
+
+  for (const sessionFile of sessionFiles) {
+    let lines: string[]
+    let modifiedAt = Date.now()
+    try {
+      const [fileText, fileStat] = await Promise.all([
+        readFile(sessionFile, "utf8"),
+        stat(sessionFile),
+      ])
+      lines = fileText.split("\n")
+      modifiedAt = fileStat.mtimeMs
+    } catch (error) {
+      log?.(`[kanna] Skipping unreadable Claude history file ${sessionFile}: ${String(error)}`)
+      continue
+    }
+
     const entries: TranscriptEntry[] = []
     let sessionToken: string | null = null
     let sessionLocalPath: string | null = null
-    let modifiedAt = statSync(sessionFile).mtimeMs
 
     for (const line of lines) {
       if (!line.trim()) continue
@@ -193,7 +213,7 @@ function readClaudeProjectChats(homeDir: string, localPath: string): RecoveryCha
       entries.push(...claudeEntriesFromRecord(record))
     }
 
-    if (!sessionToken || sessionLocalPath !== normalizedPath || entries.length === 0) {
+    if (!sessionToken || sessionLocalPath !== path.normalize(localPath) || entries.length === 0) {
       continue
     }
 
@@ -326,17 +346,29 @@ function codexEntriesFromRecord(record: Record<string, unknown>, index: number):
   return []
 }
 
-function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat[] {
+async function readCodexProjectChats(homeDir: string, localPath: string, log?: (message: string) => void): Promise<RecoveryChat[]> {
   const sessionsDir = path.join(homeDir, ".codex", "sessions")
   const chats: RecoveryChat[] = []
   const normalizedPath = path.normalize(localPath)
 
-  for (const sessionFile of collectFiles(sessionsDir, ".jsonl")) {
-    const lines = readFileSync(sessionFile, "utf8").split("\n")
+  for (const sessionFile of await collectFiles(sessionsDir, ".jsonl")) {
+    let lines: string[]
+    let modifiedAt = Date.now()
+    try {
+      const [fileText, fileStat] = await Promise.all([
+        readFile(sessionFile, "utf8"),
+        stat(sessionFile),
+      ])
+      lines = fileText.split("\n")
+      modifiedAt = fileStat.mtimeMs
+    } catch (error) {
+      log?.(`[kanna] Skipping unreadable Codex history file ${sessionFile}: ${String(error)}`)
+      continue
+    }
+
     const entries: TranscriptEntry[] = []
     let sessionToken: string | null = null
     let sessionLocalPath: string | null = null
-    let modifiedAt = statSync(sessionFile).mtimeMs
 
     lines.forEach((line, index) => {
       if (!line.trim()) return
@@ -385,10 +417,10 @@ function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat
   return chats
 }
 
-function collectProjectChats(homeDir: string, localPath: string) {
+async function collectProjectChats(homeDir: string, localPath: string, log?: (message: string) => void) {
   return [
-    ...readClaudeProjectChats(homeDir, localPath),
-    ...readCodexProjectChats(homeDir, localPath),
+    ...await readClaudeProjectChats(homeDir, localPath, log),
+    ...await readCodexProjectChats(homeDir, localPath, log),
   ]
 }
 
@@ -400,7 +432,7 @@ export async function importProjectHistory(args: {
   log?: (message: string) => void
 }): Promise<ProjectImportResult> {
   const normalizedPath = path.normalize(args.localPath)
-  const chats = collectProjectChats(args.homeDir ?? homedir(), normalizedPath)
+  const chats = await collectProjectChats(args.homeDir ?? homedir(), normalizedPath, args.log)
   const existingChats = args.store.listChatsByProject(args.projectId)
   const existingSessionKeys = new Set(
     existingChats
@@ -427,7 +459,12 @@ export async function importProjectHistory(args: {
     importedChatIds.push(createdChat.id)
   }
 
-  const newestChatId = args.store.listChatsByProject(args.projectId)[0]?.id ?? null
+  const importedNewestChatId = importedChatIds.length === 0
+    ? null
+    : args.store
+      .listChatsByProject(args.projectId)
+      .find((chat) => importedChatIds.includes(chat.id))
+      ?.id ?? null
   args.log?.(
     `[kanna] project import path=${normalizedPath} discovered=${chats.length} imported=${importedChatIds.length} messages=${importedMessages}`
   )
@@ -436,6 +473,6 @@ export async function importProjectHistory(args: {
     importedChatIds,
     importedChats: importedChatIds.length,
     importedMessages,
-    newestChatId,
+    newestChatId: importedNewestChatId,
   }
 }

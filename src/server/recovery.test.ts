@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { AgentProvider, TranscriptEntry } from "../shared/types"
@@ -91,7 +91,7 @@ class MemoryRecoveryStore {
 }
 
 describe("importProjectHistory", () => {
-  test("imports only the selected project's chats and picks the newest recovered chat", async () => {
+  test("imports only the selected project's chats and picks the newest imported chat", async () => {
     const homeDir = makeTempDir()
     const projectDir = path.join(homeDir, "workspace", "kanna")
     const otherDir = path.join(homeDir, "workspace", "other")
@@ -230,6 +230,7 @@ describe("importProjectHistory", () => {
     expect(firstImport.importedChats).toBe(1)
     expect(secondImport.importedChats).toBe(0)
     expect(store.chats.size).toBe(1)
+    expect(secondImport.newestChatId).toBeNull()
   })
 
   test("skips Claude sessions that have no real user-authored prompt", async () => {
@@ -277,5 +278,44 @@ describe("importProjectHistory", () => {
       importedMessages: 0,
       newestChatId: null,
     })
+  })
+
+  test("skips unreadable history files instead of failing the whole import", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(claudeProjectDir, { recursive: true })
+
+    const unreadableFile = path.join(claudeProjectDir, "broken.jsonl")
+    const readableFile = path.join(claudeProjectDir, "good.jsonl")
+    writeFileSync(unreadableFile, "{\"type\":\"user\"}\n")
+    writeFileSync(readableFile, [
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-user-1",
+        timestamp: "2026-03-21T06:07:40.619Z",
+        cwd: projectDir,
+        sessionId: "claude-session-1",
+        message: { role: "user", content: "Recover this Claude chat" },
+      }),
+    ].join("\n"))
+
+    chmodSync(unreadableFile, 0o000)
+
+    const store = new MemoryRecoveryStore()
+    try {
+      const result = await importProjectHistory({
+        store,
+        projectId: "project-1",
+        localPath: projectDir,
+        homeDir,
+      })
+
+      expect(result.importedChats).toBe(1)
+      expect(result.newestChatId).toBe("chat-1")
+    } finally {
+      chmodSync(unreadableFile, 0o644)
+    }
   })
 })

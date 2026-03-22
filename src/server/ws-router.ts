@@ -30,6 +30,20 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
   ws.send(JSON.stringify(message))
 }
 
+async function importProjectHistorySafely(args: Parameters<typeof importProjectHistory>[0]) {
+  try {
+    return await importProjectHistory(args)
+  } catch (error) {
+    console.warn(`[kanna] Failed to import project history for ${args.localPath}:`, error)
+    return {
+      importedChatIds: [],
+      importedChats: 0,
+      importedMessages: 0,
+      newestChatId: null,
+    }
+  }
+}
+
 export function createWsRouter({
   store,
   agent,
@@ -172,7 +186,7 @@ export function createWsRouter({
         case "project.open": {
           await ensureProjectDirectory(command.localPath)
           const project = await store.openProject(command.localPath)
-          const imported = await importProjectHistory({
+          const imported = await importProjectHistorySafely({
             store,
             projectId: project.id,
             localPath: project.localPath,
@@ -193,7 +207,7 @@ export function createWsRouter({
         case "project.create": {
           await ensureProjectDirectory(command.localPath)
           const project = await store.openProject(command.localPath, command.title)
-          const imported = await importProjectHistory({
+          const imported = await importProjectHistorySafely({
             store,
             projectId: project.id,
             localPath: project.localPath,

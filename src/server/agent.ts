@@ -267,7 +267,7 @@ async function createClaudePrompt(
   return (async function* () {
     yield {
       type: "user",
-      session_id: sessionToken ?? crypto.randomUUID(),
+      session_id: sessionToken ?? generateUUID(),
       parent_tool_use_id: null,
       message: {
         role: "user",

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"

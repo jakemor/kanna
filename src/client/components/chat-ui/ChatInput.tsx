@@ -329,37 +329,36 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
       return
     }
 
-    setImages((current) => {
-      const next = [...current]
-      let nextError: string | null = null
+    const next = [...imagesRef.current]
+    let nextError: string | null = null
 
-      for (const file of imageFiles) {
-        if (!SUPPORTED_CHAT_IMAGE_MIME_TYPES.includes(file.type as typeof SUPPORTED_CHAT_IMAGE_MIME_TYPES[number])) {
-          nextError = `Unsupported image type: ${file.type || "unknown"}`
-          continue
-        }
-        if (file.size <= 0 || file.size > MAX_CHAT_IMAGE_BYTES) {
-          nextError = `${file.name} is empty or larger than 10 MB.`
-          continue
-        }
-        if (next.length >= MAX_CHAT_ATTACHMENTS) {
-          nextError = `You can attach up to ${MAX_CHAT_ATTACHMENTS} images per message.`
-          break
-        }
-
-        next.push({
-          id: generateUUID(),
-          file,
-          name: file.name || "image",
-          mimeType: file.type,
-          sizeBytes: file.size,
-          previewUrl: URL.createObjectURL(file),
-        })
+    for (const file of imageFiles) {
+      if (!SUPPORTED_CHAT_IMAGE_MIME_TYPES.includes(file.type as typeof SUPPORTED_CHAT_IMAGE_MIME_TYPES[number])) {
+        nextError = `Unsupported image type: ${file.type || "unknown"}`
+        continue
+      }
+      if (file.size <= 0 || file.size > MAX_CHAT_IMAGE_BYTES) {
+        nextError = `${file.name} is empty or larger than 10 MB.`
+        continue
+      }
+      if (next.length >= MAX_CHAT_ATTACHMENTS) {
+        nextError = `You can attach up to ${MAX_CHAT_ATTACHMENTS} images per message.`
+        break
       }
 
-      setAttachmentError(nextError)
-      return next
-    })
+      next.push({
+        id: generateUUID(),
+        file,
+        name: file.name || "image",
+        mimeType: file.type,
+        sizeBytes: file.size,
+        previewUrl: URL.createObjectURL(file),
+      })
+    }
+
+    setImages(next)
+    imagesRef.current = next
+    setAttachmentError(nextError)
   }, [disabled])
 
   const removeImage = useCallback((imageId: string) => {

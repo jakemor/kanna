@@ -17,7 +17,7 @@ import {
 import { Button } from "../ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { Textarea } from "../ui/textarea"
-import { cn } from "../../lib/utils"
+import { cn, generateUUID } from "../../lib/utils"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
@@ -343,7 +343,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         }
 
         next.push({
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           file,
           name: file.name || "image",
           mimeType: file.type,

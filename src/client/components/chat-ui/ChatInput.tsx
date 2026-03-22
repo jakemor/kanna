@@ -218,6 +218,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   const [isDragOver, setIsDragOver] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const imagesRef = useRef<ComposerImageAttachment[]>([])
   const isStandalone = useIsStandalone()
 
   const selectedProvider = activeProvider ?? preferredProvider
@@ -264,12 +265,16 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   }, [chatId])
 
   useEffect(() => {
+    imagesRef.current = images
+  }, [images])
+
+  useEffect(() => {
     return () => {
-      for (const image of images) {
+      for (const image of imagesRef.current) {
         URL.revokeObjectURL(image.previewUrl)
       }
     }
-  }, [images])
+  }, [])
 
   function setReasoningEffort(reasoningEffort: string) {
     if (selectedProvider === "claude") {

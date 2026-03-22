@@ -577,6 +577,12 @@ export class AgentCoordinator {
     const provider = this.resolveProvider(command, chat.provider)
     const settings = this.getProviderSettings(provider, command)
     const text = command.message.text.trim()
+    const uploads = command.message.attachments
+
+    if (!text && !uploads?.length) {
+      throw new Error("Message must include text or image attachments")
+    }
+
     const userPrompt = timestamped({
       kind: "user_prompt",
       content: text,
@@ -585,13 +591,9 @@ export class AgentCoordinator {
       attachmentsDir: this.attachmentsDir,
       chatId,
       messageEntry: userPrompt,
-      uploads: command.message.attachments,
+      uploads,
     })
     userPrompt.attachments = attachments
-
-    if (!text && !attachments?.length) {
-      throw new Error("Message must include text or image attachments")
-    }
 
     await this.startTurnForChat({
       chatId,

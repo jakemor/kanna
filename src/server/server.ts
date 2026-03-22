@@ -127,7 +127,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
 async function serveAttachment(attachmentsDir: string, pathname: string) {
   const relativePath = pathname.slice(`${ATTACHMENTS_ROUTE_PREFIX}/`.length)
-  const filePath = resolveAttachmentPath(attachmentsDir, decodeURIComponent(relativePath))
+  const decodedRelativePath = decodeAttachmentRelativePath(relativePath)
+  if (!decodedRelativePath) {
+    return new Response("Invalid attachment path", { status: 400 })
+  }
+
+  const filePath = resolveAttachmentPath(attachmentsDir, decodedRelativePath)
   if (!filePath) {
     return new Response("Invalid attachment path", { status: 400 })
   }
@@ -138,6 +143,14 @@ async function serveAttachment(attachmentsDir: string, pathname: string) {
   }
 
   return new Response(file)
+}
+
+export function decodeAttachmentRelativePath(relativePath: string): string | null {
+  try {
+    return relativePath.split("/").map(decodeURIComponent).join("/")
+  } catch {
+    return null
+  }
 }
 
 async function serveStatic(distDir: string, pathname: string) {

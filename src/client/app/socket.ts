@@ -8,6 +8,7 @@ import type {
   TerminalSnapshot,
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
+import { generateUUID } from "../lib/utils"
 
 type SnapshotListener<T> = (value: T) => void
 type EventListener<T> = (value: T) => void
@@ -102,7 +103,7 @@ export class KannaSocket {
     listener: SnapshotListener<TSnapshot>,
     eventListener?: EventListener<TEvent>
   ) {
-    const id = crypto.randomUUID()
+    const id = generateUUID()
     this.subscriptions.set(id, {
       topic,
       listener: listener as SnapshotListener<unknown>,
@@ -136,7 +137,7 @@ export class KannaSocket {
       onEvent?: EventListener<TerminalEvent>
     }
   ) {
-    const id = crypto.randomUUID()
+    const id = generateUUID()
     const topic: SubscriptionTopic = { type: "terminal", terminalId }
     this.subscriptions.set(id, {
       topic,
@@ -151,7 +152,7 @@ export class KannaSocket {
   }
 
   command<TResult = unknown>(command: ClientCommand) {
-    const id = crypto.randomUUID()
+    const id = generateUUID()
     const envelope: ClientEnvelope = { v: 1, type: "command", id, command }
     return new Promise<TResult>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })

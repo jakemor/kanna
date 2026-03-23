@@ -391,7 +391,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(error instanceof Error ? error.message : String(error))
     } finally {
       setStartingLocalPath(null)
+
     }
+
+    if (intent.kind === "local_path") {
+      const result = await socket.command<{ projectId: string }>({ type: "project.open", localPath: intent.localPath })
+      return { projectId: result.projectId, localPath: intent.localPath }
+    }
+
+    const result = await socket.command<{ projectId: string }>(
+      intent.project.mode === "new"
+        ? { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
+        : { type: "project.open", localPath: intent.project.localPath }
+    )
+    return { projectId: result.projectId, localPath: intent.project.localPath }
   }
 
   async function handleCreateChat(projectId: string) {
@@ -415,9 +428,30 @@ export function useKannaState(activeChatId: string | null): KannaState {
     try {
       await socket.command({ type: "project.hide", localPath })
       setCommandError(null)
+  async function startChatFromIntent(intent: StartChatIntent) {
+    try {
+      const localPath = intent.kind === "project_id"
+        ? null
+        : intent.kind === "local_path"
+          ? intent.localPath
+          : intent.project.localPath
+      if (localPath) {
+        setStartingLocalPath(localPath)
+      }
+
+      const { projectId } = await resolveProjectIdForStartChat(intent)
+      await createChatForProject(projectId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  async function handleCreateChat(projectId: string) {
+    await startChatFromIntent({ kind: "project_id", projectId })
+  }
+
+  async function handleOpenLocalProject(localPath: string) {
+    await startChatFromIntent({ kind: "local_path", localPath })
   }
 
   async function handleCreateProject(project: ProjectRequest) {

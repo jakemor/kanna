@@ -4,6 +4,8 @@ import {
   MAX_CHAT_ATTACHMENTS,
   MAX_CHAT_IMAGE_BYTES,
   SUPPORTED_CHAT_IMAGE_MIME_TYPES,
+import { ArrowUp } from "lucide-react"
+import {
   type AgentProvider,
   type ChatAttachmentUpload,
   type ChatUserMessage,

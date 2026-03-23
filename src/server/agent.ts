@@ -22,6 +22,7 @@ import {
   normalizeCodexModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
+import { generateUUID } from "../client/lib/utils"
 
 const CLAUDE_TOOLSET = [
   "Skill",

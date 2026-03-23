@@ -1,7 +1,5 @@
-import { forwardRef, memo, useCallback, useEffect, useRef, useState, type ComponentType, type SVGProps } from "react"
-import { ArrowUp, Brain, Gauge, ListTodo, LockOpen, Paperclip, Sparkles, X, Zap } from "lucide-react"
 import { forwardRef, memo, useCallback, useEffect, useRef, useState } from "react"
-import { ArrowUp } from "lucide-react"
+import { ArrowUp, Paperclip, X } from "lucide-react"
 import {
   type AgentProvider,
   type ChatAttachmentUpload,
@@ -10,11 +8,9 @@ import {
   type CodexReasoningEffort,
   type ModelOptions,
   type ProviderCatalogEntry,
-  CLAUDE_REASONING_OPTIONS,
-  CODEX_REASONING_OPTIONS,
   MAX_CHAT_ATTACHMENTS,
   MAX_CHAT_IMAGE_BYTES,
-  SUPPORTED_CHAT_IMAGE_MIME_TYPES,
+  SUPPORTED_CHAT_IMAGE_MIME_TYPES
 } from "../../../shared/types"
 import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
@@ -200,6 +196,8 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
       }
     }
   }, [])
+
+  useEffect(() => {
     if (activeProvider === null) {
       setLockedComposerState(null)
       return
@@ -278,24 +276,19 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     if (textareaRef.current) textareaRef.current.style.height = "auto"
 
     try {
-      await onSubmit({
-        text: nextValue.trim(),
-        attachments: nextImages.length
-          ? await Promise.all(nextImages.map((image) => fileToAttachmentUpload(image.file)))
-          : undefined,
-      }, {
-        provider: selectedProvider,
-        model: providerPrefs.model,
-        modelOptions: selectedProvider === "claude"
-          ? { claude: { ...preferences.claude.modelOptions } }
-          : { codex: { ...preferences.codex.modelOptions } },
-        planMode: showPlanMode ? planMode : false,
-      })
+      await onSubmit(
+        {
+          text: nextValue.trim(),
+          attachments: nextImages.length
+            ? await Promise.all(nextImages.map((image) => fileToAttachmentUpload(image.file)))
+            : undefined,
+        },
+        submitOptions
+      )
       for (const image of nextImages) {
         URL.revokeObjectURL(image.previewUrl)
       }
       setImages([])
-      await onSubmit(nextValue, submitOptions)
     } catch (error) {
       console.error("[ChatInput] Submit failed:", error)
       setValue(nextValue)
@@ -513,14 +506,6 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         <div className="max-w-[840px] mx-auto mt-2 px-2 text-xs text-destructive">{attachmentError}</div>
       ) : null}
 
-      <div className="flex justify-center items-center gap-0.5 max-w-[840px] mx-auto mt-2 animate-fade-in">
-        <InputPopover
-          disabled={providerLocked}
-          trigger={
-            <>
-              <ProviderIcon className="h-3.5 w-3.5" />
-              <span>{providerConfig?.label ?? selectedProvider}</span>
-            </>
       <ChatPreferenceControls
         availableProviders={availableProviders}
         selectedProvider={selectedProvider}
@@ -572,7 +557,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
           setComposerPlanMode(planMode)
         }}
         includePlanMode={showPlanMode}
-        className="max-w-[840px] mx-auto mt-2"
+        className="max-w-[840px] mx-auto mt-2 animate-fade-in"
       />
     </div>
   )

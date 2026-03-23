@@ -10,11 +10,13 @@ import { createWsRouter, type ClientState } from "./ws-router"
 
 export interface StartKannaServerOptions {
   port?: number
+  host?: string
   strictPort?: boolean
 }
 
 export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const port = options.port ?? 3210
+  const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const store = new EventStore()
   const machineDisplayName = getMachineDisplayName()
@@ -58,6 +60,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     try {
       server = Bun.serve<ClientState>({
         port: actualPort,
+        hostname,
         fetch(req, serverInstance) {
           const url = new URL(req.url)
 

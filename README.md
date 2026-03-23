@@ -112,18 +112,33 @@ bun run build
 ## Usage
 
 ```bash
-kanna                  # start with defaults
+kanna                  # start with defaults (localhost only)
 kanna --port 4000      # custom port
 kanna --no-open        # don't open browser
 ```
 
 Default URL: `http://localhost:3210`
 
+### Network access (Tailscale / LAN)
+
+By default Kanna binds to `127.0.0.1` (localhost only). Use `--host` to bind a specific interface, or `--remote` as a shorthand for `0.0.0.0`:
+
+```bash
+kanna --remote                     # bind all interfaces — browser opens localhost:3210
+kanna --host dev-box               # bind to a specific hostname — browser opens http://dev-box:3210
+kanna --host 192.168.1.x           # bind to a specific LAN IP
+kanna --host 100.64.x.x            # bind to a specific Tailscale IP
+```
+
+When `--host <hostname>` is given, the browser opens `http://<hostname>:3210` automatically. Other machines on your network can connect to the same URL:
+
 ## Development
 
 ```bash
 bun run dev
 ```
+
+the same `--remote` `--host` ect can be used for local development also for remote development changes
 
 Or run client and server separately:
 

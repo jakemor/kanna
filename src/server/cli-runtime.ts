@@ -6,6 +6,7 @@ import { PROD_SERVER_PORT } from "../shared/ports"
 
 export interface CliOptions {
   port: number
+  host: string
   openBrowser: boolean
   strictPort: boolean
 }
@@ -48,15 +49,18 @@ Usage:
   ${CLI_COMMAND} [options]
 
 Options:
-  --port <number>  Port to listen on (default: ${PROD_SERVER_PORT})
-  --strict-port    Fail instead of trying another port
-  --no-open        Don't open browser automatically
-  --version        Print version and exit
-  --help           Show this help message`)
+  --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
+  --host <host>        Bind to a specific host or IP
+  --remote             Shortcut for --host 0.0.0.0
+  --strict-port        Fail instead of trying another port
+  --no-open            Don't open browser automatically
+  --version            Print version and exit
+  --help               Show this help message`)
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
   let port = PROD_SERVER_PORT
+  let host = "127.0.0.1"
   let openBrowser = true
   let strictPort = false
 
@@ -75,6 +79,17 @@ export function parseArgs(argv: string[]): ParsedArgs {
       index += 1
       continue
     }
+    if (arg === "--host") {
+      const next = argv[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --host")
+      host = next
+      index += 1
+      continue
+    }
+    if (arg === "--remote") {
+      host = "0.0.0.0"
+      continue
+    }
     if (arg === "--no-open") {
       openBrowser = false
       continue
@@ -90,6 +105,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     kind: "run",
     options: {
       port,
+      host,
       openBrowser,
       strictPort,
     },
@@ -182,10 +198,13 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   }
 
   const { port, stop } = await deps.startServer(parsedArgs.options)
-  const url = `http://localhost:${port}`
-  const launchUrl = url
+  const bindHost = parsedArgs.options.host
+  // For display / browser-open, map internal bind addresses to user-friendly names
+  const displayHost =
+    bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
+  const launchUrl = `http://${displayHost}:${port}`
 
-  deps.log(`${LOG_PREFIX} listening on ${url}`)
+  deps.log(`${LOG_PREFIX} listening on http://${bindHost}:${port}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
 
   if (parsedArgs.options.openBrowser) {

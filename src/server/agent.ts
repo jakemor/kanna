@@ -353,7 +353,7 @@ async function startClaudeTurn(args: {
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
       settingSources: ["user", "project", "local"],
-      env: { ...process.env },
+      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
   })
 

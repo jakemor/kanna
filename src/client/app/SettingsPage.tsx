@@ -7,6 +7,7 @@ import {
   Loader2,
   Monitor,
   Moon,
+  MessageSquareQuote,
   Settings2,
   Sun,
 } from "lucide-react"
@@ -14,11 +15,20 @@ import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/branding"
-import { DEFAULT_KEYBINDINGS, type KeybindingAction } from "../../shared/types"
+import { DEFAULT_KEYBINDINGS, PROVIDERS, type AgentProvider, type KeybindingAction } from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
+import { ChatPreferenceControls } from "../components/chat-ui/ChatPreferenceControls"
 import { buttonVariants } from "../components/ui/button"
 import type { EditorPreset } from "../../shared/protocol"
 import { SegmentedControl } from "../components/ui/segmented-control"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select"
 import { useTheme, type ThemePreference } from "../hooks/useTheme"
 import { KEYBINDING_ACTION_LABELS, formatKeybindingInput, getResolvedKeybindings, parseKeybindingInput } from "../lib/keybindings"
 import { cn } from "../lib/utils"
@@ -31,6 +41,7 @@ import {
   MIN_TERMINAL_SCROLLBACK,
   useTerminalPreferencesStore,
 } from "../stores/terminalPreferencesStore"
+import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import type { KannaState } from "./useKannaState"
 
 const sidebarItems = [
@@ -39,6 +50,12 @@ const sidebarItems = [
     label: "General",
     icon: Settings2,
     subtitle: "Manage appearance, editor behavior, and embedded terminal defaults.",
+  },
+  {
+    id: "providers",
+    label: "Providers",
+    icon: MessageSquareQuote,
+    subtitle: "Manage the default chat provider and saved model defaults for Claude Code and Codex.",
   },
   {
     id: "keybindings",
@@ -331,6 +348,12 @@ export function SettingsPage() {
   const setEditorPreset = useTerminalPreferencesStore((store) => store.setEditorPreset)
   const setEditorCommandTemplate = useTerminalPreferencesStore((store) => store.setEditorCommandTemplate)
   const keybindings = state.keybindings
+  const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
+  const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
+  const setDefaultProvider = useChatPreferencesStore((store) => store.setDefaultProvider)
+  const setProviderDefaultModel = useChatPreferencesStore((store) => store.setProviderDefaultModel)
+  const setProviderDefaultModelOptions = useChatPreferencesStore((store) => store.setProviderDefaultModelOptions)
+  const setProviderDefaultPlanMode = useChatPreferencesStore((store) => store.setProviderDefaultPlanMode)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
@@ -577,17 +600,23 @@ export function SettingsPage() {
                         description="Used by the navbar code button and local file links in chat"
                         alignStart
                       >
-                        <select
+                        <Select
                           value={editorPreset}
-                          onChange={(event) => setEditorPreset(event.target.value as EditorPreset)}
-                          className="min-w-[180px] rounded-lg border border-border bg-background px-3 py-2 pr-12 text-sm text-foreground outline-none"
+                          onValueChange={(value) => setEditorPreset(value as EditorPreset)}
                         >
-                          {editorOptions.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
+                          <SelectTrigger className="min-w-[180px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {editorOptions.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
                       </SettingsRow>
 
                       {editorPreset === "custom" ? (
@@ -663,6 +692,95 @@ export function SettingsPage() {
                       </SettingsRow>
                     </div>
                   </>
+                ) : selectedPage === "providers" ? (
+                  <div className="border-b border-border">
+                    <SettingsRow
+                      title="Default Provider"
+                      description="The default harness used for new chats before a provider is locked by an existing session."
+                      bordered={false}
+                    >
+                      <Select
+                        value={defaultProvider}
+                        onValueChange={(value) => setDefaultProvider(value as "last_used" | AgentProvider)}
+                      >
+                        <SelectTrigger className="min-w-[180px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value="last_used">
+                              Last Used
+                            </SelectItem>
+                            {PROVIDERS.map((provider) => (
+                              <SelectItem key={provider.id} value={provider.id}>
+                                {provider.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Claude Code Defaults"
+                      description="Saved defaults when using Claude Code."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="claude"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.claude.model}
+                          modelOptions={providerDefaults.claude.modelOptions}
+                          onModelChange={(_, model) => {
+                            setProviderDefaultModel("claude", model)
+                          }}
+                          onClaudeReasoningEffortChange={(reasoningEffort) => {
+                            setProviderDefaultModelOptions("claude", { reasoningEffort })
+                          }}
+                          onCodexReasoningEffortChange={() => {}}
+                          onCodexFastModeChange={() => {}}
+                          planMode={providerDefaults.claude.planMode}
+                          onPlanModeChange={(planMode) => setProviderDefaultPlanMode("claude", planMode)}
+                          includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Codex Defaults"
+                      description="Saved defaults when using Codex."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="codex"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.codex.model}
+                          modelOptions={providerDefaults.codex.modelOptions}
+                          onModelChange={(_, model) => {
+                            setProviderDefaultModel("codex", model)
+                          }}
+                          onClaudeReasoningEffortChange={() => {}}
+                          onCodexReasoningEffortChange={(reasoningEffort) => {
+                            setProviderDefaultModelOptions("codex", { reasoningEffort })
+                          }}
+                          onCodexFastModeChange={(fastMode) => {
+                            setProviderDefaultModelOptions("codex", { fastMode })
+                          }}
+                          planMode={providerDefaults.codex.planMode}
+                          onPlanModeChange={(planMode) => setProviderDefaultPlanMode("codex", planMode)}
+                          includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+                  </div>
                 ) : selectedPage === "keybindings" ? (
                   <div className="border-b border-border">
                     {keybindingsError ? (

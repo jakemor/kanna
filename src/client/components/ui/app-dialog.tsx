@@ -66,6 +66,26 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
     setInputValue("")
   }, [])
 
+  const resolveCancel = useCallback(() => {
+    if (!dialogState) return
+    if (dialogState.kind === "confirm") {
+      dialogState.resolve(false)
+    } else {
+      dialogState.resolve(null)
+    }
+    closeDialog()
+  }, [closeDialog, dialogState])
+
+  const resolveConfirm = useCallback(() => {
+    if (!dialogState) return
+    if (dialogState.kind === "confirm") {
+      dialogState.resolve(true)
+    } else {
+      dialogState.resolve(inputValue.trim() || null)
+    }
+    closeDialog()
+  }, [closeDialog, dialogState, inputValue])
+
   const confirm = useCallback((options: ConfirmDialogOptions) => {
     return new Promise<boolean>((resolve) => {
       setDialogState({ kind: "confirm", options, resolve })
@@ -87,15 +107,17 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
         open={dialogState !== null}
         onOpenChange={(open) => {
           if (open || !dialogState) return
-          if (dialogState.kind === "confirm") {
-            dialogState.resolve(false)
-          } else {
-            dialogState.resolve(null)
-          }
-          closeDialog()
+          resolveCancel()
         }}
       >
-        <DialogContent size="sm">
+        <DialogContent
+          size="sm"
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || !dialogState || dialogState.kind !== "confirm") return
+            event.preventDefault()
+            resolveConfirm()
+          }}
+        >
           {dialogState ? (
             <>
               <DialogBody className="space-y-4">
@@ -112,8 +134,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                     onKeyDown={(event) => {
                       if (event.key === "Enter") {
                         event.preventDefault()
-                        dialogState.resolve(inputValue.trim() || null)
-                        closeDialog()
+                        resolveConfirm()
                       }
                     }}
                     className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background outline-none"
@@ -125,28 +146,14 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    if (dialogState.kind === "confirm") {
-                      dialogState.resolve(false)
-                    } else {
-                      dialogState.resolve(null)
-                    }
-                    closeDialog()
-                  }}
+                  onClick={resolveCancel}
                 >
                   {dialogState.options.cancelLabel ?? "Cancel"}
                 </Button>
                 <Button
                   variant={dialogState.kind === "confirm" ? (dialogState.options.confirmVariant ?? "default") : "secondary"}
                   size="sm"
-                  onClick={() => {
-                    if (dialogState.kind === "confirm") {
-                      dialogState.resolve(true)
-                    } else {
-                      dialogState.resolve(inputValue.trim() || null)
-                    }
-                    closeDialog()
-                  }}
+                  onClick={resolveConfirm}
                   disabled={dialogState.kind === "prompt" && !inputValue.trim()}
                 >
                   {dialogState.options.confirmLabel ?? "Confirm"}

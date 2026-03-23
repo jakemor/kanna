@@ -27,6 +27,14 @@ export function ResultMessage({ message }: Props) {
     return `${seconds}s`
   }
 
+  if (!message.success) {
+    return (
+      <div className="px-4 py-3 mx-2 my-1 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+        {message.result || "An unknown error occurred."}
+      </div>
+    )
+  }
+
   return (
     <MetaRow className={`px-0.5 text-xs tracking-wide ${message.durationMs > 60000 ? '' : 'hidden'}`}>
       <div className="w-full h-[1px] bg-border"></div>

@@ -1,7 +1,7 @@
 {
   "name": "kanna-code",
   "type": "module",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "A beautiful web UI for Claude Code",
   "license": "MIT",
   "keywords": [
@@ -45,6 +45,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
     "@radix-ui/react-context-menu": "^2.2.16",
+    "@radix-ui/react-select": "^2.2.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/addon-web-links": "^0.12.0",

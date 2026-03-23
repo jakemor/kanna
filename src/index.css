@@ -473,7 +473,7 @@
     display: inline-block;
     width: 1px;
     height: 1.05em;
-    background-color: var(--logo);
+    background-color: white;
     animation: kanna-cursor-blink 0.9s step-end infinite;
   }
 

@@ -55,6 +55,21 @@ export function shouldPinTranscriptToBottom(distanceFromBottom: number) {
   return distanceFromBottom < 120
 }
 
+export function getUiUpdateRestartReconnectAction(
+  phase: string | null,
+  connectionStatus: SocketStatus
+): "none" | "awaiting_reconnect" | "navigate_changelog" {
+  if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
+    return "awaiting_reconnect"
+  }
+
+  if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
+    return "navigate_changelog"
+  }
+
+  return "none"
+}
+
 const FIXED_TRANSCRIPT_PADDING_BOTTOM = 320
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
 
@@ -233,18 +248,17 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   useEffect(() => {
     const phase = getUiUpdateRestartPhase()
-    if (!phase) return
-
-    if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
+    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
+    if (reconnectAction === "awaiting_reconnect") {
       setUiUpdateRestartPhase("awaiting_reconnect")
       return
     }
 
-    if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
+    if (reconnectAction === "navigate_changelog") {
       clearUiUpdateRestartPhase()
-      window.location.reload()
+      navigate("/settings/changelog", { replace: true })
     }
-  }, [connectionStatus])
+  }, [connectionStatus, navigate])
 
   useEffect(() => {
     function handleWindowFocus() {

@@ -118,6 +118,7 @@ export interface StartCodexTurnArgs {
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
   content: string
+  attachments?: Array<{ filePath: string; mimeType: string }>
   planMode: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
@@ -755,11 +756,17 @@ export class CodexAppServerManager {
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
         input: [
-          {
-            type: "text",
-            text: args.content,
-            text_elements: [],
-          },
+          ...(args.content
+            ? [{
+                type: "text" as const,
+                text: args.content,
+                text_elements: [] as [],
+              }]
+            : []),
+          ...((args.attachments ?? []).map((attachment) => ({
+            type: "localImage" as const,
+            path: attachment.filePath,
+          }))),
         ],
         approvalPolicy: "never",
         model: args.model,

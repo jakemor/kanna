@@ -223,6 +223,46 @@ export interface TodoItem {
   activeForm: string
 }
 
+export const MAX_CHAT_ATTACHMENTS = 8
+export const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
+export const SUPPORTED_CHAT_IMAGE_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const
+
+export interface ChatImageAttachment {
+  type: "image"
+  id: string
+  name: string
+  mimeType: string
+  sizeBytes: number
+  relativePath: string
+}
+
+export interface ChatImageAttachmentUpload {
+  type: "image"
+  name: string
+  mimeType: string
+  sizeBytes: number
+  dataUrl: string
+}
+
+export type ChatAttachment = ChatImageAttachment
+export type ChatAttachmentUpload = ChatImageAttachmentUpload
+
+export interface ChatUserMessage {
+  text: string
+  attachments?: ChatAttachmentUpload[]
+}
+
+export interface HydratedChatImageAttachment extends ChatImageAttachment {
+  previewUrl: string
+}
+
+export type HydratedChatAttachment = HydratedChatImageAttachment
+
 interface TranscriptEntryBase {
   _id: string
   messageId?: string
@@ -308,6 +348,7 @@ export interface ToolResultEntry extends TranscriptEntryBase {
 export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
+  attachments?: ChatAttachment[]
 }
 
 export interface SystemInitEntry extends TranscriptEntryBase {
@@ -470,7 +511,7 @@ export type HydratedToolCall =
   | HydratedUnknownToolCall
 
 export type HydratedTranscriptMessage =
-  | ({ kind: "user_prompt"; content: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "user_prompt"; content: string; attachments?: HydratedChatAttachment[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })

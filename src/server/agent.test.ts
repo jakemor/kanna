@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, readdir, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { AgentCoordinator, normalizeClaudeStreamMessage } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { TranscriptEntry } from "../shared/types"
@@ -106,6 +109,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
       generateTitle: async () => "Generated title",
     })
@@ -114,7 +118,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "first message",
+      message: { text: "first message" },
       model: "gpt-5.4",
     })
 
@@ -168,6 +172,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
       generateTitle: async () => {
         await titleGate
@@ -179,7 +184,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "first message",
+      message: { text: "first message" },
       model: "gpt-5.4",
     })
 
@@ -236,6 +241,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -243,7 +249,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "first",
+      message: { text: "first" },
     })
 
     await waitFor(() => store.turnFinishedCount === 1)
@@ -254,7 +260,7 @@ describe("AgentCoordinator codex integration", () => {
     await coordinator.send({
       type: "chat.send",
       chatId: "chat-1",
-      content: "second",
+      message: { text: "second" },
     })
 
     await waitFor(() => store.turnFinishedCount === 2)
@@ -321,6 +327,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -328,7 +335,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "opt in",
+      message: { text: "opt in" },
       modelOptions: {
         codex: {
           reasoningEffort: "xhigh",
@@ -443,6 +450,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -450,7 +458,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "plan this",
+      message: { text: "plan this" },
       planMode: true,
     })
 
@@ -535,6 +543,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -542,7 +551,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "ask me something",
+      message: { text: "ask me something" },
     })
 
     await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "ask_user_question")
@@ -629,6 +638,7 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
       codexManager: fakeCodexManager as never,
     })
 
@@ -636,7 +646,7 @@ describe("AgentCoordinator codex integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "codex",
-      content: "plan this",
+      message: { text: "plan this" },
       planMode: true,
     })
 
@@ -650,8 +660,39 @@ describe("AgentCoordinator codex integration", () => {
     }
     expect(discardedResult.content).toEqual({ discarded: true })
     expect(startTurnCalls).toEqual(["plan this"])
+    })
   })
-})
+
+  test("rejects empty messages before creating attachment files", async () => {
+    const attachmentsDir = await mkdtemp(path.join(tmpdir(), "kanna-agent-attachments-"))
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(): Promise<HarnessTurn> {
+        throw new Error("startTurn should not be called")
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      attachmentsDir,
+      codexManager: fakeCodexManager as never,
+    })
+
+    try {
+      await expect(coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "codex",
+        message: { text: "   " },
+      })).rejects.toThrow("Message must include text or image attachments")
+
+      expect(await readdir(attachmentsDir)).toEqual([])
+    } finally {
+      await rm(attachmentsDir, { recursive: true, force: true })
+    }
+  })
 
 function createFakeStore() {
   const chat = {

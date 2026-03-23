@@ -63,6 +63,39 @@ describe("processTranscriptMessages", () => {
     expect(messages[0].result).toEqual({ answers: { "Provider?": ["Codex"] } })
   })
 
+  test("hydrates user message attachments with preview urls", () => {
+    const messages = processTranscriptMessages([
+      entry({
+        kind: "user_prompt",
+        content: "Inspect this",
+        attachments: [
+          {
+            type: "image",
+            id: "image-1",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 1234,
+            relativePath: "chat-1/msg-1/0.png",
+          },
+        ],
+      }),
+    ])
+
+    expect(messages[0]?.kind).toBe("user_prompt")
+    if (messages[0]?.kind !== "user_prompt") throw new Error("unexpected message")
+    expect(messages[0].attachments).toEqual([
+      {
+        type: "image",
+        id: "image-1",
+        name: "screenshot.png",
+        mimeType: "image/png",
+        sizeBytes: 1234,
+        relativePath: "chat-1/msg-1/0.png",
+        previewUrl: "/attachments/chat-1/msg-1/0.png",
+      },
+    ])
+  })
+
   test("hydrates discarded prompt tool results", () => {
     const messages = processTranscriptMessages([
       entry({

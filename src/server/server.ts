@@ -2,6 +2,7 @@ import path from "node:path"
 import { APP_NAME } from "../shared/branding"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { ATTACHMENTS_ROUTE_PREFIX, resolveAttachmentPath } from "./attachments"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
@@ -38,6 +39,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     onStateChange: () => {
       router.broadcastSnapshots()
     },
+    attachmentsDir: path.join(store.dataDir, "attachments"),
   })
   router = createWsRouter({
     store,
@@ -72,6 +74,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
           if (url.pathname === "/health") {
             return Response.json({ ok: true, port: actualPort })
+          }
+
+          if (url.pathname.startsWith(`${ATTACHMENTS_ROUTE_PREFIX}/`)) {
+            return serveAttachment(path.join(store.dataDir, "attachments"), url.pathname)
           }
 
           return serveStatic(distDir, url.pathname)
@@ -115,6 +121,34 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     port: actualPort,
     store,
     stop: shutdown,
+  }
+}
+
+async function serveAttachment(attachmentsDir: string, pathname: string) {
+  const relativePath = pathname.slice(`${ATTACHMENTS_ROUTE_PREFIX}/`.length)
+  const decodedRelativePath = decodeAttachmentRelativePath(relativePath)
+  if (!decodedRelativePath) {
+    return new Response("Invalid attachment path", { status: 400 })
+  }
+
+  const filePath = resolveAttachmentPath(attachmentsDir, decodedRelativePath)
+  if (!filePath) {
+    return new Response("Invalid attachment path", { status: 400 })
+  }
+
+  const file = Bun.file(filePath)
+  if (!(await file.exists())) {
+    return new Response("Not Found", { status: 404 })
+  }
+
+  return new Response(file)
+}
+
+export function decodeAttachmentRelativePath(relativePath: string): string | null {
+  try {
+    return relativePath.split("/").map(decodeURIComponent).join("/")
+  } catch {
+    return null
   }
 }
 

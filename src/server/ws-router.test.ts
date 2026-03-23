@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { KeybindingsSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
+import { GitManager } from "./git-manager"
 import { createWsRouter } from "./ws-router"
 
 class FakeWebSocket {
@@ -40,6 +41,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -79,6 +81,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -117,6 +120,8 @@ describe("ws-router", () => {
         getSnapshot: () => null,
         onEvent: () => () => {},
       } as never,
+      fileTree: fileTree as never,
+      git: new GitManager(),
       keybindings: {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},

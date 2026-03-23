@@ -3,6 +3,8 @@ import { APP_NAME } from "../shared/branding"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
+import { FileTreeManager } from "./file-tree-manager"
+import { GitManager } from "./git-manager"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
@@ -31,6 +33,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   let server: ReturnType<typeof Bun.serve<ClientState>>
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
+  const git = new GitManager()
+  const fileTree = new FileTreeManager({
+    getProject: (projectId) => store.getProject(projectId),
+  })
   const keybindings = new KeybindingsManager()
   await keybindings.initialize()
   const agent = new AgentCoordinator({
@@ -43,6 +49,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     store,
     agent,
     terminals,
+    fileTree,
+    git,
     keybindings,
     refreshDiscovery,
     getDiscoveredProjects: () => discoveredProjects,

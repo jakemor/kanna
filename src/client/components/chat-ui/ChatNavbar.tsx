@@ -1,4 +1,6 @@
 import { Flower, Code, FolderOpen, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
+import type { KannaSocket } from "../../app/socket"
+import { GitBranchSelector } from "./GitBranchSelector"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
@@ -16,6 +18,8 @@ interface Props {
   onToggleRightSidebar?: () => void
   onOpenExternal?: (action: "open_finder" | "open_editor") => void
   editorLabel?: string
+  projectId?: string
+  socket: KannaSocket
   finderShortcut?: string[]
   editorShortcut?: string[]
   terminalShortcut?: string[]
@@ -34,6 +38,8 @@ export function ChatNavbar({
   onToggleRightSidebar,
   onOpenExternal,
   editorLabel = "Editor",
+  projectId,
+  socket,
   finderShortcut,
   editorShortcut,
   terminalShortcut,
@@ -48,7 +54,7 @@ export function ChatNavbar({
       )}
     >
       <div className="relative flex items-center gap-2 w-full">
-        <div className="flex items-center gap-1 flex-shrink-0 border-l border-border/0">
+        <div className="flex items-center gap-1 flex-shrink-0 md:bg-background md:dark:bg-card md:border md:border-border md:rounded-xl md:p-1">
           <Button
             variant="ghost"
             size="icon"
@@ -85,7 +91,8 @@ export function ChatNavbar({
 
         <div className="flex-1 min-w-0" />
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-1 flex-shrink-0 md:bg-background md:dark:bg-card md:border md:border-border md:rounded-xl md:p-1">
+          {projectId ? <GitBranchSelector projectId={projectId} socket={socket} /> : null}
           {localPath && (onOpenExternal || onToggleEmbeddedTerminal) && (
             <>
               {onOpenExternal ? (

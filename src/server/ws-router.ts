@@ -6,6 +6,8 @@ import type { AgentCoordinator } from "./agent"
 import type { DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
+import { FileTreeManager } from "./file-tree-manager"
+import { GitManager } from "./git-manager"
 import { KeybindingsManager } from "./keybindings"
 import { ensureProjectDirectory } from "./paths"
 import { TerminalManager } from "./terminal-manager"
@@ -19,6 +21,8 @@ interface CreateWsRouterArgs {
   store: EventStore
   agent: AgentCoordinator
   terminals: TerminalManager
+  fileTree: FileTreeManager
+  git: GitManager
   keybindings: KeybindingsManager
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
@@ -33,6 +37,8 @@ export function createWsRouter({
   store,
   agent,
   terminals,
+  fileTree,
+  git,
   keybindings,
   refreshDiscovery,
   getDiscoveredProjects,
@@ -259,6 +265,32 @@ export function createWsRouter({
           terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           pushTerminalSnapshot(command.terminalId)
+          return
+        }
+        case "file-tree.readDirectory": {
+          const result = await fileTree.readDirectory(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "git.getBranches": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          const result = await git.getBranches(project.localPath)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "git.switchBranch": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          const result = await git.switchBranch(project.localPath, command.branchName)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "git.createBranch": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          const result = await git.createBranch(project.localPath, command.branchName, command.checkout)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
       }

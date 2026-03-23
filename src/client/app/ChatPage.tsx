@@ -242,6 +242,8 @@ export function ChatPage() {
             void state.handleOpenExternal(action)
           }}
           editorLabel={state.editorLabel}
+          projectId={projectId ?? undefined}
+          socket={state.socket}
           finderShortcut={resolvedKeybindings.bindings.openInFinder}
           editorShortcut={resolvedKeybindings.bindings.openInEditor}
           terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}

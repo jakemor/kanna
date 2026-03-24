@@ -46,6 +46,7 @@ import {
   useTerminalPreferencesStore,
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import { useFeatureSettingsStore } from "../stores/featureSettingsStore"
 import type { KannaState } from "./useKannaState"
 
 const sidebarItems = [
@@ -391,6 +392,12 @@ export function SettingsPage() {
   const setProviderDefaultModel = useChatPreferencesStore((store) => store.setProviderDefaultModel)
   const setProviderDefaultModelOptions = useChatPreferencesStore((store) => store.setProviderDefaultModelOptions)
   const setProviderDefaultPlanMode = useChatPreferencesStore((store) => store.setProviderDefaultPlanMode)
+  const folderGroupsEnabled = useFeatureSettingsStore((store) => store.folderGroupsEnabled)
+  const kanbanStatusesEnabled = useFeatureSettingsStore((store) => store.kanbanStatusesEnabled)
+  const commitKannaDirectory = useFeatureSettingsStore((store) => store.commitKannaDirectory)
+  const setFolderGroupsEnabled = useFeatureSettingsStore((store) => store.setFolderGroupsEnabled)
+  const setKanbanStatusesEnabled = useFeatureSettingsStore((store) => store.setKanbanStatusesEnabled)
+  const setCommitKannaDirectory = useFeatureSettingsStore((store) => store.setCommitKannaDirectory)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
@@ -680,6 +687,61 @@ export function SettingsPage() {
                           size="sm"
                         />
                       </SettingsRow>
+
+                      <SettingsRow
+                        title="Folder Groups"
+                        description="Show or hide feature folder grouping in the sidebar. Turning this off keeps the existing feature state, but flattens chats into a direct list and hides the new-folder button."
+                      >
+                        <SegmentedControl
+                          value={folderGroupsEnabled ? "enabled" : "disabled"}
+                          onValueChange={(value) => setFolderGroupsEnabled(value === "enabled")}
+                          options={[
+                            { value: "disabled", label: "Off" },
+                            { value: "enabled", label: "On" },
+                          ]}
+                          size="sm"
+                        />
+                      </SettingsRow>
+
+                      {folderGroupsEnabled ? (
+                        <div className="mb-2 ml-6 space-y-0 border-l border-border/60 pl-4">
+                          <SettingsRow
+                            title="Kanban Status"
+                            description="Show or hide feature status controls like Idea, Todo, Progress, Testing, and Done."
+                            bordered={false}
+                          >
+                            <SegmentedControl
+                              value={kanbanStatusesEnabled ? "enabled" : "disabled"}
+                              onValueChange={(value) => setKanbanStatusesEnabled(value === "enabled")}
+                              options={[
+                                { value: "disabled", label: "Off" },
+                                { value: "enabled", label: "On" },
+                              ]}
+                              size="sm"
+                            />
+                          </SettingsRow>
+
+                          <SettingsRow
+                            title=".kanna In Git"
+                            description="Control whether Kanna keeps the project .kanna directory tracked in git or adds it to .gitignore for currently loaded projects and future opens. This is best suited to solo developers working across multiple machines. For team repos, we recommend ignoring `.kanna`."
+                            bordered={false}
+                          >
+                            <SegmentedControl
+                              value={commitKannaDirectory ? "commit" : "ignore"}
+                              onValueChange={(value) => {
+                                const enabled = value === "commit"
+                                setCommitKannaDirectory(enabled)
+                                void state.handleSetCommitKannaDirectory(enabled)
+                              }}
+                              options={[
+                                { value: "commit", label: "Commit" },
+                                { value: "ignore", label: "Ignore" },
+                              ]}
+                              size="sm"
+                            />
+                          </SettingsRow>
+                        </div>
+                      ) : null}
 
                       <SettingsRow
                         title="Default Editor"

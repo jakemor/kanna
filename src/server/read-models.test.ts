@@ -29,7 +29,7 @@ describe("read models", () => {
     })
 
     const sidebar = deriveSidebarData(state, new Map())
-    expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("codex")
+    expect(sidebar.projectGroups[0]?.generalChats[0]?.provider).toBe("codex")
     expect(sidebar.projectGroups[0]?.title).toBe("Project")
   })
 
@@ -133,4 +133,91 @@ describe("read models", () => {
     expect(snapshot.suggestedFolders.every((folder) => typeof folder.label === "string" && folder.label.length > 0)).toBe(true)
   })
 
+  test("excludes hidden projects from sidebar and local project snapshots", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      repoKey: "path:/tmp/project",
+      localPath: "/tmp/project",
+      worktreePaths: ["/tmp/project"],
+      title: "Hidden Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByRepoKey.set("path:/tmp/project", "project-1")
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.hiddenProjectKeys.add("path:/tmp/project")
+
+    expect(deriveSidebarData(state, new Map()).projectGroups).toHaveLength(0)
+    expect(deriveLocalProjectsSnapshot(state, [], "Local Machine").projects).toHaveLength(0)
+  })
+
+  test("groups chats into features and general, with done features sorted last", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      repoKey: "path:/tmp/project",
+      localPath: "/tmp/project",
+      worktreePaths: ["/tmp/project"],
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByRepoKey.set("path:/tmp/project", "project-1")
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.featuresById.set("feature-1", {
+      id: "feature-1",
+      projectId: "project-1",
+      title: "First Feature",
+      description: "First",
+      stage: "progress",
+      sortOrder: 0,
+      directoryRelativePath: ".kanna/First_Feature",
+      overviewRelativePath: ".kanna/First_Feature/overview.md",
+      createdAt: 1,
+      updatedAt: 5,
+    })
+    state.featuresById.set("feature-2", {
+      id: "feature-2",
+      projectId: "project-1",
+      title: "Done Feature",
+      description: "Done",
+      stage: "done",
+      sortOrder: 0,
+      directoryRelativePath: ".kanna/Done_Feature",
+      overviewRelativePath: ".kanna/Done_Feature/overview.md",
+      createdAt: 1,
+      updatedAt: 6,
+    })
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Feature chat",
+      featureId: "feature-1",
+      createdAt: 1,
+      updatedAt: 5,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+    state.chatsById.set("chat-2", {
+      id: "chat-2",
+      projectId: "project-1",
+      title: "General chat",
+      featureId: null,
+      createdAt: 1,
+      updatedAt: 7,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+
+    const sidebar = deriveSidebarData(state, new Map())
+
+    expect(sidebar.projectGroups[0]?.features.map((feature) => feature.featureId)).toEqual(["feature-1", "feature-2"])
+    expect(sidebar.projectGroups[0]?.features[0]?.chats[0]?.chatId).toBe("chat-1")
+    expect(sidebar.projectGroups[0]?.generalChats[0]?.chatId).toBe("chat-2")
+  })
 })

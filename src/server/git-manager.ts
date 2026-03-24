@@ -1,3 +1,5 @@
+import path from "node:path"
+import { readFile, writeFile } from "node:fs/promises"
 import type { GitBranchesResult, GitCreateBranchResult, GitSwitchBranchResult } from "../shared/protocol"
 
 export class GitManager {
@@ -52,5 +54,24 @@ export class GitManager {
     }
     const head = await this.runGit(localPath, ["rev-parse", "--abbrev-ref", "HEAD"])
     return { currentBranch: head.stdout }
+  }
+
+  async setKannaDirectoryCommitMode(localPath: string, commitKanna: boolean) {
+    // Never allow the Kanna repo itself to commit its .kanna directory.
+    const effectiveCommitKanna = path.basename(localPath).toLowerCase() === "kanna"
+      ? false
+      : commitKanna
+    const gitignorePath = `${localPath}/.gitignore`
+    const existing = await readFile(gitignorePath, "utf8").catch(() => "")
+    const lines = existing ? existing.split(/\r?\n/) : []
+    const filtered = lines.filter((line) => {
+      const trimmed = line.trim()
+      return trimmed !== ".kanna" && trimmed !== ".kanna/"
+    })
+
+    const nextLines = effectiveCommitKanna ? filtered : [...filtered, ".kanna/"]
+    const normalized = nextLines.join("\n").replace(/\n{3,}/g, "\n\n")
+    const nextContent = normalized.trim().length > 0 ? `${normalized.replace(/\n+$/g, "")}\n` : ""
+    await writeFile(gitignorePath, nextContent, "utf8")
   }
 }

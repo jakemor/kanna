@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type DirectoryBrowserSnapshot, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type DirectoryBrowserSnapshot, type FeatureStage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import { useFeatureSettingsStore } from "../stores/featureSettingsStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
@@ -14,14 +15,22 @@ import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived
 import { KannaSocket, type SocketStatus } from "./socket"
 
 export function getNewestRemainingChatId(projectGroups: SidebarData["projectGroups"], activeChatId: string): string | null {
-  const projectGroup = projectGroups.find((group) => group.chats.some((chat) => chat.chatId === activeChatId))
+  const projectGroup = projectGroups.find((group) => flattenProjectChats(group).some((chat) => chat.chatId === activeChatId))
   if (!projectGroup) return null
 
-  return projectGroup.chats.find((chat) => chat.chatId !== activeChatId)?.chatId ?? null
+  return flattenProjectChats(projectGroup).find((chat) => chat.chatId !== activeChatId)?.chatId ?? null
 }
 
 export function getProjectIdForChat(projectGroups: SidebarData["projectGroups"], chatId: string): string | null {
-  return projectGroups.find((group) => group.chats.some((chat) => chat.chatId === chatId))?.groupKey ?? null
+  return projectGroups.find((group) => flattenProjectChats(group).some((chat) => chat.chatId === chatId))?.groupKey ?? null
+}
+
+export function getSidebarChat(projectGroups: SidebarData["projectGroups"], chatId: string): SidebarChatRow | null {
+  for (const group of projectGroups) {
+    const chat = flattenProjectChats(group).find((entry) => entry.chatId === chatId)
+    if (chat) return chat
+  }
+  return null
 }
 
 function wsUrl() {
@@ -144,6 +153,8 @@ export interface KannaState {
   localProjectsReady: boolean
   commandError: string | null
   startingLocalPath: string | null
+  folderGroupsEnabled: boolean
+  kanbanStatusesEnabled: boolean
   sidebarOpen: boolean
   sidebarCollapsed: boolean
   scrollRef: RefObject<HTMLDivElement | null>
@@ -166,13 +177,20 @@ export interface KannaState {
   expandSidebar: () => void
   updateScrollState: () => void
   scrollToBottom: () => void
-  handleCreateChat: (projectId: string) => Promise<void>
+  handleCreateChat: (projectId: string, featureId?: string) => Promise<void>
+  handleCreateFeature: (projectId: string) => Promise<void>
+  handleRenameFeature: (featureId: string) => Promise<void>
+  handleDeleteFeature: (featureId: string) => Promise<void>
+  handleSetFeatureStage: (featureId: string, stage: FeatureStage) => Promise<void>
+  handleSetChatFeature: (chatId: string, featureId: string | null) => Promise<void>
+  handleReorderFeatures: (projectId: string, orderedFeatureIds: string[]) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
   handleHideLocalProject: (localPath: string) => Promise<void>
   handleListDirectories: (localPath?: string) => Promise<DirectoryBrowserSnapshot>
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  handleSetCommitKannaDirectory: (enabled: boolean) => Promise<void>
   handleSend: (message: ChatUserMessage, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleCancel: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
@@ -216,6 +234,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const folderGroupsEnabled = useFeatureSettingsStore((store) => store.folderGroupsEnabled)
+  const kanbanStatusesEnabled = useFeatureSettingsStore((store) => store.kanbanStatusesEnabled)
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -332,7 +352,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   useEffect(() => {
     if (!activeChatId) return
     if (!sidebarReady || !chatReady) return
-    const exists = sidebarData.projectGroups.some((group) => group.chats.some((chat) => chat.chatId === activeChatId))
+    const exists = sidebarData.projectGroups.some((group) => flattenProjectChats(group).some((chat) => chat.chatId === activeChatId))
     if (exists) {
       if (pendingChatId === activeChatId) {
         setPendingChatId(null)
@@ -422,14 +442,26 @@ export function useKannaState(activeChatId: string | null): KannaState {
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
   }
 
-  async function createChatForProject(projectId: string) {
+  async function createChatForProject(projectId: string, featureId?: string) {
     useChatPreferencesStore.getState().initializeComposerForNewChat()
-    const result = await socket.command<{ chatId: string }>({ type: "chat.create", projectId })
+    const result = await socket.command<{ chatId: string }>({ type: "chat.create", projectId, featureId })
     setSelectedProjectId(projectId)
     setPendingChatId(result.chatId)
     navigate(`/chat/${result.chatId}`)
     setSidebarOpen(false)
     setCommandError(null)
+  }
+
+  async function applyKannaDirectoryCommitPreference(
+    target: { projectId?: string; localPath?: string },
+    enabled = useFeatureSettingsStore.getState().commitKannaDirectory
+  ) {
+    await socket.command({
+      type: "project.setKannaDirectoryCommitMode",
+      projectId: target.projectId,
+      localPath: target.localPath,
+      commitKanna: enabled,
+    })
   }
 
   async function resolveProjectIdForStartChat(intent: StartChatIntent): Promise<{ projectId: string; localPath?: string }> {
@@ -462,6 +494,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       }
 
       const { projectId } = await resolveProjectIdForStartChat(intent)
+      await applyKannaDirectoryCommitPreference({ projectId })
       await createChatForProject(projectId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -488,8 +521,112 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }
 
-  async function handleCreateChat(projectId: string) {
+  async function handleCreateChat(projectId: string, featureId?: string) {
+    if (featureId) {
+      try {
+        await createChatForProject(projectId, featureId)
+      } catch (error) {
+        setCommandError(error instanceof Error ? error.message : String(error))
+      }
+      return
+    }
+
     await startChatFromIntent({ kind: "project_id", projectId })
+  }
+
+  async function handleCreateFeature(projectId: string) {
+    const title = await dialog.prompt({
+      title: "Create Feature",
+      description: "Name the feature folder.",
+      placeholder: "Feature name",
+      confirmLabel: "Next",
+    })
+    if (!title) return
+
+    const description = await dialog.prompt({
+      title: "Feature Description",
+      description: "Describe what this feature is about. This will seed overview.md.",
+      placeholder: "Short feature description",
+      confirmLabel: "Create",
+    })
+    if (!description) return
+
+    try {
+      const feature = await socket.command<{ featureId: string }>({
+        type: "feature.create",
+        projectId,
+        title,
+        description,
+      })
+      await createChatForProject(projectId, feature.featureId)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleRenameFeature(featureId: string) {
+    const feature = sidebarData.projectGroups.flatMap((group) => group.features).find((entry) => entry.featureId === featureId)
+    if (!feature) return
+    const title = await dialog.prompt({
+      title: "Rename Feature",
+      placeholder: "Feature name",
+      initialValue: feature.title,
+      confirmLabel: "Rename",
+    })
+    if (!title || title === feature.title) return
+
+    try {
+      await socket.command({ type: "feature.rename", featureId, title })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleDeleteFeature(featureId: string) {
+    const feature = sidebarData.projectGroups.flatMap((group) => group.features).find((entry) => entry.featureId === featureId)
+    if (!feature) return
+    const confirmed = await dialog.confirm({
+      title: "Delete Feature",
+      description: `Delete "${feature.title}"? Its chats will move to General and the feature folder will be removed.`,
+      confirmLabel: "Delete",
+      confirmVariant: "destructive",
+    })
+    if (!confirmed) return
+
+    try {
+      await socket.command({ type: "feature.delete", featureId })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleSetFeatureStage(featureId: string, stage: FeatureStage) {
+    try {
+      await socket.command({ type: "feature.setStage", featureId, stage })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleSetChatFeature(chatId: string, featureId: string | null) {
+    try {
+      await socket.command({ type: "chat.setFeature", chatId, featureId })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleReorderFeatures(projectId: string, orderedFeatureIds: string[]) {
+    try {
+      await socket.command({ type: "feature.reorder", projectId, orderedFeatureIds })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function handleOpenLocalProject(localPath: string) {
@@ -498,6 +635,25 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   async function handleCreateProject(project: ProjectRequest) {
     await startChatFromIntent({ kind: "project_request", project })
+  }
+
+  async function handleSetCommitKannaDirectory(enabled: boolean) {
+    try {
+      await Promise.all(
+        dedupeCommitPreferenceTargets(
+          localProjects?.projects.map((project) => ({
+            localPath: project.localPath,
+          })) ?? sidebarData.projectGroups.map((group) => ({
+            projectId: group.groupKey,
+            localPath: group.localPath,
+          }))
+        ).map((target) => applyKannaDirectoryCommitPreference(target, enabled))
+      )
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
   }
 
   async function handleListDirectories(localPath?: string) {
@@ -715,17 +871,27 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }
 
   function handleCompose() {
+    const activeSidebarChat = activeChatId ? getSidebarChat(sidebarData.projectGroups, activeChatId) : null
+    const activeProjectId = activeChatId ? getProjectIdForChat(sidebarData.projectGroups, activeChatId) : null
+
+    if (activeSidebarChat && activeProjectId) {
+      setCommandError(null)
+      void handleCreateChat(activeProjectId, activeSidebarChat.featureId ?? undefined)
+      return
+    }
+
     const intent = resolveComposeIntent({
       selectedProjectId,
       sidebarProjectId: sidebarData.projectGroups[0]?.groupKey,
       fallbackLocalProjectPath,
     })
     if (intent) {
+      setCommandError(null)
       void startChatFromIntent(intent)
       return
     }
 
-    navigate("/")
+    setCommandError("Open a project first")
   }
 
   async function handleAskUserQuestion(
@@ -780,6 +946,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     localProjectsReady,
     commandError,
     startingLocalPath,
+    folderGroupsEnabled,
+    kanbanStatusesEnabled,
     sidebarOpen,
     sidebarCollapsed,
     scrollRef,
@@ -803,12 +971,19 @@ export function useKannaState(activeChatId: string | null): KannaState {
     updateScrollState,
     scrollToBottom,
     handleCreateChat,
+    handleCreateFeature,
+    handleRenameFeature,
+    handleDeleteFeature,
+    handleSetFeatureStage,
+    handleSetChatFeature,
+    handleReorderFeatures,
     handleOpenLocalProject,
     handleHideLocalProject,
     handleListDirectories,
     handleCreateProject,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleSetCommitKannaDirectory,
     handleSend,
     handleCancel,
     handleDeleteChat,
@@ -820,4 +995,18 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleAskUserQuestion,
     handleExitPlanMode,
   }
+}
+
+function flattenProjectChats(projectGroup: SidebarData["projectGroups"][number]) {
+  return [...projectGroup.features.flatMap((feature) => feature.chats), ...projectGroup.generalChats]
+}
+
+function dedupeCommitPreferenceTargets(targets: Array<{ projectId?: string; localPath?: string }>) {
+  const seen = new Set<string>()
+  return targets.filter((target) => {
+    const key = target.localPath ?? target.projectId
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }

@@ -13,6 +13,9 @@ interface Props {
   nowMs: number
   onSelectChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
+  draggable?: boolean
+  onDragStart?: (chat: SidebarChatRow) => void
+  onDragEnd?: () => void
 }
 
 export function ChatRow({
@@ -21,6 +24,9 @@ export function ChatRow({
   nowMs,
   onSelectChat,
   onDeleteChat,
+  draggable = false,
+  onDragStart,
+  onDragEnd,
 }: Props) {
   const ageLabel = formatSidebarAgeLabel(chat.lastMessageAt, nowMs)
 
@@ -32,6 +38,9 @@ export function ChatRow({
         "group flex items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
         activeChatId === normalizeChatId(chat.chatId) ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-slate-400/10 "
       )}
+      draggable={draggable}
+      onDragStart={draggable ? () => onDragStart?.(chat) : undefined}
+      onDragEnd={draggable ? onDragEnd : undefined}
       onClick={() => onSelectChat(chat.chatId)}
     >
       {loadingStatuses.has(chat.status) ? (

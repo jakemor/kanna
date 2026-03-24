@@ -59,7 +59,11 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
 describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", () => {
     const router = createWsRouter({
-      store: { state: createEmptyState(), getChat: () => null } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
       agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
@@ -99,7 +103,11 @@ describe("ws-router", () => {
 
   test("acks terminal.input without rebroadcasting terminal snapshots", () => {
     const router = createWsRouter({
-      store: { state: createEmptyState(), getChat: () => null } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
       agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
@@ -144,7 +152,11 @@ describe("ws-router", () => {
 
   test("subscribes and unsubscribes chat topics", () => {
     const router = createWsRouter({
-      store: { state: createEmptyState(), getChat: () => null } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
       agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
@@ -205,6 +217,8 @@ describe("ws-router", () => {
       store: {
         state: createEmptyState(),
         listProjects: () => [],
+        getChat: () => null,
+        getMessages: () => [],
         hideProject: async (localPath: string) => {
           hiddenPaths.push(localPath)
         },
@@ -253,6 +267,60 @@ describe("ws-router", () => {
     ])
   })
 
+  test("updates .gitignore commit mode using a local project path", async () => {
+    const calls: Array<{ localPath: string; commitKanna: boolean }> = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: {
+        async setKannaDirectoryCommitMode(localPath: string, commitKanna: boolean) {
+          calls.push({ localPath, commitKanna })
+        },
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "project-gitignore-1",
+        command: {
+          type: "project.setKannaDirectoryCommitMode",
+          localPath: "/tmp/project-1",
+          commitKanna: false,
+        },
+      })
+    )
+
+    await Promise.resolve()
+    expect(calls).toEqual([{ localPath: "/tmp/project-1", commitKanna: false }])
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "project-gitignore-1",
+      },
+    ])
+  })
+
   test("subscribes to keybindings snapshots and writes keybindings through the router", async () => {
     const initialSnapshot: KeybindingsSnapshot = DEFAULT_KEYBINDINGS_SNAPSHOT
     const keybindings = {
@@ -268,7 +336,11 @@ describe("ws-router", () => {
     }
 
     const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
       agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
@@ -497,6 +569,7 @@ describe("ws-router", () => {
         worktreePaths: ["/tmp/project-1"],
         title: "project-1",
       }),
+      reconcileProjectFeatureState: async () => 0,
       isProjectHidden: () => false,
       listChatsByProject: () => [...chatState.values()].sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt)),
       createChat: async (projectId: string) => {
@@ -523,6 +596,8 @@ describe("ws-router", () => {
         const chat = chatState.get(chatId)
         if (chat) chat.sessionToken = sessionToken
       },
+      getChat: (chatId: string) => chatState.get(chatId) ?? null,
+      getMessages: () => [],
       appendMessage: async (chatId: string, entry: any) => {
         const chat = chatState.get(chatId)
         if (!chat) return

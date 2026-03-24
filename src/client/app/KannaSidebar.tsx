@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
-import type { SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
+import type { FeatureStage, SidebarData, SidebarChatRow, SidebarProjectGroup, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
 import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
 
@@ -22,9 +22,18 @@ interface KannaSidebarProps {
   onClose: () => void
   onCollapse: () => void
   onExpand: () => void
-  onCreateChat: (projectId: string) => void
+  onCreateChat: (projectId: string, featureId?: string) => void
+  onCreateFeature: (projectId: string) => void
+  onRenameFeature: (featureId: string) => void
+  onDeleteFeature: (featureId: string) => void
+  onSetFeatureStage: (featureId: string, stage: FeatureStage) => void
+  onSetChatFeature: (chatId: string, featureId: string | null) => void
+  onReorderFeatures: (projectId: string, orderedFeatureIds: string[]) => void
+  folderGroupsEnabled: boolean
+  kanbanStatusesEnabled: boolean
   onDeleteChat: (chat: SidebarChatRow) => void
   onRemoveProject: (projectId: string) => void
+  startingLocalPath?: string | null
   updateSnapshot: UpdateSnapshot | null
   onInstallUpdate: () => void
 }
@@ -42,8 +51,17 @@ export function KannaSidebar({
   onCollapse,
   onExpand,
   onCreateChat,
+  onCreateFeature,
+  onRenameFeature,
+  onDeleteFeature,
+  onSetFeatureStage,
+  onSetChatFeature,
+  onReorderFeatures,
+  folderGroupsEnabled,
+  kanbanStatusesEnabled,
   onDeleteChat,
   onRemoveProject,
+  startingLocalPath,
   updateSnapshot,
   onInstallUpdate,
 }: KannaSidebarProps) {
@@ -51,9 +69,7 @@ export function KannaSidebar({
   const navigate = useNavigate()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const chatsPerProject = 10
 
   const savedOrder = useProjectGroupOrderStore((s) => s.order)
   const setGroupOrder = useProjectGroupOrderStore((s) => s.setOrder)
@@ -74,19 +90,25 @@ export function KannaSidebar({
     return ordered
   }, [data.projectGroups, savedOrder])
 
+  const sidebarProjectGroups = useMemo(
+    () => folderGroupsEnabled
+      ? orderedProjectGroups
+      : orderedProjectGroups.map((group) => ({
+          ...group,
+          features: [],
+          generalChats: flattenProjectChats(group),
+        })),
+    [folderGroupsEnabled, orderedProjectGroups]
+  )
+
   const handleReorderGroups = useCallback(
     (newOrder: string[]) => setGroupOrder(newOrder),
     [setGroupOrder]
   )
 
-  const projectIdByPath = useMemo(
-    () => new Map(data.projectGroups.map((group) => [group.localPath, group.groupKey])),
-    [data.projectGroups]
-  )
-
   const activeVisibleCount = useMemo(
-    () => data.projectGroups.reduce((count, group) => count + group.chats.length, 0),
-    [data.projectGroups]
+    () => sidebarProjectGroups.reduce((count, group) => count + flattenProjectChats(group).length, 0),
+    [sidebarProjectGroups]
   )
 
   const toggleSection = useCallback((key: string) => {
@@ -101,16 +123,11 @@ export function KannaSidebar({
     })
   }, [])
 
-  const toggleExpandedGroup = useCallback((key: string) => {
-    setExpandedGroups((previous) => {
-      const next = new Set(previous)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }, [])
-
-  const renderChatRow = useCallback((chat: SidebarChatRow) => (
+  const renderChatRow = useCallback((chat: SidebarChatRow, options?: {
+    draggable?: boolean
+    onDragStart?: (chat: SidebarChatRow) => void
+    onDragEnd?: () => void
+  }) => (
     <ChatRow
       key={chat._id}
       chat={chat}
@@ -118,6 +135,9 @@ export function KannaSidebar({
       nowMs={nowMs}
       onSelectChat={(chatId) => navigate(`/chat/${chatId}`)}
       onDeleteChat={() => onDeleteChat(chat)}
+      draggable={options?.draggable}
+      onDragStart={options?.onDragStart}
+      onDragEnd={options?.onDragEnd}
     />
   ), [activeChatId, navigate, nowMs, onDeleteChat])
 
@@ -197,7 +217,7 @@ export function KannaSidebar({
         data-sidebar="open"
         className={cn(
           "fixed inset-0 z-50 bg-background dark:bg-card flex flex-col h-[100dvh] select-none",
-          "md:relative md:inset-auto md:w-[275px] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
+          "md:relative md:inset-auto md:w-[315px] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
           open ? "flex" : "hidden md:flex",
           collapsed && "md:hidden"
         )}
@@ -294,22 +314,23 @@ export function KannaSidebar({
             ) : null}
 
             <LocalProjectsSection
-              projectGroups={orderedProjectGroups}
+              projectGroups={sidebarProjectGroups}
               onReorderGroups={handleReorderGroups}
               collapsedSections={collapsedSections}
-              expandedGroups={expandedGroups}
               onToggleSection={toggleSection}
-              onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
-              chatsPerProject={chatsPerProject}
-              onNewLocalChat={(localPath) => {
-                const projectId = projectIdByPath.get(localPath)
-                if (projectId) {
-                  onCreateChat(projectId)
-                }
-              }}
+              onNewLocalChat={onCreateChat}
+              onCreateFeature={folderGroupsEnabled ? onCreateFeature : undefined}
+              onRenameFeature={onRenameFeature}
+              onDeleteFeature={onDeleteFeature}
+              onSetFeatureStage={kanbanStatusesEnabled ? onSetFeatureStage : undefined}
+              onSetChatFeature={onSetChatFeature}
+              onReorderFeatures={onReorderFeatures}
               onRemoveProject={onRemoveProject}
               isConnected={connectionStatus === "connected"}
+              startingLocalPath={startingLocalPath}
+              folderGroupsEnabled={folderGroupsEnabled}
+              kanbanStatusesEnabled={kanbanStatusesEnabled}
             />
           </div>
         </div>
@@ -349,4 +370,8 @@ export function KannaSidebar({
       {open ? <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={onClose} /> : null}
     </>
   )
+}
+
+function flattenProjectChats(group: SidebarProjectGroup) {
+  return [...group.features.flatMap((feature) => feature.chats), ...group.generalChats]
 }

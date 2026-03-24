@@ -262,6 +262,7 @@ export function createWsRouter({
             localPath: project.localPath,
             worktreePaths: project.worktreePaths,
           })
+          await store.reconcileProjectFeatureState(project.id)
           await refreshDiscovery()
           send(ws, {
             v: PROTOCOL_VERSION,
@@ -286,6 +287,7 @@ export function createWsRouter({
             localPath: project.localPath,
             worktreePaths: project.worktreePaths,
           })
+          await store.reconcileProjectFeatureState(project.id)
           await refreshDiscovery()
           send(ws, {
             v: PROTOCOL_VERSION,
@@ -310,7 +312,6 @@ export function createWsRouter({
             }
             await store.hideProject(project.localPath)
           }
-          await store.removeProject(command.projectId)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
@@ -324,10 +325,20 @@ export function createWsRouter({
             for (const worktreePath of existingProject.worktreePaths) {
               terminals.closeByCwd(worktreePath)
             }
-            await store.removeProject(existingProject.id)
           }
           await store.hideProject(command.localPath)
           await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "project.setKannaDirectoryCommitMode": {
+          const localPath = command.projectId
+            ? store.getProject(command.projectId)?.localPath
+            : command.localPath
+          if (!localPath) {
+            throw new Error("Project not found")
+          }
+          await git.setKannaDirectoryCommitMode(localPath, command.commitKanna)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
@@ -336,9 +347,39 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "feature.create": {
+          const feature = await store.createFeature(command.projectId, command.title, command.description)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { featureId: feature.id } })
+          break
+        }
+        case "feature.rename": {
+          await store.renameFeature(command.featureId, command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.setStage": {
+          await store.setFeatureStage(command.featureId, command.stage)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.reorder": {
+          await store.reorderFeatures(command.projectId, command.orderedFeatureIds)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.delete": {
+          await store.deleteFeature(command.featureId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
         case "chat.create": {
-          const chat = await store.createChat(command.projectId)
+          const chat = await store.createChat(command.projectId, command.featureId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
+          break
+        }
+        case "chat.setFeature": {
+          await store.setChatFeature(command.chatId, command.featureId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
         case "chat.rename": {

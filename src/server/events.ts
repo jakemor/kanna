@@ -1,6 +1,10 @@
-import type { AgentProvider, ProjectSummary, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, FeatureStage, FeatureSummary, ProjectSummary, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
+  deletedAt?: number
+}
+
+export interface FeatureRecord extends FeatureSummary {
   deletedAt?: number
 }
 
@@ -11,6 +15,7 @@ export interface ChatRecord {
   createdAt: number
   updatedAt: number
   deletedAt?: number
+  featureId?: string | null
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
@@ -22,6 +27,7 @@ export interface StoreState {
   projectsById: Map<string, ProjectRecord>
   projectIdsByRepoKey: Map<string, string>
   projectIdsByPath: Map<string, string>
+  featuresById: Map<string, FeatureRecord>
   chatsById: Map<string, ChatRecord>
   messagesByChatId: Map<string, TranscriptEntry[]>
   hiddenProjectKeys: Set<string>
@@ -31,6 +37,7 @@ export interface SnapshotFile {
   v: 3
   generatedAt: number
   projects: ProjectRecord[]
+  features: FeatureRecord[]
   chats: ChatRecord[]
   messages: Array<{ chatId: string; entries: TranscriptEntry[] }>
   hiddenProjectKeys?: string[]
@@ -68,6 +75,49 @@ export type ProjectEvent = {
   repoKey: string
 }
 
+export type FeatureEvent =
+  | {
+      v: 3
+      type: "feature_created"
+      timestamp: number
+      featureId: string
+      projectId: string
+      title: string
+      description: string
+      stage: FeatureStage
+      sortOrder: number
+      directoryRelativePath: string
+      overviewRelativePath: string
+    }
+  | {
+      v: 3
+      type: "feature_renamed"
+      timestamp: number
+      featureId: string
+      title: string
+    }
+  | {
+      v: 3
+      type: "feature_stage_set"
+      timestamp: number
+      featureId: string
+      stage: FeatureStage
+      sortOrder?: number
+    }
+  | {
+      v: 3
+      type: "feature_reordered"
+      timestamp: number
+      projectId: string
+      orderedFeatureIds: string[]
+    }
+  | {
+      v: 3
+      type: "feature_deleted"
+      timestamp: number
+      featureId: string
+    }
+
 export type ChatEvent =
   | {
       v: 3
@@ -76,6 +126,7 @@ export type ChatEvent =
       chatId: string
       projectId: string
       title: string
+      featureId?: string
     }
   | {
       v: 3
@@ -103,6 +154,13 @@ export type ChatEvent =
       timestamp: number
       chatId: string
       planMode: boolean
+    }
+  | {
+      v: 3
+      type: "chat_feature_set"
+      timestamp: number
+      chatId: string
+      featureId: string | null
     }
 
 export type MessageEvent = {
@@ -147,13 +205,14 @@ export type TurnEvent =
       sessionToken: string | null
     }
 
-export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | TurnEvent
+export type StoreEvent = ProjectEvent | FeatureEvent | ChatEvent | MessageEvent | TurnEvent
 
 export function createEmptyState(): StoreState {
   return {
     projectsById: new Map(),
     projectIdsByRepoKey: new Map(),
     projectIdsByPath: new Map(),
+    featuresById: new Map(),
     chatsById: new Map(),
     messagesByChatId: new Map(),
     hiddenProjectKeys: new Set(),

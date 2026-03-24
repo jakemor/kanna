@@ -6,12 +6,14 @@ import {
   type ChatUserMessage,
   type ClaudeReasoningEffort,
   type CodexReasoningEffort,
+  type KeybindingsSnapshot,
   type ModelOptions,
   type ProviderCatalogEntry,
   MAX_CHAT_ATTACHMENTS,
   MAX_CHAT_IMAGE_BYTES,
   SUPPORTED_CHAT_IMAGE_MIME_TYPES
 } from "../../../shared/types"
+import { actionMatchesEvent } from "../../lib/keybindings"
 import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { cn, generateUUID } from "../../lib/utils"
@@ -64,6 +66,7 @@ interface Props {
   chatId?: string | null
   activeProvider: AgentProvider | null
   availableProviders: ProviderCatalogEntry[]
+  keybindings: KeybindingsSnapshot | null
 }
 
 function logChatInput(message: string, details?: unknown) {
@@ -115,6 +118,30 @@ function createLockedComposerState(
   }
 }
 
+export function shouldSubmitChatInput(
+  event: KeyboardEvent,
+  keybindings: KeybindingsSnapshot | null,
+  canCancel: boolean | undefined
+) {
+  return actionMatchesEvent(keybindings, "submitChatMessage", event) && !canCancel && !event.isComposing
+}
+
+export function getCompactComposerLabels({
+  selectedProvider,
+  codexFastMode,
+  planMode,
+}: {
+  selectedProvider: AgentProvider
+  codexFastMode: boolean
+  planMode: boolean
+}) {
+  return {
+    providerText: selectedProvider === "codex" ? null : selectedProvider,
+    codexModeText: codexFastMode ? "Fast" : "Std",
+    planModeText: planMode ? "Plan" : "Access",
+  }
+}
+
 const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput({
   onSubmit,
   onCancel,
@@ -123,6 +150,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   chatId,
   activeProvider,
   availableProviders,
+  keybindings,
 }, forwardedRef) {
   const { getDraft, setDraft, clearDraft } = useChatInputStore()
   const {
@@ -359,9 +387,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
       onCancel?.()
       return
     }
-
-    const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0
-    if (event.key === "Enter" && !event.shiftKey && !canCancel && !isTouchDevice) {
+    if (shouldSubmitChatInput(event.nativeEvent, keybindings, canCancel)) {
       event.preventDefault()
       void handleSubmit()
     }

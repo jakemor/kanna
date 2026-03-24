@@ -35,6 +35,7 @@ function cleanupTempDirs() {
 
 const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
   bindings: {
+    submitChatMessage: ["enter"],
     toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
     toggleRightSidebar: ["ctrl+b"],
     openInFinder: ["cmd+alt+f"],
@@ -300,6 +301,7 @@ describe("ws-router", () => {
         command: {
           type: "settings.writeKeybindings",
           bindings: {
+            submitChatMessage: ["shift+enter"],
             toggleEmbeddedTerminal: ["cmd+k"],
             toggleRightSidebar: ["ctrl+shift+b"],
             openInFinder: ["cmd+shift+g"],
@@ -317,6 +319,7 @@ describe("ws-router", () => {
       id: "keybindings-write-1",
         result: {
           bindings: {
+            submitChatMessage: ["shift+enter"],
             toggleEmbeddedTerminal: ["cmd+k"],
             toggleRightSidebar: ["ctrl+shift+b"],
             openInFinder: ["cmd+shift+g"],

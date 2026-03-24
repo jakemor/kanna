@@ -456,12 +456,12 @@ export function SettingsPage() {
     setEditorCommandTemplate(editorCommandDraft)
   }
 
-  async function commitKeybindings() {
+  async function commitKeybindings(source = keybindingDrafts) {
     try {
       setKeybindingsError(null)
       await state.socket.command({
         type: "settings.writeKeybindings",
-        bindings: buildKeybindingPayload(keybindingDrafts),
+        bindings: buildKeybindingPayload(source),
       })
     } catch (error) {
       setKeybindingsError(error instanceof Error ? error.message : "Unable to save keybindings.")
@@ -832,11 +832,15 @@ export function SettingsPage() {
                                 const nextValue = event.target.value
                                 setKeybindingDrafts((current) => ({ ...current, [action]: nextValue }))
                               }}
-                              onBlur={() => {
-                                void commitKeybindings()
+                              onBlur={(event) => {
+                                const nextDrafts = { ...keybindingDrafts, [action]: event.currentTarget.value }
+                                setKeybindingDrafts(nextDrafts)
+                                void commitKeybindings(nextDrafts)
                               }}
                               onKeyDown={(event) => handleTextInputKeyDown(event, () => {
-                                void commitKeybindings()
+                                const nextDrafts = { ...keybindingDrafts, [action]: event.currentTarget.value }
+                                setKeybindingDrafts(nextDrafts)
+                                void commitKeybindings(nextDrafts)
                               })}
                               className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none"
                             />
@@ -895,8 +899,9 @@ export function SettingsPage() {
   )
 }
 
-function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
+export function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
   return {
+    submitChatMessage: parseKeybindingInput(source.submitChatMessage ?? ""),
     toggleEmbeddedTerminal: parseKeybindingInput(source.toggleEmbeddedTerminal ?? ""),
     toggleRightSidebar: parseKeybindingInput(source.toggleRightSidebar ?? ""),
     openInFinder: parseKeybindingInput(source.openInFinder ?? ""),

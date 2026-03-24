@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { getCompactComposerLabels } from "./ChatInput"
+import { getCompactComposerLabels, shouldSubmitChatInput } from "./ChatInput"
+import { getResolvedKeybindings } from "../../lib/keybindings"
 
 describe("getCompactComposerLabels", () => {
   test("hides the Codex provider text in compact mode", () => {
@@ -38,5 +39,37 @@ describe("getCompactComposerLabels", () => {
       codexModeText: "Std",
       planModeText: "Access",
     })
+  })
+})
+
+describe("shouldSubmitChatInput", () => {
+  test("submits when the configured keybinding matches", () => {
+    const keybindings = getResolvedKeybindings(null)
+    keybindings.bindings.submitChatMessage = ["shift+enter"]
+    const event = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: true, isComposing: false } as KeyboardEvent
+
+    expect(shouldSubmitChatInput(event, keybindings, false)).toBe(true)
+  })
+
+  test("does not submit on plain enter when the binding is changed to shift+enter", () => {
+    const keybindings = getResolvedKeybindings(null)
+    keybindings.bindings.submitChatMessage = ["shift+enter"]
+    const event = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false } as KeyboardEvent
+
+    expect(shouldSubmitChatInput(event, keybindings, false)).toBe(false)
+  })
+
+  test("does not submit while cancel is active", () => {
+    const keybindings = getResolvedKeybindings(null)
+    const event = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false } as KeyboardEvent
+
+    expect(shouldSubmitChatInput(event, keybindings, true)).toBe(false)
+  })
+
+  test("does not submit while IME composition is active", () => {
+    const keybindings = getResolvedKeybindings(null)
+    const event = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: true } as KeyboardEvent
+
+    expect(shouldSubmitChatInput(event, keybindings, false)).toBe(false)
   })
 })

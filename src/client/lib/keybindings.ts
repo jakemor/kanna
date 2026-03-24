@@ -1,6 +1,7 @@
 import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } from "../../shared/types"
 
 export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
+  submitChatMessage: "Submit Chat Message",
   toggleEmbeddedTerminal: "Toggle Embedded Terminal",
   toggleRightSidebar: "Toggle Right Sidebar",
   openInFinder: "Open In Finder",
@@ -63,6 +64,7 @@ export function actionMatchesEvent(
 export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): KeybindingsSnapshot {
   return {
     bindings: {
+      submitChatMessage: snapshot?.bindings.submitChatMessage ?? DEFAULT_KEYBINDINGS.submitChatMessage,
       toggleEmbeddedTerminal: snapshot?.bindings.toggleEmbeddedTerminal ?? DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal,
       toggleRightSidebar: snapshot?.bindings.toggleRightSidebar ?? DEFAULT_KEYBINDINGS.toggleRightSidebar,
       openInFinder: snapshot?.bindings.openInFinder ?? DEFAULT_KEYBINDINGS.openInFinder,

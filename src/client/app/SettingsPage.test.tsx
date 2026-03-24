@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import {
   ChangelogSection,
+  buildKeybindingPayload,
   fetchGithubReleases,
   formatPublishedDate,
   getCachedChangelog,
@@ -117,6 +118,26 @@ describe("getKeybindingsSubtitle", () => {
     expect(getKeybindingsSubtitle("~/.kanna-dev/keybindings.json")).toBe(
       "Edit global app shortcuts stored in ~/.kanna-dev/keybindings.json."
     )
+  })
+})
+
+describe("buildKeybindingPayload", () => {
+  test("includes the submit chat message binding", () => {
+    expect(buildKeybindingPayload({
+      submitChatMessage: "Shift+Enter",
+      toggleEmbeddedTerminal: "Cmd+J",
+      toggleRightSidebar: "Cmd+B",
+      openInFinder: "Cmd+Alt+F",
+      openInEditor: "Cmd+Shift+O",
+      addSplitTerminal: "Cmd+/",
+    })).toEqual({
+      submitChatMessage: ["shift+enter"],
+      toggleEmbeddedTerminal: ["cmd+j"],
+      toggleRightSidebar: ["cmd+b"],
+      openInFinder: ["cmd+alt+f"],
+      openInEditor: ["cmd+shift+o"],
+      addSplitTerminal: ["cmd+/"],
+    })
   })
 })
 

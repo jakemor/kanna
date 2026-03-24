@@ -168,6 +168,7 @@ export interface LocalProjectsSnapshot {
 }
 
 export type KeybindingAction =
+  | "submitChatMessage"
   | "toggleEmbeddedTerminal"
   | "toggleRightSidebar"
   | "openInFinder"
@@ -175,6 +176,7 @@ export type KeybindingAction =
   | "addSplitTerminal"
 
 export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
+  submitChatMessage: ["enter"],
   toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
   toggleRightSidebar: ["cmd+b", "ctrl+b"],
   openInFinder: ["cmd+alt+f", "ctrl+alt+f"],

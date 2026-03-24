@@ -350,6 +350,7 @@ export function ChatPage() {
             chatId={state.activeChatId}
             activeProvider={state.runtime?.provider ?? null}
             availableProviders={state.availableProviders}
+            keybindings={resolvedKeybindings}
           />
         </div>
       </div>

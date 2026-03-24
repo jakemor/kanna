@@ -154,6 +154,7 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
 function createDefaultSnapshot(filePath: string, warning: string | null = null): KeybindingsSnapshot {
   return {
     bindings: {
+      submitChatMessage: [...DEFAULT_KEYBINDINGS.submitChatMessage],
       toggleEmbeddedTerminal: [...DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal],
       toggleRightSidebar: [...DEFAULT_KEYBINDINGS.toggleRightSidebar],
       openInFinder: [...DEFAULT_KEYBINDINGS.openInFinder],

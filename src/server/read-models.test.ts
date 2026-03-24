@@ -7,11 +7,14 @@ describe("read models", () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
+      repoKey: "path:/tmp/project",
       localPath: "/tmp/project",
+      worktreePaths: ["/tmp/project"],
       title: "Project",
       createdAt: 1,
       updatedAt: 1,
     })
+    state.projectIdsByRepoKey.set("path:/tmp/project", "project-1")
     state.projectIdsByPath.set("/tmp/project", "project-1")
     state.chatsById.set("chat-1", {
       id: "chat-1",
@@ -27,17 +30,21 @@ describe("read models", () => {
 
     const sidebar = deriveSidebarData(state, new Map())
     expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("codex")
+    expect(sidebar.projectGroups[0]?.title).toBe("Project")
   })
 
   test("includes available providers in chat snapshots", () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
+      repoKey: "path:/tmp/project",
       localPath: "/tmp/project",
+      worktreePaths: ["/tmp/project"],
       title: "Project",
       createdAt: 1,
       updatedAt: 1,
     })
+    state.projectIdsByRepoKey.set("path:/tmp/project", "project-1")
     state.projectIdsByPath.set("/tmp/project", "project-1")
     state.chatsById.set("chat-1", {
       id: "chat-1",
@@ -81,11 +88,14 @@ describe("read models", () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
+      repoKey: "path:/tmp/project",
       localPath: "/tmp/project",
+      worktreePaths: ["/tmp/project"],
       title: "Saved Project",
       createdAt: 1,
       updatedAt: 50,
     })
+    state.projectIdsByRepoKey.set("path:/tmp/project", "project-1")
     state.projectIdsByPath.set("/tmp/project", "project-1")
     state.chatsById.set("chat-1", {
       id: "chat-1",
@@ -102,7 +112,9 @@ describe("read models", () => {
 
     const snapshot = deriveLocalProjectsSnapshot(state, [
       {
+        repoKey: "path:/tmp/project",
         localPath: "/tmp/project",
+        worktreePaths: ["/tmp/project"],
         title: "Discovered Project",
         modifiedAt: 10,
       },
@@ -117,5 +129,8 @@ describe("read models", () => {
         chatCount: 1,
       },
     ])
+    expect(snapshot.suggestedFolders.length).toBeGreaterThan(0)
+    expect(snapshot.suggestedFolders.every((folder) => typeof folder.label === "string" && folder.label.length > 0)).toBe(true)
   })
+
 })

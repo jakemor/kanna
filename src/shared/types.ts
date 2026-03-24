@@ -1,4 +1,4 @@
-export const STORE_VERSION = 2 as const
+export const STORE_VERSION = 3 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex"
@@ -123,7 +123,9 @@ export type KannaStatus =
 
 export interface ProjectSummary {
   id: string
+  repoKey: string
   localPath: string
+  worktreePaths: string[]
   title: string
   createdAt: number
   updatedAt: number
@@ -143,6 +145,7 @@ export interface SidebarChatRow {
 
 export interface SidebarProjectGroup {
   groupKey: string
+  title: string
   localPath: string
   chats: SidebarChatRow[]
 }
@@ -159,12 +162,31 @@ export interface LocalProjectSummary {
   chatCount: number
 }
 
+export interface DirectoryBrowserEntry {
+  name: string
+  localPath: string
+}
+
+export interface DirectoryBrowserSnapshot {
+  currentPath: string
+  parentPath: string | null
+  roots: DirectoryBrowserEntry[]
+  entries: DirectoryBrowserEntry[]
+}
+
+export interface SuggestedProjectFolder {
+  label: string
+  localPath: string
+}
+
 export interface LocalProjectsSnapshot {
   machine: {
     id: "local"
     displayName: string
   }
   projects: LocalProjectSummary[]
+  suggestedFolders: SuggestedProjectFolder[]
+  rootDirectory: DirectoryBrowserSnapshot | null
 }
 
 export type UpdateStatus =

@@ -14,6 +14,7 @@ function createSidebarData(): SidebarData {
     projectGroups: [
       {
         groupKey: "project-1",
+        title: "project-1",
         localPath: "/tmp/project-1",
         chats: [
           {
@@ -53,6 +54,7 @@ function createSidebarData(): SidebarData {
       },
       {
         groupKey: "project-2",
+        title: "project-2",
         localPath: "/tmp/project-2",
         chats: [
           {

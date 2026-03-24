@@ -67,7 +67,7 @@ function SortableProjectGroup({
   isConnected,
   startingLocalPath,
 }: SortableProjectGroupProps) {
-  const { groupKey, localPath, chats: pathChats } = group
+  const { groupKey, title, localPath, chats: pathChats } = group
   const isExpanded = expandedGroups.has(groupKey)
   const displayChats = isExpanded ? pathChats : pathChats.slice(0, chatsPerProject)
   const hasMore = pathChats.length > chatsPerProject
@@ -112,7 +112,7 @@ function SortableProjectGroup({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="truncate max-w-[150px] whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">
-              {getPathBasename(localPath)}
+              {title || getPathBasename(localPath)}
             </span>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={4}>

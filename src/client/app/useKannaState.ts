@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type DirectoryBrowserSnapshot, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -169,6 +169,7 @@ export interface KannaState {
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
   handleHideLocalProject: (localPath: string) => Promise<void>
+  handleListDirectories: (localPath?: string) => Promise<DirectoryBrowserSnapshot>
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
@@ -499,6 +500,31 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_request", project })
   }
 
+  async function handleListDirectories(localPath?: string) {
+    const url = new URL("/api/directories", window.location.origin)
+    if (localPath) {
+      url.searchParams.set("path", localPath)
+    }
+
+    const response = await fetch(url.toString())
+    if (!response.ok) {
+      let message = "Failed to load directories"
+      try {
+        const payload = await response.json() as { error?: string }
+        if (payload.error) {
+          message = payload.error
+        }
+      } catch {
+        // Ignore invalid JSON and keep the fallback message.
+      }
+      throw new Error(message)
+    }
+
+    const result = await response.json() as DirectoryBrowserSnapshot
+    setCommandError(null)
+    return result
+  }
+
   async function handleCheckForUpdates(options?: { force?: boolean }) {
     try {
       await socket.command<UpdateSnapshot>({ type: "update.check", force: options?.force })
@@ -779,6 +805,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCreateChat,
     handleOpenLocalProject,
     handleHideLocalProject,
+    handleListDirectories,
     handleCreateProject,
     handleCheckForUpdates,
     handleInstallUpdate,

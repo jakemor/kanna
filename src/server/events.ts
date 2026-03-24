@@ -20,48 +20,57 @@ export interface ChatRecord {
 
 export interface StoreState {
   projectsById: Map<string, ProjectRecord>
+  projectIdsByRepoKey: Map<string, string>
   projectIdsByPath: Map<string, string>
   chatsById: Map<string, ChatRecord>
   messagesByChatId: Map<string, TranscriptEntry[]>
-  hiddenProjectPaths: Set<string>
+  hiddenProjectKeys: Set<string>
 }
 
 export interface SnapshotFile {
-  v: 2
+  v: 3
   generatedAt: number
   projects: ProjectRecord[]
   chats: ChatRecord[]
   messages: Array<{ chatId: string; entries: TranscriptEntry[] }>
-  hiddenProjectPaths?: string[]
+  hiddenProjectKeys?: string[]
 }
 
 export type ProjectEvent = {
-  v: 2
+  v: 3
   type: "project_opened"
   timestamp: number
   projectId: string
+  repoKey: string
   localPath: string
+  worktreePaths: string[]
   title: string
 } | {
-  v: 2
+  v: 3
+  type: "project_worktree_added"
+  timestamp: number
+  projectId: string
+  localPath: string
+} | {
+  v: 3
   type: "project_removed"
   timestamp: number
   projectId: string
 } | {
-  v: 2
+  v: 3
   type: "project_hidden"
   timestamp: number
-  localPath: string
+  repoKey: string
 } | {
-  v: 2
+  v: 3
   type: "project_unhidden"
   timestamp: number
-  localPath: string
+  repoKey: string
 }
 
 export type ChatEvent =
   | {
-      v: 2
+      v: 3
       type: "chat_created"
       timestamp: number
       chatId: string
@@ -69,27 +78,27 @@ export type ChatEvent =
       title: string
     }
   | {
-      v: 2
+      v: 3
       type: "chat_renamed"
       timestamp: number
       chatId: string
       title: string
     }
   | {
-      v: 2
+      v: 3
       type: "chat_deleted"
       timestamp: number
       chatId: string
     }
   | {
-      v: 2
+      v: 3
       type: "chat_provider_set"
       timestamp: number
       chatId: string
       provider: AgentProvider
     }
   | {
-      v: 2
+      v: 3
       type: "chat_plan_mode_set"
       timestamp: number
       chatId: string
@@ -97,7 +106,7 @@ export type ChatEvent =
     }
 
 export type MessageEvent = {
-  v: 2
+  v: 3
   type: "message_appended"
   timestamp: number
   chatId: string
@@ -106,32 +115,32 @@ export type MessageEvent = {
 
 export type TurnEvent =
   | {
-      v: 2
+      v: 3
       type: "turn_started"
       timestamp: number
       chatId: string
     }
   | {
-      v: 2
+      v: 3
       type: "turn_finished"
       timestamp: number
       chatId: string
     }
   | {
-      v: 2
+      v: 3
       type: "turn_failed"
       timestamp: number
       chatId: string
       error: string
     }
   | {
-      v: 2
+      v: 3
       type: "turn_cancelled"
       timestamp: number
       chatId: string
     }
   | {
-      v: 2
+      v: 3
       type: "session_token_set"
       timestamp: number
       chatId: string
@@ -143,10 +152,11 @@ export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | TurnEvent
 export function createEmptyState(): StoreState {
   return {
     projectsById: new Map(),
+    projectIdsByRepoKey: new Map(),
     projectIdsByPath: new Map(),
     chatsById: new Map(),
     messagesByChatId: new Map(),
-    hiddenProjectPaths: new Set(),
+    hiddenProjectKeys: new Set(),
   }
 }
 

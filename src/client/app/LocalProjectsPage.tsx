@@ -15,6 +15,7 @@ export function LocalProjectsPage() {
         commandError={state.commandError}
         onOpenProject={state.handleOpenLocalProject}
         onHideProject={state.handleHideLocalProject}
+        onListDirectories={state.handleListDirectories}
         onCreateProject={state.handleCreateProject}
       />
     </div>

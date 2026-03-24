@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import type { KeybindingsSnapshot, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
@@ -226,6 +226,7 @@ describe("ws-router", () => {
       },
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
+      updateManager: null,
     })
     const ws = new FakeWebSocket()
 
@@ -381,6 +382,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -488,7 +490,13 @@ describe("ws-router", () => {
     const store = {
       state: createEmptyState(),
       unhideProject: async () => {},
-      openProject: async () => ({ id: "project-1", localPath: "/tmp/project-1", title: "project-1" }),
+      openProject: async () => ({
+        id: "project-1",
+        repoKey: "path:/tmp/project-1",
+        localPath: "/tmp/project-1",
+        worktreePaths: ["/tmp/project-1"],
+        title: "project-1",
+      }),
       isProjectHidden: () => false,
       listChatsByProject: () => [...chatState.values()].sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt)),
       createChat: async (projectId: string) => {
@@ -540,9 +548,12 @@ describe("ws-router", () => {
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
+      updateManager: null,
     })
     const ws = new FakeWebSocket()
     const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "project-1")
+    mkdirSync(projectDir, { recursive: true })
     const originalHome = process.env.HOME
     process.env.HOME = homeDir
 
@@ -553,7 +564,7 @@ describe("ws-router", () => {
           v: 1,
           type: "command",
           id: "project-open-1",
-          command: { type: "project.open", localPath: "/tmp/project-1" },
+          command: { type: "project.open", localPath: projectDir },
         })
       )
 
@@ -572,6 +583,122 @@ describe("ws-router", () => {
           projectId: "project-1",
           chatId: "chat-existing",
           importedChats: 0,
+        },
+      },
+    ])
+  })
+
+  test("project.open rejects missing directories instead of creating them", async () => {
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    const homeDir = makeTempDir()
+    const missingProjectDir = path.join(homeDir, "missing-project")
+    const originalHome = process.env.HOME
+    process.env.HOME = homeDir
+
+    try {
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "project-open-missing",
+          command: { type: "project.open", localPath: missingProjectDir },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } finally {
+      process.env.HOME = originalHome
+      cleanupTempDirs()
+    }
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "error",
+        id: "project-open-missing",
+        message: `Project folder not found: ${missingProjectDir}`,
+      },
+    ])
+  })
+
+  test("system.listDirectory returns browsable host directories", async () => {
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    const homeDir = makeTempDir()
+    const childDir = path.join(homeDir, "alpha")
+    mkdirSync(childDir, { recursive: true })
+
+    try {
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "list-directory-1",
+          command: { type: "system.listDirectory", localPath: homeDir },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } finally {
+      cleanupTempDirs()
+    }
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "list-directory-1",
+        result: {
+          currentPath: homeDir,
+          parentPath: path.dirname(homeDir) === homeDir ? null : path.dirname(homeDir),
+          roots: [
+            { name: "Home", localPath: homedir() },
+            { name: "/", localPath: "/" },
+          ],
+          entries: [
+            { name: "alpha", localPath: childDir },
+          ],
         },
       },
     ])

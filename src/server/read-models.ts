@@ -1,16 +1,21 @@
+import path from "node:path"
+import { existsSync, readdirSync, statSync } from "node:fs"
+import { homedir } from "node:os"
 import type {
   ChatRuntime,
   ChatSnapshot,
   ChatUsageSnapshot,
+  DirectoryBrowserSnapshot,
   KannaStatus,
   LocalProjectsSnapshot,
+  SuggestedProjectFolder,
   SidebarChatRow,
   SidebarData,
   SidebarProjectGroup,
 } from "../shared/types"
 import type { ChatRecord, StoreState } from "./events"
 import { cloneTranscriptEntries } from "./events"
-import { resolveLocalPath } from "./paths"
+import { getDefaultDirectoryRoot, resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
 export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): KannaStatus {
@@ -45,6 +50,7 @@ export function deriveSidebarData(
 
     return {
       groupKey: project.id,
+      title: project.title,
       localPath: project.localPath,
       chats,
     }
@@ -55,14 +61,14 @@ export function deriveSidebarData(
 
 export function deriveLocalProjectsSnapshot(
   state: StoreState,
-  discoveredProjects: Array<{ localPath: string; title: string; modifiedAt: number }>,
+  discoveredProjects: Array<{ repoKey: string; localPath: string; worktreePaths?: string[]; title: string; modifiedAt: number }>,
   machineName: string
 ): LocalProjectsSnapshot {
   const projects = new Map<string, LocalProjectsSnapshot["projects"][number]>()
 
   for (const project of discoveredProjects) {
     const normalizedPath = resolveLocalPath(project.localPath)
-    projects.set(normalizedPath, {
+    projects.set(project.repoKey, {
       localPath: normalizedPath,
       title: project.title,
       source: "discovered",
@@ -78,7 +84,7 @@ export function deriveLocalProjectsSnapshot(
       project.updatedAt
     )
 
-    projects.set(project.localPath, {
+    projects.set(project.repoKey, {
       localPath: project.localPath,
       title: project.title,
       source: "saved",
@@ -87,13 +93,86 @@ export function deriveLocalProjectsSnapshot(
     })
   }
 
+  const suggestedFolders = deriveSuggestedProjectFolders(state, discoveredProjects)
+  const rootDirectory = deriveRootDirectorySnapshot()
+
   return {
     machine: {
       id: "local",
       displayName: machineName,
     },
     projects: [...projects.values()].sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0)),
+    suggestedFolders,
+    rootDirectory,
   }
+}
+
+function deriveRootDirectorySnapshot(): DirectoryBrowserSnapshot | null {
+  const currentPath = getDefaultDirectoryRoot()
+
+  try {
+    const entries = readdirSync(currentPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({
+        name: entry.name,
+        localPath: path.join(currentPath, entry.name),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+
+    return {
+      currentPath,
+      parentPath: path.dirname(currentPath) === currentPath ? null : path.dirname(currentPath),
+      roots: [{ name: currentPath, localPath: currentPath }],
+      entries,
+    }
+  } catch {
+    return null
+  }
+}
+
+function deriveSuggestedProjectFolders(
+  state: StoreState,
+  discoveredProjects: Array<{ localPath: string }>
+): SuggestedProjectFolder[] {
+  const candidates = new Map<string, string>()
+  const home = homedir()
+
+  const addCandidate = (label: string, candidatePath: string | null | undefined) => {
+    if (!candidatePath) return
+    const resolvedPath = resolveLocalPath(candidatePath)
+    if (candidates.has(resolvedPath)) return
+    if (!existsSync(resolvedPath)) return
+    try {
+      if (!statSync(resolvedPath).isDirectory()) return
+    } catch {
+      return
+    }
+    candidates.set(resolvedPath, label)
+  }
+
+  addCandidate("Home", home)
+  addCandidate("Documents", path.join(home, "Documents"))
+  addCandidate("Projects", path.join(home, "projects"))
+  addCandidate("Projects", path.join(home, "Projects"))
+  addCandidate("Downloads", path.join(home, "Downloads"))
+  addCandidate("Desktop", path.join(home, "Desktop"))
+  addCandidate("Current Project", process.cwd())
+  addCandidate("Current Project Parent", path.dirname(process.cwd()))
+
+  for (const project of discoveredProjects) {
+    addCandidate(`Nearby: ${path.basename(project.localPath) || project.localPath}`, project.localPath)
+    addCandidate(`Parent: ${path.basename(path.dirname(project.localPath)) || path.dirname(project.localPath)}`, path.dirname(project.localPath))
+  }
+
+  for (const project of state.projectsById.values()) {
+    if (project.deletedAt) continue
+    addCandidate(`Saved: ${project.title}`, project.localPath)
+    addCandidate(`Parent: ${path.basename(path.dirname(project.localPath)) || path.dirname(project.localPath)}`, path.dirname(project.localPath))
+  }
+
+  return [...candidates.entries()]
+    .map(([localPath, label]) => ({ localPath, label }))
+    .slice(0, 12)
 }
 
 export function deriveChatSnapshot(

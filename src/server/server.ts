@@ -7,9 +7,11 @@ import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { GitManager } from "./git-manager"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
+import { listProjectDirectories } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
+import { importProjectHistory } from "./recovery"
 import { createWsRouter, type ClientState } from "./ws-router"
 
 export interface StartKannaServerOptions {
@@ -30,10 +32,19 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const store = new EventStore()
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
+  for (const project of store.listProjects()) {
+    await importProjectHistory({
+      store,
+      projectId: project.id,
+      repoKey: project.repoKey,
+      localPath: project.localPath,
+      worktreePaths: project.worktreePaths,
+    })
+  }
   let discoveredProjects: DiscoveredProject[] = []
 
   async function refreshDiscovery() {
-    discoveredProjects = discoverProjects().filter((project) => !store.isProjectHidden(project.localPath))
+    discoveredProjects = discoverProjects().filter((project) => !store.isProjectHidden(project.repoKey))
     return discoveredProjects
   }
 
@@ -98,6 +109,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return Response.json({ ok: true, port: actualPort })
           }
 
+          if (url.pathname === "/api/directories") {
+            return serveDirectories(url)
+          }
+
           if (url.pathname.startsWith(`${ATTACHMENTS_ROUTE_PREFIX}/`)) {
             return serveAttachment(path.join(store.dataDir, "attachments"), url.pathname)
           }
@@ -160,6 +175,17 @@ async function serveAttachment(attachmentsDir: string, pathname: string) {
   }
 
   return new Response(file)
+}
+
+async function serveDirectories(url: URL) {
+  try {
+    const localPath = url.searchParams.get("path") ?? undefined
+    const snapshot = await listProjectDirectories(localPath)
+    return Response.json(snapshot)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return Response.json({ error: message }, { status: 400 })
+  }
 }
 
 async function serveStatic(distDir: string, pathname: string) {

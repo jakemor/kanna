@@ -1,4 +1,5 @@
 import type {
+  DirectoryBrowserSnapshot,
   AgentProvider,
   ChatUserMessage,
   ChatSnapshot,
@@ -47,6 +48,7 @@ export type ClientCommand =
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.remove"; projectId: string }
   | { type: "project.hide"; localPath: string }
+  | { type: "system.listDirectory"; localPath?: string }
   | { type: "system.ping" }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
@@ -116,6 +118,8 @@ export interface GitSwitchBranchResult {
 export interface GitCreateBranchResult {
   currentBranch: string
 }
+
+export interface DirectoryListResult extends DirectoryBrowserSnapshot {}
 
 export function isClientEnvelope(value: unknown): value is ClientEnvelope {
   if (!value || typeof value !== "object") return false

@@ -13,8 +13,9 @@ interface RecoveryStore {
     lastMessageAt?: number
     updatedAt: number
   }>
-  isProjectHidden(localPath: string): boolean
+  isProjectHidden(repoKey: string): boolean
   createChat(projectId: string): Promise<{ id: string }>
+  deleteChat(chatId: string): Promise<void>
   renameChat(chatId: string, title: string): Promise<void>
   setChatProvider(chatId: string, provider: AgentProvider): Promise<void>
   setSessionToken(chatId: string, sessionToken: string | null): Promise<void>
@@ -163,10 +164,25 @@ function firstLine(value: string, fallback: string) {
   return line.length > 80 ? `${line.slice(0, 77)}...` : line
 }
 
-function readClaudeProjectChats(homeDir: string, localPath: string): RecoveryChat[] {
+function isInternalTitleGenerationPrompt(value: string | null) {
+  return Boolean(
+    value?.startsWith("Generate a short, descriptive title (under 30 chars) for a conversation that starts with this message.")
+  )
+}
+
+function markSkippedSession(
+  skippedSessionKeys: Set<string>,
+  provider: AgentProvider,
+  sessionToken: string | null
+) {
+  if (sessionToken) {
+    skippedSessionKeys.add(`${provider}:${sessionToken}`)
+  }
+}
+
+function readClaudeProjectChats(homeDir: string, trackedWorktreePaths: Set<string>, skippedSessionKeys: Set<string>): RecoveryChat[] {
   const projectsDir = path.join(homeDir, ".claude", "projects")
   const chats: RecoveryChat[] = []
-  const normalizedPath = path.normalize(localPath)
 
   for (const sessionFile of collectFiles(projectsDir, ".jsonl")) {
     const lines = readFileSync(sessionFile, "utf8").split("\n")
@@ -195,12 +211,13 @@ function readClaudeProjectChats(homeDir: string, localPath: string): RecoveryCha
       entries.push(...claudeEntriesFromRecord(record))
     }
 
-    if (!sessionToken || sessionLocalPath !== normalizedPath || entries.length === 0) {
+    if (!sessionToken || !sessionLocalPath || !trackedWorktreePaths.has(sessionLocalPath) || entries.length === 0) {
       continue
     }
 
     const prompt = firstUserPrompt(entries)
-    if (!prompt) {
+    if (!prompt || isInternalTitleGenerationPrompt(prompt)) {
+      markSkippedSession(skippedSessionKeys, "claude", sessionToken)
       continue
     }
 
@@ -329,16 +346,30 @@ function codexEntriesFromRecord(record: Record<string, unknown>, index: number):
   return []
 }
 
-function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat[] {
+function isCodexSubagentSession(payload: Record<string, unknown>) {
+  if (typeof payload.forked_from_id === "string" && payload.forked_from_id.trim()) {
+    return true
+  }
+
+  const source = payload.source
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return false
+  }
+
+  const sourceRecord = source as Record<string, unknown>
+  return Boolean(sourceRecord.subagent)
+}
+
+function readCodexProjectChats(homeDir: string, trackedWorktreePaths: Set<string>, skippedSessionKeys: Set<string>): RecoveryChat[] {
   const sessionsDir = path.join(homeDir, ".codex", "sessions")
   const chats: RecoveryChat[] = []
-  const normalizedPath = path.normalize(localPath)
 
   for (const sessionFile of collectFiles(sessionsDir, ".jsonl")) {
     const lines = readFileSync(sessionFile, "utf8").split("\n")
     const entries: TranscriptEntry[] = []
     let sessionToken: string | null = null
     let sessionLocalPath: string | null = null
+    let isSubagentSession = false
     let modifiedAt = statSync(sessionFile).mtimeMs
 
     lines.forEach((line, index) => {
@@ -350,6 +381,7 @@ function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat
         const payload = record.payload
         if (payload && typeof payload === "object" && !Array.isArray(payload)) {
           const payloadRecord = payload as Record<string, unknown>
+          isSubagentSession = isSubagentSession || isCodexSubagentSession(payloadRecord)
           if (!sessionToken && typeof payloadRecord.id === "string") {
             sessionToken = payloadRecord.id
           }
@@ -367,12 +399,18 @@ function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat
       entries.push(...codexEntriesFromRecord(record, index))
     })
 
-    if (!sessionToken || sessionLocalPath !== normalizedPath || entries.length === 0) {
+    if (isSubagentSession) {
+      markSkippedSession(skippedSessionKeys, "codex", sessionToken)
+      continue
+    }
+
+    if (!sessionToken || !sessionLocalPath || !trackedWorktreePaths.has(sessionLocalPath) || entries.length === 0) {
       continue
     }
 
     const prompt = firstUserPrompt(entries)
-    if (!prompt) {
+    if (!prompt || isInternalTitleGenerationPrompt(prompt)) {
+      markSkippedSession(skippedSessionKeys, "codex", sessionToken)
       continue
     }
 
@@ -389,22 +427,29 @@ function readCodexProjectChats(homeDir: string, localPath: string): RecoveryChat
   return chats
 }
 
-function collectProjectChats(homeDir: string, localPath: string) {
-  return [
-    ...readClaudeProjectChats(homeDir, localPath),
-    ...readCodexProjectChats(homeDir, localPath),
-  ]
+function collectProjectChats(homeDir: string, trackedWorktreePaths: Set<string>) {
+  const skippedSessionKeys = new Set<string>()
+  return {
+    skippedSessionKeys,
+    chats: [
+      ...readClaudeProjectChats(homeDir, trackedWorktreePaths, skippedSessionKeys),
+      ...readCodexProjectChats(homeDir, trackedWorktreePaths, skippedSessionKeys),
+    ],
+  }
 }
 
 export async function importProjectHistory(args: {
   store: RecoveryStore
   projectId: string
+  repoKey: string
   localPath: string
+  worktreePaths: string[]
   homeDir?: string
   log?: (message: string) => void
 }): Promise<ProjectImportResult> {
-  const normalizedPath = path.normalize(args.localPath)
-  if (args.store.isProjectHidden(normalizedPath)) {
+  const normalizedPaths = new Set(args.worktreePaths.map((worktreePath) => path.normalize(worktreePath)))
+  normalizedPaths.add(path.normalize(args.localPath))
+  if (args.store.isProjectHidden(args.repoKey)) {
     return {
       importedChatIds: [],
       importedChats: 0,
@@ -413,14 +458,22 @@ export async function importProjectHistory(args: {
     }
   }
 
-  const chats = collectProjectChats(args.homeDir ?? homedir(), normalizedPath)
+  const { chats, skippedSessionKeys } = collectProjectChats(args.homeDir ?? homedir(), normalizedPaths)
   const existingChats = args.store.listChatsByProject(args.projectId)
+
+  for (const chat of existingChats.filter((candidate) => {
+    if (!candidate.provider || !candidate.sessionToken) return false
+    return skippedSessionKeys.has(`${candidate.provider}:${candidate.sessionToken}`)
+  })) {
+    await args.store.deleteChat(chat.id)
+  }
+
+  const refreshedExistingChats = args.store.listChatsByProject(args.projectId)
   const existingSessionKeys = new Set(
-    existingChats
+    refreshedExistingChats
       .filter((chat) => chat.provider && chat.sessionToken)
       .map((chat) => `${chat.provider}:${chat.sessionToken}`)
   )
-
   const importedChatIds: string[] = []
   let importedMessages = 0
 
@@ -442,7 +495,7 @@ export async function importProjectHistory(args: {
 
   const newestChatId = args.store.listChatsByProject(args.projectId)[0]?.id ?? null
   args.log?.(
-    `[kanna] project import path=${normalizedPath} discovered=${chats.length} imported=${importedChatIds.length} messages=${importedMessages}`
+    `[kanna] project import repo=${args.repoKey} paths=${[...normalizedPaths].join(",")} discovered=${chats.length} imported=${importedChatIds.length} messages=${importedMessages}`
   )
 
   return {

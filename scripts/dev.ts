@@ -60,7 +60,6 @@ function spawnLabeledProcess(label: string, args: string[]) {
   return child
 }
 
-const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(DEV_CLIENT_PORT), "--strictPort"])
 const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(DEV_SERVER_PORT), "--strict-port", ...forwardedArgs], {
   cwd,
   stdio: "inherit",
@@ -71,7 +70,7 @@ server.on("spawn", () => {
   console.log(`${LOG_PREFIX.replace("]", ":server]")} started`)
 })
 
-const children = [client, server]
+const children = [server]
 let shuttingDown = false
 
 function stopChild(child: ChildProcess) {
@@ -105,13 +104,33 @@ function onChildExit(label: string, code: number | null, signal: NodeJS.Signals 
   shutdown(exitCode)
 }
 
-client.on("exit", (code, signal) => {
-  onChildExit("client", code, signal)
-})
-
 server.on("exit", (code, signal) => {
   onChildExit("server", code, signal)
 })
+
+async function waitForServerReady(timeoutMs = 30_000) {
+  const startedAt = Date.now()
+  const healthUrl = `http://127.0.0.1:${DEV_SERVER_PORT}/health`
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (server.exitCode !== null) {
+      throw new Error("Dev server exited before becoming ready")
+    }
+
+    try {
+      const response = await fetch(healthUrl)
+      if (response.ok) {
+        return
+      }
+    } catch {
+      // Keep polling until the server is reachable or times out.
+    }
+
+    await Bun.sleep(150)
+  }
+
+  throw new Error(`Timed out waiting for dev server at ${healthUrl}`)
+}
 
 process.on("SIGINT", () => {
   shutdown(0)
@@ -123,3 +142,15 @@ process.on("SIGTERM", () => {
 
 console.log(`${LOG_PREFIX} dev client: http://localhost:${DEV_CLIENT_PORT}`)
 console.log(`${LOG_PREFIX} dev server: http://localhost:${DEV_SERVER_PORT}`)
+
+try {
+  await waitForServerReady()
+  const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(DEV_CLIENT_PORT), "--strictPort"])
+  children.unshift(client)
+  client.on("exit", (code, signal) => {
+    onChildExit("client", code, signal)
+  })
+} catch (error) {
+  console.error(`${LOG_PREFIX.replace("]", ":dev]")} ${error instanceof Error ? error.message : String(error)}`)
+  shutdown(1)
+}

@@ -41,6 +41,9 @@ export default defineConfig({
       "/attachments": {
         target: `http://${backendTargetHost}:${DEV_SERVER_PORT}`,
       },
+      "/api": {
+        target: `http://${backendTargetHost}:${DEV_SERVER_PORT}`,
+      },
     },
     allowedHosts: getAllowedHosts(),
   },

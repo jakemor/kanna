@@ -34,7 +34,7 @@ class MemoryRecoveryStore {
     lastMessageAt?: number
   }>()
   readonly messages = new Map<string, TranscriptEntry[]>()
-  readonly hiddenProjectPaths = new Set<string>()
+  readonly hiddenProjectKeys = new Set<string>()
   private chatCount = 0
 
   listChatsByProject(projectId: string) {
@@ -43,8 +43,8 @@ class MemoryRecoveryStore {
       .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))
   }
 
-  isProjectHidden(localPath: string) {
-    return this.hiddenProjectPaths.has(localPath)
+  isProjectHidden(repoKey: string) {
+    return this.hiddenProjectKeys.has(repoKey)
   }
 
   async createChat(projectId: string) {
@@ -92,6 +92,11 @@ class MemoryRecoveryStore {
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
     }
+  }
+
+  async deleteChat(chatId: string) {
+    this.chats.delete(chatId)
+    this.messages.delete(chatId)
   }
 }
 
@@ -175,7 +180,9 @@ describe("importProjectHistory", () => {
     const result = await importProjectHistory({
       store,
       projectId: "project-1",
+      repoKey: `path:${projectDir}`,
       localPath: projectDir,
+      worktreePaths: [projectDir],
       homeDir,
     })
 
@@ -222,13 +229,17 @@ describe("importProjectHistory", () => {
     const firstImport = await importProjectHistory({
       store,
       projectId: "project-1",
+      repoKey: `path:${projectDir}`,
       localPath: projectDir,
+      worktreePaths: [projectDir],
       homeDir,
     })
     const secondImport = await importProjectHistory({
       store,
       projectId: "project-1",
+      repoKey: `path:${projectDir}`,
       localPath: projectDir,
+      worktreePaths: [projectDir],
       homeDir,
     })
 
@@ -272,7 +283,9 @@ describe("importProjectHistory", () => {
     const result = await importProjectHistory({
       store,
       projectId: "project-1",
+      repoKey: `path:${projectDir}`,
       localPath: projectDir,
+      worktreePaths: [projectDir],
       homeDir,
     })
 
@@ -282,6 +295,90 @@ describe("importProjectHistory", () => {
       importedMessages: 0,
       newestChatId: null,
     })
+  })
+
+  test("skips Claude title-generation sessions", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(claudeProjectDir, { recursive: true })
+
+    writeFileSync(path.join(claudeProjectDir, "claude-session.jsonl"), [
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-user-1",
+        timestamp: "2026-03-24T06:07:40.619Z",
+        cwd: projectDir,
+        sessionId: "claude-session-1",
+        message: {
+          role: "user",
+          content: "Generate a short, descriptive title (under 30 chars) for a conversation that starts with this message.\n\nActual user prompt",
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        uuid: "claude-assistant-1",
+        timestamp: "2026-03-24T06:07:44.090Z",
+        sessionId: "claude-session-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Short title" }],
+        },
+      }),
+    ].join("\n"))
+
+    const store = new MemoryRecoveryStore()
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      repoKey: `path:${projectDir}`,
+      localPath: projectDir,
+      worktreePaths: [projectDir],
+      homeDir,
+    })
+
+    expect(result.importedChats).toBe(0)
+  })
+
+  test("removes previously imported internal title-generation chats on reopen", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const claudeProjectDir = path.join(homeDir, ".claude", "projects", encodeClaudeProjectPath(projectDir))
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(claudeProjectDir, { recursive: true })
+
+    writeFileSync(path.join(claudeProjectDir, "claude-session.jsonl"), [
+      JSON.stringify({
+        type: "user",
+        uuid: "claude-user-1",
+        timestamp: "2026-03-24T06:07:40.619Z",
+        cwd: projectDir,
+        sessionId: "claude-session-1",
+        message: {
+          role: "user",
+          content: "Generate a short, descriptive title (under 30 chars) for a conversation that starts with this message.\n\nActual user prompt",
+        },
+      }),
+    ].join("\n"))
+
+    const store = new MemoryRecoveryStore()
+    const existing = await store.createChat("project-1")
+    await store.renameChat(existing.id, "Generate a short, descriptive ti...")
+    await store.setChatProvider(existing.id, "claude")
+    await store.setSessionToken(existing.id, "claude-session-1")
+
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      repoKey: `path:${projectDir}`,
+      localPath: projectDir,
+      worktreePaths: [projectDir],
+      homeDir,
+    })
+
+    expect(result.importedChats).toBe(0)
+    expect(store.chats.size).toBe(0)
   })
 
   test("skips import for hidden project paths", async () => {
@@ -301,12 +398,14 @@ describe("importProjectHistory", () => {
     }))
 
     const store = new MemoryRecoveryStore()
-    store.hiddenProjectPaths.add(projectDir)
+    store.hiddenProjectKeys.add(`path:${projectDir}`)
 
     const result = await importProjectHistory({
       store,
       projectId: "project-1",
+      repoKey: `path:${projectDir}`,
       localPath: projectDir,
+      worktreePaths: [projectDir],
       homeDir,
     })
 
@@ -316,5 +415,117 @@ describe("importProjectHistory", () => {
       importedMessages: 0,
       newestChatId: null,
     })
+  })
+
+
+  test("skips imported Codex subagent sessions", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const codexSessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "24")
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(codexSessionsDir, { recursive: true })
+
+    writeFileSync(path.join(codexSessionsDir, "main-session.jsonl"), [
+      JSON.stringify({
+        timestamp: "2026-03-24T10:00:03.410Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-main-session",
+          cwd: projectDir,
+          source: "vscode",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-03-24T10:00:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Main chat",
+        },
+      }),
+    ].join("\n"))
+
+    writeFileSync(path.join(codexSessionsDir, "subagent-session.jsonl"), [
+      JSON.stringify({
+        timestamp: "2026-03-24T10:05:03.410Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-subagent-session",
+          cwd: projectDir,
+          forked_from_id: "codex-main-session",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "codex-main-session",
+                depth: 1,
+              },
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-03-24T10:05:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Main chat",
+        },
+      }),
+    ].join("\n"))
+
+    const store = new MemoryRecoveryStore()
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      repoKey: `path:${projectDir}`,
+      localPath: projectDir,
+      worktreePaths: [projectDir],
+      homeDir,
+    })
+
+    expect(result.importedChats).toBe(1)
+    expect([...store.chats.values()].map((chat) => chat.sessionToken)).toEqual([
+      "codex-main-session",
+    ])
+  })
+
+  test("skips Codex title-generation sessions", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "kanna")
+    const codexSessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "24")
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(codexSessionsDir, { recursive: true })
+
+    writeFileSync(path.join(codexSessionsDir, "title-session.jsonl"), [
+      JSON.stringify({
+        timestamp: "2026-03-24T10:00:03.410Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-title-session",
+          cwd: projectDir,
+          source: "vscode",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-03-24T10:00:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Generate a short, descriptive title (under 30 chars) for a conversation that starts with this message.\n\nActual user prompt",
+        },
+      }),
+    ].join("\n"))
+
+    const store = new MemoryRecoveryStore()
+    const result = await importProjectHistory({
+      store,
+      projectId: "project-1",
+      repoKey: `path:${projectDir}`,
+      localPath: projectDir,
+      worktreePaths: [projectDir],
+      homeDir,
+    })
+
+    expect(result.importedChats).toBe(0)
   })
 })

@@ -43,7 +43,9 @@ describe("project discovery", () => {
     expect(projects).toEqual([
       {
         provider: "claude",
+        repoKey: `path:${projectDir}`,
         localPath: projectDir,
+        worktreePaths: [projectDir],
         title: "alpha-project",
         modifiedAt: new Date("2026-03-16T10:00:00.000Z").getTime(),
       },
@@ -111,7 +113,9 @@ describe("project discovery", () => {
     expect(projects).toEqual([
       {
         provider: "codex",
+        repoKey: `path:${liveProjectDir}`,
         localPath: liveProjectDir,
+        worktreePaths: [liveProjectDir],
         title: "kanna",
         modifiedAt: Date.parse("2026-03-16T23:05:58.940134Z"),
       },
@@ -167,7 +171,9 @@ describe("project discovery", () => {
           return [
             {
               provider: "claude",
+              repoKey: "path:/tmp/project",
               localPath: "/tmp/project",
+              worktreePaths: ["/tmp/project"],
               title: "Claude Project",
               modifiedAt: 10,
             },
@@ -180,13 +186,17 @@ describe("project discovery", () => {
           return [
             {
               provider: "codex",
+              repoKey: "path:/tmp/project",
               localPath: "/tmp/project",
+              worktreePaths: ["/tmp/project"],
               title: "Codex Project",
               modifiedAt: 20,
             },
             {
               provider: "codex",
+              repoKey: "path:/tmp/other-project",
               localPath: "/tmp/other-project",
+              worktreePaths: ["/tmp/other-project"],
               title: "Other Project",
               modifiedAt: 15,
             },
@@ -197,14 +207,56 @@ describe("project discovery", () => {
 
     expect(discoverProjects("/unused-home", adapters)).toEqual([
       {
+        repoKey: "path:/tmp/project",
         localPath: "/tmp/project",
+        worktreePaths: ["/tmp/project"],
         title: "Codex Project",
         modifiedAt: 20,
       },
       {
+        repoKey: "path:/tmp/other-project",
         localPath: "/tmp/other-project",
+        worktreePaths: ["/tmp/other-project"],
         title: "Other Project",
         modifiedAt: 15,
+      },
+    ])
+  })
+
+  test("discoverProjects merges sibling worktrees under one repo key", () => {
+    const adapters: ProjectDiscoveryAdapter[] = [
+      {
+        provider: "codex",
+        scan() {
+          return [
+            {
+              provider: "codex",
+              repoKey: "git:/tmp/kanna/.git",
+              localPath: "/tmp/kanna-feature",
+              worktreePaths: ["/tmp/kanna-feature"],
+              title: "kanna",
+              modifiedAt: 20,
+            },
+            {
+              provider: "codex",
+              repoKey: "git:/tmp/kanna/.git",
+              localPath: "/tmp/kanna",
+              worktreePaths: ["/tmp/kanna"],
+              title: "kanna",
+              modifiedAt: 10,
+            },
+          ]
+        },
+      },
+    ]
+
+    expect(discoverProjects("/unused-home", adapters)).toEqual([
+      {
+        repoKey: "git:/tmp/kanna/.git",
+        localPath: "/tmp/kanna-feature",
+        worktreePaths: ["/tmp/kanna-feature", "/tmp/kanna"],
+        title: "kanna",
+        modifiedAt: 20,
       },
     ])
   })

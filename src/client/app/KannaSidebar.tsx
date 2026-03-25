@@ -138,6 +138,9 @@ export function KannaSidebar({
     draggable?: boolean
     onDragStart?: (chat: SidebarChatRow) => void
     onDragEnd?: () => void
+    isTouchDevice?: boolean
+    onTouchDragMove?: (x: number, y: number, el: Element | null) => void
+    onTouchDragEnd?: (x: number, y: number, el: Element | null) => void
   }) => (
     <ChatRow
       key={chat._id}
@@ -149,6 +152,9 @@ export function KannaSidebar({
       draggable={options?.draggable}
       onDragStart={options?.onDragStart}
       onDragEnd={options?.onDragEnd}
+      isTouchDevice={options?.isTouchDevice}
+      onTouchDragMove={options?.onTouchDragMove}
+      onTouchDragEnd={options?.onTouchDragEnd}
     />
   ), [activeChatId, handleSelectChat, nowMs, onDeleteChat])
 
@@ -293,6 +299,7 @@ export function KannaSidebar({
 
         <div
           ref={scrollContainerRef}
+          data-sidebar-scroll
           className="flex-1 min-h-0 overflow-y-auto scrollbar-hide"
           style={{ WebkitOverflowScrolling: "touch" }}
         >

@@ -683,6 +683,7 @@ export interface ChatRuntime {
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
+  pendingTool?: ChatPendingToolSnapshot | null
 }
 
 export type ChatUsageWarning =
@@ -724,4 +725,8 @@ export interface KannaSnapshot {
 export interface PendingToolSnapshot {
   toolUseId: string
   toolKind: "ask_user_question" | "exit_plan_mode"
+}
+
+export interface ChatPendingToolSnapshot extends PendingToolSnapshot {
+  source?: "active" | "recovered"
 }

@@ -138,7 +138,13 @@ export function createWsRouter({
             mergeUsageSnapshots(reconstructed, agent.getLiveUsage(topic.chatId)),
             messages
           )
-          return deriveChatSnapshot(store.state, agent.getActiveStatuses(), topic.chatId, usage)
+          return deriveChatSnapshot(
+            store.state,
+            agent.getActiveStatuses(),
+            topic.chatId,
+            agent.getChatPendingTool(topic.chatId),
+            usage
+          )
         })(),
       },
     }

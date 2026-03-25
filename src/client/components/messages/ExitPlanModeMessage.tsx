@@ -11,9 +11,10 @@ interface Props {
   message: Extract<ProcessedToolCall, { toolKind: "exit_plan_mode" }>
   onConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
   isLatest: boolean
+  isActionable?: boolean
 }
 
-export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
+export function ExitPlanModeMessage({ message, onConfirm, isLatest, isActionable = isLatest }: Props) {
   const isComplete = !!message.result
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -101,6 +102,10 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
       ) : !isLatest ? (
         <div className="flex justify-end mx-2">
           <span className="inline text-sm text-muted-foreground italic">Plan pending (newer prompt active)</span>
+        </div>
+      ) : !isActionable ? (
+        <div className="flex justify-end mx-2">
+          <span className="inline text-sm text-muted-foreground italic">Plan pending</span>
         </div>
       ) : (
         <div className="flex flex-col gap-3">

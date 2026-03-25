@@ -58,7 +58,7 @@ describe("read models", () => {
       lastTurnOutcome: null,
     })
 
-    const chat = deriveChatSnapshot(state, new Map(), "chat-1", {
+    const chat = deriveChatSnapshot(state, new Map(), "chat-1", null, {
       provider: "claude",
       threadTokens: 2000,
       contextWindowTokens: 10000,

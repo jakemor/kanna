@@ -311,6 +311,7 @@ export function ChatPage() {
                   isLoading={state.isProcessing}
                   localPath={state.runtime?.localPath}
                   latestToolIds={state.latestToolIds}
+                  pendingTool={state.runtime?.pendingTool ?? null}
                   onOpenLocalLink={state.handleOpenLocalLink}
                   onAskUserQuestionSubmit={state.handleAskUserQuestion}
                   onExitPlanModeConfirm={state.handleExitPlanMode}

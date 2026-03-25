@@ -658,6 +658,196 @@ describe("AgentCoordinator codex integration", () => {
     expect(discardedResult.content).toEqual({ discarded: true })
     expect(startTurnCalls).toEqual(["plan this"])
   })
+
+  test("shutdown preserves a waiting Gemini exit-plan prompt for restart recovery", async () => {
+    let releaseInterrupt!: () => void
+    const interrupted = new Promise<void>((resolve) => {
+      releaseInterrupt = resolve
+    })
+
+    const fakeGeminiManager = {
+      async startTurn(args: {
+        onToolRequest: (request: any) => Promise<unknown>
+      }): Promise<HarnessTurn> {
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "gemini",
+              model: "auto-gemini-2.5",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "tool_call",
+              tool: {
+                kind: "tool",
+                toolKind: "exit_plan_mode",
+                toolName: "ExitPlanMode",
+                toolId: "exit-1",
+                input: {
+                  plan: "## Plan",
+                },
+              },
+            }),
+          }
+          await args.onToolRequest({
+            tool: {
+              kind: "tool",
+              toolKind: "exit_plan_mode",
+              toolName: "ExitPlanMode",
+              toolId: "exit-1",
+              input: {
+                plan: "## Plan",
+              },
+            },
+          })
+          await interrupted
+        }
+
+        return {
+          provider: "gemini",
+          stream: stream(),
+          interrupt: async () => {
+            releaseInterrupt()
+          },
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
+      geminiManager: fakeGeminiManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "gemini",
+      message: { text: "plan this" },
+      planMode: true,
+    })
+
+    await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "exit_plan_mode")
+    await coordinator.shutdown("chat-1")
+
+    expect(coordinator.getPendingTool("chat-1")).toEqual({
+      toolUseId: "exit-1",
+      toolKind: "exit_plan_mode",
+    })
+    expect(store.messages.some((entry) => entry.kind === "tool_result" && entry.toolId === "exit-1")).toBe(false)
+    expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(false)
+  })
+
+  test("approving a recovered Gemini exit-plan prompt starts a follow-up turn", async () => {
+    const startTurnCalls: Array<{ content: string; planMode: boolean }> = []
+
+    const fakeGeminiManager = {
+      async startTurn(args: {
+        content: string
+        planMode: boolean
+      }): Promise<HarnessTurn> {
+        startTurnCalls.push({ content: args.content, planMode: args.planMode })
+
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "gemini",
+              model: "auto-gemini-2.5",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "session_token" as const,
+            sessionToken: "gemini-thread-2",
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "gemini",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    store.chat.provider = "gemini"
+    store.chat.planMode = true
+    store.chat.sessionToken = "gemini-thread-1"
+    store.messages.push(timestamped({
+      kind: "tool_call",
+      tool: {
+        kind: "tool",
+        toolKind: "exit_plan_mode",
+        toolName: "ExitPlanMode",
+        toolId: "exit-1",
+        input: {
+          plan: "## Saved plan",
+        },
+      },
+    }))
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
+      geminiManager: fakeGeminiManager as never,
+    })
+
+    expect(coordinator.getChatPendingTool("chat-1")).toEqual({
+      toolUseId: "exit-1",
+      toolKind: "exit_plan_mode",
+      source: "recovered",
+    })
+
+    await coordinator.respondTool({
+      type: "chat.respondTool",
+      chatId: "chat-1",
+      toolUseId: "exit-1",
+      result: {
+        confirmed: true,
+        message: "Use the fast path",
+      },
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(startTurnCalls).toEqual([
+      {
+        content: "Proceed with the approved plan. Additional guidance: Use the fast path",
+        planMode: false,
+      },
+    ])
+    expect(store.messages.some((entry) => entry.kind === "tool_result" && entry.toolId === "exit-1")).toBe(true)
+    expect(store.chat.sessionToken).toBe("gemini-thread-2")
+  })
 })
 
 function createFakeStore() {
@@ -665,7 +855,7 @@ function createFakeStore() {
     id: "chat-1",
     projectId: "project-1",
     title: "New Chat",
-    provider: null as "claude" | "codex" | null,
+    provider: null as "claude" | "codex" | "gemini" | null,
     planMode: false,
     sessionToken: null as string | null,
   }
@@ -685,10 +875,17 @@ function createFakeStore() {
       expect(projectId).toBe("project-1")
       return project
     },
+    getChat(chatId: string) {
+      expect(chatId).toBe("chat-1")
+      return chat
+    },
     getMessages() {
       return this.messages
     },
-    async setChatProvider(_chatId: string, provider: "claude" | "codex") {
+    state: {
+      chatsById: new Map([["chat-1", chat]]),
+    },
+    async setChatProvider(_chatId: string, provider: "claude" | "codex" | "gemini") {
       chat.provider = provider
     },
     async setPlanMode(_chatId: string, planMode: boolean) {

@@ -1,6 +1,6 @@
 import React, { useMemo } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
-import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
+import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage, PendingToolSnapshot } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage } from "../components/messages/SystemMessage"
@@ -73,6 +73,7 @@ interface KannaTranscriptProps {
     answers: AskUserQuestionAnswerMap
   ) => void
   onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
+  pendingTool: PendingToolSnapshot | null
 }
 
 export function KannaTranscript({
@@ -83,6 +84,7 @@ export function KannaTranscript({
   onOpenLocalLink,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
+  pendingTool,
 }: KannaTranscriptProps) {
   const renderItems = useMemo(() => groupMessages(messages), [messages])
 
@@ -124,6 +126,7 @@ export function KannaTranscript({
               message={message}
               onConfirm={onExitPlanModeConfirm}
               isLatest={message.id === latestToolIds.ExitPlanMode}
+              isActionable={pendingTool?.toolKind === "exit_plan_mode" && pendingTool.toolUseId === message.toolId}
             />
           )
         }

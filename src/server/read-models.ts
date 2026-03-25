@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import type {
   ChatRuntime,
   ChatSnapshot,
+  ChatPendingToolSnapshot,
   ChatUsageSnapshot,
   DirectoryBrowserSnapshot,
   KannaStatus,
@@ -204,6 +205,7 @@ export function deriveChatSnapshot(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>,
   chatId: string,
+  pendingTool: ChatPendingToolSnapshot | null = null,
   usage: ChatUsageSnapshot | null = null
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
@@ -220,6 +222,7 @@ export function deriveChatSnapshot(
     provider: chat.provider,
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,
+    pendingTool,
   }
 
   return {

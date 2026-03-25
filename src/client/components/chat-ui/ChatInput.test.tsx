@@ -37,7 +37,7 @@ describe("getCompactComposerLabels", () => {
     })).toEqual({
       providerText: null,
       codexModeText: "Std",
-      planModeText: "Access",
+      planModeText: "Implement",
     })
   })
 })

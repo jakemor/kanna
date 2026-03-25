@@ -1,7 +1,7 @@
 export const STORE_VERSION = 3 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex"
+export type AgentProvider = "claude" | "codex" | "gemini"
 
 export interface ProviderModelOption {
   id: string
@@ -11,6 +11,11 @@ export interface ProviderModelOption {
 
 export interface ProviderEffortOption {
   id: string
+  label: string
+}
+
+export interface GeminiThinkingOption {
+  id: "off" | "standard" | "high"
   label: string
 }
 
@@ -33,6 +38,14 @@ export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["i
 export type CodexReasoningEffort = (typeof CODEX_REASONING_OPTIONS)[number]["id"]
 export type ServiceTier = "fast"
 
+export const GEMINI_THINKING_OPTIONS = [
+  { id: "off", label: "Off" },
+  { id: "standard", label: "Standard" },
+  { id: "high", label: "High" },
+] as const satisfies readonly GeminiThinkingOption[]
+
+export type GeminiThinkingMode = (typeof GEMINI_THINKING_OPTIONS)[number]["id"]
+
 export interface ClaudeModelOptions {
   reasoningEffort: ClaudeReasoningEffort
 }
@@ -42,9 +55,14 @@ export interface CodexModelOptions {
   fastMode: boolean
 }
 
+export interface GeminiModelOptions {
+  thinkingMode: GeminiThinkingMode
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
+  gemini: GeminiModelOptions
 }
 
 export type ModelOptions = Partial<{
@@ -60,12 +78,20 @@ export const DEFAULT_CODEX_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CodexModelOptions
 
+export const DEFAULT_GEMINI_MODEL_OPTIONS = {
+  thinkingMode: "standard",
+} as const satisfies GeminiModelOptions
+
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
   return CODEX_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function isGeminiThinkingMode(value: unknown): value is GeminiThinkingMode {
+  return GEMINI_THINKING_OPTIONS.some((option) => option.id === value)
 }
 
 export interface ProviderCatalogEntry {
@@ -101,6 +127,23 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       { id: "gpt-5.4", label: "GPT-5.4", supportsEffort: false },
       { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: false },
       { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", supportsEffort: false },
+    ],
+    efforts: [],
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    defaultModel: "auto-gemini-2.5",
+    supportsPlanMode: true,
+    models: [
+      { id: "auto-gemini-3", label: "Auto (Gemini 3)", supportsEffort: false },
+      { id: "auto-gemini-2.5", label: "Auto (Gemini 2.5)", supportsEffort: false },
+      { id: "gemini-3.1-pro-preview", label: "3.1 Pro Preview", supportsEffort: false },
+      { id: "gemini-3-pro-preview", label: "3 Pro Preview", supportsEffort: false },
+      { id: "gemini-3-flash-preview", label: "3 Flash Preview", supportsEffort: false },
+      { id: "gemini-2.5-pro", label: "2.5 Pro", supportsEffort: false },
+      { id: "gemini-2.5-flash", label: "2.5 Flash", supportsEffort: false },
+      { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", supportsEffort: false },
     ],
     efforts: [],
   },
@@ -471,6 +514,11 @@ export interface AssistantTextEntry extends TranscriptEntryBase {
   text: string
 }
 
+export interface AssistantThoughtEntry extends TranscriptEntryBase {
+  kind: "assistant_thought"
+  text: string
+}
+
 export interface ToolCallEntry extends TranscriptEntryBase {
   kind: "tool_call"
   tool: NormalizedToolCall
@@ -512,6 +560,7 @@ export type TranscriptEntry =
   | SystemInitEntry
   | AccountInfoEntry
   | AssistantTextEntry
+  | AssistantThoughtEntry
   | ToolCallEntry
   | ToolResultEntry
   | ResultEntry
@@ -615,6 +664,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "assistant_thought"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "result"; success: boolean; cancelled?: boolean; result: string; durationMs: number; costUsd?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "status"; status: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })

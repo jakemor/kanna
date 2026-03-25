@@ -11,6 +11,11 @@ export type ProcessedTextMessage = Extract<
   { kind: "assistant_text" }
 >
 
+export type ProcessedThoughtMessage = Extract<
+  import("../../../shared/types").HydratedTranscriptMessage,
+  { kind: "assistant_thought" }
+>
+
 export type ProcessedSystemMessage = Extract<
   import("../../../shared/types").HydratedTranscriptMessage,
   { kind: "system_init" }

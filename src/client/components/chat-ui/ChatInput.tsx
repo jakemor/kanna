@@ -6,6 +6,7 @@ import {
   type ChatUserMessage,
   type ClaudeReasoningEffort,
   type CodexReasoningEffort,
+  type GeminiThinkingMode,
   type KeybindingsSnapshot,
   type ModelOptions,
   type ProviderCatalogEntry,
@@ -101,6 +102,24 @@ function createLockedComposerState(
     }
   }
 
+  if (provider === "gemini") {
+    if (composerState.provider === "gemini") {
+      return {
+        provider: "gemini",
+        model: composerState.model,
+        modelOptions: { ...composerState.modelOptions },
+        planMode: composerState.planMode,
+      }
+    }
+
+    return {
+      provider: "gemini",
+      model: providerDefaults.gemini.model,
+      modelOptions: { ...providerDefaults.gemini.modelOptions },
+      planMode: providerDefaults.gemini.planMode,
+    }
+  }
+
   if (composerState.provider === "codex") {
     return {
       provider: "codex",
@@ -138,7 +157,7 @@ export function getCompactComposerLabels({
   return {
     providerText: selectedProvider === "codex" ? null : selectedProvider,
     codexModeText: codexFastMode ? "Fast" : "Std",
-    planModeText: planMode ? "Plan" : "Access",
+    planModeText: planMode ? "Plan" : "Implement",
   }
 }
 
@@ -278,13 +297,16 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
           return {
             ...next,
             modelOptions: { ...next.modelOptions, reasoningEffort: reasoningEffort as ClaudeReasoningEffort },
-          }
+          } as ComposerState
+        }
+        if (next.provider === "gemini") {
+          return next
         }
 
         return {
           ...next,
           modelOptions: { ...next.modelOptions, reasoningEffort: reasoningEffort as CodexReasoningEffort },
-        }
+        } as ComposerState
       })
       return
     }
@@ -295,6 +317,23 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     }
 
     setComposerModelOptions({ reasoningEffort: reasoningEffort as CodexReasoningEffort })
+  }
+
+  function setGeminiThinkingMode(thinkingMode: GeminiThinkingMode) {
+    if (providerLocked) {
+      setLockedComposerState((current) => {
+        const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+        if (next.provider !== "gemini") return next
+        return {
+          ...next,
+          modelOptions: { ...next.modelOptions, thinkingMode },
+        } as ComposerState
+      })
+      return
+    }
+
+    if (selectedProvider !== "gemini") return
+    setComposerModelOptions({ thinkingMode })
   }
 
   function setEffectivePlanMode(planMode: boolean) {
@@ -326,6 +365,8 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "gemini") {
+      modelOptions = { gemini: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -591,7 +632,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
           if (providerLocked) {
             setLockedComposerState((current) => {
               const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              return { ...next, model }
+              return { ...next, model } as ComposerState
             })
             return
           }
@@ -600,15 +641,16 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         }}
         onClaudeReasoningEffortChange={(effort) => setReasoningEffort(effort)}
         onCodexReasoningEffortChange={(effort) => setReasoningEffort(effort)}
+        onGeminiThinkingModeChange={(thinkingMode) => setGeminiThinkingMode(thinkingMode)}
         onCodexFastModeChange={(fastMode) => {
           if (providerLocked) {
             setLockedComposerState((current) => {
               const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              if (next.provider === "claude") return next
+              if (next.provider !== "codex") return next
               return {
                 ...next,
                 modelOptions: { ...next.modelOptions, fastMode },
-              }
+              } as ComposerState
             })
             return
           }

@@ -923,6 +923,7 @@ export function SettingsPage() {
                             setProviderDefaultModelOptions("claude", { reasoningEffort })
                           }}
                           onCodexReasoningEffortChange={() => {}}
+                          onGeminiThinkingModeChange={() => {}}
                           onCodexFastModeChange={() => {}}
                           planMode={providerDefaults.claude.planMode}
                           onPlanModeChange={(planMode) => setProviderDefaultPlanMode("claude", planMode)}
@@ -952,11 +953,42 @@ export function SettingsPage() {
                           onCodexReasoningEffortChange={(reasoningEffort) => {
                             setProviderDefaultModelOptions("codex", { reasoningEffort })
                           }}
+                          onGeminiThinkingModeChange={() => {}}
                           onCodexFastModeChange={(fastMode) => {
                             setProviderDefaultModelOptions("codex", { fastMode })
                           }}
                           planMode={providerDefaults.codex.planMode}
                           onPlanModeChange={(planMode) => setProviderDefaultPlanMode("codex", planMode)}
+                          includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Gemini Defaults"
+                      description="Saved defaults when using Gemini."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="gemini"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.gemini.model}
+                          modelOptions={providerDefaults.gemini.modelOptions}
+                          onModelChange={(_, model) => {
+                            setProviderDefaultModel("gemini", model)
+                          }}
+                          onClaudeReasoningEffortChange={() => {}}
+                          onCodexReasoningEffortChange={() => {}}
+                          onGeminiThinkingModeChange={(thinkingMode) => {
+                            setProviderDefaultModelOptions("gemini", { thinkingMode })
+                          }}
+                          onCodexFastModeChange={() => {}}
+                          planMode={providerDefaults.gemini.planMode}
+                          onPlanModeChange={(planMode) => setProviderDefaultPlanMode("gemini", planMode)}
                           includePlanMode
                           className="justify-start flex-wrap"
                         />

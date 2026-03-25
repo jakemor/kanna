@@ -77,6 +77,7 @@ describe("read models", () => {
     expect(chat?.runtime.provider).toBe("claude")
     expect(chat?.usage?.threadTokens).toBe(2000)
     expect(chat?.availableProviders.length).toBeGreaterThan(1)
+    expect(chat?.availableProviders.find((provider) => provider.id === "gemini")?.supportsPlanMode).toBe(true)
     expect(chat?.availableProviders.find((provider) => provider.id === "codex")?.models.map((model) => model.id)).toEqual([
       "gpt-5.4",
       "gpt-5.3-codex",

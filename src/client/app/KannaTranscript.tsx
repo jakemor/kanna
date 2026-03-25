@@ -6,6 +6,7 @@ import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage } from "../components/messages/SystemMessage"
 import { AccountInfoMessage } from "../components/messages/AccountInfoMessage"
 import { TextMessage } from "../components/messages/TextMessage"
+import { ThoughtMessage } from "../components/messages/ThoughtMessage"
 import { AskUserQuestionMessage } from "../components/messages/AskUserQuestionMessage"
 import { ExitPlanModeMessage } from "../components/messages/ExitPlanModeMessage"
 import { TodoWriteMessage } from "../components/messages/TodoWriteMessage"
@@ -103,6 +104,8 @@ export function KannaTranscript({
       }
       case "assistant_text":
         return <TextMessage key={message.id} message={message} />
+      case "assistant_thought":
+        return <ThoughtMessage key={message.id} message={message} />
       case "tool":
         if (message.toolKind === "ask_user_question") {
           return (

@@ -44,6 +44,11 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { reasoningEffort: "minimal", fastMode: true },
           planMode: false,
         },
+        gemini: {
+          model: "auto-gemini-2.5",
+          modelOptions: { thinkingMode: "standard" },
+          planMode: false,
+        },
       },
       composerState: {
         provider: "claude",
@@ -161,5 +166,28 @@ describe("chat preference store", () => {
       modelOptions: { reasoningEffort: "low", fastMode: false },
       planMode: true,
     })
+  })
+
+  test("keeps Gemini plan mode and thinking mode isolated in composer state", () => {
+    useChatPreferencesStore.setState({
+      ...INITIAL_STATE,
+      composerState: {
+        provider: "gemini",
+        model: "auto-gemini-2.5",
+        modelOptions: { thinkingMode: "standard" },
+        planMode: true,
+      },
+    })
+
+    useChatPreferencesStore.getState().setComposerModel("gemini-2.5-pro")
+    useChatPreferencesStore.getState().setComposerModelOptions({ thinkingMode: "high" })
+
+    expect(useChatPreferencesStore.getState().composerState).toEqual({
+      provider: "gemini",
+      model: "gemini-2.5-pro",
+      modelOptions: { thinkingMode: "high" },
+      planMode: true,
+    })
+    expect(useChatPreferencesStore.getState().providerDefaults).toEqual(INITIAL_STATE.providerDefaults)
   })
 })

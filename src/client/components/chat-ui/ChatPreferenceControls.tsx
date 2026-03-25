@@ -3,11 +3,14 @@ import { Brain, Gauge, ListTodo, LockOpen, Sparkles, Zap } from "lucide-react"
 import {
   CLAUDE_REASONING_OPTIONS,
   CODEX_REASONING_OPTIONS,
+  GEMINI_THINKING_OPTIONS,
   type AgentProvider,
   type ClaudeModelOptions,
   type ClaudeReasoningEffort,
   type CodexModelOptions,
   type CodexReasoningEffort,
+  type GeminiModelOptions,
+  type GeminiThinkingMode,
   type ProviderCatalogEntry,
 } from "../../../shared/types"
 import { cn } from "../../lib/utils"
@@ -43,9 +46,28 @@ function OpenAIIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+function GeminiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <path d="M12 0C12 0 12 8 8 12C4 16 0 12 0 12C0 12 4 12 8 12C12 12 12 16 12 24C12 24 12 16 16 12C20 8 24 12 24 12C24 12 16 12 16 12C12 12 12 4 12 0Z" />
+    </svg>
+  )
+}
+
+function geminiSupportsThinkingOff(model: string) {
+  return !(model.startsWith("gemini-3") || model === "auto-gemini-3")
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
+  gemini: GeminiIcon,
 }
 
 export const MODEL_ICON_BY_ID: Record<string, typeof Sparkles> = {
@@ -55,6 +77,14 @@ export const MODEL_ICON_BY_ID: Record<string, typeof Sparkles> = {
   "gpt-5.4": Brain,
   "gpt-5.3-codex": Sparkles,
   "gpt-5.3-codex-spark": Zap,
+  "gemini-2.5-pro": Brain,
+  "gemini-2.5-flash": Sparkles,
+  "gemini-2.5-flash-lite": Zap,
+  "auto-gemini-3": Brain,
+  "auto-gemini-2.5": Sparkles,
+  "gemini-3.1-pro-preview": Brain,
+  "gemini-3-pro-preview": Brain,
+  "gemini-3-flash-preview": Sparkles,
 }
 
 export function PopoverMenuItem({
@@ -144,11 +174,12 @@ interface ChatPreferenceControlsProps {
   showProviderPicker?: boolean
   providerLocked?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | GeminiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onClaudeReasoningEffortChange: (effort: ClaudeReasoningEffort) => void
   onCodexReasoningEffortChange: (effort: CodexReasoningEffort) => void
+  onGeminiThinkingModeChange: (thinkingMode: GeminiThinkingMode) => void
   onCodexFastModeChange: (fastMode: boolean) => void
   planMode?: boolean
   onPlanModeChange?: (planMode: boolean) => void
@@ -167,6 +198,7 @@ export function ChatPreferenceControls({
   onModelChange,
   onClaudeReasoningEffortChange,
   onCodexReasoningEffortChange,
+  onGeminiThinkingModeChange,
   onCodexFastModeChange,
   planMode = false,
   onPlanModeChange,
@@ -178,6 +210,8 @@ export function ChatPreferenceControls({
   const ModelIcon = MODEL_ICON_BY_ID[model] ?? Sparkles
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
+  const geminiModelOptions = selectedProvider === "gemini" ? modelOptions as GeminiModelOptions : null
+  const hasEffortOptions = selectedProvider === "claude" || selectedProvider === "codex"
 
   return (
     <div className={cn("max-w-full overflow-x-auto", className)}>
@@ -235,47 +269,78 @@ export function ChatPreferenceControls({
           })}
         </InputPopover>
 
-        <InputPopover
-          trigger={(
-            <>
-              <Gauge className="h-3.5 w-3.5" />
-              <span>{
-                selectedProvider === "claude"
-                  ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
-                  : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
-              }</span>
-            </>
-          )}
-        >
-          {(close) => (
-            selectedProvider === "claude"
-              ? CLAUDE_REASONING_OPTIONS.map((effort) => (
-                <PopoverMenuItem
-                  key={effort.id}
-                  onClick={() => {
-                    onClaudeReasoningEffortChange(effort.id)
-                    close()
-                  }}
-                  selected={modelOptions.reasoningEffort === effort.id}
-                  icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                  label={effort.label}
-                  disabled={effort.id === "max" && model !== "opus"}
-                />
-              ))
-              : CODEX_REASONING_OPTIONS.map((effort) => (
-                <PopoverMenuItem
-                  key={effort.id}
-                  onClick={() => {
-                    onCodexReasoningEffortChange(effort.id)
-                    close()
-                  }}
-                  selected={modelOptions.reasoningEffort === effort.id}
-                  icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                  label={effort.label}
-                />
-              ))
-          )}
-        </InputPopover>
+        {hasEffortOptions ? (
+          <InputPopover
+            trigger={(
+              <>
+                <Gauge className="h-3.5 w-3.5" />
+                <span>{
+                  selectedProvider === "claude"
+                    ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === (modelOptions as ClaudeModelOptions).reasoningEffort)?.label ?? (modelOptions as ClaudeModelOptions).reasoningEffort
+                    : CODEX_REASONING_OPTIONS.find((effort) => effort.id === (modelOptions as CodexModelOptions).reasoningEffort)?.label ?? (modelOptions as CodexModelOptions).reasoningEffort
+                }</span>
+              </>
+            )}
+          >
+            {(close) => (
+              selectedProvider === "claude"
+                ? CLAUDE_REASONING_OPTIONS.map((effort) => (
+                  <PopoverMenuItem
+                    key={effort.id}
+                    onClick={() => {
+                      onClaudeReasoningEffortChange(effort.id)
+                      close()
+                    }}
+                    selected={(modelOptions as ClaudeModelOptions).reasoningEffort === effort.id}
+                    icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                    label={effort.label}
+                    disabled={effort.id === "max" && model !== "opus"}
+                  />
+                ))
+                : CODEX_REASONING_OPTIONS.map((effort) => (
+                  <PopoverMenuItem
+                    key={effort.id}
+                    onClick={() => {
+                      onCodexReasoningEffortChange(effort.id)
+                      close()
+                    }}
+                    selected={(modelOptions as CodexModelOptions).reasoningEffort === effort.id}
+                    icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                    label={effort.label}
+                  />
+                ))
+            )}
+          </InputPopover>
+        ) : null}
+
+        {selectedProvider === "gemini" ? (
+          <InputPopover
+            trigger={(
+              <>
+                <Gauge className="h-3.5 w-3.5" />
+                <span>{
+                  GEMINI_THINKING_OPTIONS.find((option) => option.id === geminiModelOptions?.thinkingMode)?.label
+                  ?? geminiModelOptions?.thinkingMode
+                  ?? "Standard"
+                }</span>
+              </>
+            )}
+          >
+            {(close) => GEMINI_THINKING_OPTIONS.map((option) => (
+              <PopoverMenuItem
+                key={option.id}
+                onClick={() => {
+                  onGeminiThinkingModeChange(option.id)
+                  close()
+                }}
+                selected={geminiModelOptions?.thinkingMode === option.id}
+                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                label={option.label}
+                disabled={option.id === "off" && !geminiSupportsThinkingOff(model)}
+              />
+            ))}
+          </InputPopover>
+        ) : null}
 
         {selectedProvider === "codex" ? (
           <InputPopover
@@ -317,8 +382,8 @@ export function ChatPreferenceControls({
             trigger={(
               <>
                 {planMode ? <ListTodo className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-                <span className="hidden md:inline">{planMode ? "Plan Mode" : "Full Access"}</span>
-                <span className="md:hidden">{planMode ? "Plan" : "Full"}</span>
+                <span className="hidden md:inline">{planMode ? "Plan" : "Implement"}</span>
+                <span className="md:hidden">{planMode ? "Plan" : "Impl"}</span>
               </>
             )}
             triggerClassName={planMode ? "text-blue-400 dark:text-blue-300" : undefined}
@@ -332,8 +397,8 @@ export function ChatPreferenceControls({
                   }}
                   selected={!planMode}
                   icon={<LockOpen className="h-4 w-4 text-muted-foreground" />}
-                  label="Full Access"
-                  description="Execution without approval"
+                  label="Implement"
+                  description="Start execution"
                 />
                 <PopoverMenuItem
                   onClick={() => {
@@ -342,7 +407,7 @@ export function ChatPreferenceControls({
                   }}
                   selected={planMode}
                   icon={<ListTodo className="h-4 w-4 text-muted-foreground" />}
-                  label="Plan Mode"
+                  label="Plan"
                   description="Review a plan before execution"
                 />
               </>

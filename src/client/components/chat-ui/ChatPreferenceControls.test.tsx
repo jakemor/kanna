@@ -15,6 +15,7 @@ describe("ChatPreferenceControls", () => {
         onModelChange={() => {}}
         onClaudeReasoningEffortChange={() => {}}
         onCodexReasoningEffortChange={() => {}}
+        onGeminiThinkingModeChange={() => {}}
         onCodexFastModeChange={() => {}}
         includePlanMode={false}
       />
@@ -38,6 +39,7 @@ describe("ChatPreferenceControls", () => {
         onModelChange={() => {}}
         onClaudeReasoningEffortChange={() => {}}
         onCodexReasoningEffortChange={() => {}}
+        onGeminiThinkingModeChange={() => {}}
         onCodexFastModeChange={() => {}}
         planMode
         onPlanModeChange={() => {}}
@@ -48,6 +50,30 @@ describe("ChatPreferenceControls", () => {
     expect(html).toContain("Claude")
     expect(html).toContain("Opus")
     expect(html).toContain("Max")
-    expect(html).toContain("Plan Mode")
+    expect(html).toContain("Plan")
+  })
+
+  test("renders gemini-specific thinking controls", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="gemini"
+        model="auto-gemini-2.5"
+        modelOptions={{ thinkingMode: "high" }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onClaudeReasoningEffortChange={() => {}}
+        onCodexReasoningEffortChange={() => {}}
+        onGeminiThinkingModeChange={() => {}}
+        onCodexFastModeChange={() => {}}
+        planMode
+        onPlanModeChange={() => {}}
+        includePlanMode
+      />
+    )
+
+    expect(html).toContain("Gemini")
+    expect(html).toContain("High")
+    expect(html).toContain("Plan")
   })
 })

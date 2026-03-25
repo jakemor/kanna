@@ -14,6 +14,7 @@ import type { ClientCommand } from "../shared/protocol"
 import { EventStore } from "./event-store"
 import { persistChatAttachments, resolveAttachmentPath } from "./attachments"
 import { CodexAppServerManager } from "./codex-app-server"
+import { GeminiAcpManager } from "./gemini-acp"
 import { generateTitleForChat } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
@@ -21,6 +22,7 @@ import {
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeGeminiModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
 import { createClaudeRateLimitSnapshot } from "./usage"
@@ -71,6 +73,7 @@ interface AgentCoordinatorArgs {
   onStateChange: () => void
   attachmentsDir: string
   codexManager?: CodexAppServerManager
+  geminiManager?: GeminiAcpManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<string | null>
 }
 
@@ -395,6 +398,7 @@ export class AgentCoordinator {
   private readonly onStateChange: () => void
   private readonly attachmentsDir: string
   private readonly codexManager: CodexAppServerManager
+  private readonly geminiManager: GeminiAcpManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly liveUsage = new Map<string, ChatUsageSnapshot>()
@@ -404,6 +408,7 @@ export class AgentCoordinator {
     this.onStateChange = args.onStateChange
     this.attachmentsDir = args.attachmentsDir
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.geminiManager = args.geminiManager ?? new GeminiAcpManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChat
   }
 
@@ -437,6 +442,16 @@ export class AgentCoordinator {
       return {
         model: normalizeServerModel(provider, command.model),
         effort: modelOptions.reasoningEffort,
+        serviceTier: undefined,
+        planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
+      }
+    }
+
+    if (provider === "gemini") {
+      const modelOptions = normalizeGeminiModelOptions(command.modelOptions)
+      return {
+        model: normalizeServerModel(provider, command.model),
+        effort: modelOptions.thinkingMode,
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
       }
@@ -526,6 +541,17 @@ export class AgentCoordinator {
         localPath: project.localPath,
         model: args.model,
         effort: args.effort,
+        planMode: args.planMode,
+        sessionToken: chat.sessionToken,
+        onToolRequest,
+      })
+    } else if (args.provider === "gemini") {
+      turn = await this.geminiManager.startTurn({
+        chatId: args.chatId,
+        content: args.content,
+        localPath: project.localPath,
+        model: args.model,
+        thinkingMode: (args.effort as "off" | "standard" | "high" | undefined) ?? "standard",
         planMode: args.planMode,
         sessionToken: chat.sessionToken,
         onToolRequest,
@@ -658,6 +684,9 @@ export class AgentCoordinator {
         }
 
         if (!event.entry) continue
+        if (active.hasFinalResult && event.entry.kind === "result") {
+          continue
+        }
         await this.store.appendMessage(active.chatId, event.entry)
 
         if (event.entry.kind === "system_init") {
@@ -676,7 +705,7 @@ export class AgentCoordinator {
         this.onStateChange()
       }
     } catch (error) {
-      if (!active.cancelRequested) {
+      if (!active.cancelRequested && !active.hasFinalResult) {
         const message = error instanceof Error ? error.message : String(error)
         await this.store.appendMessage(
           active.chatId,

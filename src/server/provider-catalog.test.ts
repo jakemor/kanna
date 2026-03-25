@@ -3,6 +3,7 @@ import {
   codexServiceTierFromModelOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeGeminiModelOptions,
 } from "./provider-catalog"
 
 describe("provider catalog normalization", () => {
@@ -30,5 +31,19 @@ describe("provider catalog normalization", () => {
       fastMode: true,
     })
     expect(codexServiceTierFromModelOptions(normalized)).toBe("fast")
+  })
+
+  test("normalizes Gemini thinking mode independently", () => {
+    expect(normalizeGeminiModelOptions(undefined)).toEqual({
+      thinkingMode: "standard",
+    })
+
+    expect(normalizeGeminiModelOptions({
+      gemini: {
+        thinkingMode: "high",
+      },
+    })).toEqual({
+      thinkingMode: "high",
+    })
   })
 })

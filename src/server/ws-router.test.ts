@@ -36,6 +36,7 @@ function cleanupTempDirs() {
 const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
   bindings: {
     submitChatMessage: ["enter"],
+    toggleProjectsSidebar: ["ctrl+a"],
     toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
     toggleRightSidebar: ["ctrl+b"],
     openInFinder: ["cmd+alt+f"],
@@ -265,6 +266,112 @@ describe("ws-router", () => {
         id: "project-hide-1",
       },
     ])
+  })
+
+  test("passes an omitted feature description to the store as an empty string", async () => {
+    const createFeatureCalls: Array<{ projectId: string; title: string; description: string }> = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+        createFeature: async (projectId: string, title: string, description: string) => {
+          createFeatureCalls.push({ projectId, title, description })
+          return { id: "feature-1" }
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "feature-create-1",
+        command: {
+          type: "feature.create",
+          projectId: "project-1",
+          title: "Feature Name",
+        },
+      })
+    )
+
+    expect(createFeatureCalls).toEqual([
+      {
+        projectId: "project-1",
+        title: "Feature Name",
+        description: "",
+      },
+    ])
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "feature-create-1",
+        result: { featureId: "feature-1" },
+      },
+    ])
+  })
+
+  test("routes feature browser state updates to the store", async () => {
+    const calls: Array<{ featureId: string; browserState: string }> = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+        setFeatureBrowserState: async (featureId: string, browserState: string) => {
+          calls.push({ featureId, browserState })
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "feature-browser-state-1",
+        command: {
+          type: "feature.setBrowserState",
+          featureId: "feature-1",
+          browserState: "CLOSED",
+        },
+      })
+    )
+
+    expect(calls).toEqual([{ featureId: "feature-1", browserState: "CLOSED" }])
+    expect(ws.sent).toEqual([{ v: PROTOCOL_VERSION, type: "ack", id: "feature-browser-state-1" }])
   })
 
   test("updates .gitignore commit mode using a local project path", async () => {

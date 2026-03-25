@@ -348,12 +348,17 @@ export function createWsRouter({
           break
         }
         case "feature.create": {
-          const feature = await store.createFeature(command.projectId, command.title, command.description)
+          const feature = await store.createFeature(command.projectId, command.title, command.description ?? "")
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { featureId: feature.id } })
           break
         }
         case "feature.rename": {
           await store.renameFeature(command.featureId, command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.setBrowserState": {
+          await store.setFeatureBrowserState(command.featureId, command.browserState)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }

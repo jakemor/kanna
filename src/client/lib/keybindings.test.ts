@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { actionMatchesEvent, bindingMatchesEvent, getResolvedKeybindings, parseKeybindingInput } from "./keybindings"
+import { actionMatchesEvent, bindingMatchesEvent, getResolvedKeybindings, isEditableKeyboardTarget, parseKeybindingInput } from "./keybindings"
 import type { KeybindingsSnapshot } from "../../shared/types"
 
 describe("parseKeybindingInput", () => {
@@ -45,6 +45,7 @@ describe("actionMatchesEvent", () => {
     const snapshot = {
       bindings: {
         toggleEmbeddedTerminal: ["cmd+j"],
+        toggleProjectsSidebar: ["ctrl+a"],
         toggleRightSidebar: ["cmd+b"],
         openInFinder: ["cmd+alt+f"],
         openInEditor: ["cmd+shift+o"],
@@ -56,5 +57,25 @@ describe("actionMatchesEvent", () => {
     const event = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false } as KeyboardEvent
 
     expect(actionMatchesEvent(snapshot, "submitChatMessage", event)).toBe(true)
+  })
+})
+
+describe("isEditableKeyboardTarget", () => {
+  test("detects standard form controls", () => {
+    const input = { tagName: "INPUT" }
+    expect(isEditableKeyboardTarget(input)).toBe(true)
+  })
+
+  test("detects contenteditable ancestors", () => {
+    const child = {
+      closest: (selector: string) => selector.includes("[contenteditable]") ? {} : null,
+    }
+
+    expect(isEditableKeyboardTarget(child)).toBe(true)
+  })
+
+  test("ignores non-editable elements", () => {
+    const div = { tagName: "DIV", closest: () => null }
+    expect(isEditableKeyboardTarget(div)).toBe(false)
   })
 })

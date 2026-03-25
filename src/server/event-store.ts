@@ -2,7 +2,7 @@ import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "nod
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import { FEATURE_STAGES, type AgentProvider, type FeatureStage, type TranscriptEntry } from "../shared/types"
+import { FEATURE_BROWSER_STATES, FEATURE_STAGES, type AgentProvider, type FeatureBrowserState, type FeatureStage, type TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -26,6 +26,7 @@ interface PersistedProjectFeature {
   v: typeof FEATURE_METADATA_VERSION
   title: string
   description: string
+  browserState: FeatureBrowserState
   stage: FeatureStage
   sortOrder: number
   directoryRelativePath: string
@@ -125,7 +126,10 @@ export class EventStore {
         }
       }
       for (const feature of parsed.features ?? []) {
-        this.state.featuresById.set(feature.id, { ...feature })
+        this.state.featuresById.set(feature.id, {
+          ...feature,
+          browserState: feature.browserState ?? "OPEN",
+        })
       }
       for (const chat of parsed.chats) {
         this.state.chatsById.set(chat.id, { ...chat })
@@ -260,6 +264,7 @@ export class EventStore {
           projectId: event.projectId,
           title: event.title,
           description: event.description,
+          browserState: event.browserState ?? "OPEN",
           stage: event.stage,
           sortOrder: event.sortOrder,
           directoryRelativePath: event.directoryRelativePath,
@@ -273,6 +278,13 @@ export class EventStore {
         const feature = this.state.featuresById.get(event.featureId)
         if (!feature) break
         feature.title = event.title
+        feature.updatedAt = event.timestamp
+        break
+      }
+      case "feature_browser_state_set": {
+        const feature = this.state.featuresById.get(event.featureId)
+        if (!feature) break
+        feature.browserState = event.browserState
         feature.updatedAt = event.timestamp
         break
       }
@@ -481,7 +493,7 @@ export class EventStore {
     await this.append(this.projectsLogPath, event)
   }
 
-  async createFeature(projectId: string, title: string, description: string) {
+  async createFeature(projectId: string, title: string, description = "") {
     const project = this.getProject(projectId)
     if (!project) {
       throw new Error("Project not found")
@@ -490,9 +502,6 @@ export class EventStore {
     const trimmedDescription = description.trim()
     if (!trimmedTitle) {
       throw new Error("Feature title is required")
-    }
-    if (!trimmedDescription) {
-      throw new Error("Feature description is required")
     }
 
     const directoryName = this.generateUniqueFeatureDirectoryName(projectId, trimmedTitle)
@@ -518,6 +527,7 @@ export class EventStore {
       projectId,
       title: trimmedTitle,
       description: trimmedDescription,
+      browserState: "OPEN",
       stage: "idea",
       sortOrder,
       directoryRelativePath,
@@ -560,6 +570,20 @@ export class EventStore {
     }
     await this.append(this.featuresLogPath, event)
     await this.syncProjectFeatureState(feature.projectId, true)
+  }
+
+  async setFeatureBrowserState(featureId: string, browserState: FeatureBrowserState) {
+    const feature = this.requireFeature(featureId)
+    if (feature.browserState === browserState) return
+    const event: FeatureEvent = {
+      v: STORE_VERSION,
+      type: "feature_browser_state_set",
+      timestamp: Date.now(),
+      featureId,
+      browserState,
+    }
+    await this.append(this.featuresLogPath, event)
+    await this.syncProjectFeatureState(feature.projectId)
   }
 
   async reorderFeatures(projectId: string, orderedFeatureIds: string[]) {
@@ -839,6 +863,7 @@ export class EventStore {
         projectId,
         title: persistedFeature.title,
         description: persistedFeature.description,
+        browserState: persistedFeature.browserState,
         stage: persistedFeature.stage,
         sortOrder: persistedFeature.sortOrder,
         directoryRelativePath: persistedFeature.directoryRelativePath,
@@ -1023,13 +1048,14 @@ export class EventStore {
     featureTitle: string
     description: string
   }) {
+    const summary = args.description.trim() || "TODO: Add a short summary for this feature."
     return [
       `# ${args.featureTitle}`,
       "",
       `Project: ${args.projectTitle}`,
       "",
       "## Summary",
-      args.description,
+      summary,
       "",
       "## Notes",
       "- Initial feature overview generated at creation time.",
@@ -1067,6 +1093,7 @@ export class EventStore {
         v: FEATURE_METADATA_VERSION,
         title: feature.title,
         description: feature.description,
+        browserState: feature.browserState,
         stage: feature.stage,
         sortOrder: feature.sortOrder,
         directoryRelativePath: feature.directoryRelativePath,
@@ -1100,6 +1127,7 @@ export class EventStore {
           || typeof parsed.directoryRelativePath !== "string"
           || typeof parsed.overviewRelativePath !== "string"
           || typeof parsed.sortOrder !== "number"
+          || !FEATURE_BROWSER_STATES.includes((parsed.browserState ?? "OPEN") as FeatureBrowserState)
           || !FEATURE_STAGES.includes(parsed.stage as FeatureStage)
         ) {
           continue
@@ -1108,6 +1136,7 @@ export class EventStore {
           v: FEATURE_METADATA_VERSION,
           title: parsed.title,
           description: parsed.description,
+          browserState: (parsed.browserState ?? "OPEN") as FeatureBrowserState,
           stage: parsed.stage as FeatureStage,
           sortOrder: parsed.sortOrder,
           directoryRelativePath: parsed.directoryRelativePath,

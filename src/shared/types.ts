@@ -123,6 +123,8 @@ export type KannaStatus =
 
 export const FEATURE_STAGES = ["idea", "todo", "progress", "testing", "done"] as const
 export type FeatureStage = (typeof FEATURE_STAGES)[number]
+export const FEATURE_BROWSER_STATES = ["OPEN", "CLOSED"] as const
+export type FeatureBrowserState = (typeof FEATURE_BROWSER_STATES)[number]
 
 export const FEATURE_STAGE_LABELS: Record<FeatureStage, string> = {
   idea: "IDEA",
@@ -147,6 +149,7 @@ export interface FeatureSummary {
   projectId: string
   title: string
   description: string
+  browserState: FeatureBrowserState
   stage: FeatureStage
   sortOrder: number
   directoryRelativePath: string
@@ -172,6 +175,7 @@ export interface SidebarFeatureRow {
   featureId: string
   title: string
   description: string
+  browserState: FeatureBrowserState
   stage: FeatureStage
   sortOrder: number
   directoryRelativePath: string
@@ -261,6 +265,7 @@ export interface UpdateInstallResult {
 
 export type KeybindingAction =
   | "submitChatMessage"
+  | "toggleProjectsSidebar"
   | "toggleEmbeddedTerminal"
   | "toggleRightSidebar"
   | "openInFinder"
@@ -269,6 +274,7 @@ export type KeybindingAction =
 
 export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   submitChatMessage: ["enter"],
+  toggleProjectsSidebar: ["ctrl+a"],
   toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
   toggleRightSidebar: ["cmd+b", "ctrl+b"],
   openInFinder: ["cmd+alt+f", "ctrl+alt+f"],

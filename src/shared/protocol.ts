@@ -3,6 +3,7 @@ import type {
   AgentProvider,
   ChatUserMessage,
   ChatSnapshot,
+  FeatureBrowserState,
   FeatureStage,
   KeybindingsSnapshot,
   LocalProjectsSnapshot,
@@ -65,8 +66,9 @@ export type ClientCommand =
       editor?: EditorOpenSettings
     }
   | { type: "chat.create"; projectId: string; featureId?: string }
-  | { type: "feature.create"; projectId: string; title: string; description: string }
+  | { type: "feature.create"; projectId: string; title: string; description?: string }
   | { type: "feature.rename"; featureId: string; title: string }
+  | { type: "feature.setBrowserState"; featureId: string; browserState: FeatureBrowserState }
   | { type: "feature.setStage"; featureId: string; stage: FeatureStage }
   | { type: "feature.reorder"; projectId: string; orderedFeatureIds: string[] }
   | { type: "feature.delete"; featureId: string }

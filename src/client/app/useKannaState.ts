@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type DirectoryBrowserSnapshot, type FeatureStage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatUserMessage, type DirectoryBrowserSnapshot, type FeatureBrowserState, type FeatureStage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useFeatureSettingsStore } from "../stores/featureSettingsStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
@@ -107,6 +107,11 @@ export interface ProjectRequest {
   title: string
 }
 
+export interface FeatureCreateDraft {
+  title: string
+  description: string
+}
+
 export type StartChatIntent =
   | { kind: "project_id"; projectId: string }
   | { kind: "local_path"; localPath: string }
@@ -174,16 +179,21 @@ export interface KannaState {
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
+  createFeatureModalProjectId: string | null
   openSidebar: () => void
   closeSidebar: () => void
   collapseSidebar: () => void
   expandSidebar: () => void
+  toggleProjectsSidebar: (isDesktopViewport: boolean) => void
   updateScrollState: () => void
   scrollToBottom: () => void
   handleCreateChat: (projectId: string, featureId?: string) => Promise<void>
-  handleCreateFeature: (projectId: string) => Promise<void>
+  handleCreateFeature: (projectId: string) => void
+  handleCloseCreateFeatureModal: () => void
+  handleConfirmCreateFeature: (draft: FeatureCreateDraft) => Promise<void>
   handleRenameFeature: (featureId: string) => Promise<void>
   handleDeleteFeature: (featureId: string) => Promise<void>
+  handleSetFeatureBrowserState: (featureId: string, browserState: FeatureBrowserState) => Promise<void>
   handleSetFeatureStage: (featureId: string, stage: FeatureStage) => Promise<void>
   handleSetChatFeature: (chatId: string, featureId: string | null) => Promise<void>
   handleReorderFeatures: (projectId: string, orderedFeatureIds: string[]) => Promise<void>
@@ -237,6 +247,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const [createFeatureModalProjectId, setCreateFeatureModalProjectId] = useState<string | null>(null)
   const folderGroupsEnabled = useFeatureSettingsStore((store) => store.folderGroupsEnabled)
   const kanbanStatusesEnabled = useFeatureSettingsStore((store) => store.kanbanStatusesEnabled)
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
@@ -554,30 +565,26 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_id", projectId })
   }
 
-  async function handleCreateFeature(projectId: string) {
-    const title = await dialog.prompt({
-      title: "Create Feature",
-      description: "Name the feature folder.",
-      placeholder: "Feature name",
-      confirmLabel: "Next",
-    })
-    if (!title) return
+  function handleCreateFeature(projectId: string) {
+    setCreateFeatureModalProjectId(projectId)
+  }
 
-    const description = await dialog.prompt({
-      title: "Feature Description",
-      description: "Describe what this feature is about. This will seed overview.md.",
-      placeholder: "Short feature description",
-      confirmLabel: "Create",
-    })
-    if (!description) return
+  function handleCloseCreateFeatureModal() {
+    setCreateFeatureModalProjectId(null)
+  }
+
+  async function handleConfirmCreateFeature(draft: FeatureCreateDraft) {
+    const projectId = createFeatureModalProjectId
+    if (!projectId) return
 
     try {
       const feature = await socket.command<{ featureId: string }>({
         type: "feature.create",
         projectId,
-        title,
-        description,
+        title: draft.title,
+        description: draft.description,
       })
+      setCreateFeatureModalProjectId(null)
       await createChatForProject(projectId, feature.featureId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -616,6 +623,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     try {
       await socket.command({ type: "feature.delete", featureId })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleSetFeatureBrowserState(featureId: string, browserState: FeatureBrowserState) {
+    try {
+      await socket.command({ type: "feature.setBrowserState", featureId, browserState })
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -984,16 +1000,29 @@ export function useKannaState(activeChatId: string | null): KannaState {
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
+    createFeatureModalProjectId,
     openSidebar: () => setSidebarOpen(true),
     closeSidebar: () => setSidebarOpen(false),
     collapseSidebar: () => setSidebarCollapsed(true),
     expandSidebar: () => setSidebarCollapsed(false),
+    toggleProjectsSidebar: (isDesktopViewport) => {
+      if (isDesktopViewport) {
+        setSidebarOpen(false)
+        setSidebarCollapsed((current) => !current)
+        return
+      }
+
+      setSidebarOpen((current) => !current)
+    },
     updateScrollState,
     scrollToBottom,
     handleCreateChat,
     handleCreateFeature,
+    handleCloseCreateFeatureModal,
+    handleConfirmCreateFeature,
     handleRenameFeature,
     handleDeleteFeature,
+    handleSetFeatureBrowserState,
     handleSetFeatureStage,
     handleSetChatFeature,
     handleReorderFeatures,

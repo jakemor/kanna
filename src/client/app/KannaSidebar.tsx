@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
@@ -6,9 +6,10 @@ import { Button } from "../components/ui/button"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
-import type { FeatureStage, SidebarData, SidebarChatRow, SidebarProjectGroup, UpdateSnapshot } from "../../shared/types"
+import type { FeatureBrowserState, FeatureStage, SidebarData, SidebarChatRow, SidebarProjectGroup, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
 import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
+import { clampLeftSidebarWidth } from "../stores/leftSidebarStore"
 
 interface KannaSidebarProps {
   data: SidebarData
@@ -17,15 +18,21 @@ interface KannaSidebarProps {
   ready: boolean
   open: boolean
   collapsed: boolean
+  isDesktopViewport: boolean
   showMobileOpenButton: boolean
+  desktopWidth: number
   onOpen: () => void
   onClose: () => void
+  onToggle: (isDesktopViewport: boolean) => void
   onCollapse: () => void
   onExpand: () => void
+  toggleShortcut?: string[]
+  onResizeDesktopWidth: (widthPx: number) => void
   onCreateChat: (projectId: string, featureId?: string) => void
   onCreateFeature: (projectId: string) => void
   onRenameFeature: (featureId: string) => void
   onDeleteFeature: (featureId: string) => void
+  onSetFeatureBrowserState: (featureId: string, browserState: FeatureBrowserState) => void
   onSetFeatureStage: (featureId: string, stage: FeatureStage) => void
   onSetChatFeature: (chatId: string, featureId: string | null) => void
   onReorderFeatures: (projectId: string, orderedFeatureIds: string[]) => void
@@ -42,6 +49,19 @@ export function shouldCloseSidebarOnChatSelect(open: boolean) {
   return open
 }
 
+export function shouldRenderDesktopSidebarResizeHandle(isDesktopViewport: boolean, collapsed: boolean) {
+  return isDesktopViewport && !collapsed
+}
+
+export function getDesktopSidebarStyle(
+  isDesktopViewport: boolean,
+  collapsed: boolean,
+  desktopWidth: number
+): CSSProperties | undefined {
+  if (!shouldRenderDesktopSidebarResizeHandle(isDesktopViewport, collapsed)) return undefined
+  return { width: `${clampLeftSidebarWidth(desktopWidth)}px` }
+}
+
 export function KannaSidebar({
   data,
   activeChatId,
@@ -49,15 +69,21 @@ export function KannaSidebar({
   ready,
   open,
   collapsed,
+  isDesktopViewport,
   showMobileOpenButton,
+  desktopWidth,
   onOpen,
   onClose,
+  onToggle,
   onCollapse,
   onExpand,
+  toggleShortcut,
+  onResizeDesktopWidth,
   onCreateChat,
   onCreateFeature,
   onRenameFeature,
   onDeleteFeature,
+  onSetFeatureBrowserState,
   onSetFeatureStage,
   onSetChatFeature,
   onReorderFeatures,
@@ -71,8 +97,15 @@ export function KannaSidebar({
 }: KannaSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const sidebarRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const dragSidebarLeftRef = useRef(0)
+  const pendingWidthRef = useRef<number | null>(null)
+  const resizeFrameRef = useRef<number | null>(null)
+  const pendingFeatureBrowserStatesRef = useRef<Record<string, FeatureBrowserState>>({})
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
+  const [isResizing, setIsResizing] = useState(false)
+  const [draftWidthPx, setDraftWidthPx] = useState<number | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   const savedOrder = useProjectGroupOrderStore((s) => s.order)
@@ -127,6 +160,39 @@ export function KannaSidebar({
     })
   }, [])
 
+  useEffect(() => {
+    const pendingBrowserStates = pendingFeatureBrowserStatesRef.current
+    setCollapsedSections((previous) => {
+      const next = new Set([...previous].filter((key) => !key.startsWith("feature:")))
+      for (const group of sidebarProjectGroups) {
+        for (const feature of group.features) {
+          const browserState = pendingBrowserStates[feature.featureId] ?? feature.browserState
+          if (browserState === "CLOSED") {
+            next.add(`feature:${feature.featureId}`)
+          }
+        }
+      }
+      return next
+    })
+    const nextPendingBrowserStates = { ...pendingBrowserStates }
+    for (const group of sidebarProjectGroups) {
+      for (const feature of group.features) {
+        if (nextPendingBrowserStates[feature.featureId] === feature.browserState) {
+          delete nextPendingBrowserStates[feature.featureId]
+        }
+      }
+    }
+    pendingFeatureBrowserStatesRef.current = nextPendingBrowserStates
+  }, [sidebarProjectGroups])
+
+  const handleSetFeatureBrowserState = useCallback((featureId: string, browserState: FeatureBrowserState) => {
+    pendingFeatureBrowserStatesRef.current = {
+      ...pendingFeatureBrowserStatesRef.current,
+      [featureId]: browserState,
+    }
+    onSetFeatureBrowserState(featureId, browserState)
+  }, [onSetFeatureBrowserState])
+
   const handleSelectChat = useCallback((chatId: string) => {
     navigate(`/chat/${chatId}`)
     if (shouldCloseSidebarOnChatSelect(open)) {
@@ -167,6 +233,24 @@ export function KannaSidebar({
   }, [])
 
   useEffect(() => {
+    if (!isResizing) return
+
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+
+    return () => {
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+    }
+  }, [isResizing])
+
+  useEffect(() => () => {
+    if (resizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(resizeFrameRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
 
     requestAnimationFrame(() => {
@@ -200,6 +284,59 @@ export function KannaSidebar({
     ? updateSnapshot.latestVersion === `${updateSnapshot.currentVersion}-dev`
     : false
   const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
+  const effectiveDesktopWidth = draftWidthPx ?? desktopWidth
+  const desktopSidebarStyle = getDesktopSidebarStyle(isDesktopViewport, collapsed, effectiveDesktopWidth)
+  const showDesktopResizeHandle = shouldRenderDesktopSidebarResizeHandle(isDesktopViewport, collapsed)
+  const toggleSidebarTitle = toggleShortcut && toggleShortcut.length > 0
+    ? `Toggle sidebar (${toggleShortcut[0]})`
+    : "Toggle sidebar"
+
+  const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!showDesktopResizeHandle) return
+
+    event.preventDefault()
+    setIsResizing(true)
+    dragSidebarLeftRef.current = sidebarRef.current?.getBoundingClientRect().left ?? 0
+    setDraftWidthPx(desktopWidth)
+
+    const updateWidth = (clientX: number) => {
+      pendingWidthRef.current = clampLeftSidebarWidth(clientX - dragSidebarLeftRef.current)
+      if (resizeFrameRef.current !== null) return
+
+      resizeFrameRef.current = window.requestAnimationFrame(() => {
+        resizeFrameRef.current = null
+        if (pendingWidthRef.current === null) return
+        setDraftWidthPx(pendingWidthRef.current)
+      })
+    }
+
+    updateWidth(event.clientX)
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateWidth(moveEvent.clientX)
+    }
+
+    const handlePointerEnd = () => {
+      setIsResizing(false)
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current)
+        resizeFrameRef.current = null
+      }
+
+      const finalWidth = pendingWidthRef.current ?? desktopWidth
+      pendingWidthRef.current = null
+      setDraftWidthPx(null)
+      onResizeDesktopWidth(finalWidth)
+
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", handlePointerEnd)
+      window.removeEventListener("pointercancel", handlePointerEnd)
+    }
+
+    window.addEventListener("pointermove", handlePointerMove)
+    window.addEventListener("pointerup", handlePointerEnd)
+    window.addEventListener("pointercancel", handlePointerEnd)
+  }, [desktopWidth, onResizeDesktopWidth, showDesktopResizeHandle])
 
   return (
     <>
@@ -231,14 +368,30 @@ export function KannaSidebar({
       )}
 
       <div
+        ref={sidebarRef}
         data-sidebar="open"
         className={cn(
           "fixed inset-0 z-50 bg-background dark:bg-card flex flex-col h-[100dvh] select-none",
-          "md:relative md:inset-auto md:w-[315px] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
+          "md:relative md:inset-auto md:flex-none md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
           open ? "flex" : "hidden md:flex",
           collapsed && "md:hidden"
         )}
+        style={desktopSidebarStyle}
       >
+        {showDesktopResizeHandle ? (
+          <div
+            role="separator"
+            aria-label="Resize sidebar"
+            aria-orientation="vertical"
+            className={cn(
+              "hidden md:flex absolute top-0 right-0 z-20 h-full w-3 translate-x-1/2 cursor-col-resize items-center justify-center",
+              isResizing && "after:bg-logo/70"
+            )}
+            onPointerDown={handleResizeStart}
+          >
+            <span className="h-14 w-px rounded-full bg-border transition-colors" />
+          </div>
+        ) : null}
         <div className=" pl-3 pr-[7px] h-[64px] max-h-[64px] md:h-[55px] md:max-h-[55px] border-b flex items-center justify-between">
           <div className="flex items-center gap-2">
             <button
@@ -289,8 +442,9 @@ export function KannaSidebar({
             <Button
               variant="ghost"
               size="icon"
-              className="md:hidden"
-              onClick={onClose}
+              onClick={() => onToggle(isDesktopViewport)}
+              title={toggleSidebarTitle}
+              aria-label={toggleSidebarTitle}
             >
               <X className="h-5 w-5" />
             </Button>
@@ -336,6 +490,7 @@ export function KannaSidebar({
               onReorderGroups={handleReorderGroups}
               collapsedSections={collapsedSections}
               onToggleSection={toggleSection}
+              onSetFeatureBrowserState={handleSetFeatureBrowserState}
               renderChatRow={renderChatRow}
               onNewLocalChat={onCreateChat}
               onCreateFeature={folderGroupsEnabled ? onCreateFeature : undefined}

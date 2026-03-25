@@ -18,7 +18,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { FEATURE_STAGES, FEATURE_STAGE_LABELS, type FeatureStage, type SidebarChatRow, type SidebarProjectGroup } from "../../../../shared/types"
+import { FEATURE_STAGES, FEATURE_STAGE_LABELS, type FeatureBrowserState, type FeatureStage, type SidebarChatRow, type SidebarProjectGroup } from "../../../../shared/types"
 import { APP_NAME } from "../../../../shared/branding"
 import { getPathBasename } from "../../../lib/formatters"
 import { cn } from "../../../lib/utils"
@@ -50,6 +50,7 @@ interface Props {
   onCreateFeature?: (projectId: string) => void
   onRenameFeature?: (featureId: string) => void
   onDeleteFeature?: (featureId: string) => void
+  onSetFeatureBrowserState?: (featureId: string, browserState: FeatureBrowserState) => void
   onSetFeatureStage?: (featureId: string, stage: FeatureStage) => void
   onSetChatFeature?: (chatId: string, featureId: string | null) => void
   onReorderFeatures?: (projectId: string, orderedFeatureIds: string[]) => void
@@ -91,6 +92,7 @@ interface FeatureSectionProps {
   onNewLocalChat?: Props["onNewLocalChat"]
   onRenameFeature?: Props["onRenameFeature"]
   onDeleteFeature?: Props["onDeleteFeature"]
+  onSetFeatureBrowserState?: Props["onSetFeatureBrowserState"]
   onSetFeatureStage?: Props["onSetFeatureStage"]
   kanbanStatusesEnabled?: boolean
   draggedFeatureId: string | null
@@ -116,6 +118,7 @@ function FeatureSection({
   onNewLocalChat,
   onRenameFeature,
   onDeleteFeature,
+  onSetFeatureBrowserState,
   onSetFeatureStage,
   kanbanStatusesEnabled = true,
   draggedFeatureId,
@@ -132,9 +135,15 @@ function FeatureSection({
   onChatDragEnd,
 }: FeatureSectionProps) {
   const featureKey = `feature:${feature.featureId}`
+  const isOpen = sectionOpen(collapsedSections, featureKey)
   const dropActive = draggedChatId !== null
 
   const [mobileMenuPos, setMobileMenuPos] = useState<{ x: number; y: number } | null>(null)
+
+  function toggleFeatureSection() {
+    onToggleSection(featureKey)
+    onSetFeatureBrowserState?.(feature.featureId, isOpen ? "CLOSED" : "OPEN")
+  }
 
   // outerRef: the full feature block — used as the visual element for hit-testing
   const outerRef = useRef<HTMLDivElement | null>(null)
@@ -144,7 +153,7 @@ function FeatureSection({
   const { touchRef, isDragging: isTouchDragging, isArmed, dragPosition } = useTouchInteraction({
     enabled: isTouchDevice,
     visualElementRef: outerRef,
-    onTap: () => onToggleSection(featureKey),
+    onTap: toggleFeatureSection,
     onContextMenu: (pos) => setMobileMenuPos(pos),
     onDragStart: () => onFeatureDragStart(feature.featureId),
     onDragMove: ({ x, y, elementBelow }) => onTouchDragMove(x, y, elementBelow),
@@ -203,10 +212,10 @@ function FeatureSection({
             <button
               type="button"
               data-no-touch-drag
-              onClick={() => onToggleSection(featureKey)}
+              onClick={toggleFeatureSection}
               className="flex shrink-0 items-center"
             >
-              <ChevronRight className={cn("size-3 transition-transform", sectionOpen(collapsedSections, featureKey) && "rotate-90")} />
+              <ChevronRight className={cn("size-3 transition-transform", isOpen && "rotate-90")} />
             </button>
             <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate text-sm font-medium">{feature.title}</span>
@@ -215,10 +224,10 @@ function FeatureSection({
           // Desktop: entire left section is a button for click-to-toggle
           <button
             type="button"
-            onClick={() => onToggleSection(featureKey)}
+            onClick={toggleFeatureSection}
             className="flex min-w-0 flex-1 basis-0 items-center gap-2 text-left"
           >
-            <ChevronRight className={cn("size-3 transition-transform", sectionOpen(collapsedSections, featureKey) && "rotate-90")} />
+            <ChevronRight className={cn("size-3 transition-transform", isOpen && "rotate-90")} />
             <FolderGit2 className="size-3.5 text-muted-foreground" />
             <Tooltip>
               <TooltipTrigger asChild>
@@ -271,7 +280,7 @@ function FeatureSection({
         ) : null}
       </div>
 
-      {sectionOpen(collapsedSections, featureKey) ? (
+      {isOpen ? (
         <div className="space-y-[2px] border-t border-border/50 p-1 pl-3">
           {feature.chats.map((chat) => renderChatRow(chat, {
             draggable: true,
@@ -325,6 +334,7 @@ function SortableProjectGroup({
   onCreateFeature,
   onRenameFeature,
   onDeleteFeature,
+  onSetFeatureBrowserState,
   onSetFeatureStage,
   onSetChatFeature,
   onReorderFeatures,
@@ -542,6 +552,7 @@ function SortableProjectGroup({
                   onNewLocalChat={onNewLocalChat}
                   onRenameFeature={onRenameFeature}
                   onDeleteFeature={onDeleteFeature}
+                  onSetFeatureBrowserState={onSetFeatureBrowserState}
                   onSetFeatureStage={onSetFeatureStage}
                   kanbanStatusesEnabled={kanbanStatusesEnabled}
                   draggedFeatureId={draggedFeatureId}
@@ -633,6 +644,7 @@ export function LocalProjectsSection({
   onCreateFeature,
   onRenameFeature,
   onDeleteFeature,
+  onSetFeatureBrowserState,
   onSetFeatureStage,
   onSetChatFeature,
   onReorderFeatures,
@@ -697,6 +709,7 @@ export function LocalProjectsSection({
             onCreateFeature={onCreateFeature}
             onRenameFeature={onRenameFeature}
             onDeleteFeature={onDeleteFeature}
+            onSetFeatureBrowserState={onSetFeatureBrowserState}
             onSetFeatureStage={onSetFeatureStage}
             onSetChatFeature={onSetChatFeature}
             onReorderFeatures={onReorderFeatures}

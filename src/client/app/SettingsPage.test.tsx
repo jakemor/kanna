@@ -9,6 +9,7 @@ import {
   getGeneralHeaderAction,
   getCachedChangelog,
   getKeybindingsSubtitle,
+  getSettingsCloseTarget,
   loadChangelog,
   resetSettingsPageChangelogCache,
   resolveSettingsSectionId,
@@ -143,6 +144,7 @@ describe("buildKeybindingPayload", () => {
   test("includes the submit chat message binding", () => {
     expect(buildKeybindingPayload({
       submitChatMessage: "Shift+Enter",
+      toggleProjectsSidebar: "Ctrl+A",
       toggleEmbeddedTerminal: "Cmd+J",
       toggleRightSidebar: "Cmd+B",
       openInFinder: "Cmd+Alt+F",
@@ -150,6 +152,7 @@ describe("buildKeybindingPayload", () => {
       addSplitTerminal: "Cmd+/",
     })).toEqual({
       submitChatMessage: ["shift+enter"],
+      toggleProjectsSidebar: ["ctrl+a"],
       toggleEmbeddedTerminal: ["cmd+j"],
       toggleRightSidebar: ["cmd+b"],
       openInFinder: ["cmd+alt+f"],
@@ -223,6 +226,19 @@ describe("getGeneralHeaderAction", () => {
   })
 })
 
+describe("getSettingsCloseTarget", () => {
+  test("returns back when browser history has a previous entry", () => {
+    expect(getSettingsCloseTarget({ idx: 1 })).toBe("back")
+    expect(getSettingsCloseTarget({ idx: 4, key: "abc" })).toBe("back")
+  })
+
+  test("returns home when settings is the first entry or history is unavailable", () => {
+    expect(getSettingsCloseTarget({ idx: 0 })).toBe("home")
+    expect(getSettingsCloseTarget({ key: "abc" })).toBe("home")
+    expect(getSettingsCloseTarget(null)).toBe("home")
+  })
+})
+
 describe("SettingsHeaderButton", () => {
   test("renders shared header button content and icon", () => {
     const html = renderToStaticMarkup(
@@ -245,6 +261,16 @@ describe("SettingsHeaderButton", () => {
 
     expect(html).toContain("Update now")
     expect(html).toContain("bg-primary")
+  })
+
+  test("supports icon-only header actions", () => {
+    const html = renderToStaticMarkup(
+      <SettingsHeaderButton aria-label="Close settings" icon={<RefreshCw className="size-3.5" />} />
+    )
+
+    expect(html).toContain("lucide-refresh-cw")
+    expect(html).toContain("aria-label=\"Close settings\"")
+    expect(html).not.toContain("<span></span>")
   })
 })
 

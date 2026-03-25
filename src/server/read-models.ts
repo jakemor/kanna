@@ -63,6 +63,7 @@ export function deriveSidebarData(
         featureId: feature.id,
         title: feature.title,
         description: feature.description,
+        browserState: feature.browserState,
         stage: feature.stage,
         sortOrder: feature.sortOrder,
         directoryRelativePath: feature.directoryRelativePath,

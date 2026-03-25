@@ -12,6 +12,7 @@ import {
   Settings2,
   Sun,
   CloudDownload,
+  X,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -147,6 +148,20 @@ export function getGeneralHeaderAction(updateSnapshot: UpdateSnapshot | null) {
     spinning: isChecking,
     variant: "outline" as const,
   }
+}
+
+export function getSettingsCloseTarget(historyState: unknown): "back" | "home" {
+  if (
+    historyState
+    && typeof historyState === "object"
+    && "idx" in historyState
+    && typeof historyState.idx === "number"
+    && historyState.idx > 0
+  ) {
+    return "back"
+  }
+
+  return "home"
 }
 
 export function resetSettingsPageChangelogCache() {
@@ -562,6 +577,48 @@ export function SettingsPage() {
       ? getKeybindingsSubtitle(keybindingsFilePathDisplay)
       : selectedSection.subtitle
   const showFooter = !isConnecting
+  const sectionHeaderAction = selectedPage === "keybindings"
+    ? (
+        <SettingsHeaderButton
+          onClick={() => {
+            void state.handleOpenExternalPath("open_editor", keybindingsFilePathDisplay)
+          }}
+          icon={<Code className="h-4 w-4" />}
+        >
+          Open in {state.editorLabel}
+        </SettingsHeaderButton>
+      )
+    : selectedPage === "general"
+      ? (
+          <SettingsHeaderButton
+            variant={generalHeaderAction.variant}
+            onClick={() => {
+              if (generalHeaderAction.kind === "update") {
+                void state.handleInstallUpdate()
+                return
+              }
+              void state.handleCheckForUpdates({ force: true })
+            }}
+            disabled={generalHeaderAction.disabled}
+            icon={generalHeaderAction.kind === "check"
+              ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
+              : generalHeaderAction.kind === "update"
+                ? <CloudDownload className={cn("size-3.5")} />
+                : undefined}
+          >
+            {generalHeaderAction.label}
+          </SettingsHeaderButton>
+        )
+      : null
+
+  function handleCloseSettings() {
+    if (getSettingsCloseTarget(window.history.state) === "back") {
+      navigate(-1)
+      return
+    }
+
+    navigate("/", { replace: true })
+  }
 
   return (
     <div className="relative flex h-full flex-1 min-w-0 bg-background">
@@ -607,38 +664,15 @@ export function SettingsPage() {
                     <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                       {selectedSection.label}
                     </div>
-                    {selectedPage === "keybindings" ? (
+                    <div className="flex items-center gap-2">
+                      {sectionHeaderAction}
                       <SettingsHeaderButton
-                        onClick={() => {
-                          void state.handleOpenExternalPath("open_editor", keybindingsFilePathDisplay)
-                        }}
-                        icon={<Code className="h-4 w-4" />}
-                      >
-                        Open in {state.editorLabel}
-                      </SettingsHeaderButton>
-                    ) : null}
-                    {selectedPage === "general" ? (
-                      <div className="flex items-center gap-2">
-                        <SettingsHeaderButton
-                          variant={generalHeaderAction.variant}
-                          onClick={() => {
-                            if (generalHeaderAction.kind === "update") {
-                              void state.handleInstallUpdate()
-                              return
-                            }
-                            void state.handleCheckForUpdates({ force: true })
-                          }}
-                          disabled={generalHeaderAction.disabled}
-                          icon={generalHeaderAction.kind === "check"
-                            ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
-                            : generalHeaderAction.kind === "update"
-                            ? <CloudDownload className={cn("size-3.5")} />
-                            : undefined}
-                        >
-                          {generalHeaderAction.label}
-                        </SettingsHeaderButton>
-                      </div>
-                    ) : null}
+                        aria-label="Close settings"
+                        title="Close settings"
+                        onClick={handleCloseSettings}
+                        icon={<X className="h-4 w-4" />}
+                      />
+                    </div>
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
                     {selectedSectionSubtitle}
@@ -1059,6 +1093,7 @@ export function SettingsPage() {
 export function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
   return {
     submitChatMessage: parseKeybindingInput(source.submitChatMessage ?? ""),
+    toggleProjectsSidebar: parseKeybindingInput(source.toggleProjectsSidebar ?? ""),
     toggleEmbeddedTerminal: parseKeybindingInput(source.toggleEmbeddedTerminal ?? ""),
     toggleRightSidebar: parseKeybindingInput(source.toggleRightSidebar ?? ""),
     openInFinder: parseKeybindingInput(source.openInFinder ?? ""),

@@ -155,6 +155,7 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
   return {
     bindings: {
       submitChatMessage: [...DEFAULT_KEYBINDINGS.submitChatMessage],
+      toggleProjectsSidebar: [...DEFAULT_KEYBINDINGS.toggleProjectsSidebar],
       toggleEmbeddedTerminal: [...DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal],
       toggleRightSidebar: [...DEFAULT_KEYBINDINGS.toggleRightSidebar],
       openInFinder: [...DEFAULT_KEYBINDINGS.openInFinder],

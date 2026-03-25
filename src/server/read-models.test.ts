@@ -170,6 +170,7 @@ describe("read models", () => {
       projectId: "project-1",
       title: "First Feature",
       description: "First",
+      browserState: "OPEN",
       stage: "progress",
       sortOrder: 0,
       directoryRelativePath: ".kanna/First_Feature",
@@ -182,6 +183,7 @@ describe("read models", () => {
       projectId: "project-1",
       title: "Done Feature",
       description: "Done",
+      browserState: "CLOSED",
       stage: "done",
       sortOrder: 0,
       directoryRelativePath: ".kanna/Done_Feature",
@@ -217,6 +219,7 @@ describe("read models", () => {
     const sidebar = deriveSidebarData(state, new Map())
 
     expect(sidebar.projectGroups[0]?.features.map((feature) => feature.featureId)).toEqual(["feature-1", "feature-2"])
+    expect(sidebar.projectGroups[0]?.features.map((feature) => feature.browserState)).toEqual(["OPEN", "CLOSED"])
     expect(sidebar.projectGroups[0]?.features[0]?.chats[0]?.chatId).toBe("chat-1")
     expect(sidebar.projectGroups[0]?.generalChats[0]?.chatId).toBe("chat-2")
   })

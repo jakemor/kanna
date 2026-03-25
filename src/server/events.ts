@@ -1,4 +1,4 @@
-import type { AgentProvider, FeatureStage, FeatureSummary, ProjectSummary, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, FeatureBrowserState, FeatureStage, FeatureSummary, ProjectSummary, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
   deletedAt?: number
@@ -84,6 +84,7 @@ export type FeatureEvent =
       projectId: string
       title: string
       description: string
+      browserState?: FeatureBrowserState
       stage: FeatureStage
       sortOrder: number
       directoryRelativePath: string
@@ -95,6 +96,13 @@ export type FeatureEvent =
       timestamp: number
       featureId: string
       title: string
+    }
+  | {
+      v: 3
+      type: "feature_browser_state_set"
+      timestamp: number
+      featureId: string
+      browserState: FeatureBrowserState
     }
   | {
       v: 3

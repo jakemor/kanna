@@ -63,6 +63,41 @@ describe("EventStore", () => {
     expect(store.getChat(chat.id)?.featureId).toBeNull()
   })
 
+  test("creates a placeholder summary when the feature description is blank", async () => {
+    const sandboxDir = makeTempDir()
+    const dataDir = path.join(sandboxDir, "data")
+    const projectDir = path.join(sandboxDir, "project")
+    mkdirSync(projectDir, { recursive: true })
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject(projectDir, "Project")
+    const feature = await store.createFeature(project.id, "Blank Summary", "")
+    const overview = readFileSync(path.join(projectDir, feature.overviewRelativePath), "utf8")
+
+    expect(overview).toContain("## Summary")
+    expect(overview).toContain("TODO: Add a short summary for this feature.")
+    expect(store.getFeature(feature.id)?.description).toBe("")
+  })
+
+  test("persists feature browser state to feature metadata", async () => {
+    const sandboxDir = makeTempDir()
+    const dataDir = path.join(sandboxDir, "data")
+    const projectDir = path.join(sandboxDir, "project")
+    mkdirSync(projectDir, { recursive: true })
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject(projectDir, "Project")
+    const feature = await store.createFeature(project.id, "Collapsed Feature", "Save browser state")
+
+    await store.setFeatureBrowserState(feature.id, "CLOSED")
+
+    const metadata = readFileSync(path.join(projectDir, feature.directoryRelativePath, "feature.json"), "utf8")
+    expect(metadata).toContain('"browserState": "CLOSED"')
+    expect(store.getFeature(feature.id)?.browserState).toBe("CLOSED")
+  })
+
   test("persists in-flight feature writes before compaction", async () => {
     const sandboxDir = makeTempDir()
     const dataDir = path.join(sandboxDir, "data")

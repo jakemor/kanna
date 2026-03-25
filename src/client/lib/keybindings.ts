@@ -2,6 +2,7 @@ import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } 
 
 export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
   submitChatMessage: "Submit Chat Message",
+  toggleProjectsSidebar: "Toggle Projects Sidebar",
   toggleEmbeddedTerminal: "Toggle Embedded Terminal",
   toggleRightSidebar: "Toggle Right Sidebar",
   openInFinder: "Open In Finder",
@@ -65,6 +66,7 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
   return {
     bindings: {
       submitChatMessage: snapshot?.bindings.submitChatMessage ?? DEFAULT_KEYBINDINGS.submitChatMessage,
+      toggleProjectsSidebar: snapshot?.bindings.toggleProjectsSidebar ?? DEFAULT_KEYBINDINGS.toggleProjectsSidebar,
       toggleEmbeddedTerminal: snapshot?.bindings.toggleEmbeddedTerminal ?? DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal,
       toggleRightSidebar: snapshot?.bindings.toggleRightSidebar ?? DEFAULT_KEYBINDINGS.toggleRightSidebar,
       openInFinder: snapshot?.bindings.openInFinder ?? DEFAULT_KEYBINDINGS.openInFinder,
@@ -114,4 +116,29 @@ function parseBinding(binding: string): ParsedBinding | null {
   }
 
   return parsed.key ? parsed : null
+}
+
+export function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!target || typeof target !== "object") return false
+
+  const candidate = target as {
+    isContentEditable?: unknown
+    tagName?: unknown
+    closest?: (selector: string) => unknown
+  }
+
+  if (candidate.isContentEditable === true) return true
+
+  if (typeof candidate.tagName === "string") {
+    const tagName = candidate.tagName.toLowerCase()
+    if (tagName === "input" || tagName === "textarea" || tagName === "select") {
+      return true
+    }
+  }
+
+  if (typeof candidate.closest === "function") {
+    return Boolean(candidate.closest("input, textarea, select, [contenteditable], [contenteditable=\"true\"]"))
+  }
+
+  return false
 }

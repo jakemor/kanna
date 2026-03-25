@@ -9,11 +9,11 @@ import {
   Loader2,
   Monitor,
   Plus,
-  SquarePen,
   Terminal,
+  Trash2,
 } from "lucide-react"
 import { APP_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
-import type { LocalProjectsSnapshot } from "../../shared/types"
+import type { DirectoryBrowserSnapshot, LocalProjectsSnapshot } from "../../shared/types"
 import type { SocketStatus } from "../app/socket"
 import { PageHeader } from "../app/PageHeader"
 import { getPathBasename } from "../lib/formatters"
@@ -29,6 +29,8 @@ interface LocalDevProps {
   startingLocalPath: string | null
   commandError: string | null
   onOpenProject: (localPath: string) => Promise<void>
+  onHideProject: (localPath: string) => Promise<void>
+  onListDirectories: (localPath?: string) => Promise<DirectoryBrowserSnapshot>
   onCreateProject: (project: { mode: "new" | "existing"; localPath: string; title: string }) => Promise<void>
 }
 
@@ -129,37 +131,51 @@ function ProjectCard({
   localPath,
   loading,
   onClick,
+  onHide,
 }: {
   localPath: string
   loading: boolean
   onClick: () => void
+  onHide: () => void
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          className={cn(
-            "border border-border hover:border-primary/30 group rounded-lg bg-card px-4 py-3 flex items-center gap-3 w-full text-left hover:bg-muted/50 transition-colors",
-            loading && "opacity-50 cursor-not-allowed"
-          )}
-          disabled={loading}
-          onClick={onClick}
-        >
-          <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          <span className="font-medium text-foreground truncate flex-1">
-            {getPathBasename(localPath)}
-          </span>
-          {loading ? (
-            <Loader2 className="h-4 w-4 text-muted-foreground group-hover:text-primary animate-spin flex-shrink-0" />
-          ) : (
-            <SquarePen className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-          )}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>
-        <p>{localPath}</p>
-      </TooltipContent>
-    </Tooltip>
+    <div className="relative group">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            className={cn(
+              "border border-border hover:border-primary/30 rounded-lg bg-card px-4 py-3 flex items-center gap-3 w-full text-left hover:bg-muted/50 transition-colors",
+              loading && "opacity-50 cursor-not-allowed"
+            )}
+            disabled={loading}
+            onClick={onClick}
+          >
+            <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+            <span className="font-medium text-foreground truncate flex-1 pr-10">
+              {getPathBasename(localPath)}
+            </span>
+            {loading ? (
+              <Loader2 className="h-4 w-4 text-muted-foreground group-hover:text-primary animate-spin flex-shrink-0" />
+            ) : null}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p>{localPath}</p>
+        </TooltipContent>
+      </Tooltip>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="absolute right-2 top-1/2 h-7 w-7 -translate-y-1/2 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+        disabled={loading}
+        onClick={(event) => {
+          event.stopPropagation()
+          onHide()
+        }}
+      >
+        <Trash2 className="h-4 w-4" />
+      </Button>
+    </div>
   )
 }
 
@@ -170,6 +186,8 @@ export function LocalDev({
   startingLocalPath,
   commandError,
   onOpenProject,
+  onHideProject,
+  onListDirectories,
   onCreateProject,
 }: LocalDevProps) {
   const [newProjectOpen, setNewProjectOpen] = useState(false)
@@ -283,6 +301,9 @@ export function LocalDev({
                     onClick={() => {
                       void onOpenProject(project.localPath)
                     }}
+                    onHide={() => {
+                      void onHideProject(project.localPath)
+                    }}
                   />
                 ))}
               </div>
@@ -305,6 +326,8 @@ export function LocalDev({
       <NewProjectModal
         open={newProjectOpen}
         onOpenChange={setNewProjectOpen}
+        initialDirectory={snapshot?.rootDirectory ?? null}
+        onListDirectories={onListDirectories}
         onConfirm={(project) => {
           void onCreateProject(project)
         }}

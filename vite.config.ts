@@ -2,6 +2,12 @@ import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 import { DEV_CLIENT_PORT, DEV_SERVER_PORT } from "./src/shared/ports"
 
+function getBackendTargetHost() {
+  return process.env.KANNA_DEV_BACKEND_TARGET_HOST || "127.0.0.1"
+}
+
+const backendTargetHost = getBackendTargetHost()
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -10,13 +16,20 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/ws": {
-        target: `ws://localhost:${DEV_SERVER_PORT}`,
+        target: `ws://${backendTargetHost}:${DEV_SERVER_PORT}`,
         ws: true,
       },
       "/health": {
-        target: `http://localhost:${DEV_SERVER_PORT}`,
+        target: `http://${backendTargetHost}:${DEV_SERVER_PORT}`,
+      },
+      "/attachments": {
+        target: `http://${backendTargetHost}:${DEV_SERVER_PORT}`,
+      },
+      "/api": {
+        target: `http://${backendTargetHost}:${DEV_SERVER_PORT}`,
       },
     },
+    allowedHosts: true,
   },
   build: {
     outDir: "dist/client",

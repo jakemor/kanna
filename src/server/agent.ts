@@ -1,14 +1,18 @@
-import { query, type CanUseTool, type PermissionResult, type Query } from "@anthropic-ai/claude-agent-sdk"
+import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import type {
   AgentProvider,
+  ChatAttachment,
+  ChatUsageSnapshot,
   NormalizedToolCall,
   PendingToolSnapshot,
   KannaStatus,
   TranscriptEntry,
+  UserPromptEntry,
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
 import { EventStore } from "./event-store"
+import { persistChatAttachments, resolveAttachmentPath } from "./attachments"
 import { CodexAppServerManager } from "./codex-app-server"
 import { generateTitleForChat } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
@@ -19,6 +23,7 @@ import {
   normalizeCodexModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
+import { createClaudeRateLimitSnapshot } from "./usage"
 
 const CLAUDE_TOOLSET = [
   "Skill",
@@ -64,6 +69,7 @@ interface ActiveTurn {
 interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: () => void
+  attachmentsDir: string
   codexManager?: CodexAppServerManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<string | null>
 }
@@ -225,14 +231,69 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
     if (sessionToken) {
       yield { type: "session_token", sessionToken }
     }
+
+    if (sdkMessage.type === "rate_limit_event") {
+      const rateLimitInfo = sdkMessage.rate_limit_info
+      const usage = createClaudeRateLimitSnapshot(
+        typeof rateLimitInfo?.utilization === "number" ? rateLimitInfo.utilization : null,
+        typeof rateLimitInfo?.resetsAt === "number" ? rateLimitInfo.resetsAt * 1000 : null
+      )
+      if (usage) {
+        yield { type: "usage", usage }
+      }
+    }
+
     for (const entry of normalizeClaudeStreamMessage(sdkMessage)) {
       yield { type: "transcript", entry }
     }
   }
 }
 
+async function createClaudePrompt(
+  content: string,
+  attachmentFiles: Array<{ filePath: string; mimeType: string }>,
+  sessionToken: string | null
+): Promise<string | AsyncIterable<SDKUserMessage>> {
+  if (attachmentFiles.length === 0) {
+    return content
+  }
+
+  const blocks: Array<Record<string, unknown>> = []
+  for (const attachment of attachmentFiles) {
+    const bytes = Buffer.from(await Bun.file(attachment.filePath).arrayBuffer())
+    blocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: attachment.mimeType,
+        data: bytes.toString("base64"),
+      },
+    })
+  }
+
+  if (content) {
+    blocks.push({
+      type: "text",
+      text: content,
+    })
+  }
+
+  return (async function* () {
+    yield {
+      type: "user",
+      session_id: sessionToken ?? crypto.randomUUID(),
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: blocks,
+      } as SDKUserMessage["message"],
+    }
+  })()
+}
+
 async function startClaudeTurn(args: {
   content: string
+  attachmentFiles?: Array<{ filePath: string; mimeType: string }>
   localPath: string
   model: string
   effort?: string
@@ -296,7 +357,7 @@ async function startClaudeTurn(args: {
   }
 
   const q = query({
-    prompt: args.content,
+    prompt: await createClaudePrompt(args.content, args.attachmentFiles ?? [], args.sessionToken),
     options: {
       cwd: args.localPath,
       model: args.model,
@@ -332,13 +393,16 @@ async function startClaudeTurn(args: {
 export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: () => void
+  private readonly attachmentsDir: string
   private readonly codexManager: CodexAppServerManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
   readonly activeTurns = new Map<string, ActiveTurn>()
+  readonly liveUsage = new Map<string, ChatUsageSnapshot>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
     this.onStateChange = args.onStateChange
+    this.attachmentsDir = args.attachmentsDir
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChat
   }
@@ -355,6 +419,10 @@ export class AgentCoordinator {
     const pending = this.activeTurns.get(chatId)?.pendingTool
     if (!pending) return null
     return { toolUseId: pending.toolUseId, toolKind: pending.tool.toolKind }
+  }
+
+  getLiveUsage(chatId: string) {
+    return this.liveUsage.get(chatId) ?? null
   }
 
   private resolveProvider(command: Extract<ClientCommand, { type: "chat.send" }>, currentProvider: AgentProvider | null) {
@@ -387,11 +455,12 @@ export class AgentCoordinator {
     chatId: string
     provider: AgentProvider
     content: string
+    attachments?: ChatAttachment[]
     model: string
     effort?: string
     serviceTier?: "fast"
     planMode: boolean
-    appendUserPrompt: boolean
+    appendUserPrompt: UserPromptEntry | null
   }) {
     const chat = this.store.requireChat(args.chatId)
     if (this.activeTurns.has(args.chatId)) {
@@ -404,10 +473,10 @@ export class AgentCoordinator {
     await this.store.setPlanMode(args.chatId, args.planMode)
 
     const existingMessages = this.store.getMessages(args.chatId)
-    const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
+    const shouldGenerateTitle = Boolean(args.appendUserPrompt) && chat.title === "New Chat" && existingMessages.length === 0
 
     if (args.appendUserPrompt) {
-      await this.store.appendMessage(args.chatId, timestamped({ kind: "user_prompt", content: args.content }, Date.now()))
+      await this.store.appendMessage(args.chatId, args.appendUserPrompt)
     }
     await this.store.recordTurnStarted(args.chatId)
 
@@ -415,6 +484,17 @@ export class AgentCoordinator {
     if (!project) {
       throw new Error("Project not found")
     }
+
+    const attachmentFiles = (args.attachments ?? []).map((attachment) => {
+      const filePath = resolveAttachmentPath(this.attachmentsDir, attachment.relativePath)
+      if (!filePath) {
+        throw new Error(`Failed to resolve attachment '${attachment.name}'.`)
+      }
+      return {
+        filePath,
+        mimeType: attachment.mimeType,
+      }
+    })
 
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath)
@@ -442,6 +522,7 @@ export class AgentCoordinator {
     if (args.provider === "claude") {
       turn = await startClaudeTurn({
         content: args.content,
+        attachmentFiles,
         localPath: project.localPath,
         model: args.model,
         effort: args.effort,
@@ -460,6 +541,7 @@ export class AgentCoordinator {
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
         content: args.content,
+        attachments: attachmentFiles,
         model: args.model,
         effort: args.effort as any,
         serviceTier: args.serviceTier,
@@ -513,15 +595,33 @@ export class AgentCoordinator {
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(command, chat.provider)
     const settings = this.getProviderSettings(provider, command)
+    const text = command.message.text.trim()
+    const userPrompt = timestamped({
+      kind: "user_prompt",
+      content: text,
+    }) as UserPromptEntry
+    const attachments = await persistChatAttachments({
+      attachmentsDir: this.attachmentsDir,
+      chatId,
+      messageEntry: userPrompt,
+      uploads: command.message.attachments,
+    })
+    userPrompt.attachments = attachments
+
+    if (!text && !attachments?.length) {
+      throw new Error("Message must include text or image attachments")
+    }
+
     await this.startTurnForChat({
       chatId,
       provider,
-      content: command.content,
+      content: text,
+      attachments,
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
-      appendUserPrompt: true,
+      appendUserPrompt: userPrompt,
     })
 
     return { chatId }
@@ -529,7 +629,7 @@ export class AgentCoordinator {
 
   private async generateTitleInBackground(chatId: string, messageContent: string, cwd: string) {
     try {
-      const title = await this.generateTitle(messageContent, cwd)
+      const title = messageContent.trim() ? await this.generateTitle(messageContent, cwd) : "Image request"
       if (!title) return
 
       const chat = this.store.requireChat(chatId)
@@ -547,6 +647,12 @@ export class AgentCoordinator {
       for await (const event of active.turn.stream) {
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
+          this.onStateChange()
+          continue
+        }
+
+        if (event.type === "usage" && event.usage) {
+          this.liveUsage.set(active.chatId, event.usage)
           this.onStateChange()
           continue
         }
@@ -602,7 +708,7 @@ export class AgentCoordinator {
             effort: active.effort,
             serviceTier: active.serviceTier,
             planMode: active.postToolFollowUp.planMode,
-            appendUserPrompt: false,
+            appendUserPrompt: null,
           })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -692,6 +798,7 @@ export class AgentCoordinator {
         message?: string
       }
       if (result.confirmed && result.clearContext) {
+        this.liveUsage.delete(command.chatId)
         await this.store.setSessionToken(command.chatId, null)
         await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
       }

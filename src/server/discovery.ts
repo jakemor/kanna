@@ -2,10 +2,13 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import type { AgentProvider } from "../shared/types"
+import { resolveProjectRepositoryIdentity, resolveProjectWorktreePaths } from "./git-repository"
 import { resolveLocalPath } from "./paths"
 
 export interface DiscoveredProject {
+  repoKey: string
   localPath: string
+  worktreePaths: string[]
   title: string
   modifiedAt: number
 }
@@ -61,18 +64,42 @@ function normalizeExistingDirectory(localPath: string) {
   }
 }
 
+function toDiscoveredProject(localPath: string, modifiedAt: number): DiscoveredProject | null {
+  const normalizedPath = normalizeExistingDirectory(localPath)
+  if (!normalizedPath) {
+    return null
+  }
+
+  const identity = resolveProjectRepositoryIdentity(normalizedPath)
+  return {
+    repoKey: identity.repoKey,
+    localPath: identity.localPath,
+    worktreePaths: identity.isGitRepo ? resolveProjectWorktreePaths(normalizedPath) : [identity.worktreePath],
+    title: identity.title,
+    modifiedAt,
+  }
+}
+
 function mergeDiscoveredProjects(projects: Iterable<DiscoveredProject>): DiscoveredProject[] {
   const merged = new Map<string, DiscoveredProject>()
 
   for (const project of projects) {
-    const existing = merged.get(project.localPath)
+    const existing = merged.get(project.repoKey)
     if (!existing || project.modifiedAt > existing.modifiedAt) {
-      merged.set(project.localPath, {
+      merged.set(project.repoKey, {
+        repoKey: project.repoKey,
         localPath: project.localPath,
+        worktreePaths: [...project.worktreePaths],
         title: project.title || path.basename(project.localPath) || project.localPath,
         modifiedAt: project.modifiedAt,
       })
       continue
+    }
+
+    for (const worktreePath of project.worktreePaths) {
+      if (!existing.worktreePaths.includes(worktreePath)) {
+        existing.worktreePaths.push(worktreePath)
+      }
     }
 
     if (!existing.title && project.title) {
@@ -99,17 +126,15 @@ export class ClaudeProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
       if (!entry.isDirectory()) continue
 
       const resolvedPath = resolveEncodedClaudePath(entry.name)
-      const normalizedPath = normalizeExistingDirectory(resolvedPath)
-      if (!normalizedPath) {
+      const stat = statSync(path.join(projectsDir, entry.name))
+      const project = toDiscoveredProject(resolvedPath, stat.mtimeMs)
+      if (!project) {
         continue
       }
 
-      const stat = statSync(path.join(projectsDir, entry.name))
       projects.push({
         provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt: stat.mtimeMs,
+        ...project,
       })
     }
 
@@ -244,16 +269,14 @@ export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
         continue
       }
 
-      const normalizedPath = normalizeExistingDirectory(cwd)
-      if (!normalizedPath) {
+      const project = toDiscoveredProject(cwd, modifiedAt)
+      if (!project) {
         continue
       }
 
       projects.push({
         provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt,
+        ...project,
       })
     }
 
@@ -262,16 +285,14 @@ export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
         continue
       }
 
-      const normalizedPath = normalizeExistingDirectory(configuredPath)
-      if (!normalizedPath) {
+      const project = toDiscoveredProject(configuredPath, modifiedAt)
+      if (!project) {
         continue
       }
 
       projects.push({
         provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt,
+        ...project,
       })
     }
 

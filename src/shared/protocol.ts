@@ -1,6 +1,10 @@
 import type {
+  DirectoryBrowserSnapshot,
   AgentProvider,
+  ChatUserMessage,
   ChatSnapshot,
+  FeatureBrowserState,
+  FeatureStage,
   KeybindingsSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
@@ -45,6 +49,9 @@ export type ClientCommand =
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.remove"; projectId: string }
+  | { type: "project.hide"; localPath: string }
+  | { type: "project.setKannaDirectoryCommitMode"; projectId?: string; localPath?: string; commitKanna: boolean }
+  | { type: "system.listDirectory"; localPath?: string }
   | { type: "system.ping" }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
@@ -58,7 +65,14 @@ export type ClientCommand =
       column?: number
       editor?: EditorOpenSettings
     }
-  | { type: "chat.create"; projectId: string }
+  | { type: "chat.create"; projectId: string; featureId?: string }
+  | { type: "feature.create"; projectId: string; title: string; description?: string }
+  | { type: "feature.rename"; featureId: string; title: string }
+  | { type: "feature.setBrowserState"; featureId: string; browserState: FeatureBrowserState }
+  | { type: "feature.setStage"; featureId: string; stage: FeatureStage }
+  | { type: "feature.reorder"; projectId: string; orderedFeatureIds: string[] }
+  | { type: "feature.delete"; featureId: string }
+  | { type: "chat.setFeature"; chatId: string; featureId: string | null }
   | { type: "chat.rename"; chatId: string; title: string }
   | { type: "chat.delete"; chatId: string }
   | {
@@ -66,7 +80,7 @@ export type ClientCommand =
       chatId?: string
       projectId?: string
       provider?: AgentProvider
-      content: string
+      message: ChatUserMessage
       model?: string
       modelOptions?: ModelOptions
       effort?: string
@@ -78,6 +92,9 @@ export type ClientCommand =
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
   | { type: "terminal.close"; terminalId: string }
+  | { type: "git.getBranches"; projectId: string }
+  | { type: "git.switchBranch"; projectId: string; branchName: string }
+  | { type: "git.createBranch"; projectId: string; branchName: string; checkout: boolean }
 
 export type ClientEnvelope =
   | { v: 1; type: "subscribe"; id: string; topic: SubscriptionTopic }
@@ -97,6 +114,22 @@ export type ServerEnvelope =
   | { v: 1; type: "event"; id: string; event: TerminalEvent }
   | { v: 1; type: "ack"; id: string; result?: unknown }
   | { v: 1; type: "error"; id?: string; message: string }
+
+export interface GitBranchesResult {
+  isRepo: boolean
+  currentBranch: string | null
+  branches: string[]
+}
+
+export interface GitSwitchBranchResult {
+  currentBranch: string
+}
+
+export interface GitCreateBranchResult {
+  currentBranch: string
+}
+
+export interface DirectoryListResult extends DirectoryBrowserSnapshot {}
 
 export function isClientEnvelope(value: unknown): value is ClientEnvelope {
   if (!value || typeof value !== "object") return false

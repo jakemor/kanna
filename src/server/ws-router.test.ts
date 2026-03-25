@@ -1,8 +1,20 @@
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import path from "node:path"
 import type { KeybindingsSnapshot, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
+import { GitManager } from "./git-manager"
 import { createWsRouter } from "./ws-router"
+
+const tempDirs: string[] = []
+
+function makeTempDir() {
+  const directory = mkdtempSync(path.join(tmpdir(), "kanna-ws-router-"))
+  tempDirs.push(directory)
+  return directory
+}
 
 class FakeWebSocket {
   readonly sent: unknown[] = []
@@ -15,8 +27,16 @@ class FakeWebSocket {
   }
 }
 
+function cleanupTempDirs() {
+  for (const directory of tempDirs.splice(0)) {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
 const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
   bindings: {
+    submitChatMessage: ["enter"],
+    toggleProjectsSidebar: ["ctrl+a"],
     toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
     toggleRightSidebar: ["ctrl+b"],
     openInFinder: ["cmd+alt+f"],
@@ -40,8 +60,12 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
 describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", () => {
     const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -50,6 +74,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -79,8 +104,12 @@ describe("ws-router", () => {
 
   test("acks terminal.input without rebroadcasting terminal snapshots", () => {
     const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -90,6 +119,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -123,8 +153,12 @@ describe("ws-router", () => {
 
   test("subscribes and unsubscribes chat topics", () => {
     const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -133,6 +167,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -176,6 +211,223 @@ describe("ws-router", () => {
     })
   })
 
+  test("hides a discovered project without requiring a saved project record", async () => {
+    const hiddenPaths: string[] = []
+    const refreshed: string[] = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        listProjects: () => [],
+        getChat: () => null,
+        getMessages: () => [],
+        hideProject: async (localPath: string) => {
+          hiddenPaths.push(localPath)
+        },
+      } as never,
+      agent: { cancel: async () => {}, getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+        closeByCwd: () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => {
+        refreshed.push("done")
+        return []
+      },
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "project-hide-1",
+        command: { type: "project.hide", localPath: "/tmp/project-1" },
+      })
+    )
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(hiddenPaths).toEqual(["/tmp/project-1"])
+    expect(refreshed).toEqual(["done"])
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "project-hide-1",
+      },
+    ])
+  })
+
+  test("passes an omitted feature description to the store as an empty string", async () => {
+    const createFeatureCalls: Array<{ projectId: string; title: string; description: string }> = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+        createFeature: async (projectId: string, title: string, description: string) => {
+          createFeatureCalls.push({ projectId, title, description })
+          return { id: "feature-1" }
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "feature-create-1",
+        command: {
+          type: "feature.create",
+          projectId: "project-1",
+          title: "Feature Name",
+        },
+      })
+    )
+
+    expect(createFeatureCalls).toEqual([
+      {
+        projectId: "project-1",
+        title: "Feature Name",
+        description: "",
+      },
+    ])
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "feature-create-1",
+        result: { featureId: "feature-1" },
+      },
+    ])
+  })
+
+  test("routes feature browser state updates to the store", async () => {
+    const calls: Array<{ featureId: string; browserState: string }> = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+        setFeatureBrowserState: async (featureId: string, browserState: string) => {
+          calls.push({ featureId, browserState })
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "feature-browser-state-1",
+        command: {
+          type: "feature.setBrowserState",
+          featureId: "feature-1",
+          browserState: "CLOSED",
+        },
+      })
+    )
+
+    expect(calls).toEqual([{ featureId: "feature-1", browserState: "CLOSED" }])
+    expect(ws.sent).toEqual([{ v: PROTOCOL_VERSION, type: "ack", id: "feature-browser-state-1" }])
+  })
+
+  test("updates .gitignore commit mode using a local project path", async () => {
+    const calls: Array<{ localPath: string; commitKanna: boolean }> = []
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: {
+        async setKannaDirectoryCommitMode(localPath: string, commitKanna: boolean) {
+          calls.push({ localPath, commitKanna })
+        },
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "project-gitignore-1",
+        command: {
+          type: "project.setKannaDirectoryCommitMode",
+          localPath: "/tmp/project-1",
+          commitKanna: false,
+        },
+      })
+    )
+
+    await Promise.resolve()
+    expect(calls).toEqual([{ localPath: "/tmp/project-1", commitKanna: false }])
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "project-gitignore-1",
+      },
+    ])
+  })
+
   test("subscribes to keybindings snapshots and writes keybindings through the router", async () => {
     const initialSnapshot: KeybindingsSnapshot = DEFAULT_KEYBINDINGS_SNAPSHOT
     const keybindings = {
@@ -191,13 +443,18 @@ describe("ws-router", () => {
     }
 
     const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+        getMessages: () => [],
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
       } as never,
       keybindings: keybindings as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -234,6 +491,7 @@ describe("ws-router", () => {
         command: {
           type: "settings.writeKeybindings",
           bindings: {
+            submitChatMessage: ["shift+enter"],
             toggleEmbeddedTerminal: ["cmd+k"],
             toggleRightSidebar: ["ctrl+shift+b"],
             openInFinder: ["cmd+shift+g"],
@@ -251,6 +509,7 @@ describe("ws-router", () => {
       id: "keybindings-write-1",
       result: {
         bindings: {
+          submitChatMessage: ["shift+enter"],
           toggleEmbeddedTerminal: ["cmd+k"],
           toggleRightSidebar: ["ctrl+shift+b"],
           openInFinder: ["cmd+shift+g"],
@@ -293,7 +552,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -302,6 +561,7 @@ describe("ws-router", () => {
         getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
         onChange: () => () => {},
       } as never,
+      git: new GitManager(),
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
       machineDisplayName: "Local Machine",
@@ -382,6 +642,489 @@ describe("ws-router", () => {
         userTitle: "Update not live yet",
         userMessage: "This update is still propagating. Try again in a few minutes.",
       },
+    })
+  })
+
+  test("project.open returns the newest existing chat when the project already has history", async () => {
+    const chatState = new Map<string, {
+      id: string
+      projectId: string
+      provider: "claude" | "codex" | null
+      sessionToken: string | null
+      title: string
+      updatedAt: number
+      lastMessageAt?: number
+    }>()
+
+    chatState.set("chat-existing", {
+      id: "chat-existing",
+      projectId: "project-1",
+      provider: "claude",
+      sessionToken: "session-1",
+      title: "Recovered chat",
+      updatedAt: 10,
+      lastMessageAt: 10,
+    })
+
+    const store = {
+      state: createEmptyState(),
+      unhideProject: async () => {},
+      openProject: async () => ({
+        id: "project-1",
+        repoKey: "path:/tmp/project-1",
+        localPath: "/tmp/project-1",
+        worktreePaths: ["/tmp/project-1"],
+        title: "project-1",
+      }),
+      reconcileProjectFeatureState: async () => 0,
+      isProjectHidden: () => false,
+      listChatsByProject: () => [...chatState.values()].sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt)),
+      createChat: async (projectId: string) => {
+        const next = {
+          id: `chat-${chatState.size + 1}`,
+          projectId,
+          provider: null,
+          sessionToken: null,
+          title: "New Chat",
+          updatedAt: chatState.size + 1,
+        }
+        chatState.set(next.id, next)
+        return next
+      },
+      renameChat: async (chatId: string, title: string) => {
+        const chat = chatState.get(chatId)
+        if (chat) chat.title = title
+      },
+      setChatProvider: async (chatId: string, provider: "claude" | "codex") => {
+        const chat = chatState.get(chatId)
+        if (chat) chat.provider = provider
+      },
+      setSessionToken: async (chatId: string, sessionToken: string | null) => {
+        const chat = chatState.get(chatId)
+        if (chat) chat.sessionToken = sessionToken
+      },
+      getChat: (chatId: string) => chatState.get(chatId) ?? null,
+      getMessages: () => [],
+      appendMessage: async (chatId: string, entry: any) => {
+        const chat = chatState.get(chatId)
+        if (!chat) return
+        chat.updatedAt = entry.createdAt
+        if (entry.kind === "user_prompt") {
+          chat.lastMessageAt = entry.createdAt
+        }
+      },
+    }
+
+    const router = createWsRouter({
+      store: store as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "project-1")
+    mkdirSync(projectDir, { recursive: true })
+    const originalHome = process.env.HOME
+    process.env.HOME = homeDir
+
+    try {
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "project-open-1",
+          command: { type: "project.open", localPath: projectDir },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } finally {
+      process.env.HOME = originalHome
+      cleanupTempDirs()
+    }
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "project-open-1",
+        result: {
+          projectId: "project-1",
+          chatId: "chat-existing",
+          importedChats: 0,
+        },
+      },
+    ])
+  })
+
+  test("project.open rejects missing directories instead of creating them", async () => {
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    const homeDir = makeTempDir()
+    const missingProjectDir = path.join(homeDir, "missing-project")
+    const originalHome = process.env.HOME
+    process.env.HOME = homeDir
+
+    try {
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "project-open-missing",
+          command: { type: "project.open", localPath: missingProjectDir },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } finally {
+      process.env.HOME = originalHome
+      cleanupTempDirs()
+    }
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "error",
+        id: "project-open-missing",
+        message: `Project folder not found: ${missingProjectDir}`,
+      },
+    ])
+  })
+
+  test("system.listDirectory returns browsable host directories", async () => {
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        getChat: () => null,
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      git: new GitManager(),
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    const homeDir = makeTempDir()
+    const childDir = path.join(homeDir, "alpha")
+    mkdirSync(childDir, { recursive: true })
+
+    try {
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "list-directory-1",
+          command: { type: "system.listDirectory", localPath: homeDir },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    } finally {
+      cleanupTempDirs()
+    }
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "list-directory-1",
+        result: {
+          currentPath: homeDir,
+          parentPath: path.dirname(homeDir) === homeDir ? null : path.dirname(homeDir),
+          roots: [
+            { name: "Home", localPath: homedir() },
+            { name: "/", localPath: "/" },
+          ],
+          entries: [
+            { name: "alpha", localPath: childDir },
+          ],
+        },
+      },
+    ])
+  })
+
+  describe("chat.create reuses empty chats", () => {
+    function createChatTestRouter(chatState: Map<string, {
+      id: string
+      projectId: string
+      provider: "claude" | "codex" | null
+      sessionToken: string | null
+      title: string
+      updatedAt: number
+      lastMessageAt?: number
+      featureId?: string | null
+    }>) {
+      const store = {
+        state: createEmptyState(),
+        getChat: (chatId: string) => chatState.get(chatId) ?? null,
+        listChatsByProject: (projectId: string) =>
+          [...chatState.values()]
+            .filter((chat) => chat.projectId === projectId)
+            .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt)),
+        createChat: async (projectId: string, featureId?: string) => {
+          const next = {
+            id: `chat-${chatState.size + 1}`,
+            projectId,
+            provider: null as null,
+            sessionToken: null as null,
+            title: "New Chat",
+            updatedAt: Date.now(),
+            ...(featureId ? { featureId } : {}),
+          }
+          chatState.set(next.id, next)
+          return next
+        },
+      }
+
+      const router = createWsRouter({
+        store: store as never,
+        agent: { getActiveStatuses: () => new Map(), getLiveUsage: () => null } as never,
+        terminals: {
+          getSnapshot: () => null,
+          onEvent: () => () => {},
+        } as never,
+        keybindings: {
+          getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+          onChange: () => () => {},
+        } as never,
+        git: new GitManager(),
+        refreshDiscovery: async () => [],
+        getDiscoveredProjects: () => [],
+        machineDisplayName: "Local Machine",
+        updateManager: null,
+      })
+
+      return { router, store }
+    }
+
+    test("reuses existing empty general chat", async () => {
+      const chatState = new Map()
+      chatState.set("chat-empty", {
+        id: "chat-empty",
+        projectId: "project-1",
+        provider: null,
+        sessionToken: null,
+        title: "New Chat",
+        updatedAt: 100,
+      })
+
+      const { router } = createChatTestRouter(chatState)
+      const ws = new FakeWebSocket()
+
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "create-1",
+          command: { type: "chat.create", projectId: "project-1" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(ws.sent).toEqual([
+        { v: PROTOCOL_VERSION, type: "ack", id: "create-1", result: { chatId: "chat-empty" } },
+      ])
+      expect(chatState.size).toBe(1)
+    })
+
+    test("creates new chat when existing chat has messages", async () => {
+      const chatState = new Map()
+      chatState.set("chat-used", {
+        id: "chat-used",
+        projectId: "project-1",
+        provider: null,
+        sessionToken: null,
+        title: "Used Chat",
+        updatedAt: 100,
+        lastMessageAt: 100,
+      })
+
+      const { router } = createChatTestRouter(chatState)
+      const ws = new FakeWebSocket()
+
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "create-1",
+          command: { type: "chat.create", projectId: "project-1" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(ws.sent).toEqual([
+        { v: PROTOCOL_VERSION, type: "ack", id: "create-1", result: { chatId: "chat-2" } },
+      ])
+      expect(chatState.size).toBe(2)
+    })
+
+    test("reuses empty feature chat with matching featureId", async () => {
+      const chatState = new Map()
+      chatState.set("chat-feature-empty", {
+        id: "chat-feature-empty",
+        projectId: "project-1",
+        provider: null,
+        sessionToken: null,
+        title: "New Chat",
+        updatedAt: 100,
+        featureId: "feature-1",
+      })
+
+      const { router } = createChatTestRouter(chatState)
+      const ws = new FakeWebSocket()
+
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "create-1",
+          command: { type: "chat.create", projectId: "project-1", featureId: "feature-1" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(ws.sent).toEqual([
+        { v: PROTOCOL_VERSION, type: "ack", id: "create-1", result: { chatId: "chat-feature-empty" } },
+      ])
+      expect(chatState.size).toBe(1)
+    })
+
+    test("does not reuse empty chat from a different feature", async () => {
+      const chatState = new Map()
+      chatState.set("chat-feature-1", {
+        id: "chat-feature-1",
+        projectId: "project-1",
+        provider: null,
+        sessionToken: null,
+        title: "New Chat",
+        updatedAt: 100,
+        featureId: "feature-1",
+      })
+
+      const { router } = createChatTestRouter(chatState)
+      const ws = new FakeWebSocket()
+
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "create-1",
+          command: { type: "chat.create", projectId: "project-1", featureId: "feature-2" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(ws.sent).toEqual([
+        { v: PROTOCOL_VERSION, type: "ack", id: "create-1", result: { chatId: "chat-2" } },
+      ])
+      expect(chatState.size).toBe(2)
+    })
+
+    test("does not reuse empty general chat for feature request", async () => {
+      const chatState = new Map()
+      chatState.set("chat-general", {
+        id: "chat-general",
+        projectId: "project-1",
+        provider: null,
+        sessionToken: null,
+        title: "New Chat",
+        updatedAt: 100,
+      })
+
+      const { router } = createChatTestRouter(chatState)
+      const ws = new FakeWebSocket()
+
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "create-1",
+          command: { type: "chat.create", projectId: "project-1", featureId: "feature-1" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(ws.sent).toEqual([
+        { v: PROTOCOL_VERSION, type: "ack", id: "create-1", result: { chatId: "chat-2" } },
+      ])
+      expect(chatState.size).toBe(2)
+    })
+
+    test("creates new chat when no chats exist", async () => {
+      const chatState = new Map()
+
+      const { router } = createChatTestRouter(chatState)
+      const ws = new FakeWebSocket()
+
+      router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "create-1",
+          command: { type: "chat.create", projectId: "project-1" },
+        })
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(ws.sent).toEqual([
+        { v: PROTOCOL_VERSION, type: "ack", id: "create-1", result: { chatId: "chat-1" } },
+      ])
+      expect(chatState.size).toBe(1)
     })
   })
 })

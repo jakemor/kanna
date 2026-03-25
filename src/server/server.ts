@@ -2,16 +2,21 @@ import path from "node:path"
 import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { ATTACHMENTS_ROUTE_PREFIX, resolveAttachmentPath } from "./attachments"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
+import { GitManager } from "./git-manager"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
+import { listProjectDirectories } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
+import { importProjectHistory } from "./recovery"
 import { createWsRouter, type ClientState } from "./ws-router"
 
 export interface StartKannaServerOptions {
   port?: number
+  host?: string
   strictPort?: boolean
   update?: {
     version: string
@@ -22,14 +27,24 @@ export interface StartKannaServerOptions {
 
 export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const port = options.port ?? 3210
+  const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const store = new EventStore()
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
+  for (const project of store.listProjects()) {
+    await importProjectHistory({
+      store,
+      projectId: project.id,
+      repoKey: project.repoKey,
+      localPath: project.localPath,
+      worktreePaths: project.worktreePaths,
+    })
+  }
   let discoveredProjects: DiscoveredProject[] = []
 
   async function refreshDiscovery() {
-    discoveredProjects = discoverProjects()
+    discoveredProjects = discoverProjects().filter((project) => !store.isProjectHidden(project.repoKey))
     return discoveredProjects
   }
 
@@ -38,6 +53,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   let server: ReturnType<typeof Bun.serve<ClientState>>
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
+  const git = new GitManager()
   const keybindings = new KeybindingsManager()
   await keybindings.initialize()
   const updateManager = options.update
@@ -53,11 +69,13 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     onStateChange: () => {
       router.broadcastSnapshots()
     },
+    attachmentsDir: path.join(store.dataDir, "attachments"),
   })
   router = createWsRouter({
     store,
     agent,
     terminals,
+    git,
     keybindings,
     refreshDiscovery,
     getDiscoveredProjects: () => discoveredProjects,
@@ -74,6 +92,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     try {
       server = Bun.serve<ClientState>({
         port: actualPort,
+        hostname,
         fetch(req, serverInstance) {
           const url = new URL(req.url)
 
@@ -88,6 +107,14 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
           if (url.pathname === "/health") {
             return Response.json({ ok: true, port: actualPort })
+          }
+
+          if (url.pathname === "/api/directories") {
+            return serveDirectories(url)
+          }
+
+          if (url.pathname.startsWith(`${ATTACHMENTS_ROUTE_PREFIX}/`)) {
+            return serveAttachment(path.join(store.dataDir, "attachments"), url.pathname)
           }
 
           return serveStatic(distDir, url.pathname)
@@ -132,6 +159,32 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     store,
     updateManager,
     stop: shutdown,
+  }
+}
+
+async function serveAttachment(attachmentsDir: string, pathname: string) {
+  const relativePath = pathname.slice(`${ATTACHMENTS_ROUTE_PREFIX}/`.length)
+  const filePath = resolveAttachmentPath(attachmentsDir, decodeURIComponent(relativePath))
+  if (!filePath) {
+    return new Response("Invalid attachment path", { status: 400 })
+  }
+
+  const file = Bun.file(filePath)
+  if (!(await file.exists())) {
+    return new Response("Not Found", { status: 404 })
+  }
+
+  return new Response(file)
+}
+
+async function serveDirectories(url: URL) {
+  try {
+    const localPath = url.searchParams.get("path") ?? undefined
+    const snapshot = await listProjectDirectories(localPath)
+    return Response.json(snapshot)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return Response.json({ error: message }, { status: 400 })
   }
 }
 

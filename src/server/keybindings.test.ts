@@ -22,17 +22,23 @@ async function createTempFilePath() {
 describe("normalizeKeybindings", () => {
   test("falls back to defaults for invalid entries", () => {
     const snapshot = normalizeKeybindings({
+      submitChatMessage: [],
+      toggleProjectsSidebar: [],
       toggleEmbeddedTerminal: [],
       toggleRightSidebar: "Ctrl+B",
     }, TEST_FILE_PATH)
 
     expect(snapshot.bindings).toEqual(DEFAULT_KEYBINDINGS)
+    expect(snapshot.warning).toContain("submitChatMessage")
+    expect(snapshot.warning).toContain("toggleProjectsSidebar")
     expect(snapshot.warning).toContain("toggleEmbeddedTerminal")
     expect(snapshot.warning).toContain("toggleRightSidebar")
   })
 
   test("keeps valid shortcut arrays", () => {
     const snapshot = normalizeKeybindings({
+      submitChatMessage: [" Shift+Enter "],
+      toggleProjectsSidebar: [" Ctrl+A "],
       toggleEmbeddedTerminal: [" Cmd+K ", "Ctrl+`"],
       toggleRightSidebar: ["Ctrl+Shift+B"],
       openInFinder: ["Cmd+Alt+F"],
@@ -42,6 +48,8 @@ describe("normalizeKeybindings", () => {
 
     expect(snapshot).toEqual({
       bindings: {
+        submitChatMessage: ["shift+enter"],
+        toggleProjectsSidebar: ["ctrl+a"],
         toggleEmbeddedTerminal: ["cmd+k", "ctrl+`"],
         toggleRightSidebar: ["ctrl+shift+b"],
         openInFinder: ["cmd+alt+f"],
@@ -92,6 +100,8 @@ describe("KeybindingsManager", () => {
 
     await manager.initialize()
     const snapshot = await manager.write({
+      submitChatMessage: ["Shift+Enter"],
+      toggleProjectsSidebar: ["Ctrl+A"],
       toggleEmbeddedTerminal: ["Cmd+K"],
       toggleRightSidebar: ["Ctrl+Shift+B"],
       openInFinder: ["Cmd+Alt+F"],
@@ -101,6 +111,8 @@ describe("KeybindingsManager", () => {
 
     expect(snapshot).toEqual({
       bindings: {
+        submitChatMessage: ["shift+enter"],
+        toggleProjectsSidebar: ["ctrl+a"],
         toggleEmbeddedTerminal: ["cmd+k"],
         toggleRightSidebar: ["ctrl+shift+b"],
         openInFinder: ["cmd+alt+f"],

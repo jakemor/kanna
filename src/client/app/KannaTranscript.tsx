@@ -87,7 +87,7 @@ export function KannaTranscript({
 
   function renderMessage(message: HydratedTranscriptMessage, index: number): React.ReactNode {
     if (message.kind === "user_prompt") {
-      return <UserMessage key={message.id} content={message.content} />
+      return <UserMessage key={message.id} content={message.content} attachments={message.attachments} />
     }
 
     switch (message.kind) {

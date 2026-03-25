@@ -6,11 +6,14 @@ import type { AgentCoordinator } from "./agent"
 import type { DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
+import { GitManager } from "./git-manager"
 import { KeybindingsManager } from "./keybindings"
-import { ensureProjectDirectory } from "./paths"
+import { listProjectDirectories, requireProjectDirectory, ensureProjectDirectory } from "./paths"
+import { importProjectHistory } from "./recovery"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import { applyThreadEstimate, mergeUsageSnapshots, reconstructClaudeUsage, reconstructCodexUsageFromFile } from "./usage"
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
@@ -20,6 +23,7 @@ interface CreateWsRouterArgs {
   store: EventStore
   agent: AgentCoordinator
   terminals: TerminalManager
+  git: GitManager
   keybindings: KeybindingsManager
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
@@ -35,6 +39,7 @@ export function createWsRouter({
   store,
   agent,
   terminals,
+  git,
   keybindings,
   refreshDiscovery,
   getDiscoveredProjects,
@@ -121,7 +126,20 @@ export function createWsRouter({
       id,
       snapshot: {
         type: "chat",
-        data: deriveChatSnapshot(store.state, agent.getActiveStatuses(), topic.chatId),
+        data: (() => {
+          const chat = store.getChat(topic.chatId)
+          const messages = chat ? store.getMessages(topic.chatId) : []
+          const reconstructed = !chat?.provider
+            ? null
+            : chat.provider === "codex"
+              ? (chat.sessionToken ? reconstructCodexUsageFromFile(chat.sessionToken) : null)
+              : reconstructClaudeUsage(messages, null)
+          const usage = applyThreadEstimate(
+            mergeUsageSnapshots(reconstructed, agent.getLiveUsage(topic.chatId)),
+            messages
+          )
+          return deriveChatSnapshot(store.state, agent.getActiveStatuses(), topic.chatId, usage)
+        })(),
       },
     }
   }
@@ -191,6 +209,11 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }
+        case "system.listDirectory": {
+          const directory = await listProjectDirectories(command.localPath)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: directory })
+          return
+        }
         case "update.check": {
           const snapshot = updateManager
             ? await updateManager.checkForUpdates({ force: command.force })
@@ -229,17 +252,53 @@ export function createWsRouter({
           return
         }
         case "project.open": {
-          await ensureProjectDirectory(command.localPath)
+          await requireProjectDirectory(command.localPath)
+          await store.unhideProject(command.localPath)
           const project = await store.openProject(command.localPath)
+          const imported = await importProjectHistory({
+            store,
+            projectId: project.id,
+            repoKey: project.repoKey,
+            localPath: project.localPath,
+            worktreePaths: project.worktreePaths,
+          })
+          await store.reconcileProjectFeatureState(project.id)
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          send(ws, {
+            v: PROTOCOL_VERSION,
+            type: "ack",
+            id,
+            result: {
+              projectId: project.id,
+              chatId: imported.newestChatId,
+              importedChats: imported.importedChats,
+            },
+          })
           break
         }
         case "project.create": {
           await ensureProjectDirectory(command.localPath)
+          await store.unhideProject(command.localPath)
           const project = await store.openProject(command.localPath, command.title)
+          const imported = await importProjectHistory({
+            store,
+            projectId: project.id,
+            repoKey: project.repoKey,
+            localPath: project.localPath,
+            worktreePaths: project.worktreePaths,
+          })
+          await store.reconcileProjectFeatureState(project.id)
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          send(ws, {
+            v: PROTOCOL_VERSION,
+            type: "ack",
+            id,
+            result: {
+              projectId: project.id,
+              chatId: imported.newestChatId,
+              importedChats: imported.importedChats,
+            },
+          })
           break
         }
         case "project.remove": {
@@ -248,9 +307,38 @@ export function createWsRouter({
             await agent.cancel(chat.id)
           }
           if (project) {
-            terminals.closeByCwd(project.localPath)
+            for (const worktreePath of project.worktreePaths) {
+              terminals.closeByCwd(worktreePath)
+            }
+            await store.hideProject(project.localPath)
           }
-          await store.removeProject(command.projectId)
+          await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "project.hide": {
+          const existingProject = store.listProjects().find((project) => project.localPath === command.localPath)
+          if (existingProject) {
+            for (const chat of store.listChatsByProject(existingProject.id)) {
+              await agent.cancel(chat.id)
+            }
+            for (const worktreePath of existingProject.worktreePaths) {
+              terminals.closeByCwd(worktreePath)
+            }
+          }
+          await store.hideProject(command.localPath)
+          await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "project.setKannaDirectoryCommitMode": {
+          const localPath = command.projectId
+            ? store.getProject(command.projectId)?.localPath
+            : command.localPath
+          if (!localPath) {
+            throw new Error("Project not found")
+          }
+          await git.setKannaDirectoryCommitMode(localPath, command.commitKanna)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
@@ -259,9 +347,52 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "feature.create": {
+          const feature = await store.createFeature(command.projectId, command.title, command.description ?? "")
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { featureId: feature.id } })
+          break
+        }
+        case "feature.rename": {
+          await store.renameFeature(command.featureId, command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.setBrowserState": {
+          await store.setFeatureBrowserState(command.featureId, command.browserState)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.setStage": {
+          await store.setFeatureStage(command.featureId, command.stage)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.reorder": {
+          await store.reorderFeatures(command.projectId, command.orderedFeatureIds)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "feature.delete": {
+          await store.deleteFeature(command.featureId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
         case "chat.create": {
-          const chat = await store.createChat(command.projectId)
+          // Reuse an existing empty chat for this project+feature if one exists
+          const existingChats = store.listChatsByProject(command.projectId)
+          const emptyChat = existingChats.find((chat) => {
+            if (chat.lastMessageAt != null) return false
+            const chatFeatureId = chat.featureId ?? undefined
+            return chatFeatureId === (command.featureId ?? undefined)
+          })
+
+          const chat = emptyChat ?? await store.createChat(command.projectId, command.featureId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
+          break
+        }
+        case "chat.setFeature": {
+          await store.setChatFeature(command.chatId, command.featureId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
         case "chat.rename": {
@@ -319,6 +450,27 @@ export function createWsRouter({
           terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           pushTerminalSnapshot(command.terminalId)
+          return
+        }
+        case "git.getBranches": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          const result = await git.getBranches(project.localPath)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "git.switchBranch": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          const result = await git.switchBranch(project.localPath, command.branchName)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "git.createBranch": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          const result = await git.createBranch(project.localPath, command.branchName, command.checkout)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
       }

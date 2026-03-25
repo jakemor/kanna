@@ -9,6 +9,7 @@ export interface ProjectRightSidebarLayout {
 interface RightSidebarState {
   projects: Record<string, ProjectRightSidebarLayout>
   toggleVisibility: (projectId: string) => void
+  setVisibility: (projectId: string, isVisible: boolean) => void
   setSize: (projectId: string, size: number) => void
   clearProject: (projectId: string) => void
 }
@@ -64,6 +65,16 @@ export const useRightSidebarStore = create<RightSidebarState>()(
             [projectId]: {
               ...getProjectLayout(state.projects, projectId),
               isVisible: !getProjectLayout(state.projects, projectId).isVisible,
+            },
+          },
+        })),
+      setVisibility: (projectId, isVisible) =>
+        set((state) => ({
+          projects: {
+            ...state.projects,
+            [projectId]: {
+              ...getProjectLayout(state.projects, projectId),
+              isVisible,
             },
           },
         })),

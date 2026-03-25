@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import {
   getActiveChatSnapshot,
   getNewestRemainingChatId,
+  getProjectIdForChat,
+  getTranscriptPaddingBottom,
   getUiUpdateRestartReconnectAction,
   resolveComposeIntent,
   shouldPinTranscriptToBottom,
@@ -13,8 +15,10 @@ function createSidebarData(): SidebarData {
     projectGroups: [
       {
         groupKey: "project-1",
+        title: "project-1",
         localPath: "/tmp/project-1",
-        chats: [
+        features: [],
+        generalChats: [
           {
             _id: "row-1",
             _creationTime: 3,
@@ -52,8 +56,10 @@ function createSidebarData(): SidebarData {
       },
       {
         groupKey: "project-2",
+        title: "project-2",
         localPath: "/tmp/project-2",
-        chats: [
+        features: [],
+        generalChats: [
           {
             _id: "row-4",
             _creationTime: 1,
@@ -91,6 +97,20 @@ describe("getNewestRemainingChatId", () => {
   })
 })
 
+describe("getProjectIdForChat", () => {
+  test("returns the owning project for a chat", () => {
+    const sidebarData = createSidebarData()
+
+    expect(getProjectIdForChat(sidebarData.projectGroups, "chat-2")).toBe("project-1")
+  })
+
+  test("returns null when the chat is not found", () => {
+    const sidebarData = createSidebarData()
+
+    expect(getProjectIdForChat(sidebarData.projectGroups, "missing")).toBeNull()
+  })
+})
+
 describe("shouldPinTranscriptToBottom", () => {
   test("returns true when the transcript is at the bottom", () => {
     expect(shouldPinTranscriptToBottom(0)).toBe(true)
@@ -102,6 +122,16 @@ describe("shouldPinTranscriptToBottom", () => {
 
   test("returns false when the transcript is not near the bottom", () => {
     expect(shouldPinTranscriptToBottom(120)).toBe(false)
+  })
+})
+
+describe("getTranscriptPaddingBottom", () => {
+  test("keeps a minimum spacer when the composer has not been measured yet", () => {
+    expect(getTranscriptPaddingBottom(0)).toBe(136)
+  })
+
+  test("tracks the measured composer height once it grows past the minimum", () => {
+    expect(getTranscriptPaddingBottom(160)).toBe(184)
   })
 })
 

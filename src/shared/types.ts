@@ -1,4 +1,4 @@
-export const STORE_VERSION = 2 as const
+export const STORE_VERSION = 3 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex"
@@ -82,7 +82,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "claude",
     label: "Claude",
-    defaultModel: "opus",
+    defaultModel: "sonnet",
     defaultEffort: "high",
     supportsPlanMode: true,
     models: [
@@ -121,10 +121,39 @@ export type KannaStatus =
   | "waiting_for_user"
   | "failed"
 
+export const FEATURE_STAGES = ["idea", "todo", "progress", "testing", "done"] as const
+export type FeatureStage = (typeof FEATURE_STAGES)[number]
+export const FEATURE_BROWSER_STATES = ["OPEN", "CLOSED"] as const
+export type FeatureBrowserState = (typeof FEATURE_BROWSER_STATES)[number]
+
+export const FEATURE_STAGE_LABELS: Record<FeatureStage, string> = {
+  idea: "IDEA",
+  todo: "TODO",
+  progress: "PROGRESS",
+  testing: "TESTING",
+  done: "DONE",
+}
+
 export interface ProjectSummary {
   id: string
+  repoKey: string
   localPath: string
+  worktreePaths: string[]
   title: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface FeatureSummary {
+  id: string
+  projectId: string
+  title: string
+  description: string
+  browserState: FeatureBrowserState
+  stage: FeatureStage
+  sortOrder: number
+  directoryRelativePath: string
+  overviewRelativePath: string
   createdAt: number
   updatedAt: number
 }
@@ -139,12 +168,28 @@ export interface SidebarChatRow {
   provider: AgentProvider | null
   lastMessageAt?: number
   hasAutomation: boolean
+  featureId?: string | null
+}
+
+export interface SidebarFeatureRow {
+  featureId: string
+  title: string
+  description: string
+  browserState: FeatureBrowserState
+  stage: FeatureStage
+  sortOrder: number
+  directoryRelativePath: string
+  overviewRelativePath: string
+  updatedAt: number
+  chats: SidebarChatRow[]
 }
 
 export interface SidebarProjectGroup {
   groupKey: string
+  title: string
   localPath: string
-  chats: SidebarChatRow[]
+  features: SidebarFeatureRow[]
+  generalChats: SidebarChatRow[]
 }
 
 export interface SidebarData {
@@ -159,12 +204,31 @@ export interface LocalProjectSummary {
   chatCount: number
 }
 
+export interface DirectoryBrowserEntry {
+  name: string
+  localPath: string
+}
+
+export interface DirectoryBrowserSnapshot {
+  currentPath: string
+  parentPath: string | null
+  roots: DirectoryBrowserEntry[]
+  entries: DirectoryBrowserEntry[]
+}
+
+export interface SuggestedProjectFolder {
+  label: string
+  localPath: string
+}
+
 export interface LocalProjectsSnapshot {
   machine: {
     id: "local"
     displayName: string
   }
   projects: LocalProjectSummary[]
+  suggestedFolders: SuggestedProjectFolder[]
+  rootDirectory: DirectoryBrowserSnapshot | null
 }
 
 export type UpdateStatus =
@@ -200,6 +264,8 @@ export interface UpdateInstallResult {
 }
 
 export type KeybindingAction =
+  | "submitChatMessage"
+  | "toggleProjectsSidebar"
   | "toggleEmbeddedTerminal"
   | "toggleRightSidebar"
   | "openInFinder"
@@ -207,6 +273,8 @@ export type KeybindingAction =
   | "addSplitTerminal"
 
 export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
+  submitChatMessage: ["enter"],
+  toggleProjectsSidebar: ["ctrl+a"],
   toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
   toggleRightSidebar: ["cmd+b", "ctrl+b"],
   openInFinder: ["cmd+alt+f", "ctrl+alt+f"],
@@ -254,6 +322,46 @@ export interface TodoItem {
   status: "pending" | "in_progress" | "completed"
   activeForm: string
 }
+
+export const MAX_CHAT_ATTACHMENTS = 8
+export const MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
+export const SUPPORTED_CHAT_IMAGE_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+] as const
+
+export interface ChatImageAttachment {
+  type: "image"
+  id: string
+  name: string
+  mimeType: string
+  sizeBytes: number
+  relativePath: string
+}
+
+export interface ChatImageAttachmentUpload {
+  type: "image"
+  name: string
+  mimeType: string
+  sizeBytes: number
+  dataUrl: string
+}
+
+export type ChatAttachment = ChatImageAttachment
+export type ChatAttachmentUpload = ChatImageAttachmentUpload
+
+export interface ChatUserMessage {
+  text: string
+  attachments?: ChatAttachmentUpload[]
+}
+
+export interface HydratedChatImageAttachment extends ChatImageAttachment {
+  previewUrl: string
+}
+
+export type HydratedChatAttachment = HydratedChatImageAttachment
 
 interface TranscriptEntryBase {
   _id: string
@@ -340,6 +448,7 @@ export interface ToolResultEntry extends TranscriptEntryBase {
 export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
+  attachments?: ChatAttachment[]
 }
 
 export interface SystemInitEntry extends TranscriptEntryBase {
@@ -502,7 +611,7 @@ export type HydratedToolCall =
   | HydratedUnknownToolCall
 
 export type HydratedTranscriptMessage =
-  | ({ kind: "user_prompt"; content: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "user_prompt"; content: string; attachments?: HydratedChatAttachment[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -526,9 +635,34 @@ export interface ChatRuntime {
   sessionToken: string | null
 }
 
+export type ChatUsageWarning =
+  | "context_warning"
+  | "context_critical"
+  | "rate_warning"
+  | "rate_critical"
+  | "stale"
+
+export interface ChatUsageSnapshot {
+  provider: AgentProvider
+  threadTokens: number | null
+  contextWindowTokens: number | null
+  contextUsedPercent: number | null
+  lastTurnTokens: number | null
+  inputTokens: number | null
+  outputTokens: number | null
+  cachedInputTokens: number | null
+  reasoningOutputTokens?: number | null
+  sessionLimitUsedPercent: number | null
+  rateLimitResetAt: number | null
+  source: "live" | "reconstructed" | "unavailable"
+  updatedAt: number | null
+  warnings: ChatUsageWarning[]
+}
+
 export interface ChatSnapshot {
   runtime: ChatRuntime
   messages: TranscriptEntry[]
+  usage?: ChatUsageSnapshot | null
   availableProviders: ProviderCatalogEntry[]
 }
 

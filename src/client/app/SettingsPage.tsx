@@ -12,6 +12,7 @@ import {
   Settings2,
   Sun,
   CloudDownload,
+  X,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -46,6 +47,7 @@ import {
   useTerminalPreferencesStore,
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import { useFeatureSettingsStore } from "../stores/featureSettingsStore"
 import type { KannaState } from "./useKannaState"
 
 const sidebarItems = [
@@ -146,6 +148,20 @@ export function getGeneralHeaderAction(updateSnapshot: UpdateSnapshot | null) {
     spinning: isChecking,
     variant: "outline" as const,
   }
+}
+
+export function getSettingsCloseTarget(historyState: unknown): "back" | "home" {
+  if (
+    historyState
+    && typeof historyState === "object"
+    && "idx" in historyState
+    && typeof historyState.idx === "number"
+    && historyState.idx > 0
+  ) {
+    return "back"
+  }
+
+  return "home"
 }
 
 export function resetSettingsPageChangelogCache() {
@@ -391,6 +407,12 @@ export function SettingsPage() {
   const setProviderDefaultModel = useChatPreferencesStore((store) => store.setProviderDefaultModel)
   const setProviderDefaultModelOptions = useChatPreferencesStore((store) => store.setProviderDefaultModelOptions)
   const setProviderDefaultPlanMode = useChatPreferencesStore((store) => store.setProviderDefaultPlanMode)
+  const folderGroupsEnabled = useFeatureSettingsStore((store) => store.folderGroupsEnabled)
+  const kanbanStatusesEnabled = useFeatureSettingsStore((store) => store.kanbanStatusesEnabled)
+  const commitKannaDirectory = useFeatureSettingsStore((store) => store.commitKannaDirectory)
+  const setFolderGroupsEnabled = useFeatureSettingsStore((store) => store.setFolderGroupsEnabled)
+  const setKanbanStatusesEnabled = useFeatureSettingsStore((store) => store.setKanbanStatusesEnabled)
+  const setCommitKannaDirectory = useFeatureSettingsStore((store) => store.setCommitKannaDirectory)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
@@ -499,12 +521,12 @@ export function SettingsPage() {
     setEditorCommandTemplate(editorCommandDraft)
   }
 
-  async function commitKeybindings() {
+  async function commitKeybindings(source = keybindingDrafts) {
     try {
       setKeybindingsError(null)
       await state.socket.command({
         type: "settings.writeKeybindings",
-        bindings: buildKeybindingPayload(keybindingDrafts),
+        bindings: buildKeybindingPayload(source),
       })
     } catch (error) {
       setKeybindingsError(error instanceof Error ? error.message : "Unable to save keybindings.")
@@ -555,6 +577,48 @@ export function SettingsPage() {
       ? getKeybindingsSubtitle(keybindingsFilePathDisplay)
       : selectedSection.subtitle
   const showFooter = !isConnecting
+  const sectionHeaderAction = selectedPage === "keybindings"
+    ? (
+        <SettingsHeaderButton
+          onClick={() => {
+            void state.handleOpenExternalPath("open_editor", keybindingsFilePathDisplay)
+          }}
+          icon={<Code className="h-4 w-4" />}
+        >
+          Open in {state.editorLabel}
+        </SettingsHeaderButton>
+      )
+    : selectedPage === "general"
+      ? (
+          <SettingsHeaderButton
+            variant={generalHeaderAction.variant}
+            onClick={() => {
+              if (generalHeaderAction.kind === "update") {
+                void state.handleInstallUpdate()
+                return
+              }
+              void state.handleCheckForUpdates({ force: true })
+            }}
+            disabled={generalHeaderAction.disabled}
+            icon={generalHeaderAction.kind === "check"
+              ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
+              : generalHeaderAction.kind === "update"
+                ? <CloudDownload className={cn("size-3.5")} />
+                : undefined}
+          >
+            {generalHeaderAction.label}
+          </SettingsHeaderButton>
+        )
+      : null
+
+  function handleCloseSettings() {
+    if (getSettingsCloseTarget(window.history.state) === "back") {
+      navigate(-1)
+      return
+    }
+
+    navigate("/", { replace: true })
+  }
 
   return (
     <div className="relative flex h-full flex-1 min-w-0 bg-background">
@@ -600,38 +664,15 @@ export function SettingsPage() {
                     <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                       {selectedSection.label}
                     </div>
-                    {selectedPage === "keybindings" ? (
+                    <div className="flex items-center gap-2">
+                      {sectionHeaderAction}
                       <SettingsHeaderButton
-                        onClick={() => {
-                          void state.handleOpenExternalPath("open_editor", keybindingsFilePathDisplay)
-                        }}
-                        icon={<Code className="h-4 w-4" />}
-                      >
-                        Open in {state.editorLabel}
-                      </SettingsHeaderButton>
-                    ) : null}
-                    {selectedPage === "general" ? (
-                      <div className="flex items-center gap-2">
-                        <SettingsHeaderButton
-                          variant={generalHeaderAction.variant}
-                          onClick={() => {
-                            if (generalHeaderAction.kind === "update") {
-                              void state.handleInstallUpdate()
-                              return
-                            }
-                            void state.handleCheckForUpdates({ force: true })
-                          }}
-                          disabled={generalHeaderAction.disabled}
-                          icon={generalHeaderAction.kind === "check"
-                            ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
-                            : generalHeaderAction.kind === "update"
-                            ? <CloudDownload className={cn("size-3.5")} />
-                            : undefined}
-                        >
-                          {generalHeaderAction.label}
-                        </SettingsHeaderButton>
-                      </div>
-                    ) : null}
+                        aria-label="Close settings"
+                        title="Close settings"
+                        onClick={handleCloseSettings}
+                        icon={<X className="h-4 w-4" />}
+                      />
+                    </div>
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
                     {selectedSectionSubtitle}
@@ -680,6 +721,61 @@ export function SettingsPage() {
                           size="sm"
                         />
                       </SettingsRow>
+
+                      <SettingsRow
+                        title="Folder Groups"
+                        description="Show or hide feature folder grouping in the sidebar. Turning this off keeps the existing feature state, but flattens chats into a direct list and hides the new-folder button."
+                      >
+                        <SegmentedControl
+                          value={folderGroupsEnabled ? "enabled" : "disabled"}
+                          onValueChange={(value) => setFolderGroupsEnabled(value === "enabled")}
+                          options={[
+                            { value: "disabled", label: "Off" },
+                            { value: "enabled", label: "On" },
+                          ]}
+                          size="sm"
+                        />
+                      </SettingsRow>
+
+                      {folderGroupsEnabled ? (
+                        <div className="mb-2 ml-6 space-y-0 border-l border-border/60 pl-4">
+                          <SettingsRow
+                            title="Kanban Status"
+                            description="Show or hide feature status controls like Idea, Todo, Progress, Testing, and Done."
+                            bordered={false}
+                          >
+                            <SegmentedControl
+                              value={kanbanStatusesEnabled ? "enabled" : "disabled"}
+                              onValueChange={(value) => setKanbanStatusesEnabled(value === "enabled")}
+                              options={[
+                                { value: "disabled", label: "Off" },
+                                { value: "enabled", label: "On" },
+                              ]}
+                              size="sm"
+                            />
+                          </SettingsRow>
+
+                          <SettingsRow
+                            title=".kanna In Git"
+                            description="Control whether Kanna keeps the project .kanna directory tracked in git or adds it to .gitignore for currently loaded projects and future opens. This is best suited to solo developers working across multiple machines. For team repos, we recommend ignoring `.kanna`."
+                            bordered={false}
+                          >
+                            <SegmentedControl
+                              value={commitKannaDirectory ? "commit" : "ignore"}
+                              onValueChange={(value) => {
+                                const enabled = value === "commit"
+                                setCommitKannaDirectory(enabled)
+                                void state.handleSetCommitKannaDirectory(enabled)
+                              }}
+                              options={[
+                                { value: "commit", label: "Commit" },
+                                { value: "ignore", label: "Ignore" },
+                              ]}
+                              size="sm"
+                            />
+                          </SettingsRow>
+                        </div>
+                      ) : null}
 
                       <SettingsRow
                         title="Default Editor"
@@ -919,11 +1015,15 @@ export function SettingsPage() {
                                 const nextValue = event.target.value
                                 setKeybindingDrafts((current) => ({ ...current, [action]: nextValue }))
                               }}
-                              onBlur={() => {
-                                void commitKeybindings()
+                              onBlur={(event) => {
+                                const nextDrafts = { ...keybindingDrafts, [action]: event.currentTarget.value }
+                                setKeybindingDrafts(nextDrafts)
+                                void commitKeybindings(nextDrafts)
                               }}
                               onKeyDown={(event) => handleTextInputKeyDown(event, () => {
-                                void commitKeybindings()
+                                const nextDrafts = { ...keybindingDrafts, [action]: event.currentTarget.value }
+                                setKeybindingDrafts(nextDrafts)
+                                void commitKeybindings(nextDrafts)
                               })}
                               className="font-mono"
                             />
@@ -957,22 +1057,30 @@ export function SettingsPage() {
       {showFooter ? (
         <div className="absolute bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
           <div className="px-6 py-[14.25px]">
-            <div className="grid gap-3 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">Machine</div>
-                <div className="text-foreground/80">{machineName}</div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-muted-foreground lg:grid-cols-4 lg:gap-3">
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-1.5 lg:block">
+                  <div className="uppercase tracking-wide text-[11px] text-muted-foreground/80 lg:mb-1">Machine</div>
+                  <div className="truncate text-foreground/80">{machineName}</div>
+                </div>
               </div>
-              <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">Connection</div>
-                <div className="text-foreground/80">{state.connectionStatus}</div>
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-1.5 lg:block">
+                  <div className="uppercase tracking-wide text-[11px] text-muted-foreground/80 lg:mb-1">Connection</div>
+                  <div className="truncate text-foreground/80">{state.connectionStatus}</div>
+                </div>
               </div>
-              <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">Projects Indexed</div>
-                <div className="text-foreground/80">{projectCount}</div>
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-1.5 lg:block">
+                  <div className="uppercase tracking-wide text-[11px] text-muted-foreground/80 lg:mb-1">Projects</div>
+                  <div className="truncate text-foreground/80">{projectCount}</div>
+                </div>
               </div>
-              <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">App Version</div>
-                <div className="text-foreground/80">{appVersion}</div>
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-1.5 lg:block">
+                  <div className="uppercase tracking-wide text-[11px] text-muted-foreground/80 lg:mb-1">Version</div>
+                  <div className="truncate text-foreground/80">{appVersion}</div>
+                </div>
               </div>
             </div>
           </div>
@@ -982,8 +1090,10 @@ export function SettingsPage() {
   )
 }
 
-function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
+export function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
   return {
+    submitChatMessage: parseKeybindingInput(source.submitChatMessage ?? ""),
+    toggleProjectsSidebar: parseKeybindingInput(source.toggleProjectsSidebar ?? ""),
     toggleEmbeddedTerminal: parseKeybindingInput(source.toggleEmbeddedTerminal ?? ""),
     toggleRightSidebar: parseKeybindingInput(source.toggleRightSidebar ?? ""),
     openInFinder: parseKeybindingInput(source.openInFinder ?? ""),

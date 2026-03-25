@@ -9,6 +9,10 @@ interface ThemeContextValue {
 }
 
 const THEME_STORAGE_KEY = "lever-theme"
+const MANIFEST_HREF_BY_THEME = {
+  light: "/manifest.webmanifest",
+  dark: "/manifest-dark.webmanifest",
+} as const
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 const isValidTheme = (value: string | null): value is ThemePreference => {
@@ -26,6 +30,26 @@ const applyThemeClass = (preference: ThemePreference) => {
   document.documentElement.classList.toggle("dark", resolved === "dark")
 }
 
+const syncThemeMeta = (resolvedTheme: "light" | "dark") => {
+  if (typeof document === "undefined") return
+
+  document.documentElement.style.colorScheme = resolvedTheme
+
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]')
+  if (themeColorMeta) {
+    const backgroundColor = getComputedStyle(document.body).backgroundColor
+    if (backgroundColor && backgroundColor !== "rgba(0, 0, 0, 0)" && backgroundColor !== "transparent") {
+      themeColorMeta.setAttribute("content", backgroundColor)
+    }
+  }
+
+  const manifestLink = document.querySelector<HTMLLinkElement>('link[rel="manifest"]#app-manifest')
+  const nextManifestHref = MANIFEST_HREF_BY_THEME[resolvedTheme]
+  if (manifestLink && manifestLink.getAttribute("href") !== nextManifestHref) {
+    manifestLink.setAttribute("href", nextManifestHref)
+  }
+}
+
 const getInitialTheme = (): ThemePreference => {
   if (typeof window === "undefined") return "system"
   const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
@@ -37,6 +61,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyThemeClass(theme)
+    syncThemeMeta(theme === "system" ? getSystemTheme() : theme)
     if (typeof window !== "undefined") {
       window.localStorage.setItem(THEME_STORAGE_KEY, theme)
     }
@@ -45,7 +70,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (theme !== "system") return
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)")
-    const handleChange = () => applyThemeClass("system")
+    const handleChange = () => {
+      applyThemeClass("system")
+      syncThemeMeta(getSystemTheme())
+    }
 
     if (mediaQuery.addEventListener) {
       mediaQuery.addEventListener("change", handleChange)

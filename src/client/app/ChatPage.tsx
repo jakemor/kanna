@@ -9,6 +9,8 @@ import { ProcessingMessage } from "../components/messages/ProcessingMessage"
 import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { ScrollArea } from "../components/ui/scroll-area"
+import { useMediaQuery } from "../hooks/useMediaQuery"
+import { canOpenNativeAppsForHostname } from "../lib/hostAccess"
 import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
@@ -22,7 +24,7 @@ import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "./terminalToggleAnimation"
 import { useRightSidebarToggleAnimation } from "./useRightSidebarToggleAnimation"
 import { useTerminalToggleAnimation } from "./useTerminalToggleAnimation"
-import type { KannaState } from "./useKannaState"
+import { shouldPinTranscriptToBottom, type KannaState } from "./useKannaState"
 import { KannaTranscript } from "./KannaTranscript"
 import { useStickyChatFocus } from "./useStickyChatFocus"
 
@@ -39,6 +41,10 @@ export function ChatPage() {
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
+  const isDesktopViewport = useMediaQuery("(min-width: 768px)")
+  const canOpenNativeApps = typeof window === "undefined"
+    ? true
+    : canOpenNativeAppsForHostname(window.location.hostname)
   const projectId = state.runtime?.projectId ?? null
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
@@ -60,7 +66,8 @@ export function ChatPage() {
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarLayout.isVisible)
-  const shouldRenderRightSidebarLayout = Boolean(projectId)
+  const showMobileRightSidebarOverlay = Boolean(projectId && !isDesktopViewport && showRightSidebar)
+  const shouldRenderRightSidebarLayout = Boolean(projectId && isDesktopViewport)
   const {
     isAnimating: isTerminalAnimating,
     mainPanelGroupRef,
@@ -134,12 +141,14 @@ export function ChatPage() {
       }
 
       if (actionMatchesEvent(resolvedKeybindings, "openInFinder", event)) {
+        if (!canOpenNativeApps) return
         event.preventDefault()
         void state.handleOpenExternal("open_finder")
         return
       }
 
       if (actionMatchesEvent(resolvedKeybindings, "openInEditor", event)) {
+        if (!canOpenNativeApps) return
         event.preventDefault()
         void state.handleOpenExternal("open_editor")
         return
@@ -153,7 +162,7 @@ export function ChatPage() {
 
     window.addEventListener("keydown", handleGlobalKeydown)
     return () => window.removeEventListener("keydown", handleGlobalKeydown)
-  }, [addTerminal, hasTerminals, projectId, resolvedKeybindings, toggleRightSidebar, toggleVisibility])
+  }, [addTerminal, canOpenNativeApps, hasTerminals, projectId, resolvedKeybindings, toggleRightSidebar, toggleVisibility])
 
   useEffect(() => {
     if (state.messages.length === 0) return
@@ -191,6 +200,38 @@ export function ChatPage() {
   }, [state.updateScrollState])
 
   useEffect(() => {
+    if (isDesktopViewport) return
+
+    const viewport = window.visualViewport
+    if (!viewport) return
+
+    const keepFocusedComposerVisible = () => {
+      if (document.activeElement !== chatInputRef.current) return
+
+      const element = state.scrollRef.current
+      if (!element) return
+
+      const distance = element.scrollHeight - element.scrollTop - element.clientHeight
+      if (!shouldPinTranscriptToBottom(distance)) return
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          state.scrollToBottom()
+          state.updateScrollState()
+        })
+      })
+    }
+
+    viewport.addEventListener("resize", keepFocusedComposerVisible)
+    viewport.addEventListener("scroll", keepFocusedComposerVisible)
+
+    return () => {
+      viewport.removeEventListener("resize", keepFocusedComposerVisible)
+      viewport.removeEventListener("scroll", keepFocusedComposerVisible)
+    }
+  }, [isDesktopViewport, state.scrollRef, state.scrollToBottom, state.updateScrollState])
+
+  useEffect(() => {
     const element = layoutRootRef.current
     if (!element || !shouldRenderTerminalLayout) return
 
@@ -217,6 +258,11 @@ export function ChatPage() {
     return Math.min(RIGHT_SIDEBAR_MAX_SIZE_PERCENT, Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size))
   }
 
+  const closeMobileRightSidebar = () => {
+    if (!projectId) return
+    toggleRightSidebar(projectId)
+  }
+
   const chatCard = (
     <Card ref={chatCardRef} className="bg-background h-full flex flex-col overflow-hidden border-0 rounded-none relative">
       <CardContent className="flex flex-1 min-h-0 flex-col p-0 overflow-hidden relative">
@@ -225,6 +271,7 @@ export function ChatPage() {
           onOpenSidebar={state.openSidebar}
           onExpandSidebar={state.expandSidebar}
           onNewChat={state.handleCompose}
+          usage={state.usage}
           localPath={state.navbarLocalPath}
           embeddedTerminalVisible={showTerminalPane}
           onToggleEmbeddedTerminal={projectId
@@ -238,12 +285,14 @@ export function ChatPage() {
             : undefined}
           rightSidebarVisible={showRightSidebar}
           onToggleRightSidebar={projectId ? () => toggleRightSidebar(projectId) : undefined}
-          onOpenExternal={(action) => {
+          onOpenExternal={canOpenNativeApps ? (action) => {
             void state.handleOpenExternal(action)
-          }}
+          } : undefined}
           editorLabel={state.editorLabel}
-          finderShortcut={resolvedKeybindings.bindings.openInFinder}
-          editorShortcut={resolvedKeybindings.bindings.openInEditor}
+          projectId={projectId ?? undefined}
+          socket={state.socket}
+          finderShortcut={canOpenNativeApps ? resolvedKeybindings.bindings.openInFinder : undefined}
+          editorShortcut={canOpenNativeApps ? resolvedKeybindings.bindings.openInEditor : undefined}
           terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}
           rightSidebarShortcut={resolvedKeybindings.bindings.toggleRightSidebar}
         />
@@ -273,7 +322,7 @@ export function ChatPage() {
                   </div>
                 ) : null}
               </div>
-              <div style={{ height: 250 }} aria-hidden="true" />
+              <div style={{ height: state.transcriptPaddingBottom }} aria-hidden="true" />
             </>
           ) : null}
         </ScrollArea>
@@ -347,6 +396,7 @@ export function ChatPage() {
             chatId={state.activeChatId}
             activeProvider={state.runtime?.provider ?? null}
             availableProviders={state.availableProviders}
+            keybindings={resolvedKeybindings}
           />
         </div>
       </div>
@@ -544,6 +594,21 @@ export function ChatPage() {
       ) : (
         chatCard
       )}
+
+      {showMobileRightSidebarOverlay ? (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/40 md:hidden"
+            onClick={closeMobileRightSidebar}
+          />
+          <div className="fixed inset-0 z-50 flex flex-col bg-background md:hidden">
+            <RightSidebar
+              onClose={closeMobileRightSidebar}
+              className="h-[var(--app-shell-height)]"
+            />
+          </div>
+        </>
+      ) : null}
 
     </div>
   )

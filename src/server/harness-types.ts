@@ -1,9 +1,10 @@
-import type { AccountInfo, AgentProvider, NormalizedToolCall, TranscriptEntry } from "../shared/types"
+import type { AccountInfo, AgentProvider, ChatUsageSnapshot, NormalizedToolCall, TranscriptEntry } from "../shared/types"
 
 export interface HarnessEvent {
-  type: "transcript" | "session_token"
+  type: "transcript" | "session_token" | "usage"
   entry?: TranscriptEntry
   sessionToken?: string
+  usage?: ChatUsageSnapshot
 }
 
 export interface HarnessToolRequest {

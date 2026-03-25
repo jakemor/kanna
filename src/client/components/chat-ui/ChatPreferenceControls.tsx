@@ -180,173 +180,176 @@ export function ChatPreferenceControls({
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
 
   return (
-    <div className={cn("flex justify-center items-center gap-0.5", className)}>
-      {showProviderPicker ? (
+    <div className={cn("max-w-full overflow-x-auto", className)}>
+      <div className="flex w-max items-center justify-center gap-0.5 mx-auto">
+        {showProviderPicker ? (
+          <InputPopover
+            disabled={providerLocked || !onProviderChange}
+            trigger={(
+              <>
+                <ProviderIcon className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">{providerConfig?.label ?? selectedProvider}</span>
+              </>
+            )}
+          >
+            {(close) => availableProviders.map((provider) => {
+              const Icon = PROVIDER_ICONS[provider.id]
+              return (
+                <PopoverMenuItem
+                  key={provider.id}
+                  onClick={() => {
+                    onProviderChange?.(provider.id)
+                    close()
+                  }}
+                  selected={selectedProvider === provider.id}
+                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                  label={provider.label}
+                />
+              )
+            })}
+          </InputPopover>
+        ) : null}
+
         <InputPopover
-          disabled={providerLocked || !onProviderChange}
           trigger={(
             <>
-              <ProviderIcon className="h-3.5 w-3.5" />
-              <span>{providerConfig?.label ?? selectedProvider}</span>
+              <ModelIcon className="h-3.5 w-3.5" />
+              <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model}</span>
             </>
           )}
         >
-          {(close) => availableProviders.map((provider) => {
-            const Icon = PROVIDER_ICONS[provider.id]
+          {(close) => providerConfig.models.map((candidate) => {
+            const Icon = MODEL_ICON_BY_ID[candidate.id] ?? Sparkles
             return (
               <PopoverMenuItem
-                key={provider.id}
+                key={candidate.id}
                 onClick={() => {
-                  onProviderChange?.(provider.id)
+                  onModelChange(selectedProvider, candidate.id)
                   close()
                 }}
-                selected={selectedProvider === provider.id}
+                selected={model === candidate.id}
                 icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-                label={provider.label}
+                label={candidate.label}
               />
             )
           })}
         </InputPopover>
-      ) : null}
 
-      <InputPopover
-        trigger={(
-          <>
-            <ModelIcon className="h-3.5 w-3.5" />
-            <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model}</span>
-          </>
-        )}
-      >
-        {(close) => providerConfig.models.map((candidate) => {
-          const Icon = MODEL_ICON_BY_ID[candidate.id] ?? Sparkles
-          return (
-            <PopoverMenuItem
-              key={candidate.id}
-              onClick={() => {
-                onModelChange(selectedProvider, candidate.id)
-                close()
-              }}
-              selected={model === candidate.id}
-              icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-              label={candidate.label}
-            />
-          )
-        })}
-      </InputPopover>
-
-      <InputPopover
-        trigger={(
-          <>
-            <Gauge className="h-3.5 w-3.5" />
-            <span>{
-              selectedProvider === "claude"
-                ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
-                : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
-            }</span>
-          </>
-        )}
-      >
-        {(close) => (
-          selectedProvider === "claude"
-            ? CLAUDE_REASONING_OPTIONS.map((effort) => (
-              <PopoverMenuItem
-                key={effort.id}
-                onClick={() => {
-                  onClaudeReasoningEffortChange(effort.id)
-                  close()
-                }}
-                selected={modelOptions.reasoningEffort === effort.id}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label={effort.label}
-                disabled={effort.id === "max" && model !== "opus"}
-              />
-            ))
-            : CODEX_REASONING_OPTIONS.map((effort) => (
-              <PopoverMenuItem
-                key={effort.id}
-                onClick={() => {
-                  onCodexReasoningEffortChange(effort.id)
-                  close()
-                }}
-                selected={modelOptions.reasoningEffort === effort.id}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label={effort.label}
-              />
-            ))
-        )}
-      </InputPopover>
-
-      {selectedProvider === "codex" ? (
         <InputPopover
           trigger={(
             <>
-              {codexModelOptions?.fastMode ? <Zap className="h-3.5 w-3.5" /> : <Gauge className="h-3.5 w-3.5" />}
-              <span>{codexModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
+              <Gauge className="h-3.5 w-3.5" />
+              <span>{
+                selectedProvider === "claude"
+                  ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
+                  : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
+              }</span>
             </>
           )}
-          triggerClassName={codexModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
         >
           {(close) => (
-            <>
-              <PopoverMenuItem
-                onClick={() => {
-                  onCodexFastModeChange(false)
-                  close()
-                }}
-                selected={!codexModelOptions?.fastMode}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label="Standard"
-              />
-              <PopoverMenuItem
-                onClick={() => {
-                  onCodexFastModeChange(true)
-                  close()
-                }}
-                selected={Boolean(codexModelOptions?.fastMode)}
-                icon={<Zap className="h-4 w-4 text-muted-foreground" />}
-                label="Fast Mode"
-              />
-            </>
+            selectedProvider === "claude"
+              ? CLAUDE_REASONING_OPTIONS.map((effort) => (
+                <PopoverMenuItem
+                  key={effort.id}
+                  onClick={() => {
+                    onClaudeReasoningEffortChange(effort.id)
+                    close()
+                  }}
+                  selected={modelOptions.reasoningEffort === effort.id}
+                  icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                  label={effort.label}
+                  disabled={effort.id === "max" && model !== "opus"}
+                />
+              ))
+              : CODEX_REASONING_OPTIONS.map((effort) => (
+                <PopoverMenuItem
+                  key={effort.id}
+                  onClick={() => {
+                    onCodexReasoningEffortChange(effort.id)
+                    close()
+                  }}
+                  selected={modelOptions.reasoningEffort === effort.id}
+                  icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                  label={effort.label}
+                />
+              ))
           )}
         </InputPopover>
-      ) : null}
 
-      {showPlanMode ? (
-        <InputPopover
-          trigger={(
-            <>
-              {planMode ? <ListTodo className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-              <span>{planMode ? "Plan Mode" : "Full Access"}</span>
-            </>
-          )}
-          triggerClassName={planMode ? "text-blue-400 dark:text-blue-300" : undefined}
-        >
-          {(close) => (
-            <>
-              <PopoverMenuItem
-                onClick={() => {
-                  onPlanModeChange(false)
-                  close()
-                }}
-                selected={!planMode}
-                icon={<LockOpen className="h-4 w-4 text-muted-foreground" />}
-                label="Full Access"
-                description="Execution without approval"
-              />
-              <PopoverMenuItem
-                onClick={() => {
-                  onPlanModeChange(true)
-                  close()
-                }}
-                selected={planMode}
-                icon={<ListTodo className="h-4 w-4 text-muted-foreground" />}
-                label="Plan Mode"
-                description="Review a plan before execution"
-              />
-            </>
-          )}
-        </InputPopover>
-      ) : null}
+        {selectedProvider === "codex" ? (
+          <InputPopover
+            trigger={(
+              <>
+                {codexModelOptions?.fastMode ? <Zap className="h-3.5 w-3.5" /> : <Gauge className="h-3.5 w-3.5" />}
+                <span>{codexModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
+              </>
+            )}
+            triggerClassName={codexModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
+          >
+            {(close) => (
+              <>
+                <PopoverMenuItem
+                  onClick={() => {
+                    onCodexFastModeChange(false)
+                    close()
+                  }}
+                  selected={!codexModelOptions?.fastMode}
+                  icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                  label="Standard"
+                />
+                <PopoverMenuItem
+                  onClick={() => {
+                    onCodexFastModeChange(true)
+                    close()
+                  }}
+                  selected={Boolean(codexModelOptions?.fastMode)}
+                  icon={<Zap className="h-4 w-4 text-muted-foreground" />}
+                  label="Fast Mode"
+                />
+              </>
+            )}
+          </InputPopover>
+        ) : null}
+
+        {showPlanMode ? (
+          <InputPopover
+            trigger={(
+              <>
+                {planMode ? <ListTodo className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+                <span className="hidden md:inline">{planMode ? "Plan Mode" : "Full Access"}</span>
+                <span className="md:hidden">{planMode ? "Plan" : "Full"}</span>
+              </>
+            )}
+            triggerClassName={planMode ? "text-blue-400 dark:text-blue-300" : undefined}
+          >
+            {(close) => (
+              <>
+                <PopoverMenuItem
+                  onClick={() => {
+                    onPlanModeChange(false)
+                    close()
+                  }}
+                  selected={!planMode}
+                  icon={<LockOpen className="h-4 w-4 text-muted-foreground" />}
+                  label="Full Access"
+                  description="Execution without approval"
+                />
+                <PopoverMenuItem
+                  onClick={() => {
+                    onPlanModeChange(true)
+                    close()
+                  }}
+                  selected={planMode}
+                  icon={<ListTodo className="h-4 w-4 text-muted-foreground" />}
+                  label="Plan Mode"
+                  description="Review a plan before execution"
+                />
+              </>
+            )}
+          </InputPopover>
+        ) : null}
+      </div>
     </div>
   )
 }

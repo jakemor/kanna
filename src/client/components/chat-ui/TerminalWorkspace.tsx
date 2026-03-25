@@ -1,5 +1,5 @@
 import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { Eraser, Plus, X } from "lucide-react"
+import { Eraser, Plus, Square, X } from "lucide-react"
 import type { SocketStatus, KannaSocket } from "../../app/socket"
 import { Button } from "../ui/button"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resizable"
@@ -128,6 +128,22 @@ export function TerminalWorkspace({
                       </div>
                     </div>
                     <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="md:hidden"
+                        aria-label="Send Ctrl+C"
+                        onClick={() => {
+                          void socket.command({
+                            type: "terminal.input",
+                            terminalId: terminalPane.id,
+                            data: "\x03",
+                          }).catch(() => {})
+                        }}
+                        title="Send Ctrl+C"
+                      >
+                        <Square className="size-3.5" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"

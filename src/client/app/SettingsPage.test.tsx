@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { renderToStaticMarkup } from "react-dom/server"
 import { RefreshCw } from "lucide-react"
+import { renderToStaticMarkup } from "react-dom/server"
 import {
   ChangelogSection,
+  buildKeybindingPayload,
   fetchGithubReleases,
   formatPublishedDate,
   getGeneralHeaderAction,
   getCachedChangelog,
   getKeybindingsSubtitle,
+  getSettingsCloseTarget,
   loadChangelog,
   resetSettingsPageChangelogCache,
   resolveSettingsSectionId,
@@ -138,6 +140,28 @@ describe("getKeybindingsSubtitle", () => {
   })
 })
 
+describe("buildKeybindingPayload", () => {
+  test("includes the submit chat message binding", () => {
+    expect(buildKeybindingPayload({
+      submitChatMessage: "Shift+Enter",
+      toggleProjectsSidebar: "Ctrl+A",
+      toggleEmbeddedTerminal: "Cmd+J",
+      toggleRightSidebar: "Cmd+B",
+      openInFinder: "Cmd+Alt+F",
+      openInEditor: "Cmd+Shift+O",
+      addSplitTerminal: "Cmd+/",
+    })).toEqual({
+      submitChatMessage: ["shift+enter"],
+      toggleProjectsSidebar: ["ctrl+a"],
+      toggleEmbeddedTerminal: ["cmd+j"],
+      toggleRightSidebar: ["cmd+b"],
+      openInFinder: ["cmd+alt+f"],
+      openInEditor: ["cmd+shift+o"],
+      addSplitTerminal: ["cmd+/"],
+    })
+  })
+})
+
 describe("getGeneralHeaderAction", () => {
   test("returns the check action when no update is available", () => {
     expect(getGeneralHeaderAction(null)).toEqual({
@@ -179,7 +203,7 @@ describe("getGeneralHeaderAction", () => {
     })).toEqual({
       disabled: false,
       kind: "update",
-      label: "Update now",
+      label: "Update",
       variant: "default",
     })
   })
@@ -196,9 +220,22 @@ describe("getGeneralHeaderAction", () => {
     })).toEqual({
       disabled: true,
       kind: "update",
-      label: "Update now",
+      label: "Update",
       variant: "default",
     })
+  })
+})
+
+describe("getSettingsCloseTarget", () => {
+  test("returns back when browser history has a previous entry", () => {
+    expect(getSettingsCloseTarget({ idx: 1 })).toBe("back")
+    expect(getSettingsCloseTarget({ idx: 4, key: "abc" })).toBe("back")
+  })
+
+  test("returns home when settings is the first entry or history is unavailable", () => {
+    expect(getSettingsCloseTarget({ idx: 0 })).toBe("home")
+    expect(getSettingsCloseTarget({ key: "abc" })).toBe("home")
+    expect(getSettingsCloseTarget(null)).toBe("home")
   })
 })
 
@@ -217,13 +254,23 @@ describe("SettingsHeaderButton", () => {
 
   test("supports the default variant for the update action", () => {
     const html = renderToStaticMarkup(
-      <SettingsHeaderButton variant="default" >
+      <SettingsHeaderButton variant="default">
         Update now
       </SettingsHeaderButton>
     )
 
     expect(html).toContain("Update now")
     expect(html).toContain("bg-primary")
+  })
+
+  test("supports icon-only header actions", () => {
+    const html = renderToStaticMarkup(
+      <SettingsHeaderButton aria-label="Close settings" icon={<RefreshCw className="size-3.5" />} />
+    )
+
+    expect(html).toContain("lucide-refresh-cw")
+    expect(html).toContain("aria-label=\"Close settings\"")
+    expect(html).not.toContain("<span></span>")
   })
 })
 

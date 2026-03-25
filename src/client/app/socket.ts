@@ -7,6 +7,7 @@ import type {
   TerminalSnapshot,
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
+import { generateUUID } from "../lib/utils"
 
 type SnapshotListener<T> = (value: T) => void
 type EventListener<T> = (value: T) => void
@@ -101,7 +102,7 @@ export class KannaSocket {
     listener: SnapshotListener<TSnapshot>,
     eventListener?: EventListener<TEvent>
   ) {
-    const id = crypto.randomUUID()
+    const id = generateUUID()
     this.subscriptions.set(id, {
       topic,
       listener: listener as SnapshotListener<unknown>,
@@ -121,7 +122,7 @@ export class KannaSocket {
       onEvent?: EventListener<TerminalEvent>
     }
   ) {
-    const id = crypto.randomUUID()
+    const id = generateUUID()
     const topic: SubscriptionTopic = { type: "terminal", terminalId }
     this.subscriptions.set(id, {
       topic,
@@ -136,7 +137,7 @@ export class KannaSocket {
   }
 
   command<TResult = unknown>(command: ClientCommand) {
-    const id = crypto.randomUUID()
+    const id = generateUUID()
     const envelope: ClientEnvelope = { v: 1, type: "command", id, command }
     return new Promise<TResult>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
@@ -166,9 +167,13 @@ export class KannaSocket {
       return
     }
     this.emitStatus("connecting")
-    this.ws = new WebSocket(this.url)
+    const ws = new WebSocket(this.url)
+    this.ws = ws
 
-    this.ws.addEventListener("open", () => {
+    ws.addEventListener("open", () => {
+      if (this.ws !== ws) {
+        return
+      }
       this.reconnectDelayMs = 750
       this.reconnectImmediatelyOnClose = false
       this.lastOpenAt = Date.now()
@@ -176,17 +181,20 @@ export class KannaSocket {
       this.emitStatus("connected")
       this.startHeartbeat()
       for (const [id, subscription] of this.subscriptions.entries()) {
-        this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topic })
+        this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topic }, ws)
       }
       while (this.outboundQueue.length > 0) {
         const envelope = this.outboundQueue.shift()
         if (envelope) {
-          this.sendNow(envelope)
+          this.sendNow(envelope, ws)
         }
       }
     })
 
-    this.ws.addEventListener("message", (event) => {
+    ws.addEventListener("message", (event) => {
+      if (this.ws !== ws) {
+        return
+      }
       this.lastMessageAt = Date.now()
       let payload: ServerEnvelope
       try {
@@ -227,7 +235,10 @@ export class KannaSocket {
       }
     })
 
-    this.ws.addEventListener("close", () => {
+    ws.addEventListener("close", () => {
+      if (this.ws !== ws) {
+        return
+      }
       if (!this.started) {
         return
       }
@@ -359,13 +370,17 @@ export class KannaSocket {
 
   private enqueue(envelope: ClientEnvelope) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.sendNow(envelope)
+      this.sendNow(envelope, this.ws)
       return
     }
     this.outboundQueue.push(envelope)
   }
 
-  private sendNow(envelope: ClientEnvelope) {
-    this.ws?.send(JSON.stringify(envelope))
+  private sendNow(envelope: ClientEnvelope, ws: WebSocket) {
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.outboundQueue.unshift(envelope)
+      return
+    }
+    ws.send(JSON.stringify(envelope))
   }
 }

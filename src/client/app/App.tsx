@@ -1,8 +1,9 @@
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { AppDialogProvider } from "../components/ui/app-dialog"
 import { TooltipProvider } from "../components/ui/tooltip"
 import { SDK_CLIENT_APP } from "../../shared/branding"
+import { cn } from "../lib/utils"
 import { KannaSidebar } from "./KannaSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
@@ -20,6 +21,7 @@ function KannaLayout() {
   const navigate = useNavigate()
   const params = useParams()
   const state = useKannaState(params.chatId ?? null)
+  const [isPrintPreview, setIsPrintPreview] = useState(false)
   const showMobileOpenButton = location.pathname === "/" || location.pathname.startsWith("/settings")
   const currentVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
 
@@ -31,35 +33,48 @@ function KannaLayout() {
     navigate("/settings/changelog", { replace: true })
   }, [currentVersion, location.pathname, navigate])
 
+  useEffect(() => {
+    if (location.pathname.startsWith("/chat/")) return
+    setIsPrintPreview(false)
+  }, [location.pathname])
+
   return (
-    <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
-      <KannaSidebar
-        data={state.sidebarData}
-        activeChatId={state.activeChatId}
-        connectionStatus={state.connectionStatus}
-        ready={state.sidebarReady}
-        open={state.sidebarOpen}
-        collapsed={state.sidebarCollapsed}
-        showMobileOpenButton={showMobileOpenButton}
-        onOpen={state.openSidebar}
-        onClose={state.closeSidebar}
-        onCollapse={state.collapseSidebar}
-        onExpand={state.expandSidebar}
-        onCreateChat={(projectId) => {
-          void state.handleCreateChat(projectId)
-        }}
-        onDeleteChat={(chat) => {
-          void state.handleDeleteChat(chat)
-        }}
-        onRemoveProject={(projectId) => {
-          void state.handleRemoveProject(projectId)
-        }}
-        updateSnapshot={state.updateSnapshot}
-        onInstallUpdate={() => {
-          void state.handleInstallUpdate()
-        }}
-      />
-      <Outlet context={state} />
+    <div
+      className={cn(
+        isPrintPreview
+          ? "block min-h-0 overflow-visible"
+          : "flex h-[100dvh] min-h-[100dvh] overflow-hidden"
+      )}
+    >
+      {!isPrintPreview ? (
+        <KannaSidebar
+          data={state.sidebarData}
+          activeChatId={state.activeChatId}
+          connectionStatus={state.connectionStatus}
+          ready={state.sidebarReady}
+          open={state.sidebarOpen}
+          collapsed={state.sidebarCollapsed}
+          showMobileOpenButton={showMobileOpenButton}
+          onOpen={state.openSidebar}
+          onClose={state.closeSidebar}
+          onCollapse={state.collapseSidebar}
+          onExpand={state.expandSidebar}
+          onCreateChat={(projectId) => {
+            void state.handleCreateChat(projectId)
+          }}
+          onDeleteChat={(chat) => {
+            void state.handleDeleteChat(chat)
+          }}
+          onRemoveProject={(projectId) => {
+            void state.handleRemoveProject(projectId)
+          }}
+          updateSnapshot={state.updateSnapshot}
+          onInstallUpdate={() => {
+            void state.handleInstallUpdate()
+          }}
+        />
+      ) : null}
+      <Outlet context={{ ...state, isPrintPreview, setIsPrintPreview }} />
     </div>
   )
 }

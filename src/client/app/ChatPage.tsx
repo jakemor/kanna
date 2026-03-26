@@ -54,6 +54,8 @@ export function ChatPage() {
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
 
   const hasTerminals = terminalLayout.terminals.length > 0
+  const shouldAutoFocusInput = state.activeChatId === null
+    || (state.runtime?.chatId === state.activeChatId && state.messages.length === 0)
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarLayout.isVisible)
@@ -298,6 +300,7 @@ export function ChatPage() {
             disabled={!state.hasSelectedProject || state.runtime?.status === "waiting_for_user"}
             canCancel={state.canCancel}
             chatId={state.activeChatId}
+            shouldAutoFocus={shouldAutoFocusInput}
             activeProvider={state.runtime?.provider ?? null}
             availableProviders={state.availableProviders}
           />

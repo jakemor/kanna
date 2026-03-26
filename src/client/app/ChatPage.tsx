@@ -199,7 +199,7 @@ export function ChatPage() {
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [isPrintMode, state])
+  }, [isPrintMode, state.setIsPrintPreview])
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {

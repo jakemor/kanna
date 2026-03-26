@@ -121,13 +121,13 @@ Default URL: `http://localhost:3210`
 
 ### Network access (Tailscale / LAN)
 
-By default Kanna binds to `127.0.0.1` (localhost only). Use `--remote` to expose it on your network:
+By default Kanna binds to `127.0.0.1` (localhost only). Use `--host` to bind a specific interface, or `--remote` as a shorthand for `0.0.0.0`:
 
 ```bash
-kanna --remote                   # bind all interfaces — browser opens localhost:3210
-kanna --host dev-box             # bind to a specific hostname — IE: browser opens http://dev-box:3210
-kanna --host 192.168.1.x         # bind to a specific LAN IP
-kanna --host 100.64.x.x          # bind to a specific Tailscale IP
+kanna --remote                     # bind all interfaces — browser opens localhost:3210
+kanna --host dev-box               # bind to a specific hostname — browser opens http://dev-box:3210
+kanna --host 192.168.1.x           # bind to a specific LAN IP
+kanna --host 100.64.x.x            # bind to a specific Tailscale IP
 ```
 
 When `--host <hostname>` is given, the browser opens `http://<hostname>:3210` automatically. Other machines on your network can connect to the same URL:
@@ -142,11 +142,14 @@ http://dev-box:3210
 bun run dev
 ```
 
+The same `--remote` and `--host` flags can be used with `bun run dev` for remote development.
+Use `bun run dev --port 4000` to run the Vite client on `4000` and the backend on `4001`.
+
 Or run client and server separately:
 
 ```bash
 bun run dev:client   # http://localhost:5174
-bun run dev:server   # http://localhost:3211
+bun run dev:server   # http://localhost:5175
 ```
 
 ## Scripts

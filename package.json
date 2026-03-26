@@ -1,7 +1,7 @@
 {
   "name": "kanna-code",
   "type": "module",
-  "version": "0.13.9",
+  "version": "0.15.0",
   "description": "A beautiful web UI for Claude Code",
   "license": "MIT",
   "keywords": [
@@ -37,7 +37,8 @@
     "check": "tsc --noEmit && vite build",
     "dev": "bun run ./scripts/dev.ts",
     "dev:client": "vite --host 0.0.0.0 --port 5174",
-    "dev:server": "bun run ./scripts/dev-server.ts --no-open --port 3211",
+    "dev:server": "bun run ./scripts/dev-server.ts --no-open --port 5175",
+    "install:dev": "bun install && bun run build && bun install -g .",
     "start": "bun run ./src/server/cli.ts",
     "test": "bun test",
     "prepublishOnly": "vite build"

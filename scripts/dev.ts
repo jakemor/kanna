@@ -2,10 +2,12 @@ import process from "node:process"
 import { hostname as getHostname } from "node:os"
 import { spawn, type ChildProcess } from "node:child_process"
 import { LOG_PREFIX } from "../src/shared/branding"
-import { DEV_CLIENT_PORT, DEV_SERVER_PORT } from "../src/shared/ports"
+import { resolveDevPorts, stripPortArg } from "../src/shared/dev-ports"
 
 const cwd = process.cwd()
 const forwardedArgs = process.argv.slice(2)
+const serverArgs = stripPortArg(forwardedArgs)
+const { clientPort, serverPort } = resolveDevPorts(forwardedArgs)
 const bunBin = process.execPath
 const localHostname = getHostname()
 
@@ -44,6 +46,7 @@ const clientEnv = {
     ? String(devHostConfig.allowedHosts)
     : JSON.stringify(devHostConfig.allowedHosts),
   KANNA_DEV_BACKEND_TARGET_HOST: devHostConfig.backendTargetHost,
+  KANNA_DEV_BACKEND_PORT: String(serverPort),
 }
 
 function spawnLabeledProcess(label: string, args: string[]) {
@@ -60,7 +63,7 @@ function spawnLabeledProcess(label: string, args: string[]) {
   return child
 }
 
-const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(DEV_SERVER_PORT), "--strict-port", ...forwardedArgs], {
+const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(serverPort), "--strict-port", ...serverArgs], {
   cwd,
   stdio: "inherit",
   env: process.env,
@@ -110,7 +113,7 @@ server.on("exit", (code, signal) => {
 
 async function waitForServerReady(timeoutMs = 30_000) {
   const startedAt = Date.now()
-  const healthUrl = `http://127.0.0.1:${DEV_SERVER_PORT}/health`
+  const healthUrl = `http://127.0.0.1:${serverPort}/health`
 
   while (Date.now() - startedAt < timeoutMs) {
     if (server.exitCode !== null) {
@@ -140,12 +143,12 @@ process.on("SIGTERM", () => {
   shutdown(0)
 })
 
-console.log(`${LOG_PREFIX} dev client: http://localhost:${DEV_CLIENT_PORT}`)
-console.log(`${LOG_PREFIX} dev server: http://localhost:${DEV_SERVER_PORT}`)
+console.log(`${LOG_PREFIX} dev client: http://localhost:${clientPort}`)
+console.log(`${LOG_PREFIX} dev server: http://localhost:${serverPort}`)
 
 try {
   await waitForServerReady()
-  const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(DEV_CLIENT_PORT), "--strictPort"])
+  const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(clientPort), "--strictPort"])
   children.unshift(client)
   client.on("exit", (code, signal) => {
     onChildExit("client", code, signal)

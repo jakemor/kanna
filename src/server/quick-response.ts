@@ -1,6 +1,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import { CodexAppServerManager } from "./codex-app-server"
 
+const CLAUDE_STRUCTURED_TIMEOUT_MS = 5_000
+
 type JsonSchema = {
   type: "object"
   properties: Record<string, unknown>
@@ -61,14 +63,31 @@ async function runClaudeStructured(args: Omit<StructuredQuickResponseArgs<unknow
   })
 
   try {
-    for await (const message of q) {
-      if ("result" in message) {
-        return (message as Record<string, unknown>).structured_output ?? null
-      }
-    }
+    const result = await Promise.race<unknown | null>([
+      (async () => {
+        for await (const message of q) {
+          if ("result" in message) {
+            return (message as Record<string, unknown>).structured_output ?? null
+          }
+        }
+        return null
+      })(),
+      new Promise<null>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Claude structured response timed out after ${CLAUDE_STRUCTURED_TIMEOUT_MS}ms`))
+        }, CLAUDE_STRUCTURED_TIMEOUT_MS)
+      }),
+    ])
+
+    return result
+  } catch (error) {
     return null
   } finally {
-    q.close()
+    try {
+      q.close()
+    } catch {
+      // Ignore close failures on timed-out or failed quick responses.
+    }
   }
 }
 
@@ -95,7 +114,6 @@ export class QuickResponseAdapter {
     this.runCodexStructured = args.runCodexStructured ?? ((structuredArgs) =>
       runCodexStructured(this.codexManager, structuredArgs))
   }
-
   async generateStructured<T>(args: StructuredQuickResponseArgs<T>): Promise<T | null> {
     const request = {
       cwd: args.cwd,
@@ -104,20 +122,31 @@ export class QuickResponseAdapter {
       schema: args.schema,
     }
 
-    const claudeResult = await this.tryProvider(args.parse, () => this.runClaudeStructured(request))
+    const claudeResult = await this.tryProvider("claude", args.task, args.parse, () => this.runClaudeStructured(request))
     if (claudeResult !== null) return claudeResult
 
-    return await this.tryProvider(args.parse, () => this.runCodexStructured(request))
+    return await this.tryProvider("codex", args.task, args.parse, () => this.runCodexStructured(request))
   }
 
   private async tryProvider<T>(
+    provider: "claude" | "codex",
+    task: string,
     parse: (value: unknown) => T | null,
     run: () => Promise<unknown | null>
   ): Promise<T | null> {
     try {
       const result = await run()
-      return result === null ? null : parse(result)
-    } catch {
+      if (result === null) {
+        return null
+      }
+  
+      const parsed = parse(result)
+      if (parsed === null) {
+        return null
+      }
+  
+      return parsed
+    } catch (error) {
       return null
     }
   }

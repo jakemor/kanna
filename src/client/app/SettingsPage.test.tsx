@@ -255,11 +255,11 @@ describe("SettingsHeaderButton", () => {
   test("supports the default variant for the update action", () => {
     const html = renderToStaticMarkup(
       <SettingsHeaderButton variant="default">
-        Update now
+        Update
       </SettingsHeaderButton>
     )
 
-    expect(html).toContain("Update now")
+    expect(html).toContain("Update")
     expect(html).toContain("bg-primary")
   })
 

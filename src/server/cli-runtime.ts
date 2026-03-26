@@ -219,7 +219,6 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     }
   }
 
-  const bindHost = parsedArgs.options.host
   const { port, stop } = await deps.startServer({
     ...parsedArgs.options,
     update: {
@@ -230,8 +229,8 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       command: CLI_COMMAND,
     },
   })
-  const displayHost =
-    bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
+  const bindHost = parsedArgs.options.host
+  const displayHost = bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const launchUrl = `http://${displayHost}:${port}`
 
   deps.log(`${LOG_PREFIX} listening on http://${bindHost}:${port}`)

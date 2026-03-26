@@ -56,6 +56,35 @@ describe("QuickResponseAdapter", () => {
 
     expect(result).toBe("Codex title")
   })
+
+  test("falls back to Codex when Claude throws", async () => {
+    const adapter = new QuickResponseAdapter({
+      runClaudeStructured: async () => {
+        throw new Error("Not authenticated")
+      },
+      runCodexStructured: async () => ({ title: "Codex title" }),
+    })
+
+    const result = await adapter.generateStructured({
+      cwd: "/tmp/project",
+      task: "title generation",
+      prompt: "Generate a title",
+      schema: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+        },
+        required: ["title"],
+        additionalProperties: false,
+      },
+      parse: (value) => {
+        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
+        return typeof output.title === "string" ? output.title : null
+      },
+    })
+
+    expect(result).toBe("Codex title")
+  })
 })
 
 describe("generateTitleForChat", () => {

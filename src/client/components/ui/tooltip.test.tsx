@@ -13,6 +13,7 @@ describe("formatHotkeyLabel", () => {
 
 describe("HOTKEY_TOOLTIP_CONTENT_CLASSNAME", () => {
   test("includes expected styling hooks", () => {
-    expect(HOTKEY_TOOLTIP_CONTENT_CLASSNAME).toContain("bg-card")
+    expect(HOTKEY_TOOLTIP_CONTENT_CLASSNAME).toContain("border-border")
+    expect(HOTKEY_TOOLTIP_CONTENT_CLASSNAME).toContain("backdrop-blur-md")
   })
 })

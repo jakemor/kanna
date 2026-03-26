@@ -238,6 +238,7 @@ describe("runCli", () => {
   })
 
   test("opens the root route in the browser", async () => {
+    delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
     const { calls, deps } = createDeps()
 
     await runCli(["--port", "4000"], deps)
@@ -245,6 +246,14 @@ describe("runCli", () => {
     expect(calls.openUrl).toEqual(["http://localhost:4000"])
   })
 
+  test("opens browser at hostname when --host <host> is given", async () => {
+    delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+    const { calls, deps } = createDeps()
+
+    await runCli(["--host", "dev-box", "--port", "4000"], deps)
+
+    expect(calls.openUrl).toEqual(["http://dev-box:4000"])
+  })
   test("suppresses browser open for a ui-triggered restarted child", async () => {
     process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] = "1"
     const { calls, deps } = createDeps()
@@ -253,15 +262,6 @@ describe("runCli", () => {
 
     expect(calls.openUrl).toEqual([])
   })
-
-  test("opens browser at hostname when --host <host> is given", async () => {
-    const { calls, deps } = createDeps()
-
-    await runCli(["--host", "dev-box", "--port", "4000"], deps)
-
-    expect(calls.openUrl).toEqual(["http://dev-box:4000"])
-  })
-
   test("returns restarting when a newer version is available", async () => {
     const { calls, deps } = createDeps({
       fetchLatestVersion: async (packageName) => {

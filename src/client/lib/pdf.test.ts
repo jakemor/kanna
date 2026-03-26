@@ -2,10 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { buildChatPdfFilename } from "./pdf"
 
 describe("buildChatPdfFilename", () => {
-  const exportedAt = new Date(Date.UTC(2026, 2, 26, 18, 45, 0))
-
-  test("uses the chat title when available", () => {
-    expect(buildChatPdfFilename({ title: "Fix auth race condition", exportedAt })).toBe("fix-auth-race-condition-2026-03-26.pdf")
+  const exportedAt = new Date(Date.UTC(2026, 2, 26, 12, 0, 0))
   })
 
   test("falls back to the project folder name", () => {

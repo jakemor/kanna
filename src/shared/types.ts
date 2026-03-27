@@ -138,6 +138,7 @@ export interface SidebarChatRow {
   localPath: string
   provider: AgentProvider | null
   lastMessageAt?: number
+  lastCompletedTurnAt?: number
   hasAutomation: boolean
 }
 
@@ -529,6 +530,8 @@ export interface ChatRuntime {
 export interface ChatSnapshot {
   runtime: ChatRuntime
   messages: TranscriptEntry[]
+  hasOlderMessages: boolean
+  oldestLoadedMessageId: string | null
   availableProviders: ProviderCatalogEntry[]
 }
 

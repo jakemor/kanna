@@ -5,6 +5,7 @@ import { getDataDir, LOG_PREFIX } from "../shared/branding"
 import type { AgentProvider, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
+  type ActiveTurnRecovery,
   type ChatEvent,
   type MessageEvent,
   type ProjectEvent,
@@ -90,7 +91,10 @@ export class EventStore {
         this.state.projectIdsByPath.set(project.localPath, project.id)
       }
       for (const chat of parsed.chats) {
-        this.state.chatsById.set(chat.id, { ...chat })
+        this.state.chatsById.set(chat.id, {
+          ...chat,
+          activeTurn: chat.activeTurn ?? null,
+        })
       }
       for (const messageSet of parsed.messages) {
         this.state.messagesByChatId.set(messageSet.chatId, cloneTranscriptEntries(messageSet.entries))
@@ -191,6 +195,7 @@ export class EventStore {
           planMode: false,
           sessionToken: null,
           lastTurnOutcome: null,
+          activeTurn: null,
         }
         this.state.chatsById.set(chat.id, chat)
         break
@@ -240,13 +245,16 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
+        chat.activeTurn = { ...event.recovery }
         break
       }
       case "turn_finished": {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
+        chat.lastCompletedTurnAt = event.timestamp
         chat.lastTurnOutcome = "success"
+        chat.activeTurn = null
         break
       }
       case "turn_failed": {
@@ -254,6 +262,7 @@ export class EventStore {
         if (!chat) break
         chat.updatedAt = event.timestamp
         chat.lastTurnOutcome = "failed"
+        chat.activeTurn = null
         break
       }
       case "turn_cancelled": {
@@ -261,6 +270,7 @@ export class EventStore {
         if (!chat) break
         chat.updatedAt = event.timestamp
         chat.lastTurnOutcome = "cancelled"
+        chat.activeTurn = null
         break
       }
       case "session_token_set": {
@@ -402,13 +412,14 @@ export class EventStore {
     await this.append(this.messagesLogPath, event)
   }
 
-  async recordTurnStarted(chatId: string) {
+  async recordTurnStarted(chatId: string, recovery: ActiveTurnRecovery) {
     this.requireChat(chatId)
     const event: TurnEvent = {
       v: STORE_VERSION,
       type: "turn_started",
       timestamp: Date.now(),
       chatId,
+      recovery,
     }
     await this.append(this.turnsLogPath, event)
   }
@@ -478,6 +489,12 @@ export class EventStore {
     const chat = this.state.chatsById.get(chatId)
     if (!chat || chat.deletedAt) return null
     return chat
+  }
+
+  listChatsWithActiveTurn() {
+    return [...this.state.chatsById.values()]
+      .filter((chat) => !chat.deletedAt && chat.activeTurn)
+      .sort((a, b) => a.updatedAt - b.updatedAt)
   }
 
   getMessages(chatId: string) {

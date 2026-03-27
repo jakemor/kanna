@@ -1,6 +1,6 @@
 import type { ServerWebSocket } from "bun"
 import { PROTOCOL_VERSION } from "../shared/types"
-import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
+import type { ChatEvent, ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
 import type { AgentCoordinator } from "./agent"
 import type { DiscoveredProject } from "./discovery"
@@ -10,7 +10,7 @@ import { KeybindingsManager } from "./keybindings"
 import { ensureProjectDirectory } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
-import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import { deriveChatRuntime, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
@@ -138,6 +138,56 @@ export function createWsRouter({
     }
   }
 
+  function broadcastTopic(predicate: (topic: SubscriptionTopic) => boolean) {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (!predicate(topic)) continue
+        send(ws, createEnvelope(id, topic))
+      }
+    }
+  }
+
+  function pushSidebarSnapshots() {
+    broadcastTopic((topic) => topic.type === "sidebar")
+  }
+
+  function pushChatReset(chatId: string) {
+    const snapshot = deriveChatSnapshot(store.state, agent.getActiveStatuses(), chatId)
+    const event: ChatEvent = {
+      type: "chat.reset",
+      chatId,
+      snapshot,
+    }
+    pushChatEvent(chatId, event)
+  }
+
+  function pushChatRuntime(chatId: string) {
+    const runtime = deriveChatRuntime(store.state, agent.getActiveStatuses(), chatId)
+    if (!runtime) {
+      pushChatReset(chatId)
+      return
+    }
+    pushChatEvent(chatId, {
+      type: "chat.runtime",
+      chatId,
+      runtime,
+    })
+  }
+
+  function pushChatEvent(chatId: string, event: ChatEvent) {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "chat" || topic.chatId !== chatId) continue
+        send(ws, {
+          v: PROTOCOL_VERSION,
+          type: "event",
+          id,
+          event,
+        })
+      }
+    }
+  }
+
   function pushTerminalSnapshot(terminalId: string) {
     for (const ws of sockets) {
       for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -185,6 +235,7 @@ export function createWsRouter({
 
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
+    let shouldBroadcastSnapshots = true
     try {
       switch (command.type) {
         case "system.ping": {
@@ -275,19 +326,37 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "chat.prefetch": {
+          const snapshot = deriveChatSnapshot(store.state, agent.getActiveStatuses(), command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          shouldBroadcastSnapshots = false
+          break
+        }
         case "chat.send": {
           const result = await agent.send(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          shouldBroadcastSnapshots = false
           break
         }
         case "chat.cancel": {
           await agent.cancel(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          shouldBroadcastSnapshots = false
           break
         }
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          shouldBroadcastSnapshots = false
+          break
+        }
+        case "chat.loadMore": {
+          const snapshot = deriveChatSnapshot(store.state, agent.getActiveStatuses(), command.chatId, {
+            beforeMessageId: command.beforeMessageId ?? null,
+            limit: command.limit,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          shouldBroadcastSnapshots = false
           break
         }
         case "terminal.create": {
@@ -323,7 +392,9 @@ export function createWsRouter({
         }
       }
 
-      broadcastSnapshots()
+      if (shouldBroadcastSnapshots) {
+        broadcastSnapshots()
+      }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       send(ws, { v: PROTOCOL_VERSION, type: "error", id, message: messageText })
@@ -338,6 +409,10 @@ export function createWsRouter({
       sockets.delete(ws)
     },
     broadcastSnapshots,
+    pushSidebarSnapshots,
+    pushChatReset,
+    pushChatRuntime,
+    pushChatEvent,
     handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
       let parsed: unknown
       try {

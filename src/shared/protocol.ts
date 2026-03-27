@@ -1,10 +1,12 @@
 import type {
   AgentProvider,
+  ChatRuntime,
   ChatSnapshot,
   KeybindingsSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
   SidebarData,
+  TranscriptEntry,
   UpdateSnapshot,
 } from "./types"
 
@@ -41,6 +43,11 @@ export type TerminalEvent =
   | { type: "terminal.output"; terminalId: string; data: string }
   | { type: "terminal.exit"; terminalId: string; exitCode: number; signal?: number }
 
+export type ChatEvent =
+  | { type: "chat.runtime"; chatId: string; runtime: ChatRuntime }
+  | { type: "chat.messageAppended"; chatId: string; entry: TranscriptEntry }
+  | { type: "chat.reset"; chatId: string; snapshot: ChatSnapshot | null }
+
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
@@ -61,6 +68,7 @@ export type ClientCommand =
   | { type: "chat.create"; projectId: string }
   | { type: "chat.rename"; chatId: string; title: string }
   | { type: "chat.delete"; chatId: string }
+  | { type: "chat.prefetch"; chatId: string }
   | {
       type: "chat.send"
       chatId?: string
@@ -74,6 +82,7 @@ export type ClientCommand =
     }
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
+  | { type: "chat.loadMore"; chatId: string; beforeMessageId?: string; limit?: number }
   | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
@@ -94,7 +103,7 @@ export type ServerSnapshot =
 
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
-  | { v: 1; type: "event"; id: string; event: TerminalEvent }
+  | { v: 1; type: "event"; id: string; event: TerminalEvent | ChatEvent }
   | { v: 1; type: "ack"; id: string; result?: unknown }
   | { v: 1; type: "error"; id?: string; message: string }
 

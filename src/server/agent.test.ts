@@ -651,16 +651,100 @@ describe("AgentCoordinator codex integration", () => {
     expect(discardedResult.content).toEqual({ discarded: true })
     expect(startTurnCalls).toEqual(["plan this"])
   })
+
+  test("recovers an interrupted turn after restart using the saved session token", async () => {
+    const sessionCalls: Array<{ chatId: string; sessionToken: string | null }> = []
+    const startTurnCalls: Array<{ content: string; planMode: boolean }> = []
+
+    const fakeCodexManager = {
+      async startSession(args: { chatId: string; sessionToken: string | null }) {
+        sessionCalls.push({ chatId: args.chatId, sessionToken: args.sessionToken })
+      },
+      async startTurn(args: { content: string; planMode: boolean }): Promise<HarnessTurn> {
+        startTurnCalls.push({ content: args.content, planMode: args.planMode })
+
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore({
+      provider: "codex",
+      sessionToken: "thread-1",
+      activeTurn: {
+        provider: "codex",
+        content: "finish this task",
+        model: "gpt-5.4",
+        planMode: false,
+      },
+    })
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.recoverInterruptedTurns()
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(sessionCalls).toEqual([{ chatId: "chat-1", sessionToken: "thread-1" }])
+    expect(startTurnCalls).toEqual([{
+      content: "The previous response was interrupted because the Kanna server restarted. Continue from where you left off without repeating completed work unless necessary.",
+      planMode: false,
+    }])
+    expect(store.messages.some((entry) => entry.kind === "user_prompt")).toBe(false)
+  })
 })
 
-function createFakeStore() {
+function createFakeStore(overrides?: {
+  provider?: "claude" | "codex" | null
+  sessionToken?: string | null
+  activeTurn?: {
+    provider: "claude" | "codex"
+    content: string
+    model: string
+    effort?: string
+    serviceTier?: "fast"
+    planMode: boolean
+  } | null
+}) {
   const chat = {
     id: "chat-1",
     projectId: "project-1",
     title: "New Chat",
-    provider: null as "claude" | "codex" | null,
+    provider: overrides?.provider ?? null as "claude" | "codex" | null,
     planMode: false,
-    sessionToken: null as string | null,
+    sessionToken: overrides?.sessionToken ?? null as string | null,
+    activeTurn: overrides?.activeTurn ?? null,
   }
   const project = {
     id: "project-1",
@@ -678,6 +762,9 @@ function createFakeStore() {
       expect(projectId).toBe("project-1")
       return project
     },
+    listChatsWithActiveTurn() {
+      return chat.activeTurn ? [chat] : []
+    },
     getMessages() {
       return this.messages
     },
@@ -693,14 +780,23 @@ function createFakeStore() {
     async appendMessage(_chatId: string, entry: TranscriptEntry) {
       this.messages.push(entry)
     },
-    async recordTurnStarted() {},
+    async recordTurnStarted(
+      _chatId: string,
+      recovery: NonNullable<typeof chat.activeTurn>
+    ) {
+      chat.activeTurn = recovery
+    },
     async recordTurnFinished() {
       this.turnFinishedCount += 1
+      chat.activeTurn = null
     },
     async recordTurnFailed() {
+      chat.activeTurn = null
       throw new Error("Did not expect turn failure")
     },
-    async recordTurnCancelled() {},
+    async recordTurnCancelled() {
+      chat.activeTurn = null
+    },
     async setSessionToken(_chatId: string, sessionToken: string | null) {
       chat.sessionToken = sessionToken
     },

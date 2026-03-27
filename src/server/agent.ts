@@ -59,14 +59,21 @@ interface ActiveTurn {
   hasFinalResult: boolean
   cancelRequested: boolean
   cancelRecorded: boolean
+  abandonRequested: boolean
 }
 
 interface AgentCoordinatorArgs {
   store: EventStore
-  onStateChange: () => void
+  onStateChange: (change: AgentStateChange) => void
   codexManager?: CodexAppServerManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<string | null>
 }
+
+export type AgentStateChange =
+  | { type: "sidebar" }
+  | { type: "chat-runtime"; chatId: string }
+  | { type: "chat-reset"; chatId: string }
+  | { type: "chat-message"; chatId: string; entry: TranscriptEntry }
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
   entry: T,
@@ -331,7 +338,7 @@ async function startClaudeTurn(args: {
 
 export class AgentCoordinator {
   private readonly store: EventStore
-  private readonly onStateChange: () => void
+  private readonly onStateChange: (change: AgentStateChange) => void
   private readonly codexManager: CodexAppServerManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
   readonly activeTurns = new Map<string, ActiveTurn>()
@@ -355,6 +362,15 @@ export class AgentCoordinator {
     const pending = this.activeTurns.get(chatId)?.pendingTool
     if (!pending) return null
     return { toolUseId: pending.toolUseId, toolKind: pending.tool.toolKind }
+  }
+
+  private buildRecoveryPrompt(chatId: string, originalContent: string) {
+    const chat = this.store.requireChat(chatId)
+    if (chat.sessionToken) {
+      return "The previous response was interrupted because the Kanna server restarted. Continue from where you left off without repeating completed work unless necessary."
+    }
+
+    return `The previous turn was interrupted by a Kanna server restart before a resumable session was fully established. Please continue by handling the user's pending request.\n\nPending request:\n${originalContent}`
   }
 
   private resolveProvider(command: Extract<ClientCommand, { type: "chat.send" }>, currentProvider: AgentProvider | null) {
@@ -407,9 +423,18 @@ export class AgentCoordinator {
     const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
 
     if (args.appendUserPrompt) {
-      await this.store.appendMessage(args.chatId, timestamped({ kind: "user_prompt", content: args.content }, Date.now()))
+      const entry = timestamped({ kind: "user_prompt", content: args.content }, Date.now())
+      await this.store.appendMessage(args.chatId, entry)
+      this.onStateChange({ type: "chat-message", chatId: args.chatId, entry })
     }
-    await this.store.recordTurnStarted(args.chatId)
+    await this.store.recordTurnStarted(args.chatId, {
+      provider: args.provider,
+      content: args.content,
+      model: args.model,
+      effort: args.effort,
+      serviceTier: args.serviceTier,
+      planMode: args.planMode,
+    })
 
     const project = this.store.getProject(chat.projectId)
     if (!project) {
@@ -427,7 +452,8 @@ export class AgentCoordinator {
       }
 
       active.status = "waiting_for_user"
-      this.onStateChange()
+      this.onStateChange({ type: "chat-runtime", chatId: args.chatId })
+      this.onStateChange({ type: "sidebar" })
 
       return await new Promise<unknown>((resolve) => {
         active.pendingTool = {
@@ -482,16 +508,19 @@ export class AgentCoordinator {
       hasFinalResult: false,
       cancelRequested: false,
       cancelRecorded: false,
+      abandonRequested: false,
     }
     this.activeTurns.set(args.chatId, active)
-    this.onStateChange()
+    this.onStateChange({ type: "chat-runtime", chatId: args.chatId })
+    this.onStateChange({ type: "sidebar" })
 
     if (turn.getAccountInfo) {
       void turn.getAccountInfo()
         .then(async (accountInfo) => {
           if (!accountInfo) return
-          await this.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo }))
-          this.onStateChange()
+          const entry = timestamped({ kind: "account_info", accountInfo })
+          await this.store.appendMessage(args.chatId, entry)
+          this.onStateChange({ type: "chat-message", chatId: args.chatId, entry })
         })
         .catch(() => undefined)
     }
@@ -536,7 +565,8 @@ export class AgentCoordinator {
       if (chat.title !== "New Chat") return
 
       await this.store.renameChat(chatId, title)
-      this.onStateChange()
+      this.onStateChange({ type: "chat-runtime", chatId })
+      this.onStateChange({ type: "sidebar" })
     } catch {
       // Ignore background title generation failures.
     }
@@ -545,9 +575,13 @@ export class AgentCoordinator {
   private async runTurn(active: ActiveTurn) {
     try {
       for await (const event of active.turn.stream) {
+        if (active.abandonRequested) {
+          break
+        }
+
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
-          this.onStateChange()
+          this.onStateChange({ type: "chat-runtime", chatId: active.chatId })
           continue
         }
 
@@ -567,22 +601,27 @@ export class AgentCoordinator {
           }
         }
 
-        this.onStateChange()
+        this.onStateChange({ type: "chat-message", chatId: active.chatId, entry: event.entry })
+        if (event.entry.kind === "system_init" || event.entry.kind === "result" || event.entry.kind === "status") {
+          this.onStateChange({ type: "chat-runtime", chatId: active.chatId })
+          this.onStateChange({ type: "sidebar" })
+        }
       }
     } catch (error) {
-      if (!active.cancelRequested) {
+      if (!active.cancelRequested && !active.abandonRequested) {
         const message = error instanceof Error ? error.message : String(error)
-        await this.store.appendMessage(
-          active.chatId,
-          timestamped({
-            kind: "result",
-            subtype: "error",
-            isError: true,
-            durationMs: 0,
-            result: message,
-          })
-        )
+        const entry = timestamped({
+          kind: "result",
+          subtype: "error",
+          isError: true,
+          durationMs: 0,
+          result: message,
+        })
+        await this.store.appendMessage(active.chatId, entry)
         await this.store.recordTurnFailed(active.chatId, message)
+        this.onStateChange({ type: "chat-message", chatId: active.chatId, entry })
+        this.onStateChange({ type: "chat-runtime", chatId: active.chatId })
+        this.onStateChange({ type: "sidebar" })
       }
     } finally {
       if (active.cancelRequested && !active.cancelRecorded) {
@@ -590,9 +629,10 @@ export class AgentCoordinator {
       }
       active.turn.close()
       this.activeTurns.delete(active.chatId)
-      this.onStateChange()
+      this.onStateChange({ type: "chat-runtime", chatId: active.chatId })
+      this.onStateChange({ type: "sidebar" })
 
-      if (active.postToolFollowUp && !active.cancelRequested) {
+      if (active.postToolFollowUp && !active.cancelRequested && !active.abandonRequested) {
         try {
           await this.startTurnForChat({
             chatId: active.chatId,
@@ -606,18 +646,18 @@ export class AgentCoordinator {
           })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          await this.store.appendMessage(
-            active.chatId,
-            timestamped({
-              kind: "result",
-              subtype: "error",
-              isError: true,
-              durationMs: 0,
-              result: message,
-            })
-          )
+          const entry = timestamped({
+            kind: "result",
+            subtype: "error",
+            isError: true,
+            durationMs: 0,
+            result: message,
+          })
+          await this.store.appendMessage(active.chatId, entry)
           await this.store.recordTurnFailed(active.chatId, message)
-          this.onStateChange()
+          this.onStateChange({ type: "chat-message", chatId: active.chatId, entry })
+          this.onStateChange({ type: "chat-runtime", chatId: active.chatId })
+          this.onStateChange({ type: "sidebar" })
         }
       }
     }
@@ -634,20 +674,20 @@ export class AgentCoordinator {
 
     if (pendingTool) {
       const result = discardedToolResult(pendingTool.tool)
-      await this.store.appendMessage(
-        chatId,
-        timestamped({
-          kind: "tool_result",
-          toolId: pendingTool.toolUseId,
-          content: result,
-        })
-      )
+      const entry = timestamped({
+        kind: "tool_result",
+        toolId: pendingTool.toolUseId,
+        content: result,
+      })
+      await this.store.appendMessage(chatId, entry)
+      this.onStateChange({ type: "chat-message", chatId, entry })
       if (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode") {
         pendingTool.resolve(result)
       }
     }
 
-    await this.store.appendMessage(chatId, timestamped({ kind: "interrupted" }))
+    const interruptedEntry = timestamped({ kind: "interrupted" })
+    await this.store.appendMessage(chatId, interruptedEntry)
     await this.store.recordTurnCancelled(chatId)
     active.cancelRecorded = true
     active.hasFinalResult = true
@@ -659,7 +699,55 @@ export class AgentCoordinator {
     }
 
     this.activeTurns.delete(chatId)
-    this.onStateChange()
+    this.onStateChange({ type: "chat-message", chatId, entry: interruptedEntry })
+    this.onStateChange({ type: "chat-runtime", chatId })
+    this.onStateChange({ type: "sidebar" })
+  }
+
+  async recoverInterruptedTurns() {
+    for (const chat of this.store.listChatsWithActiveTurn()) {
+      if (!chat.activeTurn || this.activeTurns.has(chat.id)) continue
+
+      try {
+        await this.startTurnForChat({
+          chatId: chat.id,
+          provider: chat.activeTurn.provider,
+          content: this.buildRecoveryPrompt(chat.id, chat.activeTurn.content),
+          model: chat.activeTurn.model,
+          effort: chat.activeTurn.effort,
+          serviceTier: chat.activeTurn.serviceTier,
+          planMode: chat.activeTurn.planMode,
+          appendUserPrompt: false,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const entry = timestamped({
+          kind: "result",
+          subtype: "error",
+          isError: true,
+          durationMs: 0,
+          result: `Failed to recover interrupted turn after server restart: ${message}`,
+        })
+        await this.store.appendMessage(chat.id, entry)
+        await this.store.recordTurnFailed(chat.id, message)
+        this.onStateChange({ type: "chat-message", chatId: chat.id, entry })
+        this.onStateChange({ type: "chat-runtime", chatId: chat.id })
+        this.onStateChange({ type: "sidebar" })
+      }
+    }
+  }
+
+  shutdown() {
+    for (const active of this.activeTurns.values()) {
+      active.abandonRequested = true
+      const pendingTool = active.pendingTool
+      active.pendingTool = null
+      if (pendingTool) {
+        pendingTool.resolve(discardedToolResult(pendingTool.tool))
+      }
+      active.turn.close()
+    }
+    this.codexManager.stopAll()
   }
 
   async respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {
@@ -673,14 +761,13 @@ export class AgentCoordinator {
       throw new Error("Tool response does not match active request")
     }
 
-    await this.store.appendMessage(
-      command.chatId,
-      timestamped({
-        kind: "tool_result",
-        toolId: command.toolUseId,
-        content: command.result,
-      })
-    )
+    const resultEntry = timestamped({
+      kind: "tool_result",
+      toolId: command.toolUseId,
+      content: command.result,
+    })
+    await this.store.appendMessage(command.chatId, resultEntry)
+    const extraEntries: TranscriptEntry[] = []
 
     active.pendingTool = null
     active.status = "running"
@@ -693,7 +780,9 @@ export class AgentCoordinator {
       }
       if (result.confirmed && result.clearContext) {
         await this.store.setSessionToken(command.chatId, null)
-        await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
+        const clearEntry = timestamped({ kind: "context_cleared" })
+        await this.store.appendMessage(command.chatId, clearEntry)
+        extraEntries.push(clearEntry)
       }
 
       if (active.provider === "codex") {
@@ -715,6 +804,11 @@ export class AgentCoordinator {
 
     pending.resolve(command.result)
 
-    this.onStateChange()
+    this.onStateChange({ type: "chat-message", chatId: command.chatId, entry: resultEntry })
+    for (const entry of extraEntries) {
+      this.onStateChange({ type: "chat-message", chatId: command.chatId, entry })
+    }
+    this.onStateChange({ type: "chat-runtime", chatId: command.chatId })
+    this.onStateChange({ type: "sidebar" })
   }
 }

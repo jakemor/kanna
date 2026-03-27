@@ -12,6 +12,8 @@ import { cloneTranscriptEntries } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
+const DEFAULT_CHAT_SNAPSHOT_LIMIT = 200
+
 export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): KannaStatus {
   if (activeStatus) return activeStatus
   if (chat.lastTurnOutcome === "failed") return "failed"
@@ -39,6 +41,7 @@ export function deriveSidebarData(
         localPath: project.localPath,
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
+        lastCompletedTurnAt: chat.lastCompletedTurnAt,
         hasAutomation: false,
       }))
 
@@ -98,14 +101,68 @@ export function deriveLocalProjectsSnapshot(
 export function deriveChatSnapshot(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>,
-  chatId: string
+  chatId: string,
+  options?: {
+    beforeMessageId?: string | null
+    limit?: number
+  }
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
   if (!chat || chat.deletedAt) return null
   const project = state.projectsById.get(chat.projectId)
   if (!project || project.deletedAt) return null
 
-  const runtime: ChatRuntime = {
+  const runtime = deriveChatRuntime(state, activeStatuses, chatId)
+  if (!runtime) return null
+
+  const allMessages = state.messagesByChatId.get(chatId) ?? []
+  const { entries, hasOlderMessages, oldestLoadedMessageId } = sliceChatMessages(allMessages, options)
+
+  return {
+    runtime,
+    messages: entries,
+    hasOlderMessages,
+    oldestLoadedMessageId,
+    availableProviders: [...SERVER_PROVIDERS],
+  }
+}
+
+export function sliceChatMessages(
+  allMessages: readonly (ReturnType<typeof cloneTranscriptEntries>[number])[],
+  options?: {
+    beforeMessageId?: string | null
+    limit?: number
+  }
+) {
+  const limit = Math.max(1, options?.limit ?? DEFAULT_CHAT_SNAPSHOT_LIMIT)
+  let endExclusive = allMessages.length
+
+  if (options?.beforeMessageId) {
+    const beforeIndex = allMessages.findIndex((entry) => entry._id === options.beforeMessageId)
+    endExclusive = beforeIndex >= 0 ? beforeIndex : allMessages.length
+  }
+
+  const start = Math.max(0, endExclusive - limit)
+  const entries = cloneTranscriptEntries(allMessages.slice(start, endExclusive))
+
+  return {
+    entries,
+    hasOlderMessages: start > 0,
+    oldestLoadedMessageId: entries[0]?._id ?? null,
+  }
+}
+
+export function deriveChatRuntime(
+  state: StoreState,
+  activeStatuses: Map<string, KannaStatus>,
+  chatId: string
+): ChatRuntime | null {
+  const chat = state.chatsById.get(chatId)
+  if (!chat || chat.deletedAt) return null
+  const project = state.projectsById.get(chat.projectId)
+  if (!project || project.deletedAt) return null
+
+  return {
     chatId: chat.id,
     projectId: project.id,
     localPath: project.localPath,
@@ -114,11 +171,5 @@ export function deriveChatSnapshot(
     provider: chat.provider,
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,
-  }
-
-  return {
-    runtime,
-    messages: cloneTranscriptEntries(state.messagesByChatId.get(chat.id) ?? []),
-    availableProviders: [...SERVER_PROVIDERS],
   }
 }

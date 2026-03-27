@@ -52,8 +52,24 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     : null
   const agent = new AgentCoordinator({
     store,
-    onStateChange: () => {
-      router.broadcastSnapshots()
+    onStateChange: (change) => {
+      if (change.type === "sidebar") {
+        router.pushSidebarSnapshots()
+        return
+      }
+      if (change.type === "chat-runtime") {
+        router.pushChatRuntime(change.chatId)
+        return
+      }
+      if (change.type === "chat-reset") {
+        router.pushChatReset(change.chatId)
+        return
+      }
+      router.pushChatEvent(change.chatId, {
+        type: "chat.messageAppended",
+        chatId: change.chatId,
+        entry: change.entry,
+      })
     },
   })
   router = createWsRouter({
@@ -66,6 +82,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     machineDisplayName,
     updateManager,
   })
+
+  await agent.recoverInterruptedTurns()
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -120,9 +138,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   }
 
   const shutdown = async () => {
-    for (const chatId of [...agent.activeTurns.keys()]) {
-      await agent.cancel(chatId)
-    }
+    agent.shutdown()
     router.dispose()
     keybindings.dispose()
     terminals.closeAll()

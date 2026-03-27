@@ -176,6 +176,154 @@ describe("ws-router", () => {
     })
   })
 
+  test("loads older chat history chunks through chat.loadMore", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      provider: "codex",
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+      activeTurn: null,
+    })
+    state.messagesByChatId.set("chat-1", Array.from({ length: 4 }, (_, index) => ({
+      _id: `msg-${index + 1}`,
+      createdAt: index + 1,
+      kind: "assistant_text" as const,
+      text: `message ${index + 1}`,
+    })))
+
+    const router = createWsRouter({
+      store: { state } as never,
+      agent: { getActiveStatuses: () => new Map() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "chat-load-1",
+        command: {
+          type: "chat.loadMore",
+          chatId: "chat-1",
+          beforeMessageId: "msg-4",
+          limit: 2,
+        },
+      })
+    )
+
+    await Promise.resolve()
+    expect(ws.sent[0]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "chat-load-1",
+      result: {
+        runtime: {
+          chatId: "chat-1",
+          projectId: "project-1",
+          localPath: "/tmp/project",
+          title: "Chat",
+          status: "idle",
+          provider: "codex",
+          planMode: false,
+          sessionToken: null,
+        },
+        messages: [
+          { _id: "msg-2", createdAt: 2, kind: "assistant_text", text: "message 2" },
+          { _id: "msg-3", createdAt: 3, kind: "assistant_text", text: "message 3" },
+        ],
+        hasOlderMessages: true,
+        oldestLoadedMessageId: "msg-2",
+        availableProviders: expect.any(Array),
+      },
+    })
+  })
+
+  test("prefetches chat snapshots without opening a live subscription", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      provider: "claude",
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+      activeTurn: null,
+    })
+
+    const router = createWsRouter({
+      store: { state } as never,
+      agent: { getActiveStatuses: () => new Map() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "chat-prefetch-1",
+        command: {
+          type: "chat.prefetch",
+          chatId: "chat-1",
+        },
+      })
+    )
+
+    await Promise.resolve()
+    expect((ws.sent[0] as any).type).toBe("ack")
+    expect((ws.sent[0] as any).result.runtime.chatId).toBe("chat-1")
+  })
+
   test("subscribes to keybindings snapshots and writes keybindings through the router", async () => {
     const initialSnapshot: KeybindingsSnapshot = DEFAULT_KEYBINDINGS_SNAPSHOT
     const keybindings = {

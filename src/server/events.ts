@@ -15,7 +15,18 @@ export interface ChatRecord {
   planMode: boolean
   sessionToken: string | null
   lastMessageAt?: number
+  lastCompletedTurnAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
+  activeTurn: ActiveTurnRecovery | null
+}
+
+export interface ActiveTurnRecovery {
+  provider: AgentProvider
+  content: string
+  model: string
+  effort?: string
+  serviceTier?: "fast"
+  planMode: boolean
 }
 
 export interface StoreState {
@@ -98,6 +109,7 @@ export type TurnEvent =
       type: "turn_started"
       timestamp: number
       chatId: string
+      recovery: ActiveTurnRecovery
     }
   | {
       v: 2

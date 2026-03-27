@@ -1,4 +1,4 @@
-const CACHE_NAME = "kanna-pwa-v1"
+const CACHE_NAME = "kanna-pwa-v2"
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -37,7 +37,7 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (["script", "style", "image", "font"].includes(request.destination)) {
-    event.respondWith(staleWhileRevalidate(request))
+    event.respondWith(networkFirst(request))
   }
 })
 
@@ -60,20 +60,6 @@ async function networkFirst(request, fallbackCacheKey) {
   } catch {
     return (await cache.match(request)) || (fallbackCacheKey ? await cache.match(fallbackCacheKey) : undefined) || Response.error()
   }
-}
-
-async function staleWhileRevalidate(request) {
-  const cache = await caches.open(CACHE_NAME)
-  const cached = await cache.match(request)
-
-  const networkPromise = fetch(request).then((response) => {
-    if (response.ok) {
-      cache.put(request, response.clone())
-    }
-    return response
-  }).catch(() => undefined)
-
-  return cached || networkPromise || Response.error()
 }
 
 async function openOrFocusClient(targetUrl) {

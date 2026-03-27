@@ -1,7 +1,7 @@
 export const STORE_VERSION = 3 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex" | "gemini"
+export type AgentProvider = "claude" | "codex" | "gemini" | "cursor"
 
 export interface ProviderModelOption {
   id: string
@@ -59,10 +59,82 @@ export interface GeminiModelOptions {
   thinkingMode: GeminiThinkingMode
 }
 
+export interface CursorModelOptions {}
+
+export type CursorModelSpeed = "fast" | "standard"
+
+export const DEFAULT_CURSOR_MODEL = "claude-opus-4-6[thinking=true,context=200k,effort=high,fast=false]" as const
+
+export const CURSOR_MODELS = [
+  { id: "composer-2[fast=true]", label: "Composer 2", supportsEffort: false },
+  { id: "composer-1.5[]", label: "Composer 1.5", supportsEffort: false },
+  { id: "gpt-5.3-codex[reasoning=medium,fast=false]", label: "Codex 5.3", supportsEffort: false },
+  { id: "gpt-5.4[reasoning=medium,context=272k,fast=false]", label: "GPT-5.4", supportsEffort: false },
+  { id: "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]", label: "Sonnet 4.6", supportsEffort: false },
+  { id: "claude-opus-4-6[thinking=true,context=200k,effort=high,fast=false]", label: "Opus 4.6", supportsEffort: false },
+  { id: "claude-opus-4-5[thinking=true]", label: "Opus 4.5", supportsEffort: false },
+  { id: "gpt-5.2[reasoning=medium,fast=false]", label: "GPT-5.2", supportsEffort: false },
+  { id: "gemini-3.1-pro[]", label: "Gemini 3.1 Pro", supportsEffort: false },
+  { id: "gpt-5.4-mini[reasoning=medium]", label: "GPT-5.4 Mini", supportsEffort: false },
+  { id: "gpt-5.4-nano[reasoning=medium]", label: "GPT-5.4 Nano", supportsEffort: false },
+  { id: "claude-haiku-4-5[thinking=true]", label: "Haiku 4.5", supportsEffort: false },
+  { id: "gpt-5.3-codex-spark[reasoning=medium]", label: "Codex 5.3 Spark", supportsEffort: false },
+  { id: "grok-4-20[thinking=true]", label: "Grok 4.20", supportsEffort: false },
+  { id: "claude-sonnet-4-5[thinking=true,context=200k]", label: "Sonnet 4.5", supportsEffort: false },
+  { id: "gpt-5.2-codex[reasoning=medium,fast=false]", label: "Codex 5.2", supportsEffort: false },
+  { id: "gemini-3-flash[]", label: "Gemini 3 Flash", supportsEffort: false },
+  { id: "claude-sonnet-4[thinking=false,context=200k]", label: "Sonnet 4", supportsEffort: false },
+  { id: "kimi-k2.5[]", label: "Kimi K2.5", supportsEffort: false },
+] as const satisfies readonly ProviderModelOption[]
+
+export const CURSOR_MODEL_ALIASES: Record<string, string> = {
+  "composer-2-fast": "composer-2[fast=true]",
+  "composer-1.5": "composer-1.5[]",
+  "gpt-5.3-codex": "gpt-5.3-codex[reasoning=medium,fast=false]",
+  "gpt-5.4": "gpt-5.4[reasoning=medium,context=272k,fast=false]",
+  "gpt-5.4-medium": "gpt-5.4[reasoning=medium,context=272k,fast=false]",
+  "claude-4.6-sonnet-medium-thinking": "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+  "claude-4.6-opus-high-thinking": "claude-opus-4-6[thinking=true,context=200k,effort=high,fast=false]",
+  "claude-4.5-opus-high-thinking": "claude-opus-4-5[thinking=true]",
+  "gpt-5.2": "gpt-5.2[reasoning=medium,fast=false]",
+  "gemini-3.1-pro": "gemini-3.1-pro[]",
+  "gpt-5.4-mini": "gpt-5.4-mini[reasoning=medium]",
+  "gpt-5.4-mini-medium": "gpt-5.4-mini[reasoning=medium]",
+  "gpt-5.4-nano": "gpt-5.4-nano[reasoning=medium]",
+  "gpt-5.4-nano-medium": "gpt-5.4-nano[reasoning=medium]",
+  "claude-haiku-4.5": "claude-haiku-4-5[thinking=true]",
+  "gpt-5.3-codex-spark-preview": "gpt-5.3-codex-spark[reasoning=medium]",
+  "grok-4-20": "grok-4-20[thinking=true]",
+  "grok-4-20-thinking": "grok-4-20[thinking=true]",
+  "claude-4.5-sonnet-thinking": "claude-sonnet-4-5[thinking=true,context=200k]",
+  "gpt-5.2-codex": "gpt-5.2-codex[reasoning=medium,fast=false]",
+  "gemini-3-flash": "gemini-3-flash[]",
+  "claude-4-sonnet": "claude-sonnet-4[thinking=false,context=200k]",
+  "kimi-k2.5": "kimi-k2.5[]",
+}
+
+export function normalizeCursorModelId(model?: string): string {
+  if (!model) return DEFAULT_CURSOR_MODEL
+  if (CURSOR_MODELS.some((candidate) => candidate.id === model)) return model
+  return CURSOR_MODEL_ALIASES[model] ?? DEFAULT_CURSOR_MODEL
+}
+
+export function getCursorModelBaseId(modelId: string): string {
+  const bracketIndex = modelId.indexOf("[")
+  return bracketIndex >= 0 ? modelId.slice(0, bracketIndex) : modelId
+}
+
+export function getCursorModelSpeed(modelId: string): CursorModelSpeed | null {
+  const fastMatch = modelId.match(/\bfast=(true|false)\b/)
+  if (!fastMatch) return null
+  return fastMatch[1] === "true" ? "fast" : "standard"
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
   gemini: GeminiModelOptions
+  cursor: CursorModelOptions
 }
 
 export type ModelOptions = Partial<{
@@ -81,6 +153,9 @@ export const DEFAULT_CODEX_MODEL_OPTIONS = {
 export const DEFAULT_GEMINI_MODEL_OPTIONS = {
   thinkingMode: "standard",
 } as const satisfies GeminiModelOptions
+
+export const DEFAULT_CURSOR_MODEL_OPTIONS = {
+} as const satisfies CursorModelOptions
 
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
@@ -145,6 +220,14 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       { id: "gemini-2.5-flash", label: "2.5 Flash", supportsEffort: false },
       { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", supportsEffort: false },
     ],
+    efforts: [],
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    defaultModel: DEFAULT_CURSOR_MODEL,
+    supportsPlanMode: true,
+    models: [...CURSOR_MODELS],
     efforts: [],
   },
 ]
@@ -711,6 +794,7 @@ export interface ChatRuntime {
   title: string
   status: KannaStatus
   provider: AgentProvider | null
+  model: string | null
   planMode: boolean
   sessionToken: string | null
   pendingTool?: ChatPendingToolSnapshot | null

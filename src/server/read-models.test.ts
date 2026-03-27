@@ -63,6 +63,19 @@ describe("read models", () => {
       sessionToken: "session-1",
       lastTurnOutcome: null,
     })
+    state.messagesByChatId.set("chat-1", [
+      {
+        _id: "msg-1",
+        createdAt: 1,
+        kind: "system_init",
+        provider: "claude",
+        model: "sonnet",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+      },
+    ])
 
     const chat = deriveChatSnapshot(state, new Map(), "chat-1", null, {
       provider: "claude",
@@ -81,6 +94,7 @@ describe("read models", () => {
       warnings: [],
     })
     expect(chat?.runtime.provider).toBe("claude")
+    expect(chat?.runtime.model).toBe("sonnet")
     expect(chat?.usage?.threadTokens).toBe(2000)
     expect(chat?.availableProviders.length).toBeGreaterThan(1)
     expect(chat?.availableProviders.find((provider) => provider.id === "gemini")?.supportsPlanMode).toBe(true)
@@ -89,6 +103,71 @@ describe("read models", () => {
       "gpt-5.3-codex",
       "gpt-5.3-codex-spark",
     ])
+  })
+
+  test("derives the latest system model for each chat independently", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      repoKey: "path:/tmp/project",
+      localPath: "/tmp/project",
+      worktreePaths: ["/tmp/project"],
+      title: "Project",
+      browserState: "OPEN",
+      generalChatsBrowserState: "OPEN",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByRepoKey.set("path:/tmp/project", "project-1")
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-a", {
+      id: "chat-a",
+      projectId: "project-1",
+      title: "Chat A",
+      createdAt: 1,
+      updatedAt: 1,
+      provider: "cursor",
+      planMode: false,
+      sessionToken: "session-a",
+      lastTurnOutcome: null,
+    })
+    state.chatsById.set("chat-b", {
+      id: "chat-b",
+      projectId: "project-1",
+      title: "Chat B",
+      createdAt: 1,
+      updatedAt: 1,
+      provider: "cursor",
+      planMode: false,
+      sessionToken: "session-b",
+      lastTurnOutcome: null,
+    })
+    state.messagesByChatId.set("chat-a", [{
+      _id: "msg-a",
+      createdAt: 1,
+      kind: "system_init",
+      provider: "cursor",
+      model: "gemini-3.1-pro[]",
+      tools: [],
+      agents: [],
+      slashCommands: [],
+      mcpServers: [],
+    }])
+    state.messagesByChatId.set("chat-b", [{
+      _id: "msg-b",
+      createdAt: 1,
+      kind: "system_init",
+      provider: "cursor",
+      model: "claude-opus-4-6[thinking=true,context=200k,effort=high,fast=false]",
+      tools: [],
+      agents: [],
+      slashCommands: [],
+      mcpServers: [],
+    }])
+
+    expect(deriveChatSnapshot(state, new Map(), "chat-a")?.runtime.model).toBe("gemini-3.1-pro[]")
+    expect(deriveChatSnapshot(state, new Map(), "chat-b")?.runtime.model)
+      .toBe("claude-opus-4-6[thinking=true,context=200k,effort=high,fast=false]")
   })
 
   test("prefers saved project metadata over discovered entries for the same path", () => {

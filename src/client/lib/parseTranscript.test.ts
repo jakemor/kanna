@@ -12,6 +12,34 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("coalesces adjacent assistant text chunks into a single message", () => {
+    const messages = processTranscriptMessages([
+      entry({ kind: "assistant_text", text: "Hello" }),
+      entry({ kind: "assistant_text", text: ", world" }),
+      entry({ kind: "assistant_text", text: "!" }),
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      kind: "assistant_text",
+      text: "Hello, world!",
+    })
+  })
+
+  test("coalesces adjacent assistant thought chunks into a single message", () => {
+    const messages = processTranscriptMessages([
+      entry({ kind: "assistant_thought", text: "Thinking" }),
+      entry({ kind: "assistant_thought", text: " through" }),
+      entry({ kind: "assistant_thought", text: " options" }),
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      kind: "assistant_thought",
+      text: "Thinking through options",
+    })
+  })
+
   test("hydrates tool results onto prior tool calls", () => {
     const messages = processTranscriptMessages([
       entry({

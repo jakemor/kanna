@@ -3,8 +3,11 @@ import {
   codexServiceTierFromModelOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeCursorModelOptions,
   normalizeGeminiModelOptions,
+  normalizeServerModel,
 } from "./provider-catalog"
+import { DEFAULT_CURSOR_MODEL } from "../shared/types"
 
 describe("provider catalog normalization", () => {
   test("maps legacy Claude effort into shared model options", () => {
@@ -45,5 +48,20 @@ describe("provider catalog normalization", () => {
     })).toEqual({
       thinkingMode: "high",
     })
+  })
+
+  test("normalizes Cursor fast mode independently", () => {
+    expect(normalizeCursorModelOptions(undefined)).toEqual({
+    })
+
+    expect(normalizeCursorModelOptions({
+      cursor: {},
+    })).toEqual({
+    })
+  })
+
+  test("maps legacy Cursor model ids to ACP model ids", () => {
+    expect(normalizeServerModel("cursor", "gemini-3.1-pro")).toBe("gemini-3.1-pro[]")
+    expect(normalizeServerModel("cursor", "claude-4.6-opus-high-thinking")).toBe(DEFAULT_CURSOR_MODEL)
   })
 })

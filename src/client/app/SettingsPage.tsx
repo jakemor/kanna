@@ -59,7 +59,7 @@ const sidebarItems = [
     id: "providers",
     label: "Providers",
     icon: MessageSquareQuote,
-    subtitle: "Manage the default chat provider and saved model defaults for Claude Code and Codex.",
+    subtitle: "Manage the default chat provider and saved model defaults for Claude, Codex, Gemini, and Cursor.",
   },
   {
     id: "keybindings",
@@ -1356,6 +1356,34 @@ export function SettingsPage() {
                           onCodexFastModeChange={() => {}}
                           planMode={providerDefaults.gemini.planMode}
                           onPlanModeChange={(planMode) => setProviderDefaultPlanMode("gemini", planMode)}
+                          includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Cursor Defaults"
+                      description="Saved defaults when using Cursor."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="cursor"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.cursor.model}
+                          modelOptions={providerDefaults.cursor.modelOptions}
+                          onModelChange={(_, model) => {
+                            setProviderDefaultModel("cursor", model)
+                          }}
+                          onClaudeReasoningEffortChange={() => {}}
+                          onCodexReasoningEffortChange={() => {}}
+                          onGeminiThinkingModeChange={() => {}}
+                          onCodexFastModeChange={() => {}}
+                          planMode={providerDefaults.cursor.planMode}
+                          onPlanModeChange={(planMode) => setProviderDefaultPlanMode("cursor", planMode)}
                           includePlanMode
                           className="justify-start flex-wrap"
                         />

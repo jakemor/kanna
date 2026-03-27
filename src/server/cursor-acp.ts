@@ -1,11 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { promises as fs } from "node:fs"
-import { homedir } from "node:os"
-import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
 import { createInterface } from "node:readline"
-import type { GeminiThinkingMode, NormalizedToolCall } from "../shared/types"
+import type { NormalizedToolCall } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
@@ -16,6 +12,7 @@ import {
   isJsonRpcResponse,
   normalizeAcpToolCall,
   parseJsonLine,
+  populateExitPlanFromAssistantText,
   stringifyToolCallContent,
   timestamped,
   type JsonRpcId,
@@ -26,25 +23,23 @@ import {
   type PendingRequest,
 } from "./acp-shared"
 
-interface GeminiSessionContext {
+interface CursorSessionContext {
   chatId: string
   cwd: string
   child: ChildProcess
-  settingsPath: string
   pendingRequests: Map<JsonRpcId, PendingRequest<unknown>>
   sessionId: string | null
   initialized: boolean
   loadedSessionId: string | null
   currentModel: string | null
   currentPlanMode: boolean | null
-  currentThinkingMode: GeminiThinkingMode | null
-  pendingTurn: PendingGeminiTurn | null
+  pendingTurn: PendingCursorTurn | null
   stderrLines: string[]
   nextRequestId: number
   closed: boolean
 }
 
-interface PendingGeminiTurn {
+interface PendingCursorTurn {
   queue: AsyncQueue<HarnessEvent>
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   pendingPermissionRequestId: JsonRpcId | null
@@ -53,194 +48,49 @@ interface PendingGeminiTurn {
   replayDrainPromise: Promise<void> | null
   replayDrainResolve: (() => void) | null
   toolCalls: Map<string, NormalizedToolCall>
+  currentTodos: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }>
+  assistantText: string
   resultEmitted: boolean
 }
 
-export interface StartGeminiTurnArgs {
+export interface StartCursorTurnArgs {
   chatId: string
   content: string
   localPath: string
   model: string
-  thinkingMode: GeminiThinkingMode
   planMode: boolean
   sessionToken: string | null
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
 }
 
-function shouldRespawnContext(context: GeminiSessionContext, args: StartGeminiTurnArgs) {
-  return (
-    context.cwd !== args.localPath ||
-    context.currentThinkingMode !== args.thinkingMode
-  )
+function shouldRespawnContext(context: CursorSessionContext, args: StartCursorTurnArgs) {
+  return context.cwd !== args.localPath
 }
 
 function modeIdFromPlanMode(planMode: boolean) {
-  return planMode ? "plan" : "yolo"
+  return planMode ? "plan" : "agent"
 }
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function createThinkingSettings(thinkingMode: GeminiThinkingMode, model: string) {
-  const isGemini3 = model.startsWith("gemini-3") || model === "auto-gemini-3"
-  const modelConfigs: Record<string, unknown> = {
-    customOverrides: [],
-  }
-
-  if (!isGemini3) {
-    const thinkingBudget = thinkingMode === "off"
-      ? 0
-      : thinkingMode === "high"
-        ? 16384
-        : null
-
-    if (thinkingBudget !== null) {
-      modelConfigs.customOverrides = [
-        {
-          match: { model },
-          modelConfig: {
-            generateContentConfig: {
-              thinkingConfig: {
-                thinkingBudget,
-              },
-            },
-          },
-        },
-      ]
-    }
-  }
-
-  return {
-    agents: {
-      overrides: {
-        codebase_investigator: {
-          enabled: false,
-        },
-      },
-    },
-    modelConfigs,
-  }
-}
-
-function extractExitPlanPath(title: string | null | undefined) {
-  const planPath = (title ?? "").replace(/^Requesting plan approval for:\s*/i, "").trim()
-  return planPath || null
-}
-
-async function resolveGeminiPlanPath(sessionId: string | null, title: string | null | undefined) {
-  const explicitPlanPath = extractExitPlanPath(title)
-  if (explicitPlanPath) return explicitPlanPath
-  if (!sessionId) return null
-
-  const plansDir = join(homedir(), ".gemini", "tmp", "kanna", sessionId, "plans")
-  try {
-    const entries = await fs.readdir(plansDir, { withFileTypes: true })
-    const markdownEntries = entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .map((entry) => entry.name)
-
-    if (markdownEntries.length === 0) return null
-
-    const withStats = await Promise.all(markdownEntries.map(async (name) => {
-      const path = join(plansDir, name)
-      const stats = await fs.stat(path)
-      return { path, mtimeMs: stats.mtimeMs }
-    }))
-
-    withStats.sort((a, b) => b.mtimeMs - a.mtimeMs)
-    return withStats[0]?.path ?? null
-  } catch {
-    return null
-  }
-}
-
-async function resolvePlanPathFromDirectories(planDirectories: string[]) {
-  for (const plansDir of planDirectories) {
-    try {
-      const entries = await fs.readdir(plansDir, { withFileTypes: true })
-      const markdownEntries = entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-        .map((entry) => entry.name)
-
-      if (markdownEntries.length === 0) continue
-
-      const withStats = await Promise.all(markdownEntries.map(async (name) => {
-        const path = join(plansDir, name)
-        const stats = await fs.stat(path)
-        return { path, mtimeMs: stats.mtimeMs }
-      }))
-
-      withStats.sort((a, b) => b.mtimeMs - a.mtimeMs)
-      if (withStats[0]?.path) return withStats[0].path
-    } catch {
-      continue
-    }
-  }
-
-  return null
-}
-
-async function enrichGeminiToolCall(
-  tool: NormalizedToolCall,
-  title: string | null | undefined,
-  sessionId: string | null
-) {
-  if (tool.toolKind !== "exit_plan_mode" || tool.input.plan) {
-    return tool
-  }
-
-  const planPath = await resolveGeminiPlanPath(sessionId, title)
-    ?? await resolvePlanPathFromDirectories(
-      sessionId ? [join(homedir(), ".gemini", "tmp", "kanna", sessionId, "plans")] : []
-    )
-  if (!planPath) return tool
-
-  try {
-    const plan = await fs.readFile(planPath, "utf8")
-    return normalizeToolCall({
-      toolName: "ExitPlanMode",
-      toolId: tool.toolId,
-      input: {
-        plan,
-        summary: planPath,
-      },
-    })
-  } catch {
-    return tool
-  }
-}
-
-function prepareGeminiPrompt(content: string, planMode: boolean) {
+function prepareCursorPrompt(content: string, planMode: boolean) {
   if (!planMode) return content
 
   return [
-    "You are already in Gemini CLI Plan Mode.",
-    "Do not claim that enter_plan_mode is unavailable as a blocker.",
-    "Research the codebase, write the plan as a Markdown file in the designated Gemini plans directory, then call exit_plan_mode to request user approval.",
-    "Do not edit source files, do not implement the plan, and do not proceed past planning until the user explicitly approves the exit_plan_mode request.",
+    "You are already in Cursor architect mode.",
+    "Do not implement code changes while plan mode is active.",
+    "Research the codebase, produce a concrete implementation plan, then call exit_plan_mode to request user approval before making changes.",
     "",
     content,
   ].join("\n")
 }
 
-function isGeminiSessionPlanFile(filePath: string, cwd: string, sessionId: string | null) {
-  if (!sessionId || !filePath) return false
-  const resolvedPath = resolve(cwd, filePath)
-  const plansDir = join(homedir(), ".gemini", "tmp", "kanna", sessionId, "plans")
-  return resolvedPath.startsWith(`${plansDir}/`) && resolvedPath.endsWith(".md")
-}
-
-function isPlanModeMutationTool(tool: NormalizedToolCall, cwd: string, sessionId: string | null) {
-  if (tool.toolKind === "write_file") {
-    return !isGeminiSessionPlanFile(tool.input.filePath, cwd, sessionId)
-  }
-
-  if (tool.toolKind === "edit_file") {
-    return !isGeminiSessionPlanFile(tool.input.filePath, cwd, sessionId)
-  }
-
+function isPlanModeMutationTool(tool: NormalizedToolCall) {
   return (
+    tool.toolKind === "write_file" ||
+    tool.toolKind === "edit_file" ||
     tool.toolKind === "bash" ||
     tool.toolKind === "mcp_generic" ||
     tool.toolKind === "subagent_task" ||
@@ -248,13 +98,13 @@ function isPlanModeMutationTool(tool: NormalizedToolCall, cwd: string, sessionId
   )
 }
 
-function clearReplayDrainTimer(turn: PendingGeminiTurn) {
+function clearReplayDrainTimer(turn: PendingCursorTurn) {
   if (!turn.replayDrainTimer) return
   clearTimeout(turn.replayDrainTimer)
   turn.replayDrainTimer = null
 }
 
-function scheduleReplayDrain(turn: PendingGeminiTurn) {
+function scheduleReplayDrain(turn: PendingCursorTurn) {
   clearReplayDrainTimer(turn)
   turn.replayDrainTimer = setTimeout(() => {
     turn.replayMode = false
@@ -265,10 +115,33 @@ function scheduleReplayDrain(turn: PendingGeminiTurn) {
   }, 150)
 }
 
-export class GeminiAcpManager {
-  private readonly contexts = new Map<string, GeminiSessionContext>()
+function mergeCursorTodos(
+  previous: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }>,
+  incoming: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }>,
+  merge: boolean
+) {
+  if (!merge) return incoming
 
-  async startTurn(args: StartGeminiTurnArgs): Promise<HarnessTurn> {
+  const next = [...previous]
+  const indexById = new Map(next.map((todo, index) => [todo.id, index]))
+
+  for (const todo of incoming) {
+    const existingIndex = indexById.get(todo.id)
+    if (existingIndex === undefined) {
+      indexById.set(todo.id, next.length)
+      next.push(todo)
+      continue
+    }
+    next[existingIndex] = todo
+  }
+
+  return next
+}
+
+export class CursorAcpManager {
+  private readonly contexts = new Map<string, CursorSessionContext>()
+
+  async startTurn(args: StartCursorTurnArgs): Promise<HarnessTurn> {
     let context = this.contexts.get(args.chatId)
     if (context && shouldRespawnContext(context, args)) {
       await this.disposeContext(context)
@@ -282,7 +155,7 @@ export class GeminiAcpManager {
     }
 
     const queue = new AsyncQueue<HarnessEvent>()
-    const pendingTurn: PendingGeminiTurn = {
+    const pendingTurn: PendingCursorTurn = {
       queue,
       onToolRequest: args.onToolRequest,
       pendingPermissionRequestId: null,
@@ -291,6 +164,8 @@ export class GeminiAcpManager {
       replayDrainPromise: null,
       replayDrainResolve: null,
       toolCalls: new Map(),
+      currentTodos: [],
+      assistantText: "",
       resultEmitted: false,
     }
     context.pendingTurn = pendingTurn
@@ -302,7 +177,7 @@ export class GeminiAcpManager {
         type: "transcript",
         entry: timestamped({
           kind: "system_init",
-          provider: "gemini",
+          provider: "cursor",
           model: args.model,
           tools: [],
           agents: [],
@@ -334,7 +209,7 @@ export class GeminiAcpManager {
         prompt: [
           {
             type: "text",
-            text: prepareGeminiPrompt(args.content, args.planMode),
+            text: prepareCursorPrompt(args.content, args.planMode),
           },
         ],
       })
@@ -380,7 +255,7 @@ export class GeminiAcpManager {
     }
 
     return {
-      provider: "gemini",
+      provider: "cursor",
       stream: queue,
       interrupt: async () => {
         if (!context?.sessionId) return
@@ -407,34 +282,23 @@ export class GeminiAcpManager {
     this.contexts.clear()
   }
 
-  private async createContext(args: StartGeminiTurnArgs) {
-    const settingsPath = join(tmpdir(), `kanna-gemini-settings-${randomUUID()}.json`)
-    await fs.writeFile(
-      settingsPath,
-      JSON.stringify(createThinkingSettings(args.thinkingMode, args.model))
-    )
-
-    const child = spawn("gemini", ["--acp"], {
+  private async createContext(args: StartCursorTurnArgs) {
+    const child = spawn("agent", ["acp"], {
       cwd: args.localPath,
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsPath,
-      },
+      env: process.env,
     })
 
-    const context: GeminiSessionContext = {
+    const context: CursorSessionContext = {
       chatId: args.chatId,
       cwd: args.localPath,
       child,
-      settingsPath,
       pendingRequests: new Map(),
       sessionId: null,
       initialized: false,
       loadedSessionId: null,
       currentModel: null,
       currentPlanMode: null,
-      currentThinkingMode: args.thinkingMode,
       pendingTurn: null,
       stderrLines: [],
       nextRequestId: 1,
@@ -442,7 +306,7 @@ export class GeminiAcpManager {
     }
 
     const stdout = child.stdout
-    if (!stdout) throw new Error("Gemini ACP stdout is unavailable")
+    if (!stdout) throw new Error("Cursor ACP stdout is unavailable")
 
     const rl = createInterface({ input: stdout })
     rl.on("line", (line) => {
@@ -471,7 +335,7 @@ export class GeminiAcpManager {
     child.on("close", (code) => {
       context.closed = true
       for (const pending of context.pendingRequests.values()) {
-        pending.reject(new Error(`Gemini ACP exited with code ${code ?? "unknown"}`))
+        pending.reject(new Error(`Cursor ACP exited with code ${code ?? "unknown"}`))
       }
       context.pendingRequests.clear()
 
@@ -485,7 +349,7 @@ export class GeminiAcpManager {
             subtype: "error",
             isError: true,
             durationMs: 0,
-            result: context.stderrLines.join("\n").trim() || `Gemini ACP exited with code ${code ?? "unknown"}`,
+            result: context.stderrLines.join("\n").trim() || `Cursor ACP exited with code ${code ?? "unknown"}`,
           }),
         })
         turn.queue.finish()
@@ -504,8 +368,8 @@ export class GeminiAcpManager {
           isError: true,
           durationMs: 0,
           result: error.message.includes("ENOENT")
-            ? "Gemini CLI not found. Install it with: npm install -g @google/gemini-cli"
-            : `Gemini ACP error: ${error.message}`,
+            ? "Cursor Agent CLI not found. Install Cursor and ensure the `agent` command is on your PATH."
+            : `Cursor ACP error: ${error.message}`,
         }),
       })
       turn.queue.finish()
@@ -520,7 +384,7 @@ export class GeminiAcpManager {
     return context
   }
 
-  private async ensureSession(context: GeminiSessionContext, args: StartGeminiTurnArgs) {
+  private async ensureSession(context: CursorSessionContext, args: StartCursorTurnArgs) {
     if (args.sessionToken) {
       if (context.loadedSessionId === args.sessionToken && context.sessionId === args.sessionToken) {
         return
@@ -558,7 +422,7 @@ export class GeminiAcpManager {
     context.sessionId = typeof result.sessionId === "string" ? result.sessionId : null
   }
 
-  private async handleMessage(context: GeminiSessionContext, message: JsonRpcMessage) {
+  private async handleMessage(context: CursorSessionContext, message: JsonRpcMessage) {
     if (isJsonRpcResponse(message)) {
       const pending = context.pendingRequests.get(message.id)
       if (!pending) return
@@ -576,12 +440,124 @@ export class GeminiAcpManager {
       return
     }
 
+    if ("id" in message && message.method === "cursor/create_plan") {
+      await this.handleCreatePlanRequest(context, message)
+      return
+    }
+
+    if ("id" in message && message.method === "cursor/update_todos") {
+      await this.handleUpdateTodosRequest(context, message)
+      return
+    }
+
     if (message.method === "session/update") {
       await this.handleSessionUpdate(context, asRecord(message.params))
     }
   }
 
-  private async handlePermissionRequest(context: GeminiSessionContext, message: JsonRpcRequest) {
+  private async handleCreatePlanRequest(context: CursorSessionContext, message: JsonRpcRequest) {
+    const params = asRecord(message.params)
+    const toolCallId = typeof params?.toolCallId === "string" ? params.toolCallId : randomUUID()
+    const turn = context.pendingTurn
+
+    if (!turn) {
+      await this.respondToPermissionRequest(context, message.id, {})
+      return
+    }
+
+    const explicitPlan = typeof params?.plan === "string" ? params.plan : undefined
+    const normalizedTool = normalizeToolCall({
+      toolName: "ExitPlanMode",
+      toolId: toolCallId,
+      input: {
+        plan: explicitPlan ?? (turn.assistantText.trim() || undefined),
+        summary: typeof params?.overview === "string"
+          ? params.overview
+          : typeof params?.name === "string"
+            ? params.name
+            : undefined,
+        source: "cursor/create_plan",
+      },
+    })
+
+    turn.toolCalls.set(normalizedTool.toolId, normalizedTool)
+    turn.queue.push({
+      type: "transcript",
+      entry: timestamped({
+        kind: "tool_call",
+        tool: normalizedTool,
+      }),
+    })
+
+    const rawResult = await turn.onToolRequest({
+      tool: normalizedTool as HarnessToolRequest["tool"],
+    })
+
+    turn.queue.push({
+      type: "transcript",
+      entry: timestamped({
+        kind: "tool_result",
+        toolId: normalizedTool.toolId,
+        content: rawResult && typeof rawResult === "object" ? rawResult as Record<string, unknown> : {},
+      }),
+    })
+
+    await this.respondToPermissionRequest(context, message.id, {})
+  }
+
+  private async handleUpdateTodosRequest(context: CursorSessionContext, message: JsonRpcRequest) {
+    const params = asRecord(message.params)
+    const turn = context.pendingTurn
+    if (!turn) {
+      await this.respondToPermissionRequest(context, message.id, {})
+      return
+    }
+
+    const incomingTodos = Array.isArray(params?.todos)
+      ? params.todos
+          .map((todo) => {
+            const record = asRecord(todo)
+            const content = typeof record?.content === "string" ? record.content.trim() : ""
+            const status = record?.status
+            if (!content) return null
+            if (status !== "pending" && status !== "in_progress" && status !== "completed") return null
+            return {
+              id: typeof record?.id === "string" ? record.id : randomUUID(),
+              content,
+              status,
+            } satisfies { id: string; content: string; status: "pending" | "in_progress" | "completed" }
+          })
+          .filter((todo): todo is { id: string; content: string; status: "pending" | "in_progress" | "completed" } => Boolean(todo))
+      : []
+
+    const mergedTodos = mergeCursorTodos(turn.currentTodos, incomingTodos, Boolean(params?.merge))
+    turn.currentTodos = mergedTodos
+
+    const todoTool = normalizeToolCall({
+      toolName: "TodoWrite",
+      toolId: typeof params?.toolCallId === "string" ? params.toolCallId : randomUUID(),
+      input: {
+        todos: mergedTodos.map((todo) => ({
+          content: todo.content,
+          status: todo.status,
+          activeForm: todo.content,
+        })),
+      },
+    })
+
+    turn.toolCalls.set(todoTool.toolId, todoTool)
+    turn.queue.push({
+      type: "transcript",
+      entry: timestamped({
+        kind: "tool_call",
+        tool: todoTool,
+      }),
+    })
+
+    await this.respondToPermissionRequest(context, message.id, {})
+  }
+
+  private async handlePermissionRequest(context: CursorSessionContext, message: JsonRpcRequest) {
     const params = asRecord(message.params)
     const toolCall = asRecord(params?.toolCall)
     const toolCallId = typeof toolCall?.toolCallId === "string" ? toolCall.toolCallId : randomUUID()
@@ -592,17 +568,14 @@ export class GeminiAcpManager {
       locations: Array.isArray(toolCall?.locations) ? toolCall.locations as Array<{ path?: string | null }> : undefined,
       content: Array.isArray(toolCall?.content) ? toolCall.content as Array<Record<string, unknown>> : undefined,
     })
-    normalizedTool = await enrichGeminiToolCall(
-      normalizedTool,
-      typeof toolCall?.title === "string" ? toolCall.title : undefined,
-      context.sessionId
-    )
 
     const turn = context.pendingTurn
     if (!turn) {
       await this.respondToPermissionRequest(context, message.id, { outcome: { outcome: "cancelled" } })
       return
     }
+
+    normalizedTool = populateExitPlanFromAssistantText(normalizedTool, turn.assistantText)
 
     turn.toolCalls.set(normalizedTool.toolId, normalizedTool)
     turn.pendingPermissionRequestId = message.id
@@ -614,13 +587,13 @@ export class GeminiAcpManager {
       }),
     })
 
-    if (context.currentPlanMode && isPlanModeMutationTool(normalizedTool, context.cwd, context.sessionId)) {
+    if (context.currentPlanMode && isPlanModeMutationTool(normalizedTool)) {
       turn.queue.push({
         type: "transcript",
         entry: timestamped({
           kind: "tool_result",
           toolId: normalizedTool.toolId,
-          content: "Blocked by Kanna: Gemini cannot implement changes while plan mode is active. Write the plan, then call exit_plan_mode and wait for user approval.",
+          content: "Blocked by Kanna: Cursor cannot implement changes while plan mode is active. Finish the plan, then call exit_plan_mode and wait for user approval.",
           isError: true,
         }),
       })
@@ -636,6 +609,7 @@ export class GeminiAcpManager {
           optionId: this.defaultAllowOptionId(params),
         },
       })
+      turn.pendingPermissionRequestId = null
       return
     }
 
@@ -688,7 +662,7 @@ export class GeminiAcpManager {
     return "allow_once"
   }
 
-  private async respondToPermissionRequest(context: GeminiSessionContext, id: JsonRpcId, result: unknown) {
+  private async respondToPermissionRequest(context: CursorSessionContext, id: JsonRpcId, result: unknown) {
     await this.writeMessage(context, {
       jsonrpc: "2.0",
       id,
@@ -696,7 +670,7 @@ export class GeminiAcpManager {
     } satisfies JsonRpcResponse)
   }
 
-  private async handleSessionUpdate(context: GeminiSessionContext, params: Record<string, unknown> | null) {
+  private async handleSessionUpdate(context: CursorSessionContext, params: Record<string, unknown> | null) {
     const turn = context.pendingTurn
     if (!turn) return
 
@@ -714,6 +688,7 @@ export class GeminiAcpManager {
     if (sessionUpdate === "agent_message_chunk") {
       const content = asRecord(update.content)
       if (content?.type === "text" && typeof content.text === "string") {
+        turn.assistantText += content.text
         turn.queue.push({
           type: "transcript",
           entry: timestamped({
@@ -748,7 +723,11 @@ export class GeminiAcpManager {
         locations: Array.isArray(update.locations) ? update.locations as Array<{ path?: string | null }> : undefined,
         content: Array.isArray(update.content) ? update.content as Array<Record<string, unknown>> : undefined,
       })
-      if (normalizedTool.toolKind === "ask_user_question" || normalizedTool.toolKind === "exit_plan_mode") {
+      if (
+        normalizedTool.toolKind === "ask_user_question" ||
+        normalizedTool.toolKind === "exit_plan_mode" ||
+        normalizedTool.toolKind === "todo_write"
+      ) {
         turn.toolCalls.set(toolCallId, normalizedTool)
         return
       }
@@ -769,10 +748,7 @@ export class GeminiAcpManager {
       const status = typeof update.status === "string" ? update.status : undefined
       const normalizedTool = turn.toolCalls.get(toolCallId)
       if (status === "completed" || status === "failed") {
-        if (
-          normalizedTool?.toolKind === "ask_user_question" ||
-          normalizedTool?.toolKind === "exit_plan_mode"
-        ) {
+        if (normalizedTool?.toolKind === "ask_user_question" || normalizedTool?.toolKind === "exit_plan_mode") {
           return
         }
         turn.queue.push({
@@ -788,7 +764,7 @@ export class GeminiAcpManager {
     }
   }
 
-  private async request<TResult>(context: GeminiSessionContext, method: string, params?: unknown): Promise<TResult> {
+  private async request<TResult>(context: CursorSessionContext, method: string, params?: unknown): Promise<TResult> {
     const id = context.nextRequestId++
     const promise = new Promise<TResult>((resolve, reject) => {
       context.pendingRequests.set(id, {
@@ -806,7 +782,7 @@ export class GeminiAcpManager {
     return await promise
   }
 
-  private async notify(context: GeminiSessionContext, method: string, params?: unknown) {
+  private async notify(context: CursorSessionContext, method: string, params?: unknown) {
     await this.writeMessage(context, {
       jsonrpc: "2.0",
       method,
@@ -814,9 +790,9 @@ export class GeminiAcpManager {
     } satisfies JsonRpcNotification)
   }
 
-  private async writeMessage(context: GeminiSessionContext, message: JsonRpcMessage) {
+  private async writeMessage(context: CursorSessionContext, message: JsonRpcMessage) {
     if (!context.child.stdin || context.child.stdin.destroyed) {
-      throw new Error("Gemini ACP stdin is unavailable")
+      throw new Error("Cursor ACP stdin is unavailable")
     }
     await new Promise<void>((resolve, reject) => {
       context.child.stdin!.write(`${JSON.stringify(message)}\n`, (error) => {
@@ -829,16 +805,15 @@ export class GeminiAcpManager {
     })
   }
 
-  private async disposeContext(context: GeminiSessionContext) {
+  private async disposeContext(context: CursorSessionContext) {
     context.closed = true
     context.pendingTurn = null
     for (const pending of context.pendingRequests.values()) {
-      pending.reject(new Error("Gemini ACP context disposed"))
+      pending.reject(new Error("Cursor ACP context disposed"))
     }
     context.pendingRequests.clear()
     if (!context.child.killed) {
       context.child.kill("SIGTERM")
     }
-    await fs.rm(context.settingsPath, { force: true })
   }
 }

@@ -5,7 +5,7 @@
 <h1 align="center">Kanna</h1>
 
 <p align="center">
-  <strong>A beautiful web UI for the Claude Code & Codex CLIs</strong>
+  <strong>A beautiful web UI for Claude Code, Codex, Gemini, and Cursor</strong>
 </p>
 
 <p align="center">
@@ -46,12 +46,12 @@ That's it. Kanna opens in your browser at [`localhost:3210`](http://localhost:32
 
 ## Features
 
-- **Multi-provider support** — switch between Claude and Codex (OpenAI) from the chat input, with per-provider model selection, reasoning effort controls, and Codex fast mode
+- **Multi-provider support** — switch between Claude, Codex, Gemini, and Cursor from the chat input, with per-provider model selection, plan mode support, and provider-specific controls
 - **Project-first sidebar** — chats grouped under projects, with live status indicators (idle, running, waiting, failed)
 - **Drag-and-drop project ordering** — reorder project groups in the sidebar with persistent ordering
-- **Local project discovery** — auto-discovers projects from both Claude and Codex local history
+- **Local project discovery** — auto-discovers projects from Claude and Codex local history
 - **Rich transcript rendering** — hydrated tool calls, collapsible tool groups, plan mode dialogs, and interactive prompts with full result display
-- **Quick responses** — lightweight structured queries (e.g. title generation) via Haiku with automatic Codex fallback
+- **Quick responses** — lightweight structured queries (e.g. title generation) via Claude Haiku with automatic provider fallback
 - **Plan mode** — review and approve agent plans before execution
 - **Persistent local history** — refresh-safe routes backed by JSONL event logs and compacted snapshots
 - **Auto-generated titles** — chat titles generated in the background via Claude Haiku
@@ -71,7 +71,7 @@ Bun Server (HTTP + WS)
     ├── EventStore ─── JSONL persistence + snapshot compaction
     └── ReadModels ─── derived views (sidebar, chat, projects)
     ↕  stdio
-Claude Agent SDK / Codex App Server (local processes)
+Claude Code / Codex / Gemini CLI / Cursor Agent ACP (local processes)
     ↕
 Local File System (~/.kanna/data/, project dirs)
 ```
@@ -83,6 +83,8 @@ Local File System (~/.kanna/data/, project dirs)
 - [Bun](https://bun.sh) v1.3.5+
 - A working [Claude Code](https://docs.anthropic.com/en/docs/claude-code) environment
 - *(Optional)* [Codex CLI](https://github.com/openai/codex) for Codex provider support
+- *(Optional)* [Gemini CLI](https://github.com/google-gemini/gemini-cli) for Gemini provider support
+- *(Optional)* [Cursor CLI / Agent](https://cursor.com/downloads) for Cursor provider support (`agent acp`)
 
 Embedded terminal support uses Bun's native PTY APIs and currently works on macOS/Linux.
 
@@ -177,6 +179,8 @@ src/
 │   ├── cli.ts       CLI entry point & browser launcher
 │   ├── server.ts    HTTP/WS server setup & static serving
 │   ├── agent.ts     AgentCoordinator (multi-provider turn management)
+│   ├── gemini-acp.ts  Gemini ACP JSON-RPC client
+│   ├── cursor-acp.ts  Cursor ACP JSON-RPC client
 │   ├── codex-app-server.ts  Codex App Server JSON-RPC client
 │   ├── provider-catalog.ts  Provider/model/effort normalization
 │   ├── quick-response.ts    Structured queries with provider fallback

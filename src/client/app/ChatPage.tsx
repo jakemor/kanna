@@ -416,6 +416,8 @@ export function ChatPage() {
             canCancel={state.canCancel}
             chatId={state.activeChatId}
             activeProvider={state.runtime?.provider ?? null}
+            activeModel={state.runtime?.model ?? null}
+            activePlanMode={state.runtime?.planMode ?? false}
             availableProviders={state.availableProviders}
             keybindings={resolvedKeybindings}
           />

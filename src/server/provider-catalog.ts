@@ -2,6 +2,7 @@ import type {
   AgentProvider,
   ClaudeModelOptions,
   CodexModelOptions,
+  CursorModelOptions,
   GeminiModelOptions,
   ModelOptions,
   ProviderCatalogEntry,
@@ -11,8 +12,12 @@ import type {
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_CURSOR_MODEL,
+  DEFAULT_CURSOR_MODEL_OPTIONS,
   DEFAULT_GEMINI_MODEL_OPTIONS,
+  CURSOR_MODELS,
   PROVIDERS,
+  normalizeCursorModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   isGeminiThinkingMode,
@@ -35,6 +40,8 @@ const HARD_CODED_GEMINI_MODELS: ProviderModelOption[] = [
   { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", supportsEffort: false },
 ]
 
+const HARD_CODED_CURSOR_MODELS: ProviderModelOption[] = [...CURSOR_MODELS]
+
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = PROVIDERS.map((provider) => {
   if (provider.id === "codex") {
     return {
@@ -50,6 +57,13 @@ export const SERVER_PROVIDERS: ProviderCatalogEntry[] = PROVIDERS.map((provider)
       models: HARD_CODED_GEMINI_MODELS,
     }
   }
+  if (provider.id === "cursor") {
+    return {
+      ...provider,
+      defaultModel: DEFAULT_CURSOR_MODEL,
+      models: HARD_CODED_CURSOR_MODELS,
+    }
+  }
   return provider
 })
 
@@ -62,6 +76,9 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 }
 
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
+  if (provider === "cursor") {
+    return normalizeCursorModelId(model)
+  }
   const catalog = getServerProviderCatalog(provider)
   if (model && catalog.models.some((candidate) => candidate.id === model)) {
     return model
@@ -100,6 +117,11 @@ export function normalizeGeminiModelOptions(modelOptions?: ModelOptions): Gemini
       ? modelOptions.gemini.thinkingMode
       : DEFAULT_GEMINI_MODEL_OPTIONS.thinkingMode,
   }
+}
+
+export function normalizeCursorModelOptions(modelOptions?: ModelOptions): CursorModelOptions {
+  void modelOptions
+  return { ...DEFAULT_CURSOR_MODEL_OPTIONS }
 }
 
 export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions): ServiceTier | undefined {

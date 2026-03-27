@@ -67,6 +67,8 @@ interface Props {
   canCancel?: boolean
   chatId?: string | null
   activeProvider: AgentProvider | null
+  activeModel?: string | null
+  activePlanMode?: boolean
   availableProviders: ProviderCatalogEntry[]
   keybindings: KeybindingsSnapshot | null
 }
@@ -83,23 +85,25 @@ function logChatInput(message: string, details?: unknown) {
 function createLockedComposerState(
   provider: AgentProvider,
   composerState: ComposerState,
-  providerDefaults: ReturnType<typeof useChatPreferencesStore.getState>["providerDefaults"]
+  providerDefaults: ReturnType<typeof useChatPreferencesStore.getState>["providerDefaults"],
+  lockedModel?: string | null,
+  lockedPlanMode?: boolean
 ): ComposerState {
   if (provider === "claude") {
     if (composerState.provider === "claude") {
       return {
         provider: "claude",
-        model: composerState.model,
+        model: lockedModel ?? composerState.model,
         modelOptions: { ...composerState.modelOptions },
-        planMode: composerState.planMode,
+        planMode: lockedPlanMode ?? composerState.planMode,
       }
     }
 
     return {
       provider: "claude",
-      model: providerDefaults.claude.model,
+      model: lockedModel ?? providerDefaults.claude.model,
       modelOptions: { ...providerDefaults.claude.modelOptions },
-      planMode: providerDefaults.claude.planMode,
+      planMode: lockedPlanMode ?? providerDefaults.claude.planMode,
     }
   }
 
@@ -107,34 +111,52 @@ function createLockedComposerState(
     if (composerState.provider === "gemini") {
       return {
         provider: "gemini",
-        model: composerState.model,
+        model: lockedModel ?? composerState.model,
         modelOptions: { ...composerState.modelOptions },
-        planMode: composerState.planMode,
+        planMode: lockedPlanMode ?? composerState.planMode,
       }
     }
 
     return {
       provider: "gemini",
-      model: providerDefaults.gemini.model,
+      model: lockedModel ?? providerDefaults.gemini.model,
       modelOptions: { ...providerDefaults.gemini.modelOptions },
-      planMode: providerDefaults.gemini.planMode,
+      planMode: lockedPlanMode ?? providerDefaults.gemini.planMode,
+    }
+  }
+
+  if (provider === "cursor") {
+    if (composerState.provider === "cursor") {
+      return {
+        provider: "cursor",
+        model: lockedModel ?? composerState.model,
+        modelOptions: { ...composerState.modelOptions },
+        planMode: lockedPlanMode ?? composerState.planMode,
+      }
+    }
+
+    return {
+      provider: "cursor",
+      model: lockedModel ?? providerDefaults.cursor.model,
+      modelOptions: { ...providerDefaults.cursor.modelOptions },
+      planMode: lockedPlanMode ?? providerDefaults.cursor.planMode,
     }
   }
 
   if (composerState.provider === "codex") {
     return {
       provider: "codex",
-      model: composerState.model,
+      model: lockedModel ?? composerState.model,
       modelOptions: { ...composerState.modelOptions },
-      planMode: composerState.planMode,
+      planMode: lockedPlanMode ?? composerState.planMode,
     }
   }
 
   return {
     provider: "codex",
-    model: providerDefaults.codex.model,
+    model: lockedModel ?? providerDefaults.codex.model,
     modelOptions: { ...providerDefaults.codex.modelOptions },
-    planMode: providerDefaults.codex.planMode,
+    planMode: lockedPlanMode ?? providerDefaults.codex.planMode,
   }
 }
 
@@ -198,6 +220,8 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   canCancel,
   chatId,
   activeProvider,
+  activeModel,
+  activePlanMode,
   availableProviders,
   keybindings,
 }, forwardedRef) {
@@ -219,12 +243,12 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   const isStandalone = useIsStandalone()
   const isCoarsePointer = useMediaQuery("(pointer: coarse)")
   const [lockedComposerState, setLockedComposerState] = useState<ComposerState | null>(() => (
-    activeProvider ? createLockedComposerState(activeProvider, composerState, providerDefaults) : null
+    activeProvider ? createLockedComposerState(activeProvider, composerState, providerDefaults, activeModel, activePlanMode) : null
   ))
 
   const providerLocked = activeProvider !== null
   const providerPrefs = providerLocked
-    ? lockedComposerState ?? createLockedComposerState(activeProvider, composerState, providerDefaults)
+    ? lockedComposerState ?? createLockedComposerState(activeProvider, composerState, providerDefaults, activeModel, activePlanMode)
     : composerState
   const selectedProvider = providerLocked ? activeProvider : composerState.provider
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
@@ -276,8 +300,8 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
       return
     }
 
-    setLockedComposerState(createLockedComposerState(activeProvider, composerState, providerDefaults))
-  }, [activeProvider, chatId])
+    setLockedComposerState(createLockedComposerState(activeProvider, composerState, providerDefaults, activeModel, activePlanMode))
+  }, [activeModel, activePlanMode, activeProvider, chatId, composerState, providerDefaults])
 
   useEffect(() => {
     logChatInput("resolved provider state", {
@@ -488,15 +512,16 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   }
   return (
     <div
-      className={cn("p-3 pt-0 md:pb-2", isStandalone && "px-5")}
+      className={cn("p-3 pt-0 md:pb-2 flex flex-col items-center", isStandalone && "px-5")}
       style={isStandalone ? { paddingBottom: "var(--app-composer-bottom-padding)" } : undefined}
     >
-      <div
-        className={cn(
-          "max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] px-2 pb-2 transition-colors",
-          isDragOver && "border-foreground/40 bg-muted/30"
-        )}
-        onDragEnter={(event) => {
+      <div className="flex flex-col items-center relative z-10 w-full max-w-[840px] mx-auto">
+        <div
+          className={cn(
+            "w-full border dark:bg-card/40 bg-background/95 backdrop-blur-lg border-border rounded-[29px] px-2 pb-2 transition-colors relative z-10",
+            isDragOver && "border-foreground/40 bg-muted/30"
+          )}
+          onDragEnter={(event) => {
           if (disabled || !event.dataTransfer.types.includes("Files")) return
           event.preventDefault()
           setIsDragOver(true)
@@ -565,7 +590,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
             type="button"
             variant="ghost"
             size="icon"
-            className="mb-1 h-10 w-10 shrink-0 rounded-full"
+            className="mb-0.75 h-10 w-10 shrink-0 rounded-full"
             disabled={disabled || canCancel}
             onClick={() => fileInputRef.current?.click()}
           >
@@ -593,7 +618,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
             }}
             onKeyDown={handleKeyDown}
             disabled={disabled}
-            className="flex-1 text-base p-3 md:p-4 pl-1 md:pl-2 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
+            className="flex-1 text-base py-2 md:py-3.75 px-1 md:px-2 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
           />
           <Button
             type="button"
@@ -607,7 +632,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
             }}
             disabled={!canCancel && (disabled || (!value.trim() && images.length === 0))}
             size="icon"
-            className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
+            className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 md:mb-0.5 -mr-0.5 md:mr-0 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
           >
             {canCancel ? (
               <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
@@ -618,54 +643,65 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
         </div>
       </div>
 
+      <div
+        className={cn(
+          "border-x border-b border-t-0 border-border rounded-b-[20px] px-3 py-1.5 transition-colors relative z-20 -mt-[1px] flex-shrink-0 shadow-sm",
+          "dark:bg-card/40 bg-background/95 backdrop-blur-lg",
+          isDragOver && "border-foreground/40 bg-muted/30"
+        )}
+      >
+        <div className="absolute top-0 left-0 right-0 h-[1px] bg-background" />
+        <ChatPreferenceControls
+          availableProviders={availableProviders}
+          selectedProvider={selectedProvider}
+          providerLocked={providerLocked}
+          model={providerPrefs.model}
+          modelOptions={providerPrefs.modelOptions}
+          onProviderChange={(provider) => {
+            if (providerLocked) return
+            resetComposerFromProvider(provider)
+          }}
+          onModelChange={(_, model) => {
+            if (providerLocked) {
+              setLockedComposerState((current) => {
+                const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+                return { ...next, model } as ComposerState
+              })
+              return
+            }
+
+            setComposerModel(model)
+          }}
+          onClaudeReasoningEffortChange={(effort) => setReasoningEffort(effort)}
+          onCodexReasoningEffortChange={(effort) => setReasoningEffort(effort)}
+          onGeminiThinkingModeChange={(thinkingMode) => setGeminiThinkingMode(thinkingMode)}
+          onCodexFastModeChange={(fastMode) => {
+            if (providerLocked) {
+              setLockedComposerState((current) => {
+                const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+                if (next.provider !== "codex") return next
+                return {
+                  ...next,
+                  modelOptions: { ...next.modelOptions, fastMode },
+                } as ComposerState
+              })
+              return
+            }
+
+            setComposerModelOptions({ fastMode })
+          }}
+          planMode={providerPrefs.planMode}
+          onPlanModeChange={setEffectivePlanMode}
+          includePlanMode={showPlanMode}
+          className="w-full relative z-10"
+        />
+      </div>
+
+      </div>
+
       {attachmentError ? (
-        <div className="max-w-[840px] mx-auto mt-2 px-2 text-xs text-destructive">{attachmentError}</div>
+        <div className="max-w-[840px] mx-auto mt-2 px-2 text-xs text-destructive relative z-10">{attachmentError}</div>
       ) : null}
-
-      <ChatPreferenceControls
-        availableProviders={availableProviders}
-        selectedProvider={selectedProvider}
-        providerLocked={providerLocked}
-        model={providerPrefs.model}
-        modelOptions={providerPrefs.modelOptions}
-        onProviderChange={(provider) => {
-          if (providerLocked) return
-          resetComposerFromProvider(provider)
-        }}
-        onModelChange={(_, model) => {
-          if (providerLocked) {
-            setLockedComposerState((current) => {
-              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              return { ...next, model } as ComposerState
-            })
-            return
-          }
-
-          setComposerModel(model)
-        }}
-        onClaudeReasoningEffortChange={(effort) => setReasoningEffort(effort)}
-        onCodexReasoningEffortChange={(effort) => setReasoningEffort(effort)}
-        onGeminiThinkingModeChange={(thinkingMode) => setGeminiThinkingMode(thinkingMode)}
-        onCodexFastModeChange={(fastMode) => {
-          if (providerLocked) {
-            setLockedComposerState((current) => {
-              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              if (next.provider !== "codex") return next
-              return {
-                ...next,
-                modelOptions: { ...next.modelOptions, fastMode },
-              } as ComposerState
-            })
-            return
-          }
-
-          setComposerModelOptions({ fastMode })
-        }}
-        planMode={providerPrefs.planMode}
-        onPlanModeChange={setEffectivePlanMode}
-        includePlanMode={showPlanMode}
-        className="w-max mx-auto mt-2 bg-background/80 dark:bg-card/40 backdrop-blur-lg border border-border rounded-[20px] p-1"
-      />
     </div>
   )
 })

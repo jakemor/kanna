@@ -16,6 +16,28 @@ interface Props {
 export function ToolCallMessage({ message, isLoading = false, localPath }: Props) {
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
+  const resultText = useMemo(() => {
+    if (typeof message.result === "string") return message.result
+    if (!message.result) return ""
+    if (typeof message.result === "object" && message.result !== null && "content" in message.result) {
+      const content = (message.result as { content?: unknown }).content
+      if (typeof content === "string") return content
+    }
+    return JSON.stringify(message.result, null, 2)
+  }, [message.result])
+
+  const derivedFilePath = useMemo(() => {
+    if (message.toolKind === "read_file" || message.toolKind === "write_file" || message.toolKind === "edit_file") {
+      if (message.input.filePath) return message.input.filePath
+    }
+
+    if (message.toolKind === "edit_file") {
+      const match = resultText.match(/^Updated\s+(.+)$/m)
+      if (match?.[1]) return match[1].trim()
+    }
+
+    return ""
+  }, [message.input, message.toolKind, resultText])
 
   const name = useMemo(() => {
     if (message.toolKind === "skill") {
@@ -42,13 +64,13 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
       return message.input.query || "Web Search"
     }
     if (message.toolKind === "read_file") {
-      return `Read ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return derivedFilePath ? `Read ${stripWorkspacePath(derivedFilePath, localPath)}` : "Read file"
     }
     if (message.toolKind === "write_file") {
-      return `Write ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return derivedFilePath ? `Write ${stripWorkspacePath(derivedFilePath, localPath)}` : "Write file"
     }
     if (message.toolKind === "edit_file") {
-      return `Edit ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return derivedFilePath ? `Edit ${stripWorkspacePath(derivedFilePath, localPath)}` : "Edit file"
     }
     if (message.toolKind === "mcp_generic") {
       return `${toTitleCase(message.input.tool)} from ${toTitleCase(message.input.server)}`
@@ -57,7 +79,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
       return message.input.subagentType || message.toolName
     }
     return message.toolName
-  }, [message.input, message.toolName, localPath])
+  }, [derivedFilePath, message.input, message.toolKind, message.toolName, localPath])
 
   const isAgent = useMemo(() => message.toolKind === "subagent_task", [message.toolKind])
   const description = useMemo(() => {
@@ -70,16 +92,11 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   const isWriteTool = message.toolKind === "write_file"
   const isEditTool = message.toolKind === "edit_file"
   const isReadTool = message.toolKind === "read_file"
-
-  const resultText = useMemo(() => {
-    if (typeof message.result === "string") return message.result
-    if (!message.result) return ""
-    if (typeof message.result === "object" && message.result !== null && "content" in message.result) {
-      const content = (message.result as { content?: unknown }).content
-      if (typeof content === "string") return content
-    }
-    return JSON.stringify(message.result, null, 2)
-  }, [message.result])
+  const hasRenderableReadContent = isReadTool && Boolean(resultText.trim())
+  const hasRenderableEditDiff = isEditTool && (
+    Boolean(message.input.oldString.trim()) ||
+    Boolean(message.input.newString.trim())
+  )
 
   const inputText = useMemo(() => {
     switch (message.toolKind) {
@@ -99,12 +116,22 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
           <VerticalLineContainer className="my-4 text-sm">
             <div className="flex flex-col gap-2">
               {isEditTool ? (
-                <FileContentView
-                  content=""
-                  isDiff
-                  oldString={message.input.oldString}
-                  newString={message.input.newString}
-                />
+                hasRenderableEditDiff ? (
+                  <FileContentView
+                    content=""
+                    isDiff
+                    oldString={message.input.oldString}
+                    newString={message.input.newString}
+                  />
+                ) : resultText.trim() ? (
+                  <MetaCodeBlock label={message.isError ? "Error" : "Result"} copyText={resultText}>
+                    {resultText}
+                  </MetaCodeBlock>
+                ) : (
+                  <div className="text-muted-foreground text-xs">
+                    Cursor completed this edit, but ACP did not include the file diff details.
+                  </div>
+                )
               ) : !isReadTool && !isWriteTool && (
                 <MetaCodeBlock label={
                   isBashTool ? (
@@ -123,9 +150,15 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
                 </MetaCodeBlock>
               )}
               {hasResult && isReadTool && !message.isError && (
-                <FileContentView
-                  content={resultText}
-                />
+                hasRenderableReadContent ? (
+                  <FileContentView
+                    content={resultText}
+                  />
+                ) : (
+                  <div className="text-muted-foreground text-xs">
+                    Cursor completed this read, but ACP did not include the file contents.
+                  </div>
+                )
               )}
               {isWriteTool && !message.isError && (
                 <FileContentView

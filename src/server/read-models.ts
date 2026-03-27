@@ -20,6 +20,17 @@ import { cloneTranscriptEntries } from "./events"
 import { getDefaultDirectoryRoot, resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
+function deriveLastChatModel(chatId: string, state: StoreState): string | null {
+  const entries = state.messagesByChatId.get(chatId) ?? []
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (entry.kind === "system_init") {
+      return entry.model
+    }
+  }
+  return null
+}
+
 export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): KannaStatus {
   if (activeStatus) return activeStatus
   if (chat.lastTurnOutcome === "failed") return "failed"
@@ -222,6 +233,7 @@ export function deriveChatSnapshot(
     title: chat.title,
     status: deriveStatus(chat, activeStatuses.get(chat.id)),
     provider: chat.provider,
+    model: deriveLastChatModel(chat.id, state),
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,
     pendingTool,

@@ -15,6 +15,7 @@ import type { ClientCommand } from "../shared/protocol"
 import { EventStore } from "./event-store"
 import { persistChatAttachments, resolveAttachmentPath } from "./attachments"
 import { CodexAppServerManager } from "./codex-app-server"
+import { CursorAcpManager } from "./cursor-acp"
 import { GeminiAcpManager } from "./gemini-acp"
 import { generateTitleForChat } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
@@ -23,6 +24,7 @@ import {
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeCursorModelOptions,
   normalizeGeminiModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
@@ -60,6 +62,7 @@ interface ActiveTurn {
   model: string
   effort?: string
   serviceTier?: "fast"
+  fastMode?: boolean
   planMode: boolean
   status: KannaStatus
   pendingTool: PendingToolRequest | null
@@ -74,6 +77,7 @@ interface AgentCoordinatorArgs {
   onStateChange: () => void
   attachmentsDir: string
   codexManager?: CodexAppServerManager
+  cursorManager?: CursorAcpManager
   geminiManager?: GeminiAcpManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<string | null>
 }
@@ -118,6 +122,15 @@ function discardedToolResult(
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   return value as Record<string, unknown>
+}
+
+function shouldUseSyntheticPlanFollowUp(
+  provider: AgentProvider,
+  tool: NormalizedToolCall & { toolKind: "exit_plan_mode" }
+) {
+  if (provider === "codex") return true
+  if (provider !== "cursor") return false
+  return asRecord(tool.rawInput)?.source === "cursor/create_plan"
 }
 
 function findLatestRecoverablePendingTool(args: {
@@ -474,6 +487,7 @@ export class AgentCoordinator {
   private readonly onStateChange: () => void
   private readonly attachmentsDir: string
   private readonly codexManager: CodexAppServerManager
+  private readonly cursorManager: CursorAcpManager
   private readonly geminiManager: GeminiAcpManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
   readonly activeTurns = new Map<string, ActiveTurn>()
@@ -484,6 +498,7 @@ export class AgentCoordinator {
     this.onStateChange = args.onStateChange
     this.attachmentsDir = args.attachmentsDir
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.cursorManager = args.cursorManager ?? new CursorAcpManager()
     this.geminiManager = args.geminiManager ?? new GeminiAcpManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChat
   }
@@ -574,6 +589,7 @@ export class AgentCoordinator {
         model: normalizeServerModel(provider, command.model),
         effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
+        fastMode: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
       }
     }
@@ -584,6 +600,18 @@ export class AgentCoordinator {
         model: normalizeServerModel(provider, command.model),
         effort: modelOptions.thinkingMode,
         serviceTier: undefined,
+        fastMode: undefined,
+        planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
+      }
+    }
+
+    if (provider === "cursor") {
+      normalizeCursorModelOptions(command.modelOptions)
+      return {
+        model: normalizeServerModel(provider, command.model),
+        effort: undefined,
+        serviceTier: undefined,
+        fastMode: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
       }
     }
@@ -593,6 +621,7 @@ export class AgentCoordinator {
       model: normalizeServerModel(provider, command.model),
       effort: modelOptions.reasoningEffort,
       serviceTier: codexServiceTierFromModelOptions(modelOptions),
+      fastMode: undefined,
       planMode: catalog.supportsPlanMode ? Boolean(command.planMode) : false,
     }
   }
@@ -605,6 +634,7 @@ export class AgentCoordinator {
     model: string
     effort?: string
     serviceTier?: "fast"
+    fastMode?: boolean
     planMode: boolean
     appendUserPrompt: UserPromptEntry | null
   }) {
@@ -687,6 +717,16 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         onToolRequest,
       })
+    } else if (args.provider === "cursor") {
+      turn = await this.cursorManager.startTurn({
+        chatId: args.chatId,
+        content: args.content,
+        localPath: project.localPath,
+        model: args.model,
+        planMode: args.planMode,
+        sessionToken: chat.sessionToken,
+        onToolRequest,
+      })
     } else {
       await this.codexManager.startSession({
         chatId: args.chatId,
@@ -714,6 +754,7 @@ export class AgentCoordinator {
       model: args.model,
       effort: args.effort,
       serviceTier: args.serviceTier,
+      fastMode: args.fastMode,
       planMode: args.planMode,
       status: "starting",
       pendingTool: null,
@@ -777,6 +818,7 @@ export class AgentCoordinator {
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
+      fastMode: settings.fastMode,
       planMode: settings.planMode,
       appendUserPrompt: userPrompt,
     })
@@ -867,6 +909,7 @@ export class AgentCoordinator {
             model: active.model,
             effort: active.effort,
             serviceTier: active.serviceTier,
+            fastMode: active.fastMode,
             planMode: active.postToolFollowUp.planMode,
             appendUserPrompt: null,
           })
@@ -989,6 +1032,7 @@ export class AgentCoordinator {
           model: settings.model,
           effort: settings.effort,
           serviceTier: settings.serviceTier,
+          fastMode: settings.fastMode,
           planMode: chat.planMode,
           appendUserPrompt: null,
         })
@@ -1017,6 +1061,7 @@ export class AgentCoordinator {
         model: settings.model,
         effort: settings.effort,
         serviceTier: settings.serviceTier,
+        fastMode: settings.fastMode,
         planMode: followUp.planMode,
         appendUserPrompt: null,
       })
@@ -1054,7 +1099,7 @@ export class AgentCoordinator {
         await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
       }
 
-      if (active.provider === "codex") {
+      if (shouldUseSyntheticPlanFollowUp(active.provider, pending.tool)) {
         active.postToolFollowUp = planModeFollowUp(result)
       }
     }

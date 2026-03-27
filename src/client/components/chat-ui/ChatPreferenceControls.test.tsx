@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { PROVIDERS } from "../../../shared/types"
+import { DEFAULT_CURSOR_MODEL, PROVIDERS } from "../../../shared/types"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 
 describe("ChatPreferenceControls", () => {
@@ -74,6 +74,30 @@ describe("ChatPreferenceControls", () => {
 
     expect(html).toContain("Gemini")
     expect(html).toContain("High")
+    expect(html).toContain("Plan")
+  })
+
+  test("renders cursor-specific grouped model controls", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="cursor"
+        model={DEFAULT_CURSOR_MODEL}
+        modelOptions={{}}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onClaudeReasoningEffortChange={() => {}}
+        onCodexReasoningEffortChange={() => {}}
+        onGeminiThinkingModeChange={() => {}}
+        onCodexFastModeChange={() => {}}
+        planMode
+        onPlanModeChange={() => {}}
+        includePlanMode
+      />
+    )
+
+    expect(html).toContain("Cursor")
+    expect(html).toContain("Opus 4.6")
     expect(html).toContain("Plan")
   })
 })

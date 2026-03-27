@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { AgentCoordinator, normalizeClaudeStreamMessage } from "./agent"
 import type { HarnessTurn } from "./harness-types"
+import { DEFAULT_CURSOR_MODEL } from "../shared/types"
 import type { TranscriptEntry } from "../shared/types"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
@@ -347,6 +348,86 @@ describe("AgentCoordinator codex integration", () => {
     expect(turnCalls).toEqual([{ effort: "xhigh", serviceTier: "fast" }])
   })
 
+  test("maps cursor model options into Cursor ACP turn settings", async () => {
+    const startTurnCalls: Array<{ model: string; planMode: boolean; sessionToken: string | null }> = []
+    const fakeCursorManager = {
+      async startTurn(args: {
+        model: string
+        planMode: boolean
+        sessionToken: string | null
+      }): Promise<HarnessTurn> {
+        startTurnCalls.push({
+          model: args.model,
+          planMode: args.planMode,
+          sessionToken: args.sessionToken,
+        })
+
+        async function* stream() {
+          yield { type: "session_token" as const, sessionToken: "cursor-session-1" }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "cursor",
+              model: DEFAULT_CURSOR_MODEL,
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "cursor",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
+      cursorManager: fakeCursorManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "cursor",
+      message: { text: "cursor turn" },
+      model: DEFAULT_CURSOR_MODEL,
+      modelOptions: {
+        cursor: {},
+      },
+      planMode: true,
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(startTurnCalls).toEqual([{
+      model: DEFAULT_CURSOR_MODEL,
+      planMode: true,
+      sessionToken: null,
+    }])
+    expect(store.chat.provider).toBe("cursor")
+    expect(store.chat.sessionToken).toBe("cursor-session-1")
+  })
+
   test("approving synthetic codex ExitPlanMode starts a hidden follow-up turn and can clear context", async () => {
     const sessionCalls: Array<{ chatId: string; sessionToken: string | null }> = []
     const startTurnCalls: Array<{ content: string; planMode: boolean }> = []
@@ -485,6 +566,232 @@ describe("AgentCoordinator codex integration", () => {
     expect(store.messages.filter((entry) => entry.kind === "user_prompt")).toHaveLength(1)
     expect(store.messages.some((entry) => entry.kind === "context_cleared")).toBe(true)
     expect(store.chat.sessionToken).toBe("thread-2")
+  })
+
+  test("approving a Cursor create-plan prompt starts a hidden follow-up turn", async () => {
+    const startTurnCalls: Array<{ content: string; planMode: boolean }> = []
+    let turnCount = 0
+
+    const fakeCursorManager = {
+      async startTurn(args: {
+        content: string
+        planMode: boolean
+        onToolRequest: (request: any) => Promise<unknown>
+      }): Promise<HarnessTurn> {
+        startTurnCalls.push({ content: args.content, planMode: args.planMode })
+        turnCount += 1
+
+        async function* firstStream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "cursor",
+              model: DEFAULT_CURSOR_MODEL,
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "tool_call",
+              tool: {
+                kind: "tool",
+                toolKind: "exit_plan_mode",
+                toolName: "ExitPlanMode",
+                toolId: "exit-cursor-1",
+                input: {
+                  plan: "## Cursor Plan",
+                  summary: "Update input shell styling",
+                },
+                rawInput: {
+                  source: "cursor/create_plan",
+                },
+              },
+            }),
+          }
+          await args.onToolRequest({
+            tool: {
+              kind: "tool",
+              toolKind: "exit_plan_mode",
+              toolName: "ExitPlanMode",
+              toolId: "exit-cursor-1",
+              input: {
+                plan: "## Cursor Plan",
+                summary: "Update input shell styling",
+              },
+              rawInput: {
+                source: "cursor/create_plan",
+              },
+            },
+          })
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        async function* secondStream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "cursor",
+              model: DEFAULT_CURSOR_MODEL,
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "cursor",
+          stream: turnCount === 1 ? firstStream() : secondStream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
+      cursorManager: fakeCursorManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "cursor",
+      message: { text: "plan this" },
+      model: DEFAULT_CURSOR_MODEL,
+      planMode: true,
+    })
+
+    await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "exit_plan_mode")
+
+    await coordinator.respondTool({
+      type: "chat.respondTool",
+      chatId: "chat-1",
+      toolUseId: "exit-cursor-1",
+      result: {
+        confirmed: true,
+        message: "Then implement it cleanly",
+      },
+    })
+
+    await waitFor(() => startTurnCalls.length === 2)
+
+    expect(startTurnCalls).toEqual([
+      { content: "plan this", planMode: true },
+      { content: "Proceed with the approved plan. Additional guidance: Then implement it cleanly", planMode: false },
+    ])
+  })
+
+  test("renders Cursor todo updates as TodoWrite tool calls", async () => {
+    const fakeCursorManager = {
+      async startTurn(): Promise<HarnessTurn> {
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "cursor",
+              model: DEFAULT_CURSOR_MODEL,
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "tool_call",
+              tool: {
+                kind: "tool",
+                toolKind: "todo_write",
+                toolName: "TodoWrite",
+                toolId: "todo-1",
+                input: {
+                  todos: [
+                    { content: "Inspect file", status: "completed", activeForm: "Inspect file" },
+                    { content: "Edit file", status: "in_progress", activeForm: "Edit file" },
+                    { content: "Verify file", status: "pending", activeForm: "Verify file" },
+                  ],
+                },
+              },
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "cursor",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      attachmentsDir: "/tmp/kanna-attachments",
+      cursorManager: fakeCursorManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "cursor",
+      message: { text: "do work" },
+      model: DEFAULT_CURSOR_MODEL,
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    const todoCall = store.messages.find((entry) => entry.kind === "tool_call" && entry.tool.toolKind === "todo_write")
+    expect(todoCall).toBeDefined()
+    if (!todoCall || todoCall.kind !== "tool_call" || todoCall.tool.toolKind !== "todo_write") {
+      throw new Error("missing TodoWrite tool call")
+    }
+
+    expect(todoCall.tool.input.todos.map((todo) => todo.status)).toEqual(["completed", "in_progress", "pending"])
   })
 
   test("cancelling a waiting ask-user-question records a discarded tool result", async () => {
@@ -1244,7 +1551,7 @@ function createFakeStore() {
     id: "chat-1",
     projectId: "project-1",
     title: "New Chat",
-    provider: null as "claude" | "codex" | "gemini" | null,
+    provider: null as "claude" | "codex" | "gemini" | "cursor" | null,
     planMode: false,
     sessionToken: null as string | null,
   }
@@ -1274,7 +1581,7 @@ function createFakeStore() {
     state: {
       chatsById: new Map([["chat-1", chat]]),
     },
-    async setChatProvider(_chatId: string, provider: "claude" | "codex" | "gemini") {
+    async setChatProvider(_chatId: string, provider: "claude" | "codex" | "gemini" | "cursor") {
       chat.provider = provider
     },
     async setPlanMode(_chatId: string, planMode: boolean) {

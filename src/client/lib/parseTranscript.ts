@@ -55,6 +55,23 @@ function hydrateAttachments(attachments: ChatAttachment[] | undefined): Hydrated
   }))
 }
 
+function appendChunkMessage(
+  messages: HydratedTranscriptMessage[],
+  nextMessage: Extract<HydratedTranscriptMessage, { kind: "assistant_text" | "assistant_thought" }>
+) {
+  const previous = messages.at(-1)
+  if (
+    previous?.kind === nextMessage.kind &&
+    previous.hidden === nextMessage.hidden &&
+    previous.messageId === nextMessage.messageId
+  ) {
+    previous.text += nextMessage.text
+    return
+  }
+
+  messages.push(nextMessage)
+}
+
 export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedTranscriptMessage[] {
   const pendingToolCalls = new Map<string, { hydrated: HydratedToolCall; normalized: NormalizedToolCall }>()
   const messages: HydratedTranscriptMessage[] = []
@@ -90,14 +107,14 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         })
         break
       case "assistant_text":
-        messages.push({
+        appendChunkMessage(messages, {
           ...createBaseMessage(entry),
           kind: "assistant_text",
           text: entry.text,
         })
         break
       case "assistant_thought":
-        messages.push({
+        appendChunkMessage(messages, {
           ...createBaseMessage(entry),
           kind: "assistant_thought",
           text: entry.text,

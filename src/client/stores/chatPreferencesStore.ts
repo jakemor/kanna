@@ -3,13 +3,17 @@ import { persist } from "zustand/middleware"
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_CURSOR_MODEL,
+  DEFAULT_CURSOR_MODEL_OPTIONS,
   DEFAULT_GEMINI_MODEL_OPTIONS,
+  normalizeCursorModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   isGeminiThinkingMode,
   type AgentProvider,
   type ClaudeModelOptions,
   type CodexModelOptions,
+  type CursorModelOptions,
   type GeminiModelOptions,
   type ProviderModelOptionsByProvider,
 } from "../../shared/types"
@@ -26,6 +30,7 @@ export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
   gemini: ProviderPreference<GeminiModelOptions>
+  cursor: ProviderPreference<CursorModelOptions>
 }
 
 export type ComposerState =
@@ -47,6 +52,12 @@ export type ComposerState =
     modelOptions: GeminiModelOptions
     planMode: boolean
   }
+  | {
+    provider: "cursor"
+    model: string
+    modelOptions: CursorModelOptions
+    planMode: boolean
+  }
 
 type PersistedChatPreferencesState = Pick<
   ChatPreferencesState,
@@ -61,7 +72,7 @@ function normalizeCodexModel(model?: string) {
 }
 
 function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
-  if (value === "claude" || value === "codex" || value === "gemini") return value
+  if (value === "claude" || value === "codex" || value === "gemini" || value === "cursor") return value
   return "last_used"
 }
 
@@ -127,6 +138,19 @@ function normalizeGeminiPreference(value?: {
   }
 }
 
+function normalizeCursorPreference(value?: {
+  model?: string
+  modelOptions?: Partial<CursorModelOptions>
+  planMode?: boolean
+}): ProviderPreference<CursorModelOptions> {
+  void value?.modelOptions
+  return {
+    model: normalizeCursorModelId(value?.model ?? DEFAULT_CURSOR_MODEL),
+    modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
+    planMode: Boolean(value?.planMode),
+  }
+}
+
 function createDefaultProviderDefaults(): ChatProviderPreferences {
   return {
     claude: {
@@ -142,6 +166,11 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
     gemini: {
       model: "auto-gemini-2.5",
       modelOptions: { ...DEFAULT_GEMINI_MODEL_OPTIONS },
+      planMode: false,
+    },
+    cursor: {
+      model: DEFAULT_CURSOR_MODEL,
+      modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
       planMode: false,
     },
   }
@@ -165,11 +194,17 @@ function normalizeProviderDefaults(value?: {
     modelOptions?: Partial<GeminiModelOptions>
     planMode?: boolean
   }
+  cursor?: {
+    model?: string
+    modelOptions?: Partial<CursorModelOptions>
+    planMode?: boolean
+  }
 }): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
     gemini: normalizeGeminiPreference(value?.gemini),
+    cursor: normalizeCursorPreference(value?.cursor),
   }
 }
 
@@ -200,6 +235,16 @@ function composerFromProviderDefaults(
     const preference = providerDefaults.gemini
     return {
       provider: "gemini",
+      model: preference.model,
+      modelOptions: { ...preference.modelOptions },
+      planMode: preference.planMode,
+    }
+  }
+
+  if (provider === "cursor") {
+    const preference = providerDefaults.cursor
+    return {
+      provider: "cursor",
       model: preference.model,
       modelOptions: { ...preference.modelOptions },
       planMode: preference.planMode,
@@ -251,6 +296,16 @@ function normalizeComposerState(
     }
   }
 
+  if (value?.provider === "cursor") {
+    const preference = normalizeCursorPreference(value)
+    return {
+      provider: "cursor",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
   if (legacyLiveProvider === "claude") {
     const preference = normalizeClaudePreference(legacyLivePreferences?.claude)
     return {
@@ -265,6 +320,16 @@ function normalizeComposerState(
     const preference = normalizeCodexPreference(legacyLivePreferences?.codex)
     return {
       provider: "codex",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
+  if (legacyLiveProvider === "cursor") {
+    const preference = normalizeCursorPreference(legacyLivePreferences?.cursor)
+    return {
+      provider: "cursor",
       model: preference.model,
       modelOptions: preference.modelOptions,
       planMode: preference.planMode,
@@ -289,7 +354,9 @@ interface ChatPreferencesState {
   setShowProviderIconsInSideTray: (show: boolean) => void
   setComposerProvider: (provider: AgentProvider) => void
   setComposerModel: (model: string) => void
-  setComposerModelOptions: (modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions> | Partial<GeminiModelOptions>) => void
+  setComposerModelOptions: (
+    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions> | Partial<GeminiModelOptions> | Partial<CursorModelOptions>
+  ) => void
   setComposerPlanMode: (planMode: boolean) => void
   resetComposerFromProvider: (provider: AgentProvider) => void
   initializeComposerForNewChat: () => void
@@ -341,10 +408,15 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                   ...state.providerDefaults.gemini,
                   model,
                 })
-                : normalizeCodexPreference({
-                  ...state.providerDefaults.codex,
-                  model,
-                }),
+                : provider === "cursor"
+                  ? normalizeCursorPreference({
+                    ...state.providerDefaults.cursor,
+                    model,
+                  })
+                  : normalizeCodexPreference({
+                    ...state.providerDefaults.codex,
+                    model,
+                  }),
           },
         })),
       setProviderDefaultModelOptions: (provider, modelOptions) =>
@@ -367,13 +439,21 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                     ...modelOptions as Partial<GeminiModelOptions>,
                   },
                 })
-                : normalizeCodexPreference({
-                  ...state.providerDefaults.codex,
-                  modelOptions: {
-                    ...state.providerDefaults.codex.modelOptions,
-                    ...modelOptions as Partial<CodexModelOptions>,
-                  },
-                }),
+                : provider === "cursor"
+                  ? normalizeCursorPreference({
+                    ...state.providerDefaults.cursor,
+                    modelOptions: {
+                      ...state.providerDefaults.cursor.modelOptions,
+                      ...modelOptions as Partial<CursorModelOptions>,
+                    },
+                  })
+                  : normalizeCodexPreference({
+                    ...state.providerDefaults.codex,
+                    modelOptions: {
+                      ...state.providerDefaults.codex.modelOptions,
+                      ...modelOptions as Partial<CodexModelOptions>,
+                    },
+                  }),
           },
         })),
       setProviderDefaultPlanMode: (provider, planMode) =>
@@ -421,6 +501,19 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               } as ComposerState,
             }
           }
+          if (state.composerState.provider === "cursor") {
+            return {
+              composerState: {
+                provider: "cursor",
+                model,
+                modelOptions: normalizeCursorPreference({
+                  ...state.composerState,
+                  model,
+                }).modelOptions,
+                planMode: state.composerState.planMode,
+              } as ComposerState,
+            }
+          }
           return {
             composerState: {
               provider: "codex",
@@ -461,6 +554,22 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                   modelOptions: {
                     ...state.composerState.modelOptions,
                     ...modelOptions as Partial<GeminiModelOptions>,
+                  },
+                }).modelOptions,
+                planMode: state.composerState.planMode,
+              } as ComposerState,
+            }
+          }
+          if (state.composerState.provider === "cursor") {
+            return {
+              composerState: {
+                provider: "cursor",
+                model: state.composerState.model,
+                modelOptions: normalizeCursorPreference({
+                  ...state.composerState,
+                  modelOptions: {
+                    ...state.composerState.modelOptions,
+                    ...modelOptions as Partial<CursorModelOptions>,
                   },
                 }).modelOptions,
                 planMode: state.composerState.planMode,
@@ -518,7 +627,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     }),
     {
       name: "chat-preferences",
-      version: 4,
+      version: 5,
       migrate: (persistedState) => migrateChatPreferencesState(persistedState as Partial<PersistedChatPreferencesState> | undefined),
     }
   )

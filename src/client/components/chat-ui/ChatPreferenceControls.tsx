@@ -1,14 +1,17 @@
-import { useState, type ComponentType, type SVGProps } from "react"
-import { Brain, Gauge, ListTodo, LockOpen, Sparkles, Zap } from "lucide-react"
+import { useEffect, useState, type ComponentType, type SVGProps } from "react"
+import { Brain, ChevronLeft, ChevronRight, Gauge, ListTodo, LockOpen, Sparkles, Zap } from "lucide-react"
 import {
   CLAUDE_REASONING_OPTIONS,
   CODEX_REASONING_OPTIONS,
   GEMINI_THINKING_OPTIONS,
+  getCursorModelBaseId,
+  getCursorModelSpeed,
   type AgentProvider,
   type ClaudeModelOptions,
   type ClaudeReasoningEffort,
   type CodexModelOptions,
   type CodexReasoningEffort,
+  type CursorModelOptions,
   type GeminiModelOptions,
   type GeminiThinkingMode,
   type ProviderCatalogEntry,
@@ -60,22 +63,63 @@ function GeminiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+function CursorIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <path d="M12 0 2.4 5.5v13L12 24l9.6-5.5v-13Zm0 3.1 6.8 3.9v5.1L15 14.3V9.7L12 8l-3 1.7v4.6l-3.8-2.2V7Zm-6.8 9.8 3.8 2.2v4.5l3 1.8 3-1.8v-4.5l3.8-2.2v3.8L12 20.9l-6.8-3.9Z" />
+    </svg>
+  )
+}
+
 function geminiSupportsThinkingOff(model: string) {
   return !(model.startsWith("gemini-3") || model === "auto-gemini-3")
+}
+
+const CURSOR_MODEL_FAMILY_ORDER = ["Composer", "GPT", "Claude", "Gemini", "Grok", "Kimi"] as const
+type CursorModelFamily = (typeof CURSOR_MODEL_FAMILY_ORDER)[number]
+
+function getCursorModelFamily(modelId: string): CursorModelFamily {
+  if (modelId.startsWith("composer-")) return "Composer"
+  if (modelId.startsWith("gpt-")) return "GPT"
+  if (modelId.startsWith("claude-")) return "Claude"
+  if (modelId.startsWith("gemini-")) return "Gemini"
+  if (modelId.startsWith("grok-")) return "Grok"
+  return "Kimi"
+}
+
+function formatCursorModelLabel(label: string, modelId: string) {
+  const speed = getCursorModelSpeed(modelId)
+  if (!speed || speed === "standard") return label
+  return `${label} (${speed === "fast" ? "Fast" : "Standard"})`
 }
 
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
   gemini: GeminiIcon,
+  cursor: CursorIcon,
 }
 
 export const MODEL_ICON_BY_ID: Record<string, typeof Sparkles> = {
+  auto: Sparkles,
   opus: Brain,
   sonnet: Sparkles,
   haiku: Zap,
   "gpt-5.4": Brain,
+  "gpt-5.4[reasoning=medium,context=272k,fast=false]": Brain,
+  "gpt-5.4-mini[reasoning=medium]": Sparkles,
+  "gpt-5.4-nano[reasoning=medium]": Zap,
   "gpt-5.3-codex": Sparkles,
+  "gpt-5.3-codex[reasoning=medium,fast=false]": Sparkles,
+  "gpt-5.3-codex-spark[reasoning=medium]": Zap,
+  "gpt-5.2[reasoning=medium,fast=false]": Sparkles,
+  "gpt-5.2-codex[reasoning=medium,fast=false]": Sparkles,
   "gpt-5.3-codex-spark": Zap,
   "gemini-2.5-pro": Brain,
   "gemini-2.5-flash": Sparkles,
@@ -83,8 +127,20 @@ export const MODEL_ICON_BY_ID: Record<string, typeof Sparkles> = {
   "auto-gemini-3": Brain,
   "auto-gemini-2.5": Sparkles,
   "gemini-3.1-pro-preview": Brain,
+  "gemini-3.1-pro[]": Brain,
+  "gemini-3-flash[]": Sparkles,
   "gemini-3-pro-preview": Brain,
   "gemini-3-flash-preview": Sparkles,
+  "claude-opus-4-6[thinking=true,context=200k,effort=high,fast=false]": Brain,
+  "claude-opus-4-5[thinking=true]": Brain,
+  "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]": Sparkles,
+  "claude-sonnet-4-5[thinking=true,context=200k]": Sparkles,
+  "claude-sonnet-4[thinking=false,context=200k]": Sparkles,
+  "claude-haiku-4-5[thinking=true]": Zap,
+  "grok-4-20[thinking=true]": Brain,
+  "kimi-k2.5[]": Sparkles,
+  "composer-2[fast=true]": Brain,
+  "composer-1.5[]": Sparkles,
 }
 
 export function PopoverMenuItem({
@@ -162,7 +218,9 @@ export function InputPopover({
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="w-64 p-1">
-        <div className="space-y-1">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
+        <div className="max-h-[min(24rem,60vh)] space-y-1 overflow-y-auto pr-1">
+          {typeof children === "function" ? children(() => setOpen(false)) : children}
+        </div>
       </PopoverContent>
     </Popover>
   )
@@ -174,7 +232,7 @@ interface ChatPreferenceControlsProps {
   showProviderPicker?: boolean
   providerLocked?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions | GeminiModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | GeminiModelOptions | CursorModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onClaudeReasoningEffortChange: (effort: ClaudeReasoningEffort) => void
@@ -205,6 +263,7 @@ export function ChatPreferenceControls({
   includePlanMode = true,
   className,
 }: ChatPreferenceControlsProps) {
+  const [cursorModelFamily, setCursorModelFamily] = useState<CursorModelFamily | null>(null)
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const ProviderIcon = PROVIDER_ICONS[selectedProvider]
   const ModelIcon = MODEL_ICON_BY_ID[model] ?? Sparkles
@@ -212,6 +271,25 @@ export function ChatPreferenceControls({
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   const geminiModelOptions = selectedProvider === "gemini" ? modelOptions as GeminiModelOptions : null
   const hasEffortOptions = selectedProvider === "claude" || selectedProvider === "codex"
+  const cursorModelSpeed = selectedProvider === "cursor" ? getCursorModelSpeed(model) : null
+  const cursorVariantCandidates = providerConfig.id === "cursor"
+    ? providerConfig.models.filter((candidate) => getCursorModelBaseId(candidate.id) === getCursorModelBaseId(model))
+    : []
+  const showCursorSpeedSelector = selectedProvider === "cursor"
+    && cursorVariantCandidates.some((candidate) => getCursorModelSpeed(candidate.id) === "fast")
+    && cursorVariantCandidates.some((candidate) => getCursorModelSpeed(candidate.id) === "standard")
+  const cursorModelGroups = providerConfig.id === "cursor"
+    ? CURSOR_MODEL_FAMILY_ORDER
+        .map((family) => ({
+          family,
+          models: providerConfig.models.filter((candidate) => getCursorModelFamily(candidate.id) === family),
+        }))
+        .filter((group) => group.models.length > 0)
+    : []
+
+  useEffect(() => {
+    setCursorModelFamily(null)
+  }, [selectedProvider])
 
   return (
     <div className={cn("max-w-full overflow-x-auto", className)}>
@@ -248,26 +326,122 @@ export function ChatPreferenceControls({
           trigger={(
             <>
               <ModelIcon className="h-3.5 w-3.5" />
-              <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model}</span>
+              <span>{
+                providerConfig.id === "cursor"
+                  ? formatCursorModelLabel(providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model, model)
+                  : providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model
+              }</span>
             </>
           )}
         >
-          {(close) => providerConfig.models.map((candidate) => {
-            const Icon = MODEL_ICON_BY_ID[candidate.id] ?? Sparkles
-            return (
-              <PopoverMenuItem
-                key={candidate.id}
-                onClick={() => {
-                  onModelChange(selectedProvider, candidate.id)
-                  close()
-                }}
-                selected={model === candidate.id}
-                icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-                label={candidate.label}
-              />
-            )
-          })}
+          {(close) => providerConfig.id === "cursor"
+            ? cursorModelFamily
+              ? (
+                <>
+                  <button
+                    onClick={() => setCursorModelFamily(null)}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-muted-foreground transition-opacity hover:opacity-70"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    <span>{cursorModelFamily}</span>
+                  </button>
+                  {cursorModelGroups
+                    .find((group) => group.family === cursorModelFamily)
+                    ?.models.map((candidate) => {
+                      const Icon = MODEL_ICON_BY_ID[candidate.id] ?? Sparkles
+                      return (
+                        <PopoverMenuItem
+                          key={candidate.id}
+                          onClick={() => {
+                            onModelChange(selectedProvider, candidate.id)
+                            setCursorModelFamily(null)
+                            close()
+                          }}
+                          selected={model === candidate.id}
+                          icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                          label={formatCursorModelLabel(candidate.label, candidate.id)}
+                        />
+                      )
+                    })}
+                </>
+              )
+              : cursorModelGroups.map((group) => {
+                const selectedInGroup = group.models.some((candidate) => candidate.id === model)
+                const GroupIcon = MODEL_ICON_BY_ID[group.models[0]?.id ?? ""] ?? Sparkles
+                return (
+                  <div key={group.family} className="relative">
+                    <PopoverMenuItem
+                      onClick={() => setCursorModelFamily(group.family)}
+                      selected={selectedInGroup}
+                      icon={<GroupIcon className="h-4 w-4 text-muted-foreground" />}
+                      label={group.family}
+                      description={`${group.models.length} model${group.models.length === 1 ? "" : "s"}`}
+                    />
+                    <ChevronRight className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  </div>
+                )
+              })
+            : providerConfig.models.map((candidate) => {
+              const Icon = MODEL_ICON_BY_ID[candidate.id] ?? Sparkles
+              return (
+                <PopoverMenuItem
+                  key={candidate.id}
+                  onClick={() => {
+                    onModelChange(selectedProvider, candidate.id)
+                    close()
+                  }}
+                  selected={model === candidate.id}
+                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                  label={providerConfig.id === "cursor" ? formatCursorModelLabel(candidate.label, candidate.id) : candidate.label}
+                />
+              )
+            })}
         </InputPopover>
+
+        {showCursorSpeedSelector ? (
+          <InputPopover
+            trigger={(
+              <>
+                {cursorModelSpeed === "fast" ? <Zap className="h-3.5 w-3.5" /> : <Gauge className="h-3.5 w-3.5" />}
+                <span>{cursorModelSpeed === "fast" ? "Fast" : "Standard"}</span>
+              </>
+            )}
+            triggerClassName={cursorModelSpeed === "fast" ? "text-emerald-500 dark:text-emerald-400" : undefined}
+          >
+            {(close) => (
+              <>
+                {cursorVariantCandidates
+                  .filter((candidate) => getCursorModelSpeed(candidate.id) === "standard")
+                  .map((candidate) => (
+                    <PopoverMenuItem
+                      key={candidate.id}
+                      onClick={() => {
+                        onModelChange(selectedProvider, candidate.id)
+                        close()
+                      }}
+                      selected={model === candidate.id}
+                      icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                      label="Standard"
+                    />
+                  ))}
+                {cursorVariantCandidates
+                  .filter((candidate) => getCursorModelSpeed(candidate.id) === "fast")
+                  .map((candidate) => (
+                    <PopoverMenuItem
+                      key={candidate.id}
+                      onClick={() => {
+                        onModelChange(selectedProvider, candidate.id)
+                        close()
+                      }}
+                      selected={model === candidate.id}
+                      icon={<Zap className="h-4 w-4 text-muted-foreground" />}
+                      label="Fast"
+                    />
+                  ))}
+              </>
+            )}
+          </InputPopover>
+        ) : null}
 
         {hasEffortOptions ? (
           <InputPopover

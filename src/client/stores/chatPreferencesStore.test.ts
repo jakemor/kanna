@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { DEFAULT_CURSOR_MODEL } from "../../shared/types"
 import { migrateChatPreferencesState, useChatPreferencesStore } from "./chatPreferencesStore"
 
 const INITIAL_STATE = useChatPreferencesStore.getInitialState()
@@ -47,6 +48,11 @@ describe("migrateChatPreferencesState", () => {
         gemini: {
           model: "auto-gemini-2.5",
           modelOptions: { thinkingMode: "standard" },
+          planMode: false,
+        },
+        cursor: {
+          model: DEFAULT_CURSOR_MODEL,
+          modelOptions: {},
           planMode: false,
         },
       },
@@ -199,5 +205,47 @@ describe("chat preference store", () => {
       planMode: true,
     })
     expect(useChatPreferencesStore.getState().providerDefaults).toEqual(INITIAL_STATE.providerDefaults)
+  })
+
+  test("keeps Cursor fast mode isolated in composer state", () => {
+    useChatPreferencesStore.setState({
+      ...INITIAL_STATE,
+      composerState: {
+        provider: "cursor",
+        model: DEFAULT_CURSOR_MODEL,
+        modelOptions: {},
+        planMode: true,
+      },
+    })
+
+    useChatPreferencesStore.getState().setComposerModelOptions({})
+
+    expect(useChatPreferencesStore.getState().composerState).toEqual({
+      provider: "cursor",
+      model: DEFAULT_CURSOR_MODEL,
+      modelOptions: {},
+      planMode: true,
+    })
+    expect(useChatPreferencesStore.getState().providerDefaults).toEqual(INITIAL_STATE.providerDefaults)
+  })
+
+  test("normalizes legacy Cursor model ids in composer state", () => {
+    const migrated = migrateChatPreferencesState({
+      defaultProvider: "last_used",
+      providerDefaults: {},
+      composerState: {
+        provider: "cursor",
+        model: "gemini-3.1-pro",
+        modelOptions: {},
+        planMode: true,
+      },
+    })
+
+    expect(migrated.composerState).toEqual({
+      provider: "cursor",
+      model: "gemini-3.1-pro[]",
+      modelOptions: {},
+      planMode: true,
+    })
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react"
 import { ArrowDown, Flower } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
 import { ChatInput } from "../components/chat-ui/ChatInput"
@@ -10,6 +10,7 @@ import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { ScrollArea } from "../components/ui/scroll-area"
 import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
+import { buildChatPdfFilename } from "../lib/pdf"
 import { cn } from "../lib/utils"
 import {
   DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
@@ -31,14 +32,20 @@ const EMPTY_STATE_TYPING_INTERVAL_MS = 19
 const CHAT_NAVBAR_OFFSET_PX = 72
 const SCROLL_BUTTON_BOTTOM_PX = 120
 
+type ChatPageOutletContext = KannaState & {
+  isPrintPreview: boolean
+  setIsPrintPreview: Dispatch<SetStateAction<boolean>>
+}
+
 export function ChatPage() {
-  const state = useOutletContext<KannaState>()
+  const state = useOutletContext<ChatPageOutletContext>()
   const layoutRootRef = useRef<HTMLDivElement>(null)
   const chatCardRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
+  const isPrintMode = state.isPrintPreview
   const projectId = state.runtime?.projectId ?? null
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
@@ -168,6 +175,33 @@ export function ChatPage() {
   }, [state.messages.length, state.scrollRef])
 
   useEffect(() => {
+    const previousTitle = document.title
+    if (isPrintMode) {
+      document.title = buildChatPdfFilename({
+        title: state.runtime?.title,
+        localPath: state.runtime?.localPath,
+      })
+    }
+
+    return () => {
+      document.title = previousTitle
+    }
+  }, [isPrintMode, state.runtime?.localPath, state.runtime?.title])
+
+  useEffect(() => {
+    if (!isPrintMode) return
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      state.setIsPrintPreview(false)
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [isPrintMode, state.setIsPrintPreview])
+
+  useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
       state.updateScrollState()
     })
@@ -218,67 +252,91 @@ export function ChatPage() {
   }
 
   const chatCard = (
-    <Card ref={chatCardRef} className="bg-background h-full flex flex-col overflow-hidden border-0 rounded-none relative">
-      <CardContent className="flex flex-1 min-h-0 flex-col p-0 overflow-hidden relative">
-        <ChatNavbar
-          sidebarCollapsed={state.sidebarCollapsed}
-          onOpenSidebar={state.openSidebar}
-          onExpandSidebar={state.expandSidebar}
-          onNewChat={state.handleCompose}
-          localPath={state.navbarLocalPath}
-          embeddedTerminalVisible={showTerminalPane}
-          onToggleEmbeddedTerminal={projectId
-            ? () => {
-              if (hasTerminals) {
-                toggleVisibility(projectId)
-                return
+    <Card
+      ref={chatCardRef}
+      className={cn(
+        "bg-background h-full flex flex-col overflow-hidden border-0 rounded-none relative",
+        isPrintMode && "h-auto overflow-visible bg-transparent"
+      )}
+    >
+      <CardContent
+        className={cn(
+          "flex flex-1 min-h-0 flex-col p-0 overflow-hidden relative",
+          isPrintMode && "overflow-visible"
+        )}
+      >
+        {!isPrintMode ? (
+          <ChatNavbar
+            sidebarCollapsed={state.sidebarCollapsed}
+            onOpenSidebar={state.openSidebar}
+            onExpandSidebar={state.expandSidebar}
+            onNewChat={state.handleCompose}
+            localPath={state.navbarLocalPath}
+            embeddedTerminalVisible={showTerminalPane}
+            onToggleEmbeddedTerminal={projectId
+              ? () => {
+                if (hasTerminals) {
+                  toggleVisibility(projectId)
+                  return
+                }
+                addTerminal(projectId)
               }
-              addTerminal(projectId)
-            }
-            : undefined}
-          rightSidebarVisible={showRightSidebar}
-          onToggleRightSidebar={projectId ? () => toggleRightSidebar(projectId) : undefined}
-          onOpenExternal={(action) => {
-            void state.handleOpenExternal(action)
-          }}
-          editorLabel={state.editorLabel}
-          finderShortcut={resolvedKeybindings.bindings.openInFinder}
-          editorShortcut={resolvedKeybindings.bindings.openInEditor}
-          terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}
-          rightSidebarShortcut={resolvedKeybindings.bindings.toggleRightSidebar}
-        />
+              : undefined}
+            rightSidebarVisible={showRightSidebar}
+            onToggleRightSidebar={projectId ? () => toggleRightSidebar(projectId) : undefined}
+            onOpenExternal={(action) => {
+              void state.handleOpenExternal(action)
+            }}
+            onExportPdf={() => {
+              if (state.messages.length > 0) {
+                state.setIsPrintPreview((current) => !current)
+              }
+            }}
+            canExportPdf={state.messages.length > 0}
+            editorLabel={state.editorLabel}
+            finderShortcut={resolvedKeybindings.bindings.openInFinder}
+            editorShortcut={resolvedKeybindings.bindings.openInEditor}
+            terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}
+            rightSidebarShortcut={resolvedKeybindings.bindings.toggleRightSidebar}
+          />
+        ) : null}
 
         <ScrollArea
           ref={state.scrollRef}
           onScroll={state.updateScrollState}
-          className="flex-1 min-h-0 px-4 scroll-pt-[72px]"
+          className={cn(
+            "flex-1 min-h-0 px-4 scroll-pt-[72px]",
+            isPrintMode && "overflow-visible px-0"
+          )}
         >
           {state.messages.length === 0 ? <div style={{ height: state.transcriptPaddingBottom }} aria-hidden="true" /> : null}
           {state.messages.length > 0 ? (
             <>
-              <div className="animate-fade-in space-y-5 pt-[72px] max-w-[800px] mx-auto">
-                <KannaTranscript
-                  messages={state.messages}
-                  isLoading={state.isProcessing}
-                  localPath={state.runtime?.localPath}
-                  latestToolIds={state.latestToolIds}
-                  onOpenLocalLink={state.handleOpenLocalLink}
-                  onAskUserQuestionSubmit={state.handleAskUserQuestion}
-                  onExitPlanModeConfirm={state.handleExitPlanMode}
-                />
-                {state.isProcessing ? <ProcessingMessage status={state.runtime?.status} /> : null}
-                {state.commandError ? (
-                  <div className="text-sm text-destructive border border-destructive/20 bg-destructive/5 rounded-xl px-4 py-3">
-                    {state.commandError}
-                  </div>
-                ) : null}
+              <div className={cn("animate-fade-in space-y-5 max-w-[800px] mx-auto", isPrintMode ? "pt-0" : "pt-[72px]")}>
+                <div>
+                  <KannaTranscript
+                    messages={state.messages}
+                    isLoading={state.isProcessing}
+                    localPath={state.runtime?.localPath}
+                    latestToolIds={state.latestToolIds}
+                    onOpenLocalLink={state.handleOpenLocalLink}
+                    onAskUserQuestionSubmit={state.handleAskUserQuestion}
+                    onExitPlanModeConfirm={state.handleExitPlanMode}
+                  />
+                  {state.commandError ? (
+                    <div className="text-sm text-destructive border border-destructive/20 bg-destructive/5 rounded-xl px-4 py-3">
+                      {state.commandError}
+                    </div>
+                  ) : null}
+                </div>
+                {!isPrintMode && state.isProcessing ? <ProcessingMessage status={state.runtime?.status} /> : null}
               </div>
-              <div style={{ height: 250 }} aria-hidden="true" />
+              {!isPrintMode ? <div style={{ height: 250 }} aria-hidden="true" /> : null}
             </>
           ) : null}
         </ScrollArea>
 
-        {state.messages.length === 0 ? (
+        {state.messages.length === 0 && !isPrintMode ? (
           <div
             key={state.activeChatId ?? "new-chat"}
             className="pointer-events-none absolute inset-x-4 animate-fade-in"
@@ -315,43 +373,78 @@ export function ChatPage() {
           </div>
         ) : null}
 
-        <div
-          style={{ bottom: SCROLL_BUTTON_BOTTOM_PX }}
-          className={cn(
-            "absolute left-1/2 -translate-x-1/2 z-10 transition-all",
-            state.showScrollButton
-              ? "scale-100 duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-              : "scale-60 duration-300 ease-out pointer-events-none blur-sm opacity-0"
-          )}
-        >
-          <button
-            onClick={state.scrollToBottom}
-            className="flex items-center transition-colors gap-1.5 px-2 bg-white hover:bg-muted border border-border rounded-full aspect-square cursor-pointer text-sm text-primary hover:text-foreground dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-100 dark:border-slate-600"
+        {!isPrintMode ? (
+          <div
+            data-scroll-bottom-button
+            style={{ bottom: SCROLL_BUTTON_BOTTOM_PX }}
+            className={cn(
+              "absolute left-1/2 -translate-x-1/2 z-10 transition-all",
+              state.showScrollButton
+                ? "scale-100 duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                : "scale-60 duration-300 ease-out pointer-events-none blur-sm opacity-0"
+            )}
           >
-            <ArrowDown className="h-5 w-5" />
-          </button>
-        </div>
+            <button
+              onClick={state.scrollToBottom}
+              className="flex items-center transition-colors gap-1.5 px-2 bg-white hover:bg-muted border border-border rounded-full aspect-square cursor-pointer text-sm text-primary hover:text-foreground dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-100 dark:border-slate-600"
+            >
+              <ArrowDown className="h-5 w-5" />
+            </button>
+          </div>
+        ) : null}
       </CardContent>
 
-      <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
-        <div className="bg-gradient-to-t from-background via-background pointer-events-auto" ref={state.inputRef}>
-          <ChatInput
-            ref={chatInputRef}
-            key={state.activeChatId ?? "new-chat"}
-            onSubmit={state.handleSend}
-            onCancel={() => {
-              void state.handleCancel()
-            }}
-            disabled={!state.hasSelectedProject || state.runtime?.status === "waiting_for_user"}
-            canCancel={state.canCancel}
-            chatId={state.activeChatId}
-            activeProvider={state.runtime?.provider ?? null}
-            availableProviders={state.availableProviders}
-          />
+      {!isPrintMode ? (
+        <div data-chat-input-shell className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
+          <div className="bg-gradient-to-t from-background via-background pointer-events-auto" ref={state.inputRef}>
+            <ChatInput
+              ref={chatInputRef}
+              key={state.activeChatId ?? "new-chat"}
+              onSubmit={state.handleSend}
+              onCancel={() => {
+                void state.handleCancel()
+              }}
+              disabled={!state.hasSelectedProject || state.runtime?.status === "waiting_for_user"}
+              canCancel={state.canCancel}
+              chatId={state.activeChatId}
+              activeProvider={state.runtime?.provider ?? null}
+              availableProviders={state.availableProviders}
+            />
+          </div>
         </div>
-      </div>
+      ) : null}
     </Card>
   )
+
+  if (isPrintMode) {
+    return (
+      <div ref={layoutRootRef} className="flex-1 min-w-0 relative overflow-visible bg-background px-6 py-8">
+        <button
+          type="button"
+          onClick={() => state.setIsPrintPreview(false)}
+          className="fixed top-4 right-4 z-50 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground focus:outline-none print:hidden"
+        >
+          Exit
+        </button>
+        <div className="mx-auto max-w-[800px] space-y-5">
+          <KannaTranscript
+            messages={state.messages}
+            isLoading={false}
+            localPath={state.runtime?.localPath}
+            latestToolIds={state.latestToolIds}
+            onOpenLocalLink={state.handleOpenLocalLink}
+            onAskUserQuestionSubmit={state.handleAskUserQuestion}
+            onExitPlanModeConfirm={state.handleExitPlanMode}
+          />
+          {state.commandError ? (
+            <div className="text-sm text-destructive border border-destructive/20 bg-destructive/5 rounded-xl px-4 py-3">
+              {state.commandError}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div ref={layoutRootRef} className="flex-1 flex flex-col min-w-0 relative">

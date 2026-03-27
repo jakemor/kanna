@@ -193,6 +193,7 @@
     overscroll-behavior-y: contain;
   }
 
+
   /* Safe area insets for notched devices */
   .safe-area-inset-bottom {
     padding-bottom: env(safe-area-inset-bottom);

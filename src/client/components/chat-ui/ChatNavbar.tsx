@@ -1,6 +1,7 @@
-import { Flower, Code, FolderOpen, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
+import { Flower, Code, Ellipsis, FileOutput, FolderOpen, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
 import { cn } from "../../lib/utils"
 
@@ -15,6 +16,8 @@ interface Props {
   rightSidebarVisible?: boolean
   onToggleRightSidebar?: () => void
   onOpenExternal?: (action: "open_finder" | "open_editor") => void
+  onExportPdf?: () => void
+  canExportPdf?: boolean
   editorLabel?: string
   finderShortcut?: string[]
   editorShortcut?: string[]
@@ -33,6 +36,8 @@ export function ChatNavbar({
   rightSidebarVisible = false,
   onToggleRightSidebar,
   onOpenExternal,
+  onExportPdf,
+  canExportPdf = false,
   editorLabel = "Editor",
   finderShortcut,
   editorShortcut,
@@ -140,6 +145,36 @@ export function ChatNavbar({
               ) : null}
             </>
           )}
+          {onExportPdf ? (
+            <Popover>
+              <HotkeyTooltip>
+                <HotkeyTooltipTrigger asChild>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="More actions"
+                      className="border border-border/0"
+                    >
+                      <Ellipsis className="h-4.5 w-4.5" />
+                    </Button>
+                  </PopoverTrigger>
+                </HotkeyTooltipTrigger>
+                <HotkeyTooltipContent side="bottom">More actions</HotkeyTooltipContent>
+              </HotkeyTooltip>
+              <PopoverContent align="end" className="w-56 p-1.5">
+                <button
+                  type="button"
+                  onClick={onExportPdf}
+                  disabled={!canExportPdf}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-left text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+                >
+                  <FileOutput className="h-4 w-4 text-muted-foreground" />
+                  <span>Preview PDF</span>
+                </button>
+              </PopoverContent>
+            </Popover>
+          ) : null}
           {onToggleRightSidebar ? (
             <HotkeyTooltip>
               <HotkeyTooltipTrigger asChild>

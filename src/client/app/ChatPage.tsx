@@ -19,6 +19,7 @@ import {
 } from "../stores/rightSidebarStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { shouldCloseTerminalPane } from "./terminalLayoutResize"
 import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "./terminalToggleAnimation"
 import { useRightSidebarToggleAnimation } from "./useRightSidebarToggleAnimation"
 import { useTerminalToggleAnimation } from "./useTerminalToggleAnimation"
@@ -47,6 +48,7 @@ export function ChatPage() {
   const addTerminal = useTerminalLayoutStore((store) => store.addTerminal)
   const removeTerminal = useTerminalLayoutStore((store) => store.removeTerminal)
   const toggleVisibility = useTerminalLayoutStore((store) => store.toggleVisibility)
+  const resetMainSizes = useTerminalLayoutStore((store) => store.resetMainSizes)
   const setMainSizes = useTerminalLayoutStore((store) => store.setMainSizes)
   const setTerminalSizes = useTerminalLayoutStore((store) => store.setTerminalSizes)
   const toggleRightSidebar = useRightSidebarStore((store) => store.toggleVisibility)
@@ -93,6 +95,37 @@ export function ChatPage() {
     canCancel: state.canCancel,
   })
 
+  const handleToggleEmbeddedTerminal = () => {
+    if (!projectId) return
+    if (hasTerminals) {
+      toggleVisibility(projectId)
+      return
+    }
+
+    addTerminal(projectId)
+  }
+
+  const handleTerminalResize = (layout: Record<string, number>) => {
+    if (!projectId || !showTerminalPane || isTerminalAnimating.current) {
+      return
+    }
+
+    const chatSize = layout.chat
+    const terminalSize = layout.terminal
+    if (!Number.isFinite(chatSize) || !Number.isFinite(terminalSize)) {
+      return
+    }
+
+    const containerHeight = layoutRootRef.current?.getBoundingClientRect().height ?? 0
+    if (shouldCloseTerminalPane(containerHeight, terminalSize)) {
+      resetMainSizes(projectId)
+      toggleVisibility(projectId)
+      return
+    }
+
+    setMainSizes(projectId, [chatSize, terminalSize])
+  }
+
   useEffect(() => {
     if (state.messages.length !== 0) return
 
@@ -118,12 +151,7 @@ export function ChatPage() {
       if (!projectId) return
       if (actionMatchesEvent(resolvedKeybindings, "toggleEmbeddedTerminal", event)) {
         event.preventDefault()
-        if (hasTerminals) {
-          toggleVisibility(projectId)
-          return
-        }
-
-        addTerminal(projectId)
+        handleToggleEmbeddedTerminal()
         return
       }
 
@@ -153,19 +181,7 @@ export function ChatPage() {
 
     window.addEventListener("keydown", handleGlobalKeydown)
     return () => window.removeEventListener("keydown", handleGlobalKeydown)
-  }, [addTerminal, hasTerminals, projectId, resolvedKeybindings, toggleRightSidebar, toggleVisibility])
-
-  useEffect(() => {
-    if (state.messages.length === 0) return
-
-    const frameId = window.requestAnimationFrame(() => {
-      const element = state.scrollRef.current
-      if (!element) return
-      element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    })
-
-    return () => window.cancelAnimationFrame(frameId)
-  }, [state.messages.length, state.scrollRef])
+  }, [addTerminal, handleToggleEmbeddedTerminal, projectId, resolvedKeybindings, toggleRightSidebar, toggleVisibility])
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
@@ -227,15 +243,7 @@ export function ChatPage() {
           onNewChat={state.handleCompose}
           localPath={state.navbarLocalPath}
           embeddedTerminalVisible={showTerminalPane}
-          onToggleEmbeddedTerminal={projectId
-            ? () => {
-              if (hasTerminals) {
-                toggleVisibility(projectId)
-                return
-              }
-              addTerminal(projectId)
-            }
-            : undefined}
+          onToggleEmbeddedTerminal={projectId ? handleToggleEmbeddedTerminal : undefined}
           rightSidebarVisible={showRightSidebar}
           onToggleRightSidebar={projectId ? () => toggleRightSidebar(projectId) : undefined}
           onOpenExternal={(action) => {
@@ -396,12 +404,7 @@ export function ChatPage() {
                 groupRef={mainPanelGroupRef}
                 orientation="vertical"
                 className="flex-1 min-h-0"
-                onLayoutChanged={(layout) => {
-                  if (!showTerminalPane || isTerminalAnimating.current) {
-                    return
-                  }
-                  setMainSizes(projectId, [layout.chat, layout.terminal])
-                }}
+                onLayoutChanged={handleTerminalResize}
               >
                 <ResizablePanel id="chat" defaultSize={`${terminalLayout.mainSizes[0]}%`} minSize="25%" className="min-h-0">
                   {chatCard}
@@ -409,6 +412,7 @@ export function ChatPage() {
                 <ResizableHandle
                   withHandle
                   orientation="vertical"
+                  disabled={!showTerminalPane}
                   className={cn(!showTerminalPane && "pointer-events-none opacity-0")}
                 />
                 <ResizablePanel
@@ -488,12 +492,7 @@ export function ChatPage() {
           groupRef={mainPanelGroupRef}
           orientation="vertical"
           className="flex-1 min-h-0"
-          onLayoutChanged={(layout) => {
-            if (!showTerminalPane || isTerminalAnimating.current) {
-              return
-            }
-            setMainSizes(projectId, [layout.chat, layout.terminal])
-          }}
+          onLayoutChanged={handleTerminalResize}
         >
           <ResizablePanel id="chat" defaultSize={`${terminalLayout.mainSizes[0]}%`} minSize="25%" className="min-h-0">
             {chatCard}
@@ -501,6 +500,7 @@ export function ChatPage() {
           <ResizableHandle
             withHandle
             orientation="vertical"
+            disabled={!showTerminalPane}
             className={cn(!showTerminalPane && "pointer-events-none opacity-0")}
           />
           <ResizablePanel

@@ -42,24 +42,24 @@ export function ChatNavbar({
   return (
     <CardHeader
       className={cn(
-        "absolute top-0 md:top-2 left-0 right-0 z-10 px-2.5 pr-4 border-border/0 md:pb-0 flex items-center justify-center",
+        "absolute top-0 md:top-2 left-0 right-0 z-10 px-2.5 border-border/0 md:pb-0 flex items-center justify-center",
         sidebarCollapsed ? "md:px-2.5 md:pr-4" : "md:px-4 md:pr-4",
-        "backdrop-blur-lg md:backdrop-blur-none bg-gradient-to-b from-background md:from-transparent border-b border-x-0 md:border-x border-border md:border-none"
+        " bg-gradient-to-b from-background"
       )}
     >
       <div className="relative flex items-center gap-2 w-full">
-        <div className="flex items-center gap-1 flex-shrink-0 border-l border-border/0">
+        <div className={`flex items-center gap-1 flex-shrink-0 border border-border rounded-full ${sidebarCollapsed ? 'px-1.5' : ''} p-1 backdrop-blur-lg`}>
           <Button
             variant="ghost"
             size="icon"
             className="md:hidden"
             onClick={onOpenSidebar}
           >
-            <Menu className="h-5 w-5" />
+            <Menu className="size-4.5" />
           </Button>
           {sidebarCollapsed && (
             <>
-              <div className="flex items-center justify-center w-[40px] h-[40px]">
+              <div className="flex items-center justify-center w-[36px] h-[36px]">
                 <Flower className="h-4 w-4 sm:h-5 sm:w-5 text-logo ml-1 hidden md:block" />
               </div>
               <Button
@@ -69,7 +69,7 @@ export function ChatNavbar({
                 onClick={onExpandSidebar}
                 title="Expand sidebar"
               >
-                <PanelLeft className="h-5 w-5" />
+                <PanelLeft className="size-4.5" />
               </Button>
             </>
           )}
@@ -79,13 +79,13 @@ export function ChatNavbar({
             onClick={onNewChat}
             title="Compose"
           >
-            <SquarePen className="h-5 w-5" />
+            <SquarePen className="size-4.5" />
           </Button>
         </div>
 
         <div className="flex-1 min-w-0" />
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-1 flex-shrink-0 border border-border rounded-full px-1.5 py-1 backdrop-blur-lg">
           {localPath && (onOpenExternal || onToggleEmbeddedTerminal) && (
             <>
               {onOpenExternal ? (

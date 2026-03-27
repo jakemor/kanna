@@ -111,7 +111,7 @@ export function InputPopover({
       <button
         disabled
         className={cn(
-          "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md text-muted-foreground [&>svg]:shrink-0 opacity-70 cursor-default",
+          "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md text-muted-foreground [&>svg]:shrink-0 opacity-70 cursor-default [&>span]:whitespace-nowrap",
           triggerClassName
         )}
       >
@@ -125,7 +125,7 @@ export function InputPopover({
       <PopoverTrigger asChild>
         <button
           className={cn(
-            "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0",
+            "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
             "hover:bg-muted/50",
             triggerClassName
           )}
@@ -188,7 +188,7 @@ export function ChatPreferenceControls({
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
 
   return (
-    <div className={cn("flex justify-center items-center gap-0.5", className)}>
+    <div className={cn("flex md:justify-center items-center gap-0.5", className)}>
       {showProviderPicker ? (
         <InputPopover
           disabled={providerLocked || !onProviderChange}

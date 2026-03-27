@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useEffect, useRef, useState } from "react"
+import { forwardRef, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { ArrowUp } from "lucide-react"
 import {
   type AgentProvider,
@@ -143,6 +143,10 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   const autoResize = useCallback(() => {
     const element = textareaRef.current
     if (!element) return
+    if (element.value.length === 0) {
+      element.style.height = ""
+      return
+    }
     element.style.height = "auto"
     element.style.height = `${element.scrollHeight}px`
   }, [])
@@ -159,7 +163,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     forwardedRef.current = node
   }, [forwardedRef])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     autoResize()
   }, [value, autoResize])
 
@@ -326,103 +330,111 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
     }
   }
   return (
-    <div className={cn("p-3 pt-0 md:pb-2", isStandalone && "px-5 pb-5")}>
-      <div className="flex items-end gap-2 max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
-        <Textarea
-          ref={setTextareaRefs}
-          placeholder="Build something..."
-          value={value}
-          autoFocus
-          {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
-          rows={1}
-          onChange={(event) => {
-            setValue(event.target.value)
-            if (chatId) setDraft(chatId, event.target.value)
-            autoResize()
-          }}
-          onKeyDown={handleKeyDown}
-          disabled={disabled}
-          className="flex-1 text-base p-3 md:p-4 pl-4.5 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
-        />
-        <Button
-          type="button"
-          onPointerDown={(event) => {
-            event.preventDefault()
-            if (canCancel) {
-              onCancel?.()
-            } else if (!disabled && value.trim()) {
-              void handleSubmit()
-            }
-          }}
-          disabled={!canCancel && (disabled || !value.trim())}
-          size="icon"
-          className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
-        >
-          {canCancel ? (
-            <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
-          ) : (
-            <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
-          )}
-        </Button>
+    <div>
+      <div className={cn("px-3 pt-0", isStandalone && "px-5")}>
+        <div className="flex items-end gap-2 max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
+          <Textarea
+            ref={setTextareaRefs}
+            placeholder="Build something..."
+            value={value}
+            autoFocus
+            {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
+            rows={1}
+            onChange={(event) => {
+              setValue(event.target.value)
+              if (chatId) setDraft(chatId, event.target.value)
+              autoResize()
+            }}
+            onKeyDown={handleKeyDown}
+            disabled={disabled}
+            className="flex-1 text-base p-3 md:p-4 pl-4.5 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
+          />
+          <Button
+            type="button"
+            onPointerDown={(event) => {
+              event.preventDefault()
+              if (canCancel) {
+                onCancel?.()
+              } else if (!disabled && value.trim()) {
+                void handleSubmit()
+              }
+            }}
+            disabled={!canCancel && (disabled || !value.trim())}
+            size="icon"
+            className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
+          >
+            {canCancel ? (
+              <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
+            ) : (
+              <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
+            )}
+          </Button>
+        </div>
+      </div>
+      <div className={cn("overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden py-3 flex flex-row", isStandalone && "p-5 pt-3")}>
+        <div className="min-w-3"/>
+        <ChatPreferenceControls
+            availableProviders={availableProviders}
+            selectedProvider={selectedProvider}
+            providerLocked={providerLocked}
+            model={providerPrefs.model}
+            modelOptions={providerPrefs.modelOptions}
+            onProviderChange={(provider) => {
+              if (providerLocked) return
+              resetComposerFromProvider(provider)
+            }}
+            onModelChange={(_, model) => {
+              if (providerLocked) {
+                setLockedComposerState((current) => {
+                  const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+                  if (next.provider === "claude") {
+                    const normalizedContextWindow = normalizeClaudeContextWindow(model, next.modelOptions.contextWindow)
+                    const { contextWindow: _unusedContextWindow, ...restModelOptions } = next.modelOptions
+                    return {
+                      ...next,
+                      model,
+                      modelOptions: {
+                        ...restModelOptions,
+                        ...(normalizedContextWindow ? { contextWindow: normalizedContextWindow } : {}),
+                      },
+                    }
+                  }
+
+                  return { ...next, model }
+                })
+                return
+              }
+
+              setComposerModel(model)
+            }}
+            onClaudeReasoningEffortChange={(effort) => setReasoningEffort(effort)}
+            onClaudeContextWindowChange={(contextWindow) => setClaudeContextWindow(contextWindow)}
+            onCodexReasoningEffortChange={(effort) => setReasoningEffort(effort)}
+            onCodexFastModeChange={(fastMode) => {
+              if (providerLocked) {
+                setLockedComposerState((current) => {
+                  const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
+                  if (next.provider === "claude") return next
+                  return {
+                    ...next,
+                    modelOptions: { ...next.modelOptions, fastMode },
+                  }
+                })
+                return
+              }
+
+              setComposerModelOptions({ fastMode })
+            }}
+            planMode={providerPrefs.planMode}
+            onPlanModeChange={setEffectivePlanMode}
+            includePlanMode={showPlanMode}
+            className="max-w-[840px] mx-auto"
+          />
+        <div className="min-w-3"/>
+
       </div>
 
-      <ChatPreferenceControls
-        availableProviders={availableProviders}
-        selectedProvider={selectedProvider}
-        providerLocked={providerLocked}
-        model={providerPrefs.model}
-        modelOptions={providerPrefs.modelOptions}
-        onProviderChange={(provider) => {
-          if (providerLocked) return
-          resetComposerFromProvider(provider)
-        }}
-        onModelChange={(_, model) => {
-          if (providerLocked) {
-            setLockedComposerState((current) => {
-              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              if (next.provider === "claude") {
-                const normalizedContextWindow = normalizeClaudeContextWindow(model, next.modelOptions.contextWindow)
-                const { contextWindow: _unusedContextWindow, ...restModelOptions } = next.modelOptions
-                return {
-                  ...next,
-                  model,
-                  modelOptions: {
-                    ...restModelOptions,
-                    ...(normalizedContextWindow ? { contextWindow: normalizedContextWindow } : {}),
-                  },
-                }
-              }
-
-              return { ...next, model }
-            })
-            return
-          }
-
-          setComposerModel(model)
-        }}
-        onClaudeReasoningEffortChange={(effort) => setReasoningEffort(effort)}
-        onClaudeContextWindowChange={(contextWindow) => setClaudeContextWindow(contextWindow)}
-        onCodexReasoningEffortChange={(effort) => setReasoningEffort(effort)}
-        onCodexFastModeChange={(fastMode) => {
-          if (providerLocked) {
-            setLockedComposerState((current) => {
-              const next = current ?? createLockedComposerState(selectedProvider, composerState, providerDefaults)
-              if (next.provider === "claude") return next
-              return {
-                ...next,
-                modelOptions: { ...next.modelOptions, fastMode },
-              }
-            })
-            return
-          }
-
-          setComposerModelOptions({ fastMode })
-        }}
-        planMode={providerPrefs.planMode}
-        onPlanModeChange={setEffectivePlanMode}
-        includePlanMode={showPlanMode}
-        className="max-w-[840px] mx-auto mt-2"
-      />
+     
     </div>
   )
 })

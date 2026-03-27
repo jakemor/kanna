@@ -20,7 +20,7 @@ function KannaLayout() {
   const navigate = useNavigate()
   const params = useParams()
   const state = useKannaState(params.chatId ?? null)
-  const showMobileOpenButton = location.pathname === "/" || location.pathname.startsWith("/settings")
+  const showMobileOpenButton = location.pathname === "/"
   const currentVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
 
   useEffect(() => {

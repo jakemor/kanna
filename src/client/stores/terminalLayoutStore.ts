@@ -19,17 +19,18 @@ interface TerminalLayoutState {
   addTerminal: (projectId: string, afterTerminalId?: string) => void
   removeTerminal: (projectId: string, terminalId: string) => void
   toggleVisibility: (projectId: string) => void
+  resetMainSizes: (projectId: string) => void
   setMainSizes: (projectId: string, sizes: number[]) => void
   setTerminalSizes: (projectId: string, sizes: number[]) => void
   clearProject: (projectId: string) => void
 }
 
-const DEFAULT_MAIN_SIZES: [number, number] = [68, 32]
+export const DEFAULT_TERMINAL_MAIN_SIZES: [number, number] = [68, 32]
 
 function createDefaultProjectLayout(): ProjectTerminalLayout {
   return {
     isVisible: false,
-    mainSizes: [...DEFAULT_MAIN_SIZES],
+    mainSizes: [...DEFAULT_TERMINAL_MAIN_SIZES],
     terminals: [],
     nextTerminalIndex: 0,
   }
@@ -134,6 +135,13 @@ export const useTerminalLayoutStore = create<TerminalLayoutState>()(
             isVisible: layout.terminals.length > 0 ? !layout.isVisible : false,
           })),
         })),
+      resetMainSizes: (projectId) =>
+        set((state) => ({
+          projects: withProjectLayout(state.projects, projectId, (layout) => ({
+            ...layout,
+            mainSizes: [...DEFAULT_TERMINAL_MAIN_SIZES],
+          })),
+        })),
       setMainSizes: (projectId, sizes) =>
         set((state) => {
           if (sizes.length !== 2) return state
@@ -174,7 +182,7 @@ export const useTerminalLayoutStore = create<TerminalLayoutState>()(
 
 export const DEFAULT_PROJECT_TERMINAL_LAYOUT: ProjectTerminalLayout = {
   isVisible: false,
-  mainSizes: [...DEFAULT_MAIN_SIZES],
+  mainSizes: [...DEFAULT_TERMINAL_MAIN_SIZES],
   terminals: [],
   nextTerminalIndex: 0,
 }

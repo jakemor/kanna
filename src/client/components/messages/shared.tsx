@@ -347,7 +347,7 @@ export const markdownComponents = {
 
   a: ({ children, ...props }: ComponentPropsWithoutRef<"a">) => (
     <a
-      className="transition-all underline decoration-2 text-orange-500 decoration-orange-500/50 hover:text-orange-500/70 dark:text-logo dark:decoration-logo/70 dark:hover:text-logo/60 dark:hover:decoration-logo/40 "
+      className="transition-all underline decoration-2 text-logo decoration-logo/50 hover:text-logo/70 dark:text-logo dark:decoration-logo/70 dark:hover:text-logo/60 dark:hover:decoration-logo/40 "
       target="_blank"
       rel="noopener noreferrer"
       {...props}
@@ -368,7 +368,7 @@ export function createMarkdownComponents(options?: {
 
       return (
         <a
-          className="transition-all underline decoration-2 text-orange-500 decoration-orange-500/50 hover:text-orange-500/70 dark:text-logo dark:decoration-logo/70 dark:hover:text-logo/60 dark:hover:decoration-logo/40 "
+          className="transition-all underline decoration-2 text-logo decoration-logo/50 hover:text-logo/70 dark:text-logo dark:decoration-logo/70 dark:hover:text-logo/60 dark:hover:decoration-logo/40 "
           href={href}
           target={parsedLocalLink ? undefined : "_blank"}
           rel={parsedLocalLink ? undefined : "noopener noreferrer"}

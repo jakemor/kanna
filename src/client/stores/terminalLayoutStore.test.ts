@@ -37,4 +37,16 @@ describe("terminalLayoutStore", () => {
     expect(layout.isVisible).toBe(false)
     expect(layout.terminals).toHaveLength(0)
   })
+
+  test("resetting main sizes restores the default split without removing terminals", () => {
+    useTerminalLayoutStore.getState().addTerminal(PROJECT_ID)
+    useTerminalLayoutStore.getState().setMainSizes(PROJECT_ID, [80, 20])
+
+    useTerminalLayoutStore.getState().resetMainSizes(PROJECT_ID)
+
+    const layout = useTerminalLayoutStore.getState().projects[PROJECT_ID] ?? getDefaultProjectTerminalLayout()
+    expect(layout.mainSizes).toEqual([68, 32])
+    expect(layout.isVisible).toBe(true)
+    expect(layout.terminals).toHaveLength(1)
+  })
 })

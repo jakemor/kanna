@@ -1114,7 +1114,7 @@ export class CodexAppServerManager {
         this.handleContextCompacted(pendingTurn, notification.params)
         return
       case "error":
-        this.failContext(context, notification.params.message)
+        this.failContext(context, notification.params.error.message)
         return
       default:
         return

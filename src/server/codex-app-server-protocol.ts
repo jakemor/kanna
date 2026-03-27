@@ -394,7 +394,14 @@ export interface ItemCompletedNotification {
 }
 
 export interface ErrorNotification {
-  message: string
+  error: {
+    message: string
+    codexErrorInfo?: string
+    additionalDetails?: unknown
+  }
+  willRetry: boolean
+  threadId?: string
+  turnId?: string
 }
 
 export type ServerNotification =

@@ -184,18 +184,6 @@ export function ChatPage() {
   }, [addTerminal, handleToggleEmbeddedTerminal, projectId, resolvedKeybindings, toggleRightSidebar, toggleVisibility])
 
   useEffect(() => {
-    if (state.messages.length === 0) return
-
-    const frameId = window.requestAnimationFrame(() => {
-      const element = state.scrollRef.current
-      if (!element) return
-      element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    })
-
-    return () => window.cancelAnimationFrame(frameId)
-  }, [state.messages.length, state.scrollRef])
-
-  useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
       state.updateScrollState()
     })

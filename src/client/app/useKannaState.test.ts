@@ -4,7 +4,7 @@ import {
   getNewestRemainingChatId,
   getUiUpdateRestartReconnectAction,
   resolveComposeIntent,
-  shouldPinTranscriptToBottom,
+  shouldAutoFollowTranscript,
 } from "./useKannaState"
 import type { ChatSnapshot, SidebarData } from "../../shared/types"
 
@@ -91,17 +91,17 @@ describe("getNewestRemainingChatId", () => {
   })
 })
 
-describe("shouldPinTranscriptToBottom", () => {
+describe("shouldAutoFollowTranscript", () => {
   test("returns true when the transcript is at the bottom", () => {
-    expect(shouldPinTranscriptToBottom(0)).toBe(true)
+    expect(shouldAutoFollowTranscript(0)).toBe(true)
   })
 
   test("returns true when the transcript is near the bottom", () => {
-    expect(shouldPinTranscriptToBottom(119)).toBe(true)
+    expect(shouldAutoFollowTranscript(23)).toBe(true)
   })
 
   test("returns false when the transcript is not near the bottom", () => {
-    expect(shouldPinTranscriptToBottom(120)).toBe(false)
+    expect(shouldAutoFollowTranscript(24)).toBe(false)
   })
 })
 

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, rename, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -588,8 +588,8 @@ export class EventStore {
     return (await this.getLegacyTranscriptStats()).hasLegacyData
   }
 
-  private createSnapshot(includeLegacyMessages: boolean): SnapshotFile {
-    const snapshot: SnapshotFile = {
+  private createSnapshot(): SnapshotFile {
+    return {
       v: STORE_VERSION,
       generatedAt: Date.now(),
       projects: this.listProjects().map((project) => ({ ...project })),
@@ -597,30 +597,10 @@ export class EventStore {
         .filter((chat) => !chat.deletedAt)
         .map((chat) => ({ ...chat })),
     }
-
-    if (includeLegacyMessages) {
-      snapshot.messages = [...this.legacyMessagesByChatId.entries()].map(([chatId, entries]) => ({
-        chatId,
-        entries: cloneTranscriptEntries(entries),
-      }))
-    }
-
-    return snapshot
   }
 
   async compact() {
-    const snapshot = this.createSnapshot(false)
-    await Bun.write(this.snapshotPath, JSON.stringify(snapshot, null, 2))
-    await Promise.all([
-      Bun.write(this.projectsLogPath, ""),
-      Bun.write(this.chatsLogPath, ""),
-      Bun.write(this.messagesLogPath, ""),
-      Bun.write(this.turnsLogPath, ""),
-    ])
-  }
-
-  private async compactLegacyMessagesIntoSnapshot() {
-    const snapshot = this.createSnapshot(true)
+    const snapshot = this.createSnapshot()
     await Bun.write(this.snapshotPath, JSON.stringify(snapshot, null, 2))
     await Promise.all([
       Bun.write(this.projectsLogPath, ""),
@@ -636,17 +616,14 @@ export class EventStore {
 
     const sourceSummary = stats.sources.map((source) => source === "messages_log" ? "messages.jsonl" : "snapshot.json").join(", ")
     onProgress?.(`${LOG_PREFIX} transcript migration detected: ${stats.chatCount} chats, ${stats.entryCount} entries from ${sourceSummary}`)
-    onProgress?.(`${LOG_PREFIX} transcript migration: compacting legacy transcript state into snapshot`)
-    await this.compactLegacyMessagesIntoSnapshot()
 
-    const snapshot = JSON.parse(await readFile(this.snapshotPath, "utf8")) as SnapshotFile
-    const messageSets = snapshot.messages ?? []
+    const messageSets = [...this.legacyMessagesByChatId.entries()]
     onProgress?.(`${LOG_PREFIX} transcript migration: writing ${messageSets.length} per-chat transcript files`)
 
     await mkdir(this.transcriptsDir, { recursive: true })
     const logEveryChat = messageSets.length <= 10
     for (let index = 0; index < messageSets.length; index += 1) {
-      const { chatId, entries } = messageSets[index]
+      const [chatId, entries] = messageSets[index]
       const transcriptPath = this.transcriptPath(chatId)
       const tempPath = `${transcriptPath}.tmp`
       const payload = entries.map((entry) => JSON.stringify(entry)).join("\n")
@@ -657,9 +634,8 @@ export class EventStore {
       }
     }
 
-    delete snapshot.messages
-    await Bun.write(this.snapshotPath, JSON.stringify(snapshot, null, 2))
     this.clearLegacyTranscriptState()
+    await this.compact()
     this.cachedTranscript = null
     onProgress?.(`${LOG_PREFIX} transcript migration complete`)
     return true

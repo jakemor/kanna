@@ -51,6 +51,46 @@ function logKannaState(message: string, details?: unknown) {
   console.info(`[useKannaState] ${message}`, details)
 }
 
+function getSidebarChatStatusMap(projectGroups: SidebarData["projectGroups"]) {
+  const statuses = new Map<string, SidebarChatRow["status"]>()
+  for (const group of projectGroups) {
+    for (const chat of group.chats) {
+      statuses.set(chat.chatId, chat.status)
+    }
+  }
+  return statuses
+}
+
+export function reconcileUnreadCompletedChatIds(params: {
+  previousStatuses: ReadonlyMap<string, SidebarChatRow["status"]>
+  projectGroups: SidebarData["projectGroups"]
+  activeChatId: string | null
+  unreadCompletedChatIds: ReadonlySet<string>
+}) {
+  const nextUnreadCompletedChatIds = new Set(params.unreadCompletedChatIds)
+  const currentChatIds = new Set<string>()
+
+  for (const group of params.projectGroups) {
+    for (const chat of group.chats) {
+      currentChatIds.add(chat.chatId)
+
+      const previousStatus = params.previousStatuses.get(chat.chatId)
+      const completedInBackground = (previousStatus === "starting" || previousStatus === "running") && chat.status === "idle"
+      if (completedInBackground) {
+        nextUnreadCompletedChatIds.add(chat.chatId)
+      }
+    }
+  }
+
+  for (const chatId of nextUnreadCompletedChatIds) {
+    if (!currentChatIds.has(chatId)) {
+      nextUnreadCompletedChatIds.delete(chatId)
+    }
+  }
+
+  return nextUnreadCompletedChatIds
+}
+
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {
   return distanceFromBottom < 24
 }
@@ -148,6 +188,7 @@ export interface KannaState {
   latestToolIds: ReturnType<typeof getLatestToolIds>
   runtime: ChatSnapshot["runtime"] | null
   availableProviders: ProviderCatalogEntry[]
+  unreadCompletedChatIds: ReadonlySet<string>
   isProcessing: boolean
   canCancel: boolean
   transcriptPaddingBottom: number
@@ -168,6 +209,7 @@ export interface KannaState {
   handleInstallUpdate: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleCancel: () => Promise<void>
+  handleComposerInputActivity: (value: string) => void
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
   handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
@@ -209,22 +251,31 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const [unreadCompletedChatIds, setUnreadCompletedChatIds] = useState<Set<string>>(new Set())
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLDivElement>(null)
   const initialScrollCompletedRef = useRef(false)
   const initialScrollFrameRef = useRef<number | null>(null)
+  const previousSidebarStatusesRef = useRef<ReadonlyMap<string, SidebarChatRow["status"]>>(new Map())
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
   useEffect(() => {
     return socket.subscribe<SidebarData>({ type: "sidebar" }, (snapshot) => {
+      setUnreadCompletedChatIds((previous) => reconcileUnreadCompletedChatIds({
+        previousStatuses: previousSidebarStatusesRef.current,
+        projectGroups: snapshot.projectGroups,
+        activeChatId,
+        unreadCompletedChatIds: previous,
+      }))
+      previousSidebarStatusesRef.current = getSidebarChatStatusMap(snapshot.projectGroups)
       setSidebarData(snapshot)
       setSidebarReady(true)
       setCommandError(null)
     })
-  }, [socket])
+  }, [activeChatId, socket])
 
   useEffect(() => {
     return socket.subscribe<LocalProjectsSnapshot>({ type: "local-projects" }, (snapshot) => {
@@ -451,6 +502,17 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   function scrollToBottom() {
     enableAutoFollow("smooth")
+  }
+
+  function handleComposerInputActivity(value: string) {
+    if (!activeChatId) return
+    if (!value) return
+    setUnreadCompletedChatIds((previous) => {
+      if (!previous.has(activeChatId)) return previous
+      const next = new Set(previous)
+      next.delete(activeChatId)
+      return next
+    })
   }
 
   async function createChatForProject(projectId: string) {
@@ -778,6 +840,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     latestToolIds,
     runtime,
     availableProviders,
+    unreadCompletedChatIds,
     isProcessing,
     canCancel,
     transcriptPaddingBottom,
@@ -798,6 +861,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleInstallUpdate,
     handleSend,
     handleCancel,
+    handleComposerInputActivity,
     handleDeleteChat,
     handleRemoveProject,
     handleOpenExternal,

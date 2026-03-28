@@ -3,10 +3,11 @@ import {
   getActiveChatSnapshot,
   getNewestRemainingChatId,
   getUiUpdateRestartReconnectAction,
+  reconcileUnreadCompletedChatIds,
   resolveComposeIntent,
   shouldAutoFollowTranscript,
 } from "./useKannaState"
-import type { ChatSnapshot, SidebarData } from "../../shared/types"
+import type { ChatSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 
 function createSidebarData(): SidebarData {
   return {
@@ -200,5 +201,66 @@ describe("getActiveChatSnapshot", () => {
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-new")).toBeNull()
+  })
+})
+
+describe("reconcileUnreadCompletedChatIds", () => {
+  function createChat(chatId: string, status: SidebarChatRow["status"]): SidebarChatRow {
+    return {
+      _id: `row-${chatId}`,
+      _creationTime: 1,
+      chatId,
+      title: chatId,
+      status,
+      localPath: "/tmp/project-1",
+      provider: null,
+      lastMessageAt: 1,
+      hasAutomation: false,
+    }
+  }
+
+  test("marks a background chat when it finishes running", () => {
+    const next = reconcileUnreadCompletedChatIds({
+      previousStatuses: new Map<string, SidebarChatRow["status"]>([["chat-1", "running"]]),
+      projectGroups: [{
+        groupKey: "project-1",
+        localPath: "/tmp/project-1",
+        chats: [createChat("chat-1", "idle")],
+      }],
+      activeChatId: "chat-2",
+      unreadCompletedChatIds: new Set(),
+    })
+
+    expect([...next]).toEqual(["chat-1"])
+  })
+
+  test("keeps the marker for an active chat until the composer clears it", () => {
+    const next = reconcileUnreadCompletedChatIds({
+      previousStatuses: new Map<string, SidebarChatRow["status"]>([["chat-1", "running"]]),
+      projectGroups: [{
+        groupKey: "project-1",
+        localPath: "/tmp/project-1",
+        chats: [createChat("chat-1", "idle")],
+      }],
+      activeChatId: "chat-1",
+      unreadCompletedChatIds: new Set(),
+    })
+
+    expect([...next]).toEqual(["chat-1"])
+  })
+
+  test("drops markers for chats that no longer exist", () => {
+    const next = reconcileUnreadCompletedChatIds({
+      previousStatuses: new Map<string, SidebarChatRow["status"]>(),
+      projectGroups: [{
+        groupKey: "project-1",
+        localPath: "/tmp/project-1",
+        chats: [createChat("chat-2", "idle")],
+      }],
+      activeChatId: "chat-2",
+      unreadCompletedChatIds: new Set(["chat-1"]),
+    })
+
+    expect(next.size).toBe(0)
   })
 })

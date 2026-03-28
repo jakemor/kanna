@@ -347,6 +347,7 @@ export function ChatPage() {
             ref={chatInputRef}
             key={state.activeChatId ?? "new-chat"}
             onSubmit={state.handleSend}
+            onInputActivity={state.handleComposerInputActivity}
             onCancel={() => {
               void state.handleCancel()
             }}

@@ -24,6 +24,7 @@ interface Props {
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }
   ) => Promise<void>
   onCancel?: () => void
+  onInputActivity?: (value: string) => void
   disabled: boolean
   canCancel?: boolean
   chatId?: string | null
@@ -110,6 +111,7 @@ export function resolvePlanModeState(args: {
 const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput({
   onSubmit,
   onCancel,
+  onInputActivity,
   disabled,
   canCancel,
   chatId,
@@ -340,11 +342,12 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
             autoFocus
             {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
             rows={1}
-            onChange={(event) => {
-              setValue(event.target.value)
-              if (chatId) setDraft(chatId, event.target.value)
-              autoResize()
-            }}
+          onChange={(event) => {
+            setValue(event.target.value)
+            if (chatId) setDraft(chatId, event.target.value)
+            onInputActivity?.(event.target.value)
+            autoResize()
+          }}
             onKeyDown={handleKeyDown}
             disabled={disabled}
             className="flex-1 text-base p-3 md:p-4 pl-4.5 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"

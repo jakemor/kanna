@@ -10,6 +10,7 @@ const loadingStatuses = new Set(["starting", "running"])
 interface Props {
   chat: SidebarChatRow
   activeChatId: string | null
+  showCompletedMarker: boolean
   nowMs: number
   onSelectChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
@@ -18,6 +19,7 @@ interface Props {
 export function ChatRow({
   chat,
   activeChatId,
+  showCompletedMarker,
   nowMs,
   onSelectChat,
   onDeleteChat,
@@ -43,6 +45,8 @@ export function ChatRow({
             <div className=" rounded-full z-0 size-2.5 bg-blue-400 ring-2 ring-muted/20 dark:ring-muted/50" />
           </div>
         </div>
+      ) : showCompletedMarker ? (
+        <span className="size-2.5 rounded-full bg-emerald-500 ring-2 ring-muted/20 dark:ring-muted/50" />
       ) : null}
       <span className="text-sm truncate flex-1 translate-y-[-0.5px]">
         {chat.status !== "idle" && chat.status !== "waiting_for_user" ? (

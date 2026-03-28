@@ -13,6 +13,7 @@ import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
 interface KannaSidebarProps {
   data: SidebarData
   activeChatId: string | null
+  unreadCompletedChatIds: ReadonlySet<string>
   connectionStatus: SocketStatus
   ready: boolean
   open: boolean
@@ -32,6 +33,7 @@ interface KannaSidebarProps {
 export function KannaSidebar({
   data,
   activeChatId,
+  unreadCompletedChatIds,
   connectionStatus,
   ready,
   open,
@@ -115,6 +117,7 @@ export function KannaSidebar({
       key={chat._id}
       chat={chat}
       activeChatId={activeChatId}
+      showCompletedMarker={unreadCompletedChatIds.has(chat.chatId)}
       nowMs={nowMs}
       onSelectChat={(chatId) => {
         navigate(`/chat/${chatId}`)
@@ -122,7 +125,7 @@ export function KannaSidebar({
       }}
       onDeleteChat={() => onDeleteChat(chat)}
     />
-  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat])
+  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat, unreadCompletedChatIds])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {

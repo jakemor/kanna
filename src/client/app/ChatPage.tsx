@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { ArrowDown, Flower } from "lucide-react"
-import { useOutletContext } from "react-router-dom"
+import { useLocation, useNavigate, useOutletContext } from "react-router-dom"
 import { ChatInput } from "../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../components/chat-ui/RightSidebar"
@@ -26,6 +26,7 @@ import { useTerminalToggleAnimation } from "./useTerminalToggleAnimation"
 import type { KannaState } from "./useKannaState"
 import { KannaTranscript } from "./KannaTranscript"
 import { useStickyChatFocus } from "./useStickyChatFocus"
+import { shouldAutoScrollChatToBottom } from "../pwa"
 
 const EMPTY_STATE_TEXT = "What are we building?"
 const EMPTY_STATE_TYPING_INTERVAL_MS = 19
@@ -34,6 +35,8 @@ const SCROLL_BUTTON_BOTTOM_PX = 120
 
 export function ChatPage() {
   const state = useOutletContext<KannaState>()
+  const location = useLocation()
+  const navigate = useNavigate()
   const layoutRootRef = useRef<HTMLDivElement>(null)
   const chatCardRef = useRef<HTMLDivElement>(null)
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
@@ -224,6 +227,24 @@ export function ChatPage() {
 
     return () => observer.disconnect()
   }, [projectId, shouldRenderTerminalLayout, terminalLayout.mainSizes])
+
+  useEffect(() => {
+    if (!shouldAutoScrollChatToBottom(location.search)) return
+    if (!state.activeChatId || !state.runtime) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      state.scrollToBottom()
+    })
+    const timeoutId = window.setTimeout(() => {
+      state.scrollToBottom()
+      navigate({ pathname: location.pathname, search: "" }, { replace: true })
+    }, 150)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.clearTimeout(timeoutId)
+    }
+  }, [location.pathname, location.search, navigate, state.activeChatId, state.runtime, state.scrollToBottom])
 
   const clampRightSidebarSize = (size: number) => {
     if (!Number.isFinite(size)) {

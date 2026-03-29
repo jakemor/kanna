@@ -10,6 +10,7 @@ import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData }
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { processTranscriptMessages } from "../lib/parseTranscript"
+import { requestNotificationPermissionOnUserAction, shouldShowCompletionNotification, showChatCompletionNotification } from "../pwa"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { KannaSocket, type SocketStatus } from "./socket"
 
@@ -49,6 +50,16 @@ function logKannaState(message: string, details?: unknown) {
   }
 
   console.info(`[useKannaState] ${message}`, details)
+}
+
+function getSidebarChatStatusMap(projectGroups: SidebarData["projectGroups"]) {
+  const statuses = new Map<string, SidebarChatRow["status"]>()
+  for (const group of projectGroups) {
+    for (const chat of group.chats) {
+      statuses.set(chat.chatId, chat.status)
+    }
+  }
+  return statuses
 }
 
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {
@@ -209,20 +220,69 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const [pendingNotificationChatIds, setPendingNotificationChatIds] = useState<Set<string>>(new Set())
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLDivElement>(null)
   const initialScrollCompletedRef = useRef(false)
   const initialScrollFrameRef = useRef<number | null>(null)
+  const previousSidebarStatusesRef = useRef<ReadonlyMap<string, SidebarChatRow["status"]>>(new Map())
+  const pendingNotificationChatIdsRef = useRef<ReadonlySet<string>>(new Set())
+
+  useEffect(() => {
+    pendingNotificationChatIdsRef.current = pendingNotificationChatIds
+  }, [pendingNotificationChatIds])
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
   useEffect(() => {
     return socket.subscribe<SidebarData>({ type: "sidebar" }, (snapshot) => {
+      const chatById = new Map(snapshot.projectGroups.flatMap((group) => group.chats.map((chat) => [chat.chatId, chat] as const)))
+      const completedChatIds: string[] = []
+      for (const chat of chatById.values()) {
+        const previousStatus = previousSidebarStatusesRef.current.get(chat.chatId)
+        if ((previousStatus === "starting" || previousStatus === "running") && chat.status === "idle") {
+          completedChatIds.push(chat.chatId)
+        }
+      }
+
+      setPendingNotificationChatIds((previous) => {
+        if (previous.size === 0 || completedChatIds.length === 0) {
+          return previous
+        }
+        const next = new Set(previous)
+        for (const chatId of completedChatIds) {
+          next.delete(chatId)
+        }
+        return next
+      })
+      previousSidebarStatusesRef.current = getSidebarChatStatusMap(snapshot.projectGroups)
       setSidebarData(snapshot)
       setSidebarReady(true)
       setCommandError(null)
+
+      for (const chatId of completedChatIds) {
+        if (!pendingNotificationChatIdsRef.current.has(chatId)) {
+          continue
+        }
+        if (!shouldShowCompletionNotification({
+          chatId,
+          activeChatId,
+          documentVisibilityState: document.visibilityState,
+        })) {
+          continue
+        }
+
+        const chat = chatById.get(chatId)
+        if (!chat) {
+          continue
+        }
+        void showChatCompletionNotification({
+          chatId,
+          chatTitle: chat.title,
+        })
+      }
     })
   }, [socket])
 
@@ -347,6 +407,13 @@ export function useKannaState(activeChatId: string | null): KannaState {
       initialScrollFrameRef.current = null
     }
     setIsAtBottom(true)
+    if (!activeChatId) return
+    setPendingNotificationChatIds((previous) => {
+      if (!previous.has(activeChatId)) return previous
+      const next = new Set(previous)
+      next.delete(activeChatId)
+      return next
+    })
   }, [activeChatId])
 
   useEffect(() => {
@@ -556,6 +623,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }
   ) {
     try {
+      requestNotificationPermissionOnUserAction()
+
       let projectId = selectedProjectId ?? sidebarData.projectGroups[0]?.groupKey ?? null
       if (!activeChatId && !projectId && fallbackLocalProjectPath) {
         const project = await socket.command<{ projectId: string }>({
@@ -585,7 +654,18 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
       if (!activeChatId && result.chatId) {
         setPendingChatId(result.chatId)
+        setPendingNotificationChatIds((previous) => {
+          const next = new Set(previous)
+          next.add(result.chatId!)
+          return next
+        })
         navigate(`/chat/${result.chatId}`)
+      } else if (activeChatId) {
+        setPendingNotificationChatIds((previous) => {
+          const next = new Set(previous)
+          next.add(activeChatId)
+          return next
+        })
       }
       setCommandError(null)
     } catch (error) {

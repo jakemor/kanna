@@ -8,6 +8,7 @@ class FakeWebSocket {
   readonly sent: unknown[] = []
   readonly data = {
     subscriptions: new Map(),
+    clientContext: undefined,
   }
 
   send(message: string) {
@@ -117,6 +118,77 @@ describe("ws-router", () => {
         v: PROTOCOL_VERSION,
         type: "ack",
         id: "terminal-input-1",
+      },
+    ])
+  })
+
+  test("stores client context and passes it to chat.send", async () => {
+    const calls: unknown[] = []
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        send: async (command: unknown, clientContext: unknown) => {
+          calls.push({ command, clientContext })
+          return { chatId: "chat-1" }
+        },
+      } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "ctx-1",
+        command: {
+          type: "system.setClientContext",
+          context: {
+            currentUserDevice: "pixel",
+            currentUserDeviceLabel: "pixel",
+          },
+        },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "chat-send-1",
+        command: {
+          type: "chat.send",
+          projectId: "project-1",
+          content: "hello",
+        },
+      })
+    )
+
+    expect(calls).toEqual([
+      {
+        command: {
+          type: "chat.send",
+          projectId: "project-1",
+          content: "hello",
+        },
+        clientContext: {
+          currentUserDevice: "pixel",
+          currentUserDeviceLabel: "pixel",
+        },
       },
     ])
   })

@@ -1,6 +1,6 @@
 import type { ServerWebSocket } from "bun"
 import { PROTOCOL_VERSION } from "../shared/types"
-import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
+import type { ClientContext, ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
 import type { AgentCoordinator } from "./agent"
 import type { DiscoveredProject } from "./discovery"
@@ -14,6 +14,7 @@ import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } fr
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
+  clientContext?: ClientContext
 }
 
 interface CreateWsRouterArgs {
@@ -191,6 +192,11 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }
+        case "system.setClientContext": {
+          ws.data.clientContext = command.context
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
         case "update.check": {
           const snapshot = updateManager
             ? await updateManager.checkForUpdates({ force: command.force })
@@ -276,7 +282,7 @@ export function createWsRouter({
           break
         }
         case "chat.send": {
-          const result = await agent.send(command)
+          const result = await agent.send(command, ws.data.clientContext)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           break
         }

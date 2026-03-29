@@ -10,6 +10,20 @@ import type {
 
 export type EditorPreset = "cursor" | "vscode" | "windsurf" | "custom"
 
+export type CurrentUserDevice =
+  | "pixel"
+  | "android"
+  | "macbook"
+  | "ios"
+  | "windows"
+  | "linux"
+  | "unknown"
+
+export interface ClientContext {
+  currentUserDevice: CurrentUserDevice
+  currentUserDeviceLabel?: string
+}
+
 export interface EditorOpenSettings {
   preset: EditorPreset
   commandTemplate: string
@@ -46,6 +60,7 @@ export type ClientCommand =
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.remove"; projectId: string }
   | { type: "system.ping" }
+  | { type: "system.setClientContext"; context: ClientContext }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
   | { type: "settings.readKeybindings" }

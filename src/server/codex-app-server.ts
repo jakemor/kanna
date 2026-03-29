@@ -55,7 +55,7 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
+type SpawnCodexAppServer = (cwd: string, envOverrides?: Record<string, string>) => CodexAppServerProcess
 
 interface PendingRequest<TResult> {
   method: string
@@ -96,6 +96,7 @@ interface PendingTurn {
 interface SessionContext {
   chatId: string
   cwd: string
+  envSignature: string
   child: CodexAppServerProcess
   pendingRequests: Map<CodexRequestId, PendingRequest<unknown>>
   pendingTurn: PendingTurn | null
@@ -110,6 +111,7 @@ export interface StartCodexSessionArgs {
   model: string
   serviceTier?: ServiceTier
   sessionToken: string | null
+  envOverrides?: Record<string, string>
 }
 
 export interface StartCodexTurnArgs {
@@ -119,6 +121,7 @@ export interface StartCodexTurnArgs {
   serviceTier?: ServiceTier
   content: string
   planMode: boolean
+  developerInstructions?: string
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
 }
@@ -638,17 +641,21 @@ export class CodexAppServerManager {
   private readonly spawnProcess: SpawnCodexAppServer
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.spawnProcess = args.spawnProcess ?? ((cwd) =>
+    this.spawnProcess = args.spawnProcess ?? ((cwd, envOverrides) =>
       spawn("codex", ["app-server"], {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
+        env: {
+          ...process.env,
+          ...envOverrides,
+        },
       }) as unknown as CodexAppServerProcess)
   }
 
   async startSession(args: StartCodexSessionArgs) {
+    const envSignature = JSON.stringify(args.envOverrides ?? {})
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && existing.cwd === args.cwd) {
+    if (existing && !existing.closed && existing.cwd === args.cwd && existing.envSignature === envSignature) {
       return
     }
 
@@ -656,10 +663,11 @@ export class CodexAppServerManager {
       this.stopSession(args.chatId)
     }
 
-    const child = this.spawnProcess(args.cwd)
+    const child = this.spawnProcess(args.cwd, args.envOverrides)
     const context: SessionContext = {
       chatId: args.chatId,
       cwd: args.cwd,
+      envSignature,
       child,
       pendingRequests: new Map(),
       pendingTurn: null,
@@ -770,7 +778,7 @@ export class CodexAppServerManager {
           settings: {
             model: args.model,
             reasoning_effort: null,
-            developer_instructions: null,
+            developer_instructions: args.developerInstructions ?? null,
           },
         },
       } satisfies TurnStartParams)

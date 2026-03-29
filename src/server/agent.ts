@@ -7,7 +7,7 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
-import type { ClientCommand } from "../shared/protocol"
+import type { ClientCommand, ClientContext } from "../shared/protocol"
 import { EventStore } from "./event-store"
 import { CodexAppServerManager } from "./codex-app-server"
 import { generateTitleForChat } from "./generate-title"
@@ -69,6 +69,23 @@ interface AgentCoordinatorArgs {
   generateTitle?: (messageContent: string, cwd: string) => Promise<string | null>
 }
 
+function buildRuntimeContextInstruction(clientContext?: ClientContext) {
+  const currentUserDevice = clientContext?.currentUserDevice ?? "unknown"
+  return [
+    "Runtime context:",
+    "- You are running on the VPS host, not on the user's local device.",
+    `- The user's current device tag is \`${currentUserDevice}\`.`,
+    "- If you need to mention the current device, use that exact tag unless later tool output proves otherwise.",
+    `- If the user asks for CURRENT_USER_DEVICE or CURRENT_USER_DEVICE_LABEL, answer with \`${currentUserDevice}\` directly.`,
+    "- Do not run shell commands just to read CURRENT_USER_DEVICE or CURRENT_USER_DEVICE_LABEL.",
+  ].join("\n")
+}
+
+export type AgentStateChange =
+  | { type: "sidebar" }
+  | { type: "chat-runtime"; chatId: string }
+  | { type: "chat-reset"; chatId: string }
+  | { type: "chat-message"; chatId: string; entry: TranscriptEntry }
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
   entry: T,
   createdAt = Date.now()
@@ -239,6 +256,8 @@ async function startClaudeTurn(args: {
   effort?: string
   planMode: boolean
   sessionToken: string | null
+  envOverrides?: Record<string, string>
+  systemPrompt?: string
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
 }): Promise<HarnessTurn> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -307,7 +326,14 @@ async function startClaudeTurn(args: {
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
       settingSources: ["user", "project", "local"],
-      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
+      systemPrompt: args.systemPrompt ?? "",
+      env: (() => {
+        const { CLAUDECODE: _, ...env } = process.env
+        return {
+          ...env,
+          ...args.envOverrides,
+        }
+      })(),
     },
   })
 
@@ -385,6 +411,13 @@ export class AgentCoordinator {
     }
   }
 
+  private buildAgentEnv(clientContext?: ClientContext) {
+    return {
+      CURRENT_USER_DEVICE: clientContext?.currentUserDevice ?? "unknown",
+      CURRENT_USER_DEVICE_LABEL: clientContext?.currentUserDeviceLabel ?? clientContext?.currentUserDevice ?? "unknown",
+    }
+  }
+
   private async startTurnForChat(args: {
     chatId: string
     provider: AgentProvider
@@ -394,6 +427,7 @@ export class AgentCoordinator {
     serviceTier?: "fast"
     planMode: boolean
     appendUserPrompt: boolean
+    clientContext?: ClientContext
   }) {
     const chat = this.store.requireChat(args.chatId)
     if (this.activeTurns.has(args.chatId)) {
@@ -449,6 +483,8 @@ export class AgentCoordinator {
         effort: args.effort,
         planMode: args.planMode,
         sessionToken: chat.sessionToken,
+        envOverrides: this.buildAgentEnv(args.clientContext),
+        systemPrompt: buildRuntimeContextInstruction(args.clientContext),
         onToolRequest,
       })
     } else {
@@ -458,6 +494,7 @@ export class AgentCoordinator {
         model: args.model,
         serviceTier: args.serviceTier,
         sessionToken: chat.sessionToken,
+        envOverrides: this.buildAgentEnv(args.clientContext),
       })
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
@@ -466,6 +503,7 @@ export class AgentCoordinator {
         effort: args.effort as any,
         serviceTier: args.serviceTier,
         planMode: args.planMode,
+        developerInstructions: buildRuntimeContextInstruction(args.clientContext),
         onToolRequest,
       })
     }
@@ -501,7 +539,7 @@ export class AgentCoordinator {
     void this.runTurn(active)
   }
 
-  async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
+  async send(command: Extract<ClientCommand, { type: "chat.send" }>, clientContext?: ClientContext) {
     let chatId = command.chatId
 
     if (!chatId) {
@@ -524,6 +562,7 @@ export class AgentCoordinator {
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
       appendUserPrompt: true,
+      clientContext,
     })
 
     return { chatId }

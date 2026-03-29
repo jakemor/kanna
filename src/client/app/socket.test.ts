@@ -117,6 +117,7 @@ describe("KannaSocket", () => {
   const originalWindow = globalThis.window
   const originalDocument = globalThis.document
   const originalWebSocket = globalThis.WebSocket
+  const originalNavigator = globalThis.navigator
 
   let windowTarget: FakeEventTarget
   let documentTarget: FakeEventTarget & { visibilityState: "visible" | "hidden" }
@@ -137,12 +138,18 @@ describe("KannaSocket", () => {
     })
     ;(globalThis as any).document = documentTarget
     ;(globalThis as any).WebSocket = FakeWebSocket
+    ;(globalThis as any).navigator = {
+      userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/123.0 Mobile Safari/537.36",
+      platform: "Linux armv8l",
+      maxTouchPoints: 5,
+    }
   })
 
   afterEach(() => {
     ;(globalThis as any).window = originalWindow
     ;(globalThis as any).document = originalDocument
     ;(globalThis as any).WebSocket = originalWebSocket
+    ;(globalThis as any).navigator = originalNavigator
   })
 
   test("does not ping when the connection is already fresh", async () => {
@@ -153,7 +160,16 @@ describe("KannaSocket", () => {
 
     await socket.ensureHealthyConnection()
 
-    expect(ws.sent).toHaveLength(0)
+    expect(ws.sent[0]).toMatchObject({
+      type: "command",
+      command: {
+        type: "system.setClientContext",
+        context: {
+          currentUserDevice: "pixel",
+          currentUserDeviceLabel: "pixel",
+        },
+      },
+    })
     socket.dispose()
   })
 
@@ -166,7 +182,7 @@ describe("KannaSocket", () => {
     ;(socket as any).lastMessageAt = Date.now() - 30_000
 
     const healthCheck = socket.ensureHealthyConnection()
-    const ping = ws.sent[0]
+    const ping = ws.sent[1]
 
     expect(ping?.type).toBe("command")
     expect(ping?.command).toEqual({ type: "system.ping" })

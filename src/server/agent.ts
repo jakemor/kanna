@@ -1,6 +1,7 @@
 import { query, type CanUseTool, type PermissionResult, type Query } from "@anthropic-ai/claude-agent-sdk"
 import type {
   AgentProvider,
+  ChatAttachment,
   NormalizedToolCall,
   PendingToolSnapshot,
   KannaStatus,
@@ -87,6 +88,41 @@ function stringFromUnknown(value: unknown) {
   } catch {
     return String(value)
   }
+}
+
+function escapeXmlAttribute(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+}
+
+export function buildAttachmentHintText(attachments: ChatAttachment[]) {
+  if (attachments.length === 0) return ""
+
+  const lines = attachments.map((attachment) => (
+    `<attachment kind="${escapeXmlAttribute(attachment.kind)}" mime_type="${escapeXmlAttribute(attachment.mimeType)}" path="${escapeXmlAttribute(attachment.absolutePath)}" project_path="${escapeXmlAttribute(attachment.relativePath)}" size_bytes="${attachment.size}" display_name="${escapeXmlAttribute(attachment.displayName)}" />`
+  ))
+
+  return [
+    "<kanna-attachments>",
+    ...lines,
+    "</kanna-attachments>",
+  ].join("\n")
+}
+
+export function buildPromptText(content: string, attachments: ChatAttachment[]) {
+  const attachmentHint = buildAttachmentHintText(attachments)
+  if (!attachmentHint) {
+    return content.trim()
+  }
+
+  const trimmed = content.trim()
+  return [
+    trimmed || "Please inspect the attached files.",
+    attachmentHint,
+  ].join("\n\n").trim()
 }
 
 function discardedToolResult(
@@ -389,6 +425,7 @@ export class AgentCoordinator {
     chatId: string
     provider: AgentProvider
     content: string
+    attachments: ChatAttachment[]
     model: string
     effort?: string
     serviceTier?: "fast"
@@ -409,7 +446,10 @@ export class AgentCoordinator {
     const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
 
     if (args.appendUserPrompt) {
-      await this.store.appendMessage(args.chatId, timestamped({ kind: "user_prompt", content: args.content }, Date.now()))
+      await this.store.appendMessage(
+        args.chatId,
+        timestamped({ kind: "user_prompt", content: args.content, attachments: args.attachments }, Date.now())
+      )
     }
     await this.store.recordTurnStarted(args.chatId)
 
@@ -443,7 +483,7 @@ export class AgentCoordinator {
     let turn: HarnessTurn
     if (args.provider === "claude") {
       turn = await startClaudeTurn({
-        content: args.content,
+        content: buildPromptText(args.content, args.attachments),
         localPath: project.localPath,
         model: args.model,
         effort: args.effort,
@@ -461,7 +501,7 @@ export class AgentCoordinator {
       })
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
-        content: args.content,
+        content: buildPromptText(args.content, args.attachments),
         model: args.model,
         effort: args.effort as any,
         serviceTier: args.serviceTier,
@@ -519,6 +559,7 @@ export class AgentCoordinator {
       chatId,
       provider,
       content: command.content,
+      attachments: command.attachments ?? [],
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
@@ -600,6 +641,7 @@ export class AgentCoordinator {
             chatId: active.chatId,
             provider: active.provider,
             content: active.postToolFollowUp.content,
+            attachments: [],
             model: active.model,
             effort: active.effort,
             serviceTier: active.serviceTier,

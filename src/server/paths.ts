@@ -25,3 +25,7 @@ export async function ensureProjectDirectory(localPath: string) {
     throw new Error("Project path must be a directory")
   }
 }
+
+export function getProjectUploadDir(localPath: string) {
+  return path.join(resolveLocalPath(localPath), ".kanna", "uploads")
+}

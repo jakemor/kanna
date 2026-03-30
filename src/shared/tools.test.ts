@@ -96,4 +96,69 @@ describe("hydrateToolResult", () => {
 
     expect(hydrateToolResult(tool, "line 1\nline 2")).toBe("line 1\nline 2")
   })
+
+  test("hydrates read image results with canonical image blocks intact", () => {
+    const tool = normalizeToolCall({
+      toolName: "Read",
+      toolId: "tool-image",
+      input: { file_path: "/tmp/example.png" },
+    })
+
+    expect(hydrateToolResult(tool, {
+      content: [
+        {
+          type: "text",
+          text: "Read image file [image/png]\n[Image: original 10x10, displayed at 10x10.]",
+        },
+        {
+          type: "image",
+          data: "ZmFrZS1pbWFnZS1kYXRh",
+          mimeType: "image/png",
+        },
+      ],
+    })).toEqual({
+      content: "Read image file [image/png]\n[Image: original 10x10, displayed at 10x10.]",
+      blocks: [
+        {
+          type: "text",
+          text: "Read image file [image/png]\n[Image: original 10x10, displayed at 10x10.]",
+        },
+        {
+          type: "image",
+          data: "ZmFrZS1pbWFnZS1kYXRh",
+          mimeType: "image/png",
+        },
+      ],
+    })
+  })
+
+  test("hydrates Claude read image results with source.base64 into canonical image blocks", () => {
+    const tool = normalizeToolCall({
+      toolName: "Read",
+      toolId: "tool-image-claude",
+      input: { file_path: "/tmp/example.png" },
+    })
+
+    expect(hydrateToolResult(tool, {
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            data: "ZmFrZS1pbWFnZS1kYXRh",
+            media_type: "image/png",
+          },
+        },
+      ],
+    })).toEqual({
+      content: "",
+      blocks: [
+        {
+          type: "image",
+          data: "ZmFrZS1pbWFnZS1kYXRh",
+          mimeType: "image/png",
+        },
+      ],
+    })
+  })
 })

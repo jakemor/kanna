@@ -3,6 +3,25 @@ export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex"
 
+export type AttachmentKind = "image" | "file"
+
+export interface ChatAttachment {
+  id: string
+  kind: AttachmentKind
+  displayName: string
+  absolutePath: string
+  relativePath: string
+  contentUrl: string
+  mimeType: string
+  size: number
+}
+
+export interface InternalUserAttachmentsData {
+  userText: string
+  attachments: ChatAttachment[]
+  llmHintText: string
+}
+
 export interface ProviderModelOption {
   id: string
   label: string
@@ -378,6 +397,7 @@ export interface ToolResultEntry extends TranscriptEntryBase {
 export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
+  attachments?: ChatAttachment[]
 }
 
 export interface SystemInitEntry extends TranscriptEntryBase {
@@ -501,8 +521,20 @@ export type HydratedBashToolCall =
 export type HydratedWebSearchToolCall =
   HydratedToolCallBase<"web_search", WebSearchToolCall["input"], unknown>
 
+export interface ReadFileTextBlock {
+  type: "text"
+  text: string
+}
+
+export interface ReadFileImageBlock {
+  type: "image"
+  data: string
+  mimeType?: string
+}
+
 export interface ReadFileToolResult {
   content: string
+  blocks?: Array<ReadFileTextBlock | ReadFileImageBlock>
 }
 
 export type HydratedReadFileToolCall =
@@ -540,7 +572,7 @@ export type HydratedToolCall =
   | HydratedUnknownToolCall
 
 export type HydratedTranscriptMessage =
-  | ({ kind: "user_prompt"; content: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })

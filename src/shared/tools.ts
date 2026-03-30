@@ -203,6 +203,72 @@ function parseJsonValue(value: unknown): unknown {
   }
 }
 
+type ReadStructuredTextBlock = {
+  type: "text"
+  text: string
+}
+
+type ReadStructuredImageBlock = {
+  type: "image"
+  data: string
+  mimeType?: string
+}
+
+function normalizeReadBlocks(value: unknown): Array<ReadStructuredTextBlock | ReadStructuredImageBlock> {
+  const blocks = (
+    value
+    && typeof value === "object"
+    && "content" in value
+    && Array.isArray((value as { content?: unknown }).content)
+  )
+    ? (value as { content: unknown[] }).content
+    : Array.isArray(value)
+      ? value
+      : []
+
+  const normalized: Array<ReadStructuredTextBlock | ReadStructuredImageBlock> = []
+
+  for (const block of blocks) {
+    if (!block || typeof block !== "object" || !("type" in block)) {
+      continue
+    }
+
+    if (block.type === "text" && typeof block.text === "string") {
+      normalized.push({ type: "text", text: block.text })
+      continue
+    }
+
+    if (block.type === "image") {
+      if ("data" in block && typeof block.data === "string") {
+        normalized.push({
+          type: "image",
+          data: block.data,
+          mimeType: typeof block.mimeType === "string" ? block.mimeType : undefined,
+        })
+        continue
+      }
+
+      if (
+        "source" in block
+        && block.source
+        && typeof block.source === "object"
+        && "type" in block.source
+        && block.source.type === "base64"
+        && "data" in block.source
+        && typeof block.source.data === "string"
+      ) {
+        normalized.push({
+          type: "image",
+          data: block.source.data,
+          mimeType: typeof block.source.media_type === "string" ? block.source.media_type : undefined,
+        })
+      }
+    }
+  }
+
+  return normalized
+}
+
 export function hydrateToolResult(tool: NormalizedToolCall, raw: unknown): HydratedToolCall["result"] {
   const parsed = parseJsonValue(raw)
 
@@ -241,6 +307,16 @@ export function hydrateToolResult(tool: NormalizedToolCall, raw: unknown): Hydra
       if (typeof parsed === "string") {
         return parsed
       }
+      const blocks = normalizeReadBlocks(parsed)
+      if (blocks.length > 0) {
+        return {
+          content: blocks
+            .flatMap((block) => block.type === "text" ? [block.text] : [])
+            .join(""),
+          blocks,
+        } satisfies ReadFileToolResult
+      }
+
       const record = asRecord(parsed)
       return {
         content: typeof record?.content === "string" ? record.content : JSON.stringify(parsed, null, 2),

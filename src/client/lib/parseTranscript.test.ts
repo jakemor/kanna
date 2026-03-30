@@ -89,6 +89,30 @@ describe("processTranscriptMessages", () => {
     expect(messages[0].result).toEqual({ discarded: true })
   })
 
+  test("preserves attachments on hydrated user prompts", () => {
+    const messages = processTranscriptMessages([
+      entry({
+        kind: "user_prompt",
+        content: "Please inspect these.",
+        attachments: [{
+          id: "file-1",
+          kind: "file",
+          displayName: "spec.pdf",
+          absolutePath: "/tmp/project/.kanna/uploads/spec.pdf",
+          relativePath: "./.kanna/uploads/spec.pdf",
+          contentUrl: "/api/projects/project-1/uploads/spec.pdf/content",
+          mimeType: "application/pdf",
+          size: 1234,
+        }],
+      }),
+    ])
+
+    expect(messages[0]?.kind).toBe("user_prompt")
+    if (messages[0]?.kind !== "user_prompt") throw new Error("unexpected message")
+    expect(messages[0].attachments).toHaveLength(1)
+    expect(messages[0].attachments?.[0]?.relativePath).toBe("./.kanna/uploads/spec.pdf")
+  })
+
   test("preserves structured Claude ask-user-question results when a later echoed tool result arrives", () => {
     const messages = processTranscriptMessages([
       entry({

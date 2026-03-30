@@ -42,6 +42,9 @@ export default defineConfig({
         target: `ws://${backendTargetHost}:${backendPort}`,
         ws: true,
       },
+      "/api": {
+        target: `http://${backendTargetHost}:${backendPort}`,
+      },
       "/health": {
         target: `http://${backendTargetHost}:${backendPort}`,
       },

@@ -54,6 +54,7 @@
     "@xterm/xterm": "^6.0.0",
     "cloudflared": "^0.7.1",
     "default-shell": "^2.2.0",
+    "file-type": "^22.0.0",
     "qrcode": "^1.5.4",
     "react-resizable-panels": "^4.7.3"
   },

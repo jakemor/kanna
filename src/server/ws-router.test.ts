@@ -41,7 +41,7 @@ describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getQueuedChatIds: () => new Set() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -80,7 +80,7 @@ describe("ws-router", () => {
   test("acks terminal.input without rebroadcasting terminal snapshots", () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getQueuedChatIds: () => new Set() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -124,7 +124,7 @@ describe("ws-router", () => {
   test("subscribes and unsubscribes chat topics", () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getQueuedChatIds: () => new Set() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -229,7 +229,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getQueuedChatIds: () => new Set() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -330,7 +330,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getQueuedChatIds: () => new Set() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},

@@ -591,6 +591,7 @@ export interface ChatRuntime {
   localPath: string
   title: string
   status: KannaStatus
+  isDraining: boolean
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null

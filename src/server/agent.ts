@@ -372,6 +372,7 @@ export class AgentCoordinator {
   private readonly codexManager: CodexAppServerManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
   readonly activeTurns = new Map<string, ActiveTurn>()
+  readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -392,6 +393,18 @@ export class AgentCoordinator {
     const pending = this.activeTurns.get(chatId)?.pendingTool
     if (!pending) return null
     return { toolUseId: pending.toolUseId, toolKind: pending.tool.toolKind }
+  }
+
+  getDrainingChatIds(): Set<string> {
+    return new Set(this.drainingStreams.keys())
+  }
+
+  async stopDraining(chatId: string) {
+    const draining = this.drainingStreams.get(chatId)
+    if (!draining) return
+    draining.turn.close()
+    this.drainingStreams.delete(chatId)
+    this.onStateChange()
   }
 
   private resolveProvider(command: Extract<ClientCommand, { type: "chat.send" }>, currentProvider: AgentProvider | null) {
@@ -432,6 +445,13 @@ export class AgentCoordinator {
     planMode: boolean
     appendUserPrompt: boolean
   }) {
+    // Close any lingering draining stream before starting a new turn.
+    const draining = this.drainingStreams.get(args.chatId)
+    if (draining) {
+      draining.turn.close()
+      this.drainingStreams.delete(args.chatId)
+    }
+
     const chat = this.store.requireChat(args.chatId)
     if (this.activeTurns.has(args.chatId)) {
       throw new Error("Chat is already running")
@@ -588,6 +608,10 @@ export class AgentCoordinator {
   private async runTurn(active: ActiveTurn) {
     try {
       for await (const event of active.turn.stream) {
+        // Once cancelled, stop processing further stream events.
+        // cancel() already removed us from activeTurns and notified the UI.
+        if (active.cancelRequested) break
+
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
           this.onStateChange()
@@ -608,6 +632,14 @@ export class AgentCoordinator {
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
           }
+          // Remove from activeTurns as soon as the result arrives so the UI
+          // transitions to idle immediately. The stream may still be open
+          // (e.g. background tasks), but the user should be able to send
+          // new messages without having to hit stop first.
+          this.activeTurns.delete(active.chatId)
+          // Track the still-open stream so the UI can show a draining
+          // indicator and the user can stop background tasks.
+          this.drainingStreams.set(active.chatId, { turn: active.turn })
         }
 
         this.onStateChange()
@@ -632,7 +664,14 @@ export class AgentCoordinator {
         await this.store.recordTurnCancelled(active.chatId)
       }
       active.turn.close()
-      this.activeTurns.delete(active.chatId)
+      // Only remove if we're still the active turn for this chat.
+      // We may have already been removed by result handling or cancel(),
+      // and a new turn may have started for the same chatId.
+      if (this.activeTurns.get(active.chatId) === active) {
+        this.activeTurns.delete(active.chatId)
+      }
+      // Stream has fully ended — no longer draining.
+      this.drainingStreams.delete(active.chatId)
       this.onStateChange()
 
       if (active.postToolFollowUp && !active.cancelRequested) {
@@ -668,9 +707,18 @@ export class AgentCoordinator {
   }
 
   async cancel(chatId: string) {
+    // Also clean up any draining stream for this chat.
+    const draining = this.drainingStreams.get(chatId)
+    if (draining) {
+      draining.turn.close()
+      this.drainingStreams.delete(chatId)
+    }
+
     const active = this.activeTurns.get(chatId)
     if (!active) return
 
+    // Guard against concurrent cancel() calls — only the first one does work.
+    if (active.cancelRequested) return
     active.cancelRequested = true
 
     const pendingTool = active.pendingTool
@@ -696,14 +744,23 @@ export class AgentCoordinator {
     active.cancelRecorded = true
     active.hasFinalResult = true
 
-    try {
-      await active.turn.interrupt()
-    } catch {
-      active.turn.close()
-    }
-
+    // Remove from activeTurns immediately so the UI reflects the cancellation
+    // right away, rather than waiting for interrupt() which may hang.
     this.activeTurns.delete(chatId)
     this.onStateChange()
+
+    // Now attempt to interrupt/close the underlying stream in the background.
+    // This is best-effort — the turn is already removed from active state above,
+    // and runTurn()'s finally block will also call close().
+    try {
+      await Promise.race([
+        active.turn.interrupt(),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
+      ])
+    } catch {
+      // interrupt() failed — force close
+    }
+    active.turn.close()
   }
 
   async respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {

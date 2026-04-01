@@ -150,6 +150,7 @@ export interface KannaState {
   availableProviders: ProviderCatalogEntry[]
   isProcessing: boolean
   canCancel: boolean
+  isDraining: boolean
   transcriptPaddingBottom: number
   showScrollButton: boolean
   navbarLocalPath?: string
@@ -168,6 +169,7 @@ export interface KannaState {
   handleInstallUpdate: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleCancel: () => Promise<void>
+  handleStopDraining: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
   handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
@@ -389,6 +391,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const availableProviders = activeChatSnapshot?.availableProviders ?? PROVIDERS
   const isProcessing = isProcessingStatus(runtime?.status)
   const canCancel = canCancelStatus(runtime?.status)
+  const isDraining = runtime?.isDraining ?? false
   const transcriptPaddingBottom = FIXED_TRANSCRIPT_PADDING_BOTTOM
   const showScrollButton = !isAtBottom && messages.length > 0
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
@@ -604,6 +607,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }
 
+  async function handleStopDraining() {
+    if (!activeChatId) return
+    try {
+      await socket.command({ type: "chat.stopDraining", chatId: activeChatId })
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function handleDeleteChat(chat: SidebarChatRow) {
     const confirmed = await dialog.confirm({
       title: "Delete Chat",
@@ -781,6 +793,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     availableProviders,
     isProcessing,
     canCancel,
+    isDraining,
     transcriptPaddingBottom,
     showScrollButton,
     navbarLocalPath,
@@ -799,6 +812,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleInstallUpdate,
     handleSend,
     handleCancel,
+    handleStopDraining,
     handleDeleteChat,
     handleRemoveProject,
     handleOpenExternal,

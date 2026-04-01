@@ -5,6 +5,7 @@ import { ChatInput, type ChatInputHandle } from "../components/chat-ui/ChatInput
 import { ChatNavbar } from "../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../components/chat-ui/RightSidebar"
 import { TerminalWorkspace } from "../components/chat-ui/TerminalWorkspace"
+import { DrainingIndicator } from "../components/messages/DrainingIndicator"
 import { ProcessingMessage } from "../components/messages/ProcessingMessage"
 import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
@@ -325,6 +326,9 @@ export function ChatPage() {
                   onExitPlanModeConfirm={state.handleExitPlanMode}
                 />
                 {state.isProcessing ? <ProcessingMessage status={state.runtime?.status} /> : null}
+                {!state.isProcessing && state.isDraining ? (
+                  <DrainingIndicator onStop={() => void state.handleStopDraining()} />
+                ) : null}
                 {state.commandError ? (
                   <div className="text-sm text-destructive border border-destructive/20 bg-destructive/5 rounded-xl px-4 py-3">
                     {state.commandError}

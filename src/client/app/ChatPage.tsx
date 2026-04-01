@@ -7,6 +7,7 @@ import { RightSidebar } from "../components/chat-ui/RightSidebar"
 import { TerminalWorkspace } from "../components/chat-ui/TerminalWorkspace"
 import { DrainingIndicator } from "../components/messages/DrainingIndicator"
 import { ProcessingMessage } from "../components/messages/ProcessingMessage"
+import { QueuedMessageIndicator } from "../components/messages/QueuedMessageIndicator"
 import { Card, CardContent } from "../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { ScrollArea } from "../components/ui/scroll-area"
@@ -328,6 +329,9 @@ export function ChatPage() {
                 {state.isProcessing ? <ProcessingMessage status={state.runtime?.status} /> : null}
                 {!state.isProcessing && state.isDraining ? (
                   <DrainingIndicator onStop={() => void state.handleStopDraining()} />
+                ) : null}
+                {state.hasQueuedMessage ? (
+                  <QueuedMessageIndicator onCancel={() => void state.handleCancelQueued()} />
                 ) : null}
                 {state.commandError ? (
                   <div className="text-sm text-destructive border border-destructive/20 bg-destructive/5 rounded-xl px-4 py-3">

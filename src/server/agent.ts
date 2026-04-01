@@ -373,6 +373,14 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<string | null>
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
+  readonly queuedMessages = new Map<
+    string,
+    {
+      command: Extract<ClientCommand, { type: "chat.send" }>
+      provider: AgentProvider
+      settings: { model: string; effort?: string; serviceTier?: "fast"; planMode: boolean }
+    }
+  >()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -404,6 +412,16 @@ export class AgentCoordinator {
     if (!draining) return
     draining.turn.close()
     this.drainingStreams.delete(chatId)
+    this.onStateChange()
+  }
+
+  getQueuedChatIds(): Set<string> {
+    return new Set(this.queuedMessages.keys())
+  }
+
+  cancelQueued(chatId: string) {
+    if (!this.queuedMessages.has(chatId)) return
+    this.queuedMessages.delete(chatId)
     this.onStateChange()
   }
 
@@ -575,6 +593,22 @@ export class AgentCoordinator {
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(command, chat.provider)
     const settings = this.getProviderSettings(provider, command)
+
+    // If a turn is already running, queue the message instead of throwing.
+    // The user prompt is appended to the transcript immediately so it appears
+    // in the UI right away. When the active turn finishes, runTurn()'s finally
+    // block will auto-start a new turn with the queued message.
+    if (this.activeTurns.has(chatId)) {
+      await this.store.appendMessage(
+        chatId,
+        timestamped({ kind: "user_prompt", content: command.content, attachments: command.attachments ?? [] }, Date.now())
+      )
+      // Latest message wins — replaces any previously queued message.
+      this.queuedMessages.set(chatId, { command, provider, settings })
+      this.onStateChange()
+      return { chatId }
+    }
+
     await this.startTurnForChat({
       chatId,
       provider,
@@ -701,6 +735,42 @@ export class AgentCoordinator {
           )
           await this.store.recordTurnFailed(active.chatId, message)
           this.onStateChange()
+        }
+      } else {
+        // Check for a queued user message. If the user sent a message while
+        // this turn was running, auto-start a new turn with their message.
+        // This fires even after cancellation — the user explicitly sent the
+        // message, so it should still be processed.
+        const queued = this.queuedMessages.get(active.chatId)
+        if (queued) {
+          this.queuedMessages.delete(active.chatId)
+          try {
+            await this.startTurnForChat({
+              chatId: active.chatId,
+              provider: queued.provider,
+              content: queued.command.content,
+              attachments: queued.command.attachments ?? [],
+              model: queued.settings.model,
+              effort: queued.settings.effort,
+              serviceTier: queued.settings.serviceTier,
+              planMode: queued.settings.planMode,
+              appendUserPrompt: false, // Already appended when queued
+            })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            await this.store.appendMessage(
+              active.chatId,
+              timestamped({
+                kind: "result",
+                subtype: "error",
+                isError: true,
+                durationMs: 0,
+                result: message,
+              })
+            )
+            await this.store.recordTurnFailed(active.chatId, message)
+            this.onStateChange()
+          }
         }
       }
     }

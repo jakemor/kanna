@@ -98,6 +98,7 @@ export function deriveChatSnapshot(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>,
   drainingChatIds: Set<string>,
+  queuedChatIds: Set<string>,
   chatId: string,
   getMessages: (chatId: string) => ChatSnapshot["messages"]
 ): ChatSnapshot | null {
@@ -113,6 +114,7 @@ export function deriveChatSnapshot(
     title: chat.title,
     status: deriveStatus(chat, activeStatuses.get(chat.id)),
     isDraining: drainingChatIds.has(chat.id),
+    hasQueuedMessage: queuedChatIds.has(chat.id),
     provider: chat.provider,
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,

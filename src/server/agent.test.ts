@@ -1080,6 +1080,364 @@ describe("AgentCoordinator codex integration", () => {
     expect(discardedResult.content).toEqual({ discarded: true })
     expect(startTurnCalls).toEqual(["plan this"])
   })
+
+  test("queues a message when a turn is active and auto-starts on completion", async () => {
+    let resolveFirstStream!: () => void
+    const startTurnCalls: string[] = []
+
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(args: { content: string }): Promise<HarnessTurn> {
+        startTurnCalls.push(args.content)
+
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          if (startTurnCalls.length === 1) {
+            // First turn: wait for us to resolve before producing result
+            await new Promise<void>((resolve) => {
+              resolveFirstStream = resolve
+            })
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {
+            resolveFirstStream?.()
+          },
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    // Start the first turn
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    })
+
+    await waitFor(() => coordinator.getActiveStatuses().get("chat-1") === "running")
+
+    // Queue a second message while the first is running
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "queued message",
+    })
+
+    // The queued message should be tracked
+    expect(coordinator.getQueuedChatIds().has("chat-1")).toBe(true)
+    // User prompt should appear in transcript immediately
+    const userPrompts = store.messages.filter((e) => e.kind === "user_prompt")
+    expect(userPrompts).toHaveLength(2) // first + queued
+
+    // Resolve the first stream to complete the first turn
+    resolveFirstStream()
+
+    // The queued message should auto-start as a second turn
+    await waitFor(() => store.turnFinishedCount === 2)
+    expect(startTurnCalls).toEqual(["first message", "queued message"])
+    expect(coordinator.getQueuedChatIds().has("chat-1")).toBe(false)
+  })
+
+  test("latest queued message replaces previous", async () => {
+    let resolveFirstStream!: () => void
+    const startTurnCalls: string[] = []
+
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(args: { content: string }): Promise<HarnessTurn> {
+        startTurnCalls.push(args.content)
+
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          if (startTurnCalls.length === 1) {
+            await new Promise<void>((resolve) => {
+              resolveFirstStream = resolve
+            })
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {
+            resolveFirstStream?.()
+          },
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    })
+
+    await waitFor(() => coordinator.getActiveStatuses().get("chat-1") === "running")
+
+    // Queue two messages — only the latest should run
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "message A",
+    })
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "message B",
+    })
+
+    // Both user prompts appear in transcript
+    const userPrompts = store.messages.filter((e) => e.kind === "user_prompt")
+    expect(userPrompts).toHaveLength(3) // first + A + B
+
+    resolveFirstStream()
+
+    // Only message B should actually start as a turn
+    await waitFor(() => store.turnFinishedCount === 2)
+    expect(startTurnCalls).toEqual(["first message", "message B"])
+  })
+
+  test("cancel preserves queued message and it fires after cancellation", async () => {
+    const startTurnCalls: string[] = []
+    let resolveStream!: () => void
+
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(args: { content: string }): Promise<HarnessTurn> {
+        startTurnCalls.push(args.content)
+
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          if (startTurnCalls.length === 1) {
+            // First turn hangs until cancelled
+            await new Promise<void>((resolve) => {
+              resolveStream = resolve
+            })
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {
+            resolveStream?.()
+          },
+          close: () => {
+            resolveStream?.()
+          },
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    })
+
+    await waitFor(() => coordinator.getActiveStatuses().get("chat-1") === "running")
+
+    // Queue a message while running
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "queued message",
+    })
+
+    expect(coordinator.getQueuedChatIds().has("chat-1")).toBe(true)
+
+    // Cancel the active turn
+    await coordinator.cancel("chat-1")
+
+    // The queued message should fire as a new turn
+    await waitFor(() => store.turnFinishedCount >= 1)
+    await waitFor(() => startTurnCalls.length === 2)
+    expect(startTurnCalls).toEqual(["first message", "queued message"])
+  })
+
+  test("cancelQueued removes queued message so it does not fire", async () => {
+    let resolveFirstStream!: () => void
+    const startTurnCalls: string[] = []
+
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(args: { content: string }): Promise<HarnessTurn> {
+        startTurnCalls.push(args.content)
+
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          if (startTurnCalls.length === 1) {
+            await new Promise<void>((resolve) => {
+              resolveFirstStream = resolve
+            })
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {
+            resolveFirstStream?.()
+          },
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    })
+
+    await waitFor(() => coordinator.getActiveStatuses().get("chat-1") === "running")
+
+    // Queue then cancel the queued message
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "queued message",
+    })
+    expect(coordinator.getQueuedChatIds().has("chat-1")).toBe(true)
+
+    coordinator.cancelQueued("chat-1")
+    expect(coordinator.getQueuedChatIds().has("chat-1")).toBe(false)
+
+    // Complete the first turn
+    resolveFirstStream()
+
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    // Give it time to potentially start a queued turn (it shouldn't)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(startTurnCalls).toEqual(["first message"])
+  })
 })
 
 function createFakeStore() {

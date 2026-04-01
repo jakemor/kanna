@@ -121,7 +121,7 @@ export function createWsRouter({
       id,
       snapshot: {
         type: "chat",
-        data: deriveChatSnapshot(store.state, agent.getActiveStatuses(), agent.getDrainingChatIds(), topic.chatId, (chatId) => store.getMessages(chatId)),
+        data: deriveChatSnapshot(store.state, agent.getActiveStatuses(), agent.getDrainingChatIds(), agent.getQueuedChatIds(), topic.chatId, (chatId) => store.getMessages(chatId)),
       },
     }
   }
@@ -271,6 +271,7 @@ export function createWsRouter({
         }
         case "chat.delete": {
           await agent.cancel(command.chatId)
+          agent.cancelQueued(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
@@ -287,6 +288,11 @@ export function createWsRouter({
         }
         case "chat.stopDraining": {
           await agent.stopDraining(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
+        case "chat.cancelQueued": {
+          agent.cancelQueued(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }

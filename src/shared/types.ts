@@ -592,6 +592,7 @@ export interface ChatRuntime {
   title: string
   status: KannaStatus
   isDraining: boolean
+  hasQueuedMessage: boolean
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null

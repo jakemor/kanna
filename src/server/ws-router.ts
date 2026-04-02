@@ -258,6 +258,7 @@ export function createWsRouter({
           const project = store.getProject(command.projectId)
           for (const chat of store.listChatsByProject(command.projectId)) {
             await agent.cancel(chat.id)
+            await agent.closeChat(chat.id)
           }
           if (project) {
             terminals.closeByCwd(project.localPath)
@@ -283,6 +284,7 @@ export function createWsRouter({
         }
         case "chat.delete": {
           await agent.cancel(command.chatId)
+          await agent.closeChat(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break

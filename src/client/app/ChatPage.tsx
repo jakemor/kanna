@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { ArrowDown, ArrowUpRight, Flower, MessageCircle, Upload } from "lucide-react"
+import { ArrowDown, Flower, Upload } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
 import type { HydratedTranscriptMessage } from "../../shared/types"
 import { ChatInput, type ChatInputHandle } from "../components/chat-ui/ChatInput"

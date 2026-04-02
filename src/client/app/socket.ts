@@ -7,6 +7,7 @@ import type {
   TerminalSnapshot,
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
+import { detectClientContext } from "../lib/current-user-device"
 import { generateUUID } from "../lib/utils"
 
 type SnapshotListener<T> = (value: T) => void
@@ -176,6 +177,15 @@ export class KannaSocket {
       this.lastMessageAt = this.lastOpenAt
       this.emitStatus("connected")
       this.startHeartbeat()
+      this.sendNow({
+        v: 1,
+        type: "command",
+        id: generateUUID(),
+        command: {
+          type: "system.setClientContext",
+          context: detectClientContext(),
+        },
+      })
       for (const [id, subscription] of this.subscriptions.entries()) {
         this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topic })
       }

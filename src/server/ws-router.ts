@@ -314,6 +314,29 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "git.diff": {
+          const project = store.getProject(command.projectId)
+          if (!project) {
+            throw new Error("Project not found")
+          }
+          const { execSync } = await import("child_process")
+          let diff = ""
+          try {
+            diff = execSync("git diff HEAD --no-ext-diff --color=never", {
+              cwd: project.localPath,
+              encoding: "utf-8",
+              maxBuffer: 10 * 1024 * 1024,
+            })
+          } catch (err) {
+            // git diff exits 1 when there are differences in some configs,
+            // but stdout still contains the diff.
+            if (err && typeof err === "object" && "stdout" in err && typeof (err as { stdout: unknown }).stdout === "string") {
+              diff = (err as { stdout: string }).stdout
+            }
+          }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { diff } })
+          return
+        }
         case "terminal.create": {
           const project = store.getProject(command.projectId)
           if (!project) {

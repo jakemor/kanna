@@ -3,10 +3,10 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { RightSidebar } from "./RightSidebar"
 
 describe("RightSidebar", () => {
-  test("renders the placeholder copy", () => {
+  test("renders the empty-state copy when no diffs are loaded", () => {
     const markup = renderToStaticMarkup(RightSidebar({ onClose: () => {} }))
 
-    expect(markup).toContain("diffs coming soon")
+    expect(markup).toContain("No diffs to display")
   })
 
   test("renders the close affordance", () => {

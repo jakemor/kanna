@@ -1,4 +1,5 @@
 import type {
+  BackgroundTaskInfo,
   ChatRuntime,
   ChatSnapshot,
   KannaStatus,
@@ -19,7 +20,9 @@ export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): Kann
 
 export function deriveSidebarData(
   state: StoreState,
-  activeStatuses: Map<string, KannaStatus>
+  activeStatuses: Map<string, KannaStatus>,
+  drainingChatIds?: Set<string>,
+  getBackgroundTasks?: (chatId: string) => BackgroundTaskInfo[]
 ): SidebarData {
   const projects = [...state.projectsById.values()]
     .filter((project) => !project.deletedAt)
@@ -40,6 +43,8 @@ export function deriveSidebarData(
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
         hasAutomation: false,
+        isDraining: drainingChatIds?.has(chat.id) ?? false,
+        backgroundTasks: getBackgroundTasks?.(chat.id) ?? [],
       }))
 
     return {

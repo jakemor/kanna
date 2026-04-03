@@ -1,6 +1,7 @@
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import type {
   AgentProvider,
+  BackgroundTaskInfo,
   ChatAttachment,
   NormalizedToolCall,
   PendingToolSnapshot,
@@ -9,6 +10,7 @@ import type {
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
+import { BackgroundTaskRegistry } from "./background-task-registry"
 import { EventStore } from "./event-store"
 import { CodexAppServerManager } from "./codex-app-server"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
@@ -473,6 +475,7 @@ export class AgentCoordinator {
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
+  readonly taskRegistry = new BackgroundTaskRegistry()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -480,6 +483,7 @@ export class AgentCoordinator {
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
+    this.taskRegistry.setOnChange(() => this.onStateChange())
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -504,12 +508,51 @@ export class AgentCoordinator {
     return new Set(this.drainingStreams.keys())
   }
 
+  getBackgroundTasksForChat(chatId: string): BackgroundTaskInfo[] {
+    return this.taskRegistry.getTasksForChat(chatId)
+  }
+
   async stopDraining(chatId: string) {
     const draining = this.drainingStreams.get(chatId)
     if (!draining) return
     draining.turn.close()
     this.drainingStreams.delete(chatId)
+    // NOTE: Do NOT mark background tasks as stopped here — draining is
+    // about the SDK stream, not about background bash processes.  Tasks
+    // are stopped only when: (1) the KillShell tool result is detected,
+    // (2) the file-growth poll detects staleness, or (3) explicit
+    // markStopped() is called.
     this.onStateChange()
+  }
+
+  async restartDraining(chatId: string) {
+    // Stop the current draining stream first
+    await this.stopDraining(chatId)
+
+    // Find the last user prompt from the chat's transcript
+    const messages = this.store.getMessages(chatId)
+    let lastUserPrompt: string | null = null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].kind === "user_prompt") {
+        lastUserPrompt = (messages[i] as { content: string }).content
+        break
+      }
+    }
+
+    if (!lastUserPrompt) {
+      throw new Error("No user message found to restart")
+    }
+
+    const chat = this.store.requireChat(chatId)
+    const provider = chat.provider ?? "claude"
+
+    // Re-send the last user prompt using the existing send flow
+    await this.send({
+      type: "chat.send",
+      chatId,
+      content: lastUserPrompt,
+      provider,
+    })
   }
 
   async closeChat(chatId: string) {
@@ -789,6 +832,18 @@ export class AgentCoordinator {
   }
 
   private async runClaudeSession(session: ClaudeSessionState) {
+    // Simple idle timer to auto-exit draining mode after the turn completes.
+    // Background task tracking is now handled by taskRegistry independently.
+    let drainingIdleTimer: ReturnType<typeof setTimeout> | null = null
+    const DRAINING_IDLE_MS = 3_000
+
+    const clearDrainingIdle = () => {
+      if (drainingIdleTimer !== null) {
+        clearTimeout(drainingIdleTimer)
+        drainingIdleTimer = null
+      }
+    }
+
     try {
       for await (const event of session.session.stream) {
         if (event.type === "session_token" && event.sessionToken) {
@@ -799,7 +854,23 @@ export class AgentCoordinator {
         }
 
         if (!event.entry) continue
+
+        // If we're currently draining and a new event arrives, reset the
+        // idle timer — the stream is still producing events.
+        if (this.drainingStreams.has(session.chatId) && drainingIdleTimer !== null) {
+          clearDrainingIdle()
+          drainingIdleTimer = setTimeout(() => {
+            if (this.drainingStreams.has(session.chatId)) {
+              this.drainingStreams.delete(session.chatId)
+              this.onStateChange()
+            }
+          }, DRAINING_IDLE_MS)
+        }
+
         await this.store.appendMessage(session.chatId, event.entry)
+
+        // Scan newly appended messages for background tasks and register them
+        this.taskRegistry.scanAndRegister(session.chatId, this.store.getMessages(session.chatId))
 
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "system_init" && active) {
@@ -814,6 +885,25 @@ export class AgentCoordinator {
             await this.store.recordTurnFinished(session.chatId)
           }
           this.activeTurns.delete(session.chatId)
+
+          // Enter draining briefly — the stream may still produce trailing
+          // events.  Auto-clear via idle timer.
+          this.drainingStreams.set(session.chatId, {
+            turn: {
+              provider: "claude",
+              stream: { async *[Symbol.asyncIterator]() {} },
+              interrupt: session.session.interrupt,
+              close: () => {
+                void session.session.interrupt()
+              },
+            },
+          })
+          drainingIdleTimer = setTimeout(() => {
+            if (this.drainingStreams.has(session.chatId)) {
+              this.drainingStreams.delete(session.chatId)
+              this.onStateChange()
+            }
+          }, DRAINING_IDLE_MS)
         }
 
         this.onStateChange()
@@ -835,6 +925,7 @@ export class AgentCoordinator {
         await this.store.recordTurnFailed(session.chatId, message)
       }
     } finally {
+      clearDrainingIdle()
       this.claudeSessions.delete(session.chatId)
       const active = this.activeTurns.get(session.chatId)
       if (active?.provider === "claude") {
@@ -843,6 +934,8 @@ export class AgentCoordinator {
         }
         this.activeTurns.delete(session.chatId)
       }
+      // Session stream ended — no longer draining.
+      this.drainingStreams.delete(session.chatId)
       session.session.close()
       this.onStateChange()
     }
@@ -886,6 +979,9 @@ export class AgentCoordinator {
 
         if (!event.entry) continue
         await this.store.appendMessage(active.chatId, event.entry)
+
+        // Scan for new background tasks
+        this.taskRegistry.scanAndRegister(active.chatId, this.store.getMessages(active.chatId))
 
         if (event.entry.kind === "system_init") {
           active.status = "running"

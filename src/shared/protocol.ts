@@ -23,6 +23,7 @@ export type SubscriptionTopic =
   | { type: "keybindings" }
   | { type: "chat"; chatId: string }
   | { type: "terminal"; terminalId: string }
+  | { type: "task-output"; taskId: string; outputPath: string }
 
 export interface TerminalSnapshot {
   terminalId: string
@@ -41,6 +42,15 @@ export interface TerminalSnapshot {
 export type TerminalEvent =
   | { type: "terminal.output"; terminalId: string; data: string }
   | { type: "terminal.exit"; terminalId: string; exitCode: number; signal?: number }
+
+export type TaskOutputEvent =
+  | { type: "task.output"; taskId: string; data: string }
+
+export interface TaskOutputSnapshot {
+  taskId: string
+  outputPath: string
+  content: string
+}
 
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
@@ -77,6 +87,7 @@ export type ClientCommand =
     }
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.stopDraining"; chatId: string }
+  | { type: "chat.restartDraining"; chatId: string }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
   | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
@@ -96,10 +107,11 @@ export type ServerSnapshot =
   | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "terminal"; data: TerminalSnapshot | null }
+  | { type: "task-output"; data: TaskOutputSnapshot }
 
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
-  | { v: 1; type: "event"; id: string; event: TerminalEvent }
+  | { v: 1; type: "event"; id: string; event: TerminalEvent | TaskOutputEvent }
   | { v: 1; type: "ack"; id: string; result?: unknown }
   | { v: 1; type: "error"; id?: string; message: string }
 

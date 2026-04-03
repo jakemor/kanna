@@ -207,6 +207,8 @@ export interface KannaState {
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
+  handleStopDrainingForChat: (chatId: string) => Promise<void>
+  handleRestartDraining: (chatId: string) => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
@@ -690,6 +692,22 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }
 
+  async function handleStopDrainingForChat(chatId: string) {
+    try {
+      await socket.command({ type: "chat.stopDraining", chatId })
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleRestartDraining(chatId: string) {
+    try {
+      await socket.command({ type: "chat.restartDraining", chatId })
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function handleDeleteChat(chat: SidebarChatRow) {
     const confirmed = await dialog.confirm({
       title: "Delete Chat",
@@ -899,6 +917,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleSend,
     handleCancel,
     handleStopDraining,
+    handleStopDrainingForChat,
+    handleRestartDraining,
     handleDeleteChat,
     handleRemoveProject,
     handleCopyPath,

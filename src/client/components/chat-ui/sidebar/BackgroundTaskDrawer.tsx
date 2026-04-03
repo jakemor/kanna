@@ -32,18 +32,16 @@ export function BackgroundTaskDrawer({
 
   // Subscribe to the task output file
   useEffect(() => {
-    return socket.subscribe<TaskOutputSnapshot>(
+    return socket.subscribe<TaskOutputSnapshot, TaskOutputEvent>(
       { type: "task-output", taskId: task.taskId, outputPath: task.outputPath },
-      // Snapshot handler — initial full content
       (snapshot) => {
         setLogContent(snapshot.content)
       },
-      // Event handler — incremental output
-      ((event: TaskOutputEvent) => {
+      (event) => {
         if (event.type === "task.output" && event.taskId === task.taskId) {
           setLogContent((prev) => prev + event.data)
         }
-      }) as any
+      }
     )
   }, [socket, task.taskId, task.outputPath])
 

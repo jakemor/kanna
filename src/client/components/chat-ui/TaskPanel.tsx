@@ -220,16 +220,16 @@ function TaskLogViewer({
     setLogContent("")
     prevLengthRef.current = 0
 
-    return socket.subscribe<TaskOutputSnapshot>(
+    return socket.subscribe<TaskOutputSnapshot, TaskOutputEvent>(
       { type: "task-output", taskId: task.taskId, outputPath: task.outputPath },
       (snapshot) => {
         setLogContent(snapshot.content)
       },
-      ((event: TaskOutputEvent) => {
+      (event) => {
         if (event.type === "task.output" && event.taskId === task.taskId) {
           setLogContent((prev) => prev + event.data)
         }
-      }) as any
+      }
     )
   }, [socket, task.taskId, task.outputPath])
 

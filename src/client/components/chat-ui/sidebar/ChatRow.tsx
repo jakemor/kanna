@@ -94,42 +94,46 @@ export function ChatRow({
         </div>
       </div>
 
-      {/* Inline running background task sub-rows (newest first) */}
-      {chat.backgroundTasks.filter(t => t.status === "running").map((task) => (
-        <div
-          key={task.taskId}
-          className="group/task flex items-center gap-1.5 pl-6 pr-1 py-0.5 rounded-md cursor-pointer transition-colors hover:bg-muted/30"
-          onClick={() => onOpenTask?.(task)}
-        >
-          <Loader2 className="size-2.5 flex-shrink-0 animate-spin text-emerald-500/70" />
-          <span className="flex-1 truncate text-[11px] font-mono text-muted-foreground">
-            {task.command.length > 40 ? task.command.substring(0, 40) + "..." : task.command}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onStopTask?.(task.chatId, task.taskId)
-            }}
-            className="flex size-4 items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-muted-foreground hover:text-destructive transition-all"
-            title="Stop"
-          >
-            <Square className="size-2.5" />
-          </button>
-        </div>
-      ))}
-      {/* Muted count of stopped tasks */}
-      {chat.backgroundTasks.filter(t => t.status === "stopped").length > 0 && (
-        <div
-          className="pl-6 pr-1 py-0.5 text-[10px] text-muted-foreground/50 cursor-pointer hover:text-muted-foreground transition-colors"
-          onClick={() => {
-            const firstStopped = chat.backgroundTasks.find(t => t.status === "stopped")
-            if (firstStopped) onOpenTask?.(firstStopped)
-          }}
-        >
-          {chat.backgroundTasks.filter(t => t.status === "stopped").length} terminated
-        </div>
-      )}
+      {/* Inline background task sub-rows */}
+      {(() => {
+        const runningTasks = chat.backgroundTasks.filter(t => t.status === "running")
+        const stoppedTasks = chat.backgroundTasks.filter(t => t.status === "stopped")
+        return (
+          <>
+            {runningTasks.map((task) => (
+              <div
+                key={task.taskId}
+                className="group/task flex items-center gap-1.5 pl-6 pr-1 py-0.5 rounded-md cursor-pointer transition-colors hover:bg-muted/30"
+                onClick={() => onOpenTask?.(task)}
+              >
+                <Loader2 className="size-2.5 flex-shrink-0 animate-spin text-emerald-500/70" />
+                <span className="flex-1 truncate text-[11px] font-mono text-muted-foreground">
+                  {task.command.length > 40 ? task.command.substring(0, 40) + "..." : task.command}
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onStopTask?.(task.chatId, task.taskId)
+                  }}
+                  className="flex size-4 items-center justify-center rounded opacity-0 group-hover/task:opacity-100 text-muted-foreground hover:text-destructive transition-all"
+                  title="Stop"
+                >
+                  <Square className="size-2.5" />
+                </button>
+              </div>
+            ))}
+            {stoppedTasks.length > 0 && (
+              <div
+                className="pl-6 pr-1 py-0.5 text-[10px] text-muted-foreground/50 cursor-pointer hover:text-muted-foreground transition-colors"
+                onClick={() => onOpenTask?.(stoppedTasks[0])}
+              >
+                {stoppedTasks.length} terminated
+              </div>
+            )}
+          </>
+        )
+      })()}
     </>
   )
 }

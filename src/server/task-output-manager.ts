@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { watchFile, unwatchFile, existsSync } from "node:fs"
 
 export interface TaskOutputEvent {
@@ -10,7 +10,8 @@ export interface TaskOutputEvent {
 interface TailedFile {
   taskId: string
   outputPath: string
-  lastSize: number
+  /** Character count of content already sent to subscribers. */
+  lastCharLength: number
   subscriberCount: number
 }
 
@@ -29,21 +30,19 @@ export class TaskOutputManager {
     const existing = this.tailedFiles.get(taskId)
     if (existing) {
       existing.subscriberCount++
-      // Return current file content as initial snapshot
       return this.readFullFile(outputPath)
     }
 
     const entry: TailedFile = {
       taskId,
       outputPath,
-      lastSize: 0,
+      lastCharLength: 0,
       subscriberCount: 1,
     }
     this.tailedFiles.set(taskId, entry)
 
-    // Read the full file as initial snapshot
     const initialContent = await this.readFullFile(outputPath)
-    entry.lastSize = Buffer.byteLength(initialContent, "utf-8")
+    entry.lastCharLength = initialContent.length
 
     // Start watching for changes
     watchFile(outputPath, { persistent: false, interval: 500 }, () => {
@@ -86,12 +85,14 @@ export class TaskOutputManager {
     if (!entry) return
 
     try {
-      const stats = await stat(entry.outputPath)
-      if (stats.size <= entry.lastSize) return
-
+      // Read the full file as text and compare character lengths
+      // consistently — avoids byte vs character mismatches with
+      // non-ASCII content.
       const content = await readFile(entry.outputPath, "utf-8")
-      const newData = content.slice(entry.lastSize)
-      entry.lastSize = content.length
+      if (content.length <= entry.lastCharLength) return
+
+      const newData = content.slice(entry.lastCharLength)
+      entry.lastCharLength = content.length
 
       if (newData.length > 0) {
         this.emit({ type: "task.output", taskId, data: newData })

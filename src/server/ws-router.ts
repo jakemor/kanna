@@ -11,6 +11,7 @@ import { ensureProjectDirectory } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import { TaskOutputManager } from "./task-output-manager"
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
@@ -25,6 +26,7 @@ interface CreateWsRouterArgs {
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
   updateManager: UpdateManager | null
+  taskOutputManager?: TaskOutputManager
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
@@ -40,6 +42,7 @@ export function createWsRouter({
   getDiscoveredProjects,
   machineDisplayName,
   updateManager,
+  taskOutputManager = new TaskOutputManager(),
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
 
@@ -51,7 +54,12 @@ export function createWsRouter({
         id,
         snapshot: {
           type: "sidebar",
-          data: deriveSidebarData(store.state, agent.getActiveStatuses()),
+          data: deriveSidebarData(
+            store.state,
+            agent.getActiveStatuses(),
+            agent.getDrainingChatIds(),
+            (chatId) => agent.getBackgroundTasksForChat(chatId)
+          ),
         },
       }
     }
@@ -99,6 +107,20 @@ export function createWsRouter({
             error: null,
             installAction: "restart",
           },
+        },
+      }
+    }
+
+    if (topic.type === "task-output") {
+      // The initial snapshot is sent asynchronously after startTailing completes.
+      // Return a placeholder that will be replaced by the subscribe handler below.
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "task-output",
+          data: { taskId: topic.taskId, outputPath: topic.outputPath, content: "" },
         },
       }
     }
@@ -173,6 +195,20 @@ export function createWsRouter({
 
   const disposeTerminalEvents = terminals.onEvent((event) => {
     pushTerminalEvent(event.terminalId, event)
+  })
+
+  const disposeTaskOutputEvents = taskOutputManager.onEvent((event) => {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "task-output" || topic.taskId !== event.taskId) continue
+        send(ws, {
+          v: PROTOCOL_VERSION,
+          type: "event",
+          id,
+          event,
+        })
+      }
+    }
   })
 
   const disposeKeybindingEvents = keybindings.onChange(() => {
@@ -309,10 +345,38 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "chat.restartDraining": {
+          await agent.restartDraining(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          break
+        }
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
+        }
+        case "git.diff": {
+          const project = store.getProject(command.projectId)
+          if (!project) {
+            throw new Error("Project not found")
+          }
+          const { execSync } = await import("child_process")
+          let diff = ""
+          try {
+            diff = execSync("git diff HEAD --no-ext-diff --color=never", {
+              cwd: project.localPath,
+              encoding: "utf-8",
+              maxBuffer: 10 * 1024 * 1024,
+            })
+          } catch (err) {
+            // git diff exits 1 when there are differences in some configs,
+            // but stdout still contains the diff.
+            if (err && typeof err === "object" && "stdout" in err && typeof (err as { stdout: unknown }).stdout === "string") {
+              diff = (err as { stdout: string }).stdout
+            }
+          }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { diff } })
+          return
         }
         case "terminal.create": {
           const project = store.getProject(command.projectId)
@@ -385,11 +449,33 @@ export function createWsRouter({
             }
           })
         }
+        if (parsed.topic.type === "task-output") {
+          // Start tailing and send initial content asynchronously
+          const taskTopic = parsed.topic
+          void taskOutputManager.startTailing(taskTopic.taskId, taskTopic.outputPath).then((content) => {
+            if (ws.data.subscriptions.has(parsed.id)) {
+              send(ws, {
+                v: PROTOCOL_VERSION,
+                type: "snapshot",
+                id: parsed.id,
+                snapshot: {
+                  type: "task-output",
+                  data: { taskId: taskTopic.taskId, outputPath: taskTopic.outputPath, content },
+                },
+              })
+            }
+          })
+          return
+        }
         send(ws, createEnvelope(parsed.id, parsed.topic))
         return
       }
 
       if (parsed.type === "unsubscribe") {
+        const topic = ws.data.subscriptions.get(parsed.id)
+        if (topic?.type === "task-output") {
+          taskOutputManager.stopTailing(topic.taskId)
+        }
         ws.data.subscriptions.delete(parsed.id)
         send(ws, { v: PROTOCOL_VERSION, type: "ack", id: parsed.id })
         return
@@ -400,8 +486,10 @@ export function createWsRouter({
     dispose() {
       agent.setBackgroundErrorReporter?.(null)
       disposeTerminalEvents()
+      disposeTaskOutputEvents()
       disposeKeybindingEvents()
       disposeUpdateEvents()
+      taskOutputManager.dispose()
     },
   }
 }

@@ -29,6 +29,9 @@ import { useTerminalToggleAnimation } from "./useTerminalToggleAnimation"
 import type { KannaState } from "./useKannaState"
 import { KannaTranscript } from "./KannaTranscript"
 import { useStickyChatFocus } from "./useStickyChatFocus"
+import { useGitDiff } from "../hooks/useDiffExtractor"
+import { TaskPanel } from "../components/chat-ui/TaskPanel"
+import { useTaskPanelStore } from "../stores/taskPanelStore"
 
 const EMPTY_STATE_TEXT = "What are we building?"
 const EMPTY_STATE_TYPING_INTERVAL_MS = 19
@@ -122,6 +125,12 @@ export function ChatPage() {
   const scrollback = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
   const showTranscriptToc = useChatPreferencesStore((store) => store.showTranscriptToc)
+  const taskPanelVisible = useTaskPanelStore((store) => store.isVisible)
+  const taskPanelSelectedId = useTaskPanelStore((store) => store.selectedTaskId)
+  const taskPanelHasUserSelected = useTaskPanelStore((store) => store.hasUserSelected)
+  const taskPanelSelectTask = useTaskPanelStore((store) => store.selectTask)
+  const taskPanelToggle = useTaskPanelStore((store) => store.toggleVisibility)
+  const taskPanelSetVisible = useTaskPanelStore((store) => store.setVisible)
   const keybindings = state.keybindings
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const transcriptTocItems = useMemo(() => createTranscriptTocItems(state.messages), [state.messages])
@@ -131,11 +140,25 @@ export function ChatPage() {
     itemCount: transcriptTocItems.length,
   })
 
+  // Background tasks for the active chat only
+  const activeChatTasks = useMemo(() => {
+    if (!state.activeChatId) return []
+    for (const group of state.sidebarData.projectGroups) {
+      for (const chat of group.chats) {
+        if (chat.chatId === state.activeChatId) {
+          return [...chat.backgroundTasks].sort((a, b) => b.startedAt - a.startedAt)
+        }
+      }
+    }
+    return []
+  }, [state.sidebarData.projectGroups, state.activeChatId])
+
   const hasTerminals = terminalLayout.terminals.length > 0
   const showTerminalPane = Boolean(projectId && terminalLayout.isVisible && hasTerminals)
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarLayout.isVisible)
   const shouldRenderRightSidebarLayout = Boolean(projectId)
+  const { refetch: refetchDiff } = useGitDiff(state.socket, projectId, showRightSidebar)
   const {
     isAnimating: isTerminalAnimating,
     mainPanelGroupRef,
@@ -369,6 +392,9 @@ export function ChatPage() {
           onToggleEmbeddedTerminal={projectId ? handleToggleEmbeddedTerminal : undefined}
           rightSidebarVisible={showRightSidebar}
           onToggleRightSidebar={projectId ? () => toggleRightSidebar(projectId) : undefined}
+          taskPanelVisible={taskPanelVisible}
+          taskCount={activeChatTasks.filter(t => t.status === "running").length}
+          onToggleTaskPanel={taskPanelToggle}
           onOpenExternal={(action) => {
             void state.handleOpenExternal(action)
           }}
@@ -661,6 +687,8 @@ export function ChatPage() {
             >
               <RightSidebar
                 onClose={() => toggleRightSidebar(projectId)}
+                onRefresh={refetchDiff}
+                onSendAll={(message) => void state.handleSend(message)}
               />
             </div>
           </ResizablePanel>
@@ -724,6 +752,29 @@ export function ChatPage() {
         chatCard
       )}
 
+      {/* Background Tasks Panel — pushes chat up like the terminal */}
+      {taskPanelVisible && (
+        <div
+          className="shrink-0 border-t border-border bg-background"
+          style={{ height: "35%", minHeight: 180, maxHeight: 400 }}
+        >
+          <TaskPanel
+            tasks={activeChatTasks}
+            selectedTaskId={taskPanelSelectedId}
+            hasUserSelected={taskPanelHasUserSelected}
+            onSelectTask={taskPanelSelectTask}
+            onStopTask={(chatId, taskId) => {
+              void state.socket.command({
+                type: "chat.send",
+                chatId,
+                content: `Stop background task ${taskId}`,
+              })
+            }}
+            onClose={() => taskPanelSetVisible(false)}
+            socket={state.socket}
+          />
+        </div>
+      )}
     </div>
   )
 }

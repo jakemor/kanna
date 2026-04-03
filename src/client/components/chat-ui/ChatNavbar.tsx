@@ -1,4 +1,4 @@
-import { Flower, Code, FolderOpen, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
+import { Activity, Flower, Code, FolderOpen, Menu, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
@@ -14,6 +14,9 @@ interface Props {
   onToggleEmbeddedTerminal?: () => void
   rightSidebarVisible?: boolean
   onToggleRightSidebar?: () => void
+  taskPanelVisible?: boolean
+  taskCount?: number
+  onToggleTaskPanel?: () => void
   onOpenExternal?: (action: "open_finder" | "open_editor") => void
   editorLabel?: string
   finderShortcut?: string[]
@@ -32,6 +35,9 @@ export function ChatNavbar({
   onToggleEmbeddedTerminal,
   rightSidebarVisible = false,
   onToggleRightSidebar,
+  taskPanelVisible = false,
+  taskCount = 0,
+  onToggleTaskPanel,
   onOpenExternal,
   editorLabel = "Editor",
   finderShortcut,
@@ -120,6 +126,25 @@ export function ChatNavbar({
                   </HotkeyTooltipTrigger>
                   <HotkeyTooltipContent side="bottom" shortcut={terminalShortcut} />
                 </HotkeyTooltip>
+              ) : null}
+              {onToggleTaskPanel ? (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onToggleTaskPanel}
+                  title="Background Tasks"
+                  className={cn(
+                    "border border-border/0 relative",
+                    taskPanelVisible && "text-white"
+                  )}
+                >
+                  <Activity className="h-4.5 w-4.5" />
+                  {taskCount > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-emerald-500 px-0.5 text-[9px] font-bold text-white">
+                      {taskCount}
+                    </span>
+                  )}
+                </Button>
               ) : null}
               {onOpenExternal ? (
                 <HotkeyTooltip>

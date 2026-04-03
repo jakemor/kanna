@@ -9,6 +9,7 @@ import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProject
 import type { SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
 import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
+import { useTaskPanelStore } from "../stores/taskPanelStore"
 
 interface KannaSidebarProps {
   data: SidebarData
@@ -30,6 +31,9 @@ interface KannaSidebarProps {
   editorLabel: string
   updateSnapshot: UpdateSnapshot | null
   onInstallUpdate: () => void
+  onStopDraining: (chatId: string) => void
+  onStopTask: (chatId: string, taskId: string) => void
+  onRestartDraining: (chatId: string) => void
 }
 
 export function KannaSidebar({
@@ -52,6 +56,9 @@ export function KannaSidebar({
   editorLabel,
   updateSnapshot,
   onInstallUpdate,
+  onStopDraining,
+  onStopTask,
+  onRestartDraining,
 }: KannaSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -60,6 +67,7 @@ export function KannaSidebar({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const chatsPerProject = 10
+  const selectTask = useTaskPanelStore((s) => s.selectTask)
 
   const savedOrder = useProjectGroupOrderStore((s) => s.order)
   const setGroupOrder = useProjectGroupOrderStore((s) => s.setOrder)
@@ -126,8 +134,15 @@ export function KannaSidebar({
         onClose()
       }}
       onDeleteChat={() => onDeleteChat(chat)}
+      onOpenTask={(task) => {
+        // Navigate to the task's chat and open the bottom panel focused on it
+        navigate(`/chat/${task.chatId}`)
+        selectTask(task.taskId)
+        onClose()
+      }}
+      onStopTask={(chatId, taskId) => onStopTask(chatId, taskId)}
     />
-  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat])
+  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat, onStopTask, selectTask])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -223,7 +238,7 @@ export function KannaSidebar({
             </button>
             <Flower className="h-5 w-5 sm:h-6 sm:w-6 text-logo md:hidden" />
             <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{APP_NAME}</span>
-            
+
           </div>
           <div className="flex items-center">
             {showDevBadge ? (

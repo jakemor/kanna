@@ -41,7 +41,7 @@ describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [] } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -80,7 +80,7 @@ describe("ws-router", () => {
   test("acks terminal.input without rebroadcasting terminal snapshots", () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [] } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -124,7 +124,7 @@ describe("ws-router", () => {
   test("subscribes and unsubscribes chat topics", () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [] } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -210,7 +210,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: store as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [] } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -287,6 +287,8 @@ describe("ws-router", () => {
               provider: null,
               lastMessageAt: undefined,
               hasAutomation: false,
+              isDraining: false,
+              backgroundTasks: [],
             }],
           }],
         },
@@ -313,6 +315,8 @@ describe("ws-router", () => {
               provider: null,
               lastMessageAt: undefined,
               hasAutomation: false,
+              isDraining: false,
+              backgroundTasks: [],
             }],
           }],
         },
@@ -326,6 +330,7 @@ describe("ws-router", () => {
       store: { state: createEmptyState() } as never,
       agent: {
         getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [],
         setBackgroundErrorReporter: (reporter: ((message: string) => void) | null) => {
           reportBackgroundError = reporter
         },
@@ -373,7 +378,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [] } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -474,7 +479,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getBackgroundTasksForChat: () => [] } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},

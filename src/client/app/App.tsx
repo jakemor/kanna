@@ -153,6 +153,19 @@ function KannaLayout() {
         onInstallUpdate={() => {
           void state.handleInstallUpdate()
         }}
+        onStopDraining={(chatId) => {
+          void state.handleStopDrainingForChat(chatId)
+        }}
+        onStopTask={(chatId, taskId) => {
+          void state.socket.command({
+            type: "chat.send",
+            chatId,
+            content: `Stop background task ${taskId}`,
+          })
+        }}
+        onRestartDraining={(chatId) => {
+          void state.handleRestartDraining(chatId)
+        }}
       />
       <Outlet context={state} />
     </div>

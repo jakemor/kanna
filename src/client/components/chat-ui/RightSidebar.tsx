@@ -4,9 +4,10 @@ import { DiffView } from "../diff"
 interface RightSidebarProps {
   onClose: () => void
   onRefresh?: () => void
+  onSendAll?: (message: string) => void
 }
 
-export function RightSidebar({ onClose, onRefresh }: RightSidebarProps) {
+export function RightSidebar({ onClose, onRefresh, onSendAll }: RightSidebarProps) {
   return (
     <div className="h-full min-h-0 border-l border-border bg-background md:min-w-[300px]">
       <div className="flex h-full min-h-0 flex-col">
@@ -32,7 +33,7 @@ export function RightSidebar({ onClose, onRefresh }: RightSidebarProps) {
           </button>
         </div>
 
-        <DiffView />
+        <DiffView onSendAll={onSendAll} />
       </div>
     </div>
   )

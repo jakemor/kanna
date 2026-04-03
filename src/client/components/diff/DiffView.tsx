@@ -1,14 +1,18 @@
 import { useCallback } from "react"
-import { ClipboardCopy, MessageSquare, Trash2 } from "lucide-react"
+import { ClipboardCopy, MessageSquare, Send, Trash2 } from "lucide-react"
 import { useDiffStore } from "../../stores/diffStore"
 import type { DiffSide, LineNumber } from "./types"
 import { DiffFileCard } from "./DiffFileCard"
+
+interface DiffViewProps {
+  onSendAll?: (message: string) => void
+}
 
 /**
  * Top-level diff viewer. Reads from the shared diffStore and renders all files
  * with inline commenting support.
  */
-export function DiffView() {
+export function DiffView({ onSendAll }: DiffViewProps) {
   const files = useDiffStore((s) => s.files)
   const threads = useDiffStore((s) => s.threads)
   const addThread = useDiffStore((s) => s.addThread)
@@ -37,6 +41,13 @@ export function DiffView() {
     }
   }, [generateAllThreadsPrompt])
 
+  const handleSendAll = useCallback(() => {
+    const prompt = generateAllThreadsPrompt()
+    if (prompt && onSendAll) {
+      onSendAll(`Address these comments:\n\n${prompt}`)
+    }
+  }, [generateAllThreadsPrompt, onSendAll])
+
   // ---- Empty state ----
   if (files.length === 0) {
     return (
@@ -59,6 +70,17 @@ export function DiffView() {
             {threads.length} comment{threads.length !== 1 ? "s" : ""}
           </span>
           <div className="flex items-center gap-1">
+            {onSendAll && (
+              <button
+                type="button"
+                onClick={handleSendAll}
+                title="Send all comments to chat"
+                className="flex h-6 items-center gap-1 rounded-md bg-logo px-2 text-[11px] font-medium text-white transition-colors hover:bg-logo/90"
+              >
+                <Send className="h-3 w-3" />
+                Send all
+              </button>
+            )}
             <button
               type="button"
               onClick={handleCopyAll}

@@ -664,6 +664,7 @@ export function ChatPage() {
               <RightSidebar
                 onClose={() => toggleRightSidebar(projectId)}
                 onRefresh={refetchDiff}
+                onSendAll={(message) => void state.handleSend(message)}
               />
             </div>
           </ResizablePanel>

@@ -196,6 +196,15 @@ export interface ProjectSummary {
   updatedAt: number
 }
 
+export interface BackgroundTaskInfo {
+  taskId: string
+  command: string
+  outputPath: string
+  chatId: string
+  startedAt: number
+  status: "running" | "stopped"
+}
+
 export interface SidebarChatRow {
   _id: string
   _creationTime: number
@@ -207,6 +216,8 @@ export interface SidebarChatRow {
   provider: AgentProvider | null
   lastMessageAt?: number
   hasAutomation: boolean
+  isDraining: boolean
+  backgroundTasks: BackgroundTaskInfo[]
 }
 
 export interface SidebarProjectGroup {

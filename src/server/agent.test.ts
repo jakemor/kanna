@@ -1332,7 +1332,7 @@ describe("AgentCoordinator claude integration", () => {
     events.close()
   })
 
-  test("Claude final results clear running state without using draining mode", async () => {
+  test("Claude final results enter draining mode for background task visibility", async () => {
     const events = new AsyncEventQueue<any>()
 
     const store = createFakeStore()
@@ -1384,7 +1384,12 @@ describe("AgentCoordinator claude integration", () => {
 
     await waitFor(() => store.turnFinishedCount === 1)
     expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
-    expect(coordinator.getDrainingChatIds().has("chat-1")).toBe(false)
+    // Claude sessions enter draining mode after result.  This turn has no
+    // bash tool calls with runInBackground so the idle timer should auto-
+    // clear draining within a few seconds.
+    expect(coordinator.getDrainingChatIds().has("chat-1")).toBe(true)
+
+    await waitFor(() => !coordinator.getDrainingChatIds().has("chat-1"), 10000)
 
     events.close()
   })

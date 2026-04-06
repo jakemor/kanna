@@ -54,6 +54,7 @@
     "@xterm/xterm": "^6.0.0",
     "cloudflared": "^0.7.1",
     "default-shell": "^2.2.0",
+    "diff": "^8.0.4",
     "file-type": "^22.0.0",
     "qrcode": "^1.5.4",
     "react-resizable-panels": "^4.7.3"
@@ -68,6 +69,7 @@
     "@tailwindcss/postcss": "^4.1.18",
     "@tailwindcss/typography": "^0.5.19",
     "@types/bun": "latest",
+    "@types/diff": "^8.0.0",
     "@types/node": "^24.10.1",
     "@types/qrcode": "^1.5.6",
     "@types/react": "19.2.7",

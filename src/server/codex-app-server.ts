@@ -2,7 +2,14 @@ import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
-import type { AskUserQuestionItem, CodexReasoningEffort, ServiceTier, TodoItem, TranscriptEntry } from "../shared/types"
+import type {
+  AskUserQuestionItem,
+  CodexReasoningEffort,
+  ContextWindowUsageSnapshot,
+  ServiceTier,
+  TodoItem,
+  TranscriptEntry,
+} from "../shared/types"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   type CollabAgentToolCallItem,
@@ -29,6 +36,7 @@ import {
   type ThreadResumeResponse,
   type ThreadStartParams,
   type ThreadStartResponse,
+  type ThreadTokenUsageUpdatedNotification,
   type ToolRequestUserInputParams,
   type ToolRequestUserInputQuestion,
   type ToolRequestUserInputResponse,
@@ -229,6 +237,47 @@ function contentFromMcpResult(item: McpToolCallItem): unknown {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   return value as Record<string, unknown>
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function normalizeCodexTokenUsage(
+  notification: ThreadTokenUsageUpdatedNotification,
+): ContextWindowUsageSnapshot | null {
+  const usage = notification.tokenUsage
+  const totalUsage = usage.total_token_usage ?? usage.total
+  const lastUsage = usage.last_token_usage ?? usage.last
+
+  const totalProcessedTokens = asNumber(totalUsage?.total_tokens) ?? asNumber(totalUsage?.totalTokens)
+  const usedTokens = asNumber(lastUsage?.total_tokens) ?? asNumber(lastUsage?.totalTokens) ?? totalProcessedTokens
+  if (usedTokens === undefined || usedTokens <= 0) {
+    return null
+  }
+
+  const inputTokens = asNumber(lastUsage?.input_tokens) ?? asNumber(lastUsage?.inputTokens)
+  const cachedInputTokens = asNumber(lastUsage?.cached_input_tokens) ?? asNumber(lastUsage?.cachedInputTokens)
+  const outputTokens = asNumber(lastUsage?.output_tokens) ?? asNumber(lastUsage?.outputTokens)
+  const reasoningOutputTokens =
+    asNumber(lastUsage?.reasoning_output_tokens) ?? asNumber(lastUsage?.reasoningOutputTokens)
+  const maxTokens = asNumber(usage.model_context_window) ?? asNumber(usage.modelContextWindow)
+
+  return {
+    usedTokens,
+    ...(totalProcessedTokens !== undefined && totalProcessedTokens > usedTokens ? { totalProcessedTokens } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    ...(inputTokens !== undefined ? { lastInputTokens: inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { lastCachedInputTokens: cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { lastOutputTokens: outputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { lastReasoningOutputTokens: reasoningOutputTokens } : {}),
+    lastUsedTokens: usedTokens,
+    compactsAutomatically: true,
+  }
 }
 
 function todoStatus(status: TurnPlanStep["status"]): TodoItem["status"] {
@@ -1095,6 +1144,9 @@ export class CodexAppServerManager {
     if (!pendingTurn) return
 
     switch (notification.method) {
+      case "thread/tokenUsage/updated":
+        this.handleTokenUsageUpdated(pendingTurn, notification.params)
+        return
       case "turn/plan/updated":
         this.handlePlanUpdated(pendingTurn, notification.params)
         return
@@ -1235,6 +1287,24 @@ export class CodexAppServerManager {
     pendingTurn.queue.push({
       type: "transcript",
       entry: timestamped({ kind: "compact_boundary" }),
+    })
+  }
+
+  private handleTokenUsageUpdated(
+    pendingTurn: PendingTurn,
+    notification: ThreadTokenUsageUpdatedNotification,
+  ) {
+    const usage = normalizeCodexTokenUsage(notification)
+    if (!usage) {
+      return
+    }
+
+    pendingTurn.queue.push({
+      type: "transcript",
+      entry: timestamped({
+        kind: "context_window_updated",
+        usage,
+      }),
     })
   }
 

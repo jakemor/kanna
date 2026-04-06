@@ -144,6 +144,8 @@ export function KannaTranscript({
         }
         return <ResultMessage key={message.id} message={message} />
       }
+      case "context_window_updated":
+        return null
       case "interrupted":
         return <InterruptedMessage key={message.id} message={message} />
       case "compact_boundary":

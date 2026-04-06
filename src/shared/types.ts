@@ -171,6 +171,16 @@ export function resolveClaudeApiModelId(modelId: string, contextWindow?: ClaudeC
   return contextWindow === "1m" ? `${modelId}[1m]` : modelId
 }
 
+export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWindow): number {
+  switch (contextWindow) {
+    case "1m":
+      return 1_000_000
+    case "200k":
+    default:
+      return 200_000
+  }
+}
+
 export type KannaStatus =
   | "idle"
   | "starting"
@@ -440,6 +450,29 @@ export interface StatusEntry extends TranscriptEntryBase {
   status: string
 }
 
+export interface ContextWindowUsageSnapshot {
+  usedTokens: number
+  totalProcessedTokens?: number
+  maxTokens?: number
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  reasoningOutputTokens?: number
+  lastUsedTokens?: number
+  lastInputTokens?: number
+  lastCachedInputTokens?: number
+  lastOutputTokens?: number
+  lastReasoningOutputTokens?: number
+  toolUses?: number
+  durationMs?: number
+  compactsAutomatically: boolean
+}
+
+export interface ContextWindowUpdatedEntry extends TranscriptEntryBase {
+  kind: "context_window_updated"
+  usage: ContextWindowUsageSnapshot
+}
+
 export interface CompactBoundaryEntry extends TranscriptEntryBase {
   kind: "compact_boundary"
 }
@@ -466,6 +499,7 @@ export type TranscriptEntry =
   | ToolResultEntry
   | ResultEntry
   | StatusEntry
+  | ContextWindowUpdatedEntry
   | CompactBoundaryEntry
   | CompactSummaryEntry
   | ContextClearedEntry
@@ -579,6 +613,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "result"; success: boolean; cancelled?: boolean; result: string; durationMs: number; costUsd?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "status"; status: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "context_window_updated"; usage: ContextWindowUsageSnapshot; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })

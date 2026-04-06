@@ -1,5 +1,5 @@
-import { afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { TerminalManager } from "./terminal-manager"
@@ -13,16 +13,49 @@ const isSupportedPlatform = process.platform !== "win32" && typeof Bun.Terminal 
 const describeIfSupported = isSupportedPlatform ? describe : describe.skip
 
 let tempProjectPath = ""
+let tempHomePath = ""
+const originalHome = process.env.HOME
+const originalZdotdir = process.env.ZDOTDIR
+const originalHistfile = process.env.HISTFILE
 
 beforeAll(async () => {
   if (!isSupportedPlatform) return
   tempProjectPath = await mkdtemp(path.join(os.tmpdir(), "kanna-terminal-manager-"))
+  tempHomePath = await mkdtemp(path.join(os.tmpdir(), "kanna-terminal-home-"))
+  await mkdir(path.join(tempHomePath, ".config"), { recursive: true })
+  process.env.HOME = tempHomePath
+  process.env.ZDOTDIR = tempHomePath
+  process.env.HISTFILE = path.join(tempHomePath, ".zsh_history")
 })
 
 afterEach(async () => {
   if (!tempProjectPath) return
   await rm(tempProjectPath, { recursive: true, force: true })
   tempProjectPath = await mkdtemp(path.join(os.tmpdir(), "kanna-terminal-manager-"))
+})
+
+afterAll(async () => {
+  if (originalHome === undefined) {
+    delete process.env.HOME
+  } else {
+    process.env.HOME = originalHome
+  }
+
+  if (originalZdotdir === undefined) {
+    delete process.env.ZDOTDIR
+  } else {
+    process.env.ZDOTDIR = originalZdotdir
+  }
+
+  if (originalHistfile === undefined) {
+    delete process.env.HISTFILE
+  } else {
+    process.env.HISTFILE = originalHistfile
+  }
+
+  if (tempHomePath) {
+    await rm(tempHomePath, { recursive: true, force: true })
+  }
 })
 
 async function waitFor(check: () => boolean, timeoutMs: number, intervalMs = 25) {
@@ -70,8 +103,8 @@ describeIfSupported("TerminalManager", () => {
     const { manager, getOutput } = await createSession(terminalId)
 
     try {
-      manager.write(terminalId, 'python3 -c "import time; time.sleep(30)"\r')
-      await waitFor(() => getOutput().includes("time.sleep(30)"), COMMAND_TIMEOUT_MS)
+      manager.write(terminalId, `python3 -c "import time; print('__KANNA_SLEEP__', flush=True); time.sleep(30)"\r`)
+      await waitFor(() => getOutput().includes("__KANNA_SLEEP__"), COMMAND_TIMEOUT_MS)
 
       manager.write(terminalId, "\x03")
       manager.write(terminalId, "printf '__KANNA_AFTER_INT__\\n'\r")

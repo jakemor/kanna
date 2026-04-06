@@ -141,6 +141,32 @@ export interface ContextCompactedNotification {
   turnId: string
 }
 
+export interface TokenUsageCounter {
+  input_tokens?: number
+  inputTokens?: number
+  cached_input_tokens?: number
+  cachedInputTokens?: number
+  output_tokens?: number
+  outputTokens?: number
+  reasoning_output_tokens?: number
+  reasoningOutputTokens?: number
+  total_tokens?: number
+  totalTokens?: number
+}
+
+export interface ThreadTokenUsageUpdatedNotification {
+  threadId: string
+  turnId: string
+  tokenUsage: {
+    total_token_usage?: TokenUsageCounter
+    total?: TokenUsageCounter
+    last_token_usage?: TokenUsageCounter
+    last?: TokenUsageCounter
+    model_context_window?: number
+    modelContextWindow?: number
+  }
+}
+
 export interface ToolRequestUserInputOption {
   label: string
   description?: string | null
@@ -406,6 +432,7 @@ export interface ErrorNotification {
 
 export type ServerNotification =
   | { method: "thread/started"; params: ThreadStartedNotification }
+  | { method: "thread/tokenUsage/updated"; params: ThreadTokenUsageUpdatedNotification }
   | { method: "turn/started"; params: TurnStartedNotification }
   | { method: "turn/completed"; params: TurnCompletedNotification }
   | { method: "turn/plan/updated"; params: TurnPlanUpdatedNotification }
@@ -436,6 +463,7 @@ export function isServerNotification(value: unknown): value is ServerNotificatio
   const candidate = value as Record<string, unknown>
   if (typeof candidate.method !== "string" || "id" in candidate) return false
   return candidate.method === "thread/started"
+    || candidate.method === "thread/tokenUsage/updated"
     || candidate.method === "turn/started"
     || candidate.method === "turn/completed"
     || candidate.method === "turn/plan/updated"

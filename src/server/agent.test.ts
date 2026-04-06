@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { AgentCoordinator, buildAttachmentHintText, buildPromptText, normalizeClaudeStreamMessage } from "./agent"
+import {
+  AgentCoordinator,
+  buildAttachmentHintText,
+  buildPromptText,
+  maxClaudeContextWindowFromModelUsage,
+  normalizeClaudeStreamMessage,
+  normalizeClaudeUsageSnapshot,
+} from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 
@@ -98,6 +105,43 @@ describe("normalizeClaudeStreamMessage", () => {
     expect(entries[0]?.kind).toBe("result")
     if (entries[0]?.kind !== "result") throw new Error("unexpected entry")
     expect(entries[0].durationMs).toBe(3210)
+  })
+
+  test("normalizes Claude usage snapshots from SDK usage payloads", () => {
+    const snapshot = normalizeClaudeUsageSnapshot({
+      input_tokens: 4,
+      cache_creation_input_tokens: 2715,
+      cache_read_input_tokens: 21144,
+      output_tokens: 679,
+      tool_uses: 2,
+      duration_ms: 654,
+    }, 200_000)
+
+    expect(snapshot).toEqual({
+      usedTokens: 24_542,
+      inputTokens: 23_863,
+      cachedInputTokens: 21_144,
+      outputTokens: 679,
+      lastUsedTokens: 24_542,
+      lastInputTokens: 23_863,
+      lastCachedInputTokens: 21_144,
+      lastOutputTokens: 679,
+      toolUses: 2,
+      durationMs: 654,
+      maxTokens: 200_000,
+      compactsAutomatically: false,
+    })
+  })
+
+  test("reads the max Claude context window from modelUsage", () => {
+    expect(maxClaudeContextWindowFromModelUsage({
+      "claude-opus-4-6": {
+        contextWindow: 200_000,
+      },
+      "claude-opus-4-6[1m]": {
+        contextWindow: 1_000_000,
+      },
+    })).toBe(1_000_000)
   })
 })
 

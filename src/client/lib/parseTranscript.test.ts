@@ -113,6 +113,25 @@ describe("processTranscriptMessages", () => {
     expect(messages[0].attachments?.[0]?.relativePath).toBe("./.kanna/uploads/spec.pdf")
   })
 
+  test("preserves context window update entries", () => {
+    const messages = processTranscriptMessages([
+      entry({
+        kind: "context_window_updated",
+        usage: {
+          usedTokens: 126,
+          totalProcessedTokens: 11_839,
+          maxTokens: 258_400,
+          compactsAutomatically: true,
+        },
+      }),
+    ])
+
+    expect(messages[0]?.kind).toBe("context_window_updated")
+    if (messages[0]?.kind !== "context_window_updated") throw new Error("unexpected message")
+    expect(messages[0].usage.maxTokens).toBe(258_400)
+    expect(messages[0].usage.compactsAutomatically).toBe(true)
+  })
+
   test("preserves structured Claude ask-user-question results when a later echoed tool result arrives", () => {
     const messages = processTranscriptMessages([
       entry({

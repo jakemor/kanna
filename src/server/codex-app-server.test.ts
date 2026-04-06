@@ -181,6 +181,94 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBeNull()
   })
 
+  test("maps thread token usage updates into context window transcript entries", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-usage" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { turn: { id: "turn-usage", status: "completed", error: null } },
+        })
+        child.writeServerMessage({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: "thread-usage",
+            turnId: "turn-usage",
+            tokenUsage: {
+              total: {
+                inputTokens: 11_833,
+                cachedInputTokens: 3456,
+                outputTokens: 6,
+                reasoningOutputTokens: 0,
+                totalTokens: 11_839,
+              },
+              last: {
+                inputTokens: 120,
+                cachedInputTokens: 0,
+                outputTokens: 6,
+                reasoningOutputTokens: 0,
+                totalTokens: 126,
+              },
+              modelContextWindow: 258_400,
+            },
+          },
+        })
+        child.writeServerMessage({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-usage",
+            turn: { id: "turn-usage", status: "completed", error: null },
+          },
+        })
+      }
+    })
+
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => process as never,
+    })
+
+    await manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken: null,
+    })
+
+    const turn = await manager.startTurn({
+      chatId: "chat-1",
+      model: "gpt-5.4",
+      content: "Hello",
+      planMode: false,
+      onToolRequest: async () => ({}),
+    })
+
+    const events = await collectStream(turn.stream)
+    const usageEvent = events.find((event) => event.type === "transcript" && event.entry.kind === "context_window_updated")
+
+    expect(usageEvent).toBeDefined()
+    if (!usageEvent || usageEvent.type !== "transcript" || usageEvent.entry.kind !== "context_window_updated") {
+      throw new Error("missing usage event")
+    }
+
+    expect(usageEvent.entry.usage).toMatchObject({
+      usedTokens: 126,
+      totalProcessedTokens: 11_839,
+      maxTokens: 258_400,
+      inputTokens: 120,
+      cachedInputTokens: 0,
+      outputTokens: 6,
+      reasoningOutputTokens: 0,
+      lastUsedTokens: 126,
+      compactsAutomatically: true,
+    })
+  })
+
   test("generateStructured returns the final assistant JSON and stops the transient session", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {

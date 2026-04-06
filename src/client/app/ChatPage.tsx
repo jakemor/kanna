@@ -384,7 +384,7 @@ export function ChatPage() {
         <ScrollArea
           ref={state.scrollRef}
           onScroll={state.updateScrollState}
-          className="flex-1 min-h-0 px-4 scroll-pt-[72px]"
+          className="flex-1 min-h-0 px-3 scroll-pt-[72px]"
         >
           {state.messages.length === 0 ? <div style={{ height: state.transcriptPaddingBottom }} aria-hidden="true" /> : null}
           {state.messages.length > 0 ? (
@@ -416,11 +416,11 @@ export function ChatPage() {
 
         {shouldShowTranscriptToc ? (
           <div
-            className="absolute right-4 z-20"
+            className="absolute -mt-1 right-3 border border-border/0 border-[1px] z-20 bottom-0 overflow-y-auto pb-[110px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             style={{ top: CHAT_NAVBAR_OFFSET_PX }}
           >
             <div
-              className=" px-1 backdrop-blur-md"
+              className=" pl-1 backdrop-blur-md"
               data-testid="transcript-toc"
             >
  
@@ -429,7 +429,7 @@ export function ChatPage() {
                   <button
                     key={item.id}
                     type="button"
-                    className="flex max-w-[175px] items-center justify-end gap-1 rounded-xl px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    className="flex max-w-[170px] items-center justify-end gap-1 rounded-xl px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                     onClick={() => {
                       const container = state.scrollRef.current
                       const target = document.getElementById(`msg-${item.id}`)
@@ -536,6 +536,7 @@ export function ChatPage() {
             projectId={projectId}
             activeProvider={state.runtime?.provider ?? null}
             availableProviders={state.availableProviders}
+            transcriptEntries={state.chatSnapshot?.messages ?? []}
           />
         </div>
       </div>

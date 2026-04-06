@@ -120,6 +120,13 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           status: entry.status,
         })
         break
+      case "context_window_updated":
+        messages.push({
+          ...createBaseMessage(entry),
+          kind: "context_window_updated",
+          usage: entry.usage,
+        })
+        break
       case "compact_boundary":
         messages.push({
           ...createBaseMessage(entry),

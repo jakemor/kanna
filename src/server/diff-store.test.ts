@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry, DiffStore } from "./diff-store"
+import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug } from "./diff-store"
 
 async function run(command: string[], cwd: string) {
   const process = Bun.spawn(command, {
@@ -71,6 +71,7 @@ describe("DiffStore", () => {
       status: "no_repo",
       branchName: undefined,
       files: [],
+      branchHistory: { entries: [] },
     })
   })
 
@@ -235,6 +236,36 @@ describe("DiffStore", () => {
   test("appendGitIgnoreEntry does not duplicate an existing identical entry", () => {
     expect(appendGitIgnoreEntry("scratch.log\n", "scratch.log")).toBe("scratch.log\n")
     expect(appendGitIgnoreEntry("scratch.log", "scratch.log")).toBe("scratch.log\n")
+  })
+
+  test("extractGitHubRepoSlug supports common remote URL formats", () => {
+    expect(extractGitHubRepoSlug("git@github.com:acme/repo.git")).toBe("acme/repo")
+    expect(extractGitHubRepoSlug("ssh://git@github.com/acme/repo.git")).toBe("acme/repo")
+    expect(extractGitHubRepoSlug("https://github.com/acme/repo.git")).toBe("acme/repo")
+    expect(extractGitHubRepoSlug("https://gitlab.com/acme/repo.git")).toBeNull()
+  })
+
+  test("refreshSnapshot includes recent branch history with tags and github URLs", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "Initial commit"], repoRoot)
+    await run(["git", "tag", "v1.0.0"], repoRoot)
+    await run(["git", "remote", "add", "origin", "git@github.com:acme/repo.git"], repoRoot)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("chat-1", repoRoot)
+
+    const snapshot = store.getSnapshot("chat-1")
+    expect(snapshot.branchHistory?.entries).toHaveLength(1)
+    expect(snapshot.branchHistory?.entries[0]).toMatchObject({
+      summary: "Initial commit",
+      authorName: "Kanna",
+      tags: ["v1.0.0"],
+      githubUrl: expect.stringContaining("https://github.com/acme/repo/commit/"),
+    })
   })
 
   test("ignoreFile rejects tracked files", async () => {

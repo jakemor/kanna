@@ -477,11 +477,26 @@ export interface ChatDiffFile {
   size?: number
 }
 
+export interface ChatBranchHistoryEntry {
+  sha: string
+  summary: string
+  description: string
+  authorName?: string
+  authoredAt: string
+  tags: string[]
+  githubUrl?: string
+}
+
+export interface ChatBranchHistorySnapshot {
+  entries: ChatBranchHistoryEntry[]
+}
+
 export interface ChatDiffSnapshot {
   status: "unknown" | "ready" | "no_repo"
   branchName?: string
   hasUpstream?: boolean
   files: ChatDiffFile[]
+  branchHistory?: ChatBranchHistorySnapshot
 }
 
 export type DiffCommitMode = "commit_and_push" | "commit_only"

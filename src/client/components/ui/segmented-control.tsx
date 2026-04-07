@@ -60,7 +60,7 @@ export function SegmentedControl<T extends string>({
             aria-pressed={isActive}
             className={cn(
               "rounded-[4px] border transition-colors",
-              icon ? "grid grid-cols-[auto_auto] items-center gap-2" : "inline-flex items-center gap-1.5",
+              icon ? "grid grid-cols-[auto_auto] items-center gap-2" : "inline-flex items-center",
               sizeClasses[size],
               isActive
                 ? "bg-white dark:bg-muted text-slate-900 dark:text-slate-200 border-slate-300 dark:border-white/10 bg-slate-200 "

@@ -1,7 +1,7 @@
 import { PatchDiff } from "@pierre/diffs/react"
-import { Ban, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Ellipsis, Rows3, Trash2, WrapText, X } from "lucide-react"
+import { Ban, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Ellipsis, Minus, Rows3, Trash2, WrapText, X } from "lucide-react"
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
-import type { ChatAttachment, ChatDiffSnapshot, DiffCommitMode, DiffCommitResult } from "../../../shared/types"
+import type { ChatAttachment, ChatBranchHistoryEntry, ChatDiffSnapshot, DiffCommitMode, DiffCommitResult } from "../../../shared/types"
 import { useStickyState } from "../../hooks/useStickyState"
 import { cn } from "../../lib/utils"
 import { useDiffCommitStore } from "../../stores/diffCommitStore"
@@ -11,11 +11,13 @@ import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { Button } from "../ui/button"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu"
 import { Input } from "../ui/input"
+import { SegmentedControl } from "../ui/segmented-control"
 import { Textarea } from "../ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 type DiffRenderMode = "unified" | "split"
 type DiffFile = ChatDiffSnapshot["files"][number]
+type SidebarViewMode = "changes" | "history"
 const EMPTY_CHECKED_PATHS: Record<string, boolean> = {}
 
 function getDiffPreviewAttachment(projectId: string | null, file: DiffFile): ChatAttachment | null {
@@ -110,28 +112,116 @@ function IconButton(props: {
 
 function StageCheckbox({
   checked,
+  mixed = false,
+  label,
+  className,
   onClick,
 }: {
   checked: boolean
+  mixed?: boolean
+  label?: string
+  className?: string
   onClick: () => void
 }) {
   return (
     <button
       type="button"
-      aria-label={checked ? "Exclude file from commit" : "Include file in commit"}
-      aria-pressed={checked}
+      aria-label={label ?? (checked ? "Exclude file from commit" : "Include file in commit")}
+      aria-checked={mixed ? "mixed" : checked}
+      aria-pressed={mixed ? "mixed" : checked}
       onClick={(event) => {
         event.stopPropagation()
         onClick()
       }}
       className={cn(
         "flex size-4.5 shrink-0 items-center justify-center rounded border transition-colors",
-        checked
+        checked || mixed
           ? "border-foreground bg-foreground text-background"
-          : "border-border bg-background text-transparent"
+          : "border-border bg-background text-transparent",
+        className
       )}
     >
-      {checked ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
+      {mixed
+        ? <Minus className="h-3 w-3" strokeWidth={3} />
+        : checked
+          ? <Check className="h-3 w-3" strokeWidth={3} />
+          : null}
+    </button>
+  )
+}
+
+function formatRelativeTime(isoTimestamp: string) {
+  const timestamp = Date.parse(isoTimestamp)
+  if (!Number.isFinite(timestamp)) {
+    return ""
+  }
+
+  const diffMs = timestamp - Date.now()
+  const minute = 60_000
+  const hour = 60 * minute
+  const day = 24 * hour
+  const week = 7 * day
+  const month = 30 * day
+  const year = 365 * day
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" })
+  const absoluteDiff = Math.abs(diffMs)
+
+  if (absoluteDiff < hour) {
+    return formatter.format(Math.round(diffMs / minute), "minute")
+  }
+  if (absoluteDiff < day) {
+    return formatter.format(Math.round(diffMs / hour), "hour")
+  }
+  if (absoluteDiff < week) {
+    return formatter.format(Math.round(diffMs / day), "day")
+  }
+  if (absoluteDiff < month) {
+    return formatter.format(Math.round(diffMs / week), "week")
+  }
+  if (absoluteDiff < year) {
+    return formatter.format(Math.round(diffMs / month), "month")
+  }
+  return formatter.format(Math.round(diffMs / year), "year")
+}
+
+function CommitHistoryRow({ entry }: { entry: ChatBranchHistoryEntry }) {
+  const relativeTime = formatRelativeTime(entry.authoredAt)
+  const isClickable = Boolean(entry.githubUrl)
+  return (
+    <button
+      type="button"
+      disabled={!isClickable}
+      onClick={() => {
+        if (!entry.githubUrl || typeof window === "undefined") return
+        window.open(entry.githubUrl, "_blank", "noopener,noreferrer")
+      }}
+      className={cn(
+        "flex w-full items-start gap-3 rounded-lg border border-border bg-background px-3 py-2 text-left transition-colors",
+        isClickable ? "hover:bg-accent" : "cursor-default opacity-60"
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-foreground">{entry.summary}</div>
+        {entry.description ? (
+          <div className="mt-1 line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">
+            {entry.description}
+          </div>
+        ) : null}
+        <div className="mt-1 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+          {entry.authorName ? <span className="truncate">{entry.authorName}</span> : null}
+          {entry.authorName && relativeTime ? <span aria-hidden="true">•</span> : null}
+          {relativeTime ? <span>{relativeTime}</span> : null}
+        </div>
+      </div>
+      {entry.tags.length > 0 ? (
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          {entry.tags.map((tag) => (
+            <span key={tag} className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+              {tag}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </button>
   )
 }
@@ -360,9 +450,11 @@ function RightSidebarImpl({
   onWrapLinesChange,
   onClose,
 }: RightSidebarProps) {
+  const hasChanges = diffs.files.length > 0
   const [collapsedPaths, setCollapsedPaths] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(diffs.files.map((file) => [file.path, true]))
   )
+  const [viewMode, setViewMode] = useState<SidebarViewMode>(() => (hasChanges ? "changes" : "history"))
   const [summary, setSummary] = useState("")
   const [description, setDescription] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
@@ -373,6 +465,8 @@ function RightSidebarImpl({
   const checkedPaths = useDiffCommitStore((store) => (projectId ? (store.checkedPathsByProjectId[projectId] ?? EMPTY_CHECKED_PATHS) : EMPTY_CHECKED_PATHS))
   const reconcileCheckedPaths = useDiffCommitStore((store) => store.reconcileProject)
   const setCheckedPath = useDiffCommitStore((store) => store.setChecked)
+  const setAllCheckedPaths = useDiffCommitStore((store) => store.setAllChecked)
+  const previousHasChangesRef = useRef(hasChanges)
 
   useEffect(() => {
     setCollapsedPaths((current) => {
@@ -395,15 +489,28 @@ function RightSidebarImpl({
     reconcileCheckedPaths(projectId, filePaths)
   }, [filePaths, filePathsKey, projectId, reconcileCheckedPaths])
 
+  useEffect(() => {
+    const previousHasChanges = previousHasChangesRef.current
+    if (previousHasChanges !== hasChanges) {
+      setViewMode(hasChanges ? "changes" : "history")
+      previousHasChangesRef.current = hasChanges
+      return
+    }
+    previousHasChangesRef.current = hasChanges
+  }, [hasChanges])
+
   const selectedPaths = useMemo(
     () => diffs.files.filter((file) => checkedPaths[file.path] ?? true).map((file) => file.path),
     [checkedPaths, diffs.files]
   )
   const selectedCount = selectedPaths.length
+  const allSelected = diffs.files.length > 0 && selectedCount === diffs.files.length
+  const someSelected = selectedCount > 0 && selectedCount < diffs.files.length
   const trimmedSummary = summary.trim()
   const hasSummary = trimmedSummary.length > 0
   const isCommitting = commitModeInFlight !== null
   const isBusy = isGenerating || isCommitting
+  const branchHistory = diffs.branchHistory?.entries ?? []
   const canGenerate = diffs.status === "ready"
     && selectedCount > 0
     && !isBusy
@@ -457,51 +564,95 @@ function RightSidebarImpl({
   }
 
   return (
-    <div className="h-full min-h-0 border-l border-border bg-background md:min-w-[300px]">
+    <div className="h-full min-h-0 border-l border-border bg-background md:min-w-[370px]">
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <div className="truncate text-xs text-muted-foreground">Diffs</div>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <IconButton
-              label="Unified diff"
-              active={diffRenderMode === "unified"}
-              onClick={() => onDiffRenderModeChange("unified")}
-            >
-              <Rows3 className="h-4 w-4" />
-            </IconButton>
-            <IconButton
-              label="Side-by-side diff"
-              active={diffRenderMode === "split"}
-              onClick={() => onDiffRenderModeChange("split")}
-            >
-              <Columns2 className="h-4 w-4" />
-            </IconButton>
-            <IconButton
-              label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
-              active={wrapLines}
-              onClick={() => onWrapLinesChange(!wrapLines)}
-            >
-              <WrapText className="h-4 w-4" />
-            </IconButton>
-            <button
-              type="button"
-              aria-label="Close right sidebar"
-              onClick={onClose}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
+         
         </div>
-
         <div className="relative min-h-0 flex-1">
+          <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] bg-gradient-to-b from-background to-transparent">
+            <div className="relative h-[40px]  flex min-w-0 items-center justify-center gap-[13px]">
+              <div className="flex min-w-0 flex-1 items-center justify-between gap-[13px] relative">
+                {viewMode === "changes" ? (
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
+                    <StageCheckbox
+                      checked={allSelected}
+                      mixed={someSelected}
+                      label={
+                        someSelected
+                          ? "Select all files for commit"
+                          : allSelected
+                            ? "Unselect all files from commit"
+                            : "Select all files for commit"
+                      }
+                      onClick={() => {
+                        if (!projectId || diffs.files.length === 0) return
+                        setAllCheckedPaths(projectId, filePaths, someSelected ? true : !allSelected)
+                      }}
+                    />
+                    <span>{selectedCount} files</span>
+                  </div>
+                ) : <div />}
+                <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2">
+                  <div className="pointer-events-auto">
+                    <SegmentedControl
+                      value={viewMode}
+                      onValueChange={(value) => setViewMode(value)}
+                      size="sm"
+                      optionClassName="flex-1 justify-center"
+                      options={[
+                        { value: "changes", label: "Changes"},
+                        { value: "history", label: "History" },
+                      ]}
+                    />
+                  </div>
+                </div>
+                {viewMode === "changes" ? (
+                  <div className="flex items-center gap-1">
+                    <IconButton
+                      label="Unified diff"
+                      active={diffRenderMode === "unified"}
+                      onClick={() => onDiffRenderModeChange("unified")}
+                    >
+                      <Rows3 className="h-4 w-4" />
+                    </IconButton>
+                    <IconButton
+                      label="Side-by-side diff"
+                      active={diffRenderMode === "split"}
+                      onClick={() => onDiffRenderModeChange("split")}
+                    >
+                      <Columns2 className="h-4 w-4" />
+                    </IconButton>
+                    <IconButton
+                      label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
+                      active={wrapLines}
+                      onClick={() => onWrapLinesChange(!wrapLines)}
+                    >
+                      <WrapText className="h-4 w-4" />
+                    </IconButton>
+                  </div>
+                ) : <div />}
+              </div>
+            </div>
+          </div>
           <div ref={scrollContainerRef} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
             {diffs.status === "no_repo" ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
                 <p className="text-sm text-muted-foreground">Open a git repo to view current file diffs.</p>
               </div>
+            ) : viewMode === "history" ? (
+              branchHistory.length === 0 ? (
+                <div className="flex h-full items-center justify-center px-6 py-3 text-center">
+                  <p className="text-sm text-muted-foreground">No recent commits on {diffs.branchName ?? "this branch"}.</p>
+                </div>
+              ) : (
+                <div className="space-y-1.5 p-1.5">
+                  {branchHistory.map((entry) => <CommitHistoryRow key={entry.sha} entry={entry} />)}
+                </div>
+              )
             ) : diffs.files.length === 0 ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
                 <p className="text-sm text-muted-foreground">No file changes.</p>
@@ -539,7 +690,9 @@ function RightSidebarImpl({
               </div>
             )}
           </div>
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-3 pt-14 overflow-y-auto [scrollbar-gutter:stable]">
+          
+          {viewMode === "changes" ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-3 pt-14 overflow-y-auto [scrollbar-gutter:stable]">
             <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
             <div className="pointer-events-auto relative mx-auto max-w-[550px]">
               <div className="space-y-0 rounded-xl bg-background">
@@ -559,14 +712,14 @@ function RightSidebarImpl({
                   onKeyDown={handleCommitKeyDown}
                   placeholder="Description"
                   rows={3}
-                  className="-mt-px rounded-t-none rounded-b-none px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border"
+                  className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border mb-2"
                   disabled={isBusy || diffs.status !== "ready"}
                 />
                 <ContextMenu>
                   <ContextMenuTrigger asChild>
                     <Button
                       type="button"
-                      className="-mt-px w-full rounded-t-none rounded-b-xl"
+                      className="-mt-px w-full rounded-xl "
                       disabled={hasSummary ? !canCommit : !canGenerate}
                       onClick={() => {
                         if (hasSummary) {
@@ -603,7 +756,8 @@ function RightSidebarImpl({
                 </ContextMenu>
               </div>
             </div>
-          </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

@@ -57,7 +57,7 @@ export function createWsRouter({
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
   const resolvedDiffStore = diffStore ?? {
-    getSnapshot: () => ({ status: "unknown", branchName: undefined, hasUpstream: undefined, files: [] as const }),
+    getSnapshot: () => ({ status: "unknown", branchName: undefined, hasUpstream: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
     refreshSnapshot: async () => false,
     generateCommitMessage: async () => ({ subject: "Update selected files", body: "", usedFallback: true, failureMessage: null }),
     commitFiles: async () => ({ ok: true, mode: "commit_only" as const, branchName: undefined, pushed: false, snapshotChanged: false }),

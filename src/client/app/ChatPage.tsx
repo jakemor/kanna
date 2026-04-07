@@ -19,6 +19,7 @@ import { cn } from "../lib/utils"
 import { deriveLatestContextWindowSnapshot, type ContextWindowSnapshot } from "../lib/contextWindow"
 import {
   DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
+  RIGHT_SIDEBAR_MIN_WIDTH_PX,
   RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   useRightSidebarStore,
 } from "../stores/rightSidebarStore"
@@ -1026,8 +1027,11 @@ export function ChatPage() {
     if (!Number.isFinite(size)) {
       return rightSidebarLayout.size
     }
-
-    return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size)
+    const layoutWidth = layoutRootRef.current?.clientWidth ?? 0
+    const minPercentFromWidth = layoutWidth > 0
+      ? (RIGHT_SIDEBAR_MIN_WIDTH_PX / layoutWidth) * 100
+      : RIGHT_SIDEBAR_MIN_SIZE_PERCENT
+    return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, minPercentFromWidth, size)
   }
 
   const handleTranscriptDragEnter = useCallback((event: React.DragEvent) => {

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { ChatDiffFile, ChatDiffSnapshot, DiffCommitMode, DiffCommitResult } from "../shared/types"
+import type { ChatBranchHistoryEntry, ChatBranchHistorySnapshot, ChatDiffFile, ChatDiffSnapshot, DiffCommitMode, DiffCommitResult } from "../shared/types"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
 import { inferProjectFileContentType } from "./uploads"
 
@@ -10,6 +10,7 @@ interface StoredChatDiffState {
   branchName?: string
   hasUpstream?: boolean
   files: ChatDiffFile[]
+  branchHistory: ChatBranchHistorySnapshot
 }
 
 function createEmptyState(): StoredChatDiffState {
@@ -18,6 +19,7 @@ function createEmptyState(): StoredChatDiffState {
     branchName: undefined,
     hasUpstream: undefined,
     files: [],
+    branchHistory: { entries: [] },
   }
 }
 
@@ -29,6 +31,20 @@ function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChat
   if (left.branchName !== right.branchName) return false
   if (left.hasUpstream !== right.hasUpstream) return false
   if (left.files.length !== right.files.length) return false
+  if (left.branchHistory.entries.length !== right.branchHistory.entries.length) return false
+  const sameHistory = left.branchHistory.entries.every((entry, index) => {
+    const other = right.branchHistory.entries[index]
+    return Boolean(other)
+      && entry.sha === other.sha
+      && entry.summary === other.summary
+      && entry.description === other.description
+      && entry.authorName === other.authorName
+      && entry.authoredAt === other.authoredAt
+      && entry.githubUrl === other.githubUrl
+      && entry.tags.length === other.tags.length
+      && entry.tags.every((tag, tagIndex) => tag === other.tags[tagIndex])
+  })
+  if (!sameHistory) return false
   return left.files.every((file, index) => {
     const other = right.files[index]
     return Boolean(other)
@@ -158,6 +174,95 @@ async function getBranchName(repoRoot: string) {
 async function hasUpstreamBranch(repoRoot: string) {
   const upstream = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], repoRoot)
   return upstream.exitCode === 0 && upstream.stdout.trim().length > 0
+}
+
+async function getOriginRemoteUrl(repoRoot: string) {
+  const result = await runGit(["remote", "get-url", "origin"], repoRoot)
+  if (result.exitCode !== 0) {
+    return null
+  }
+  const remoteUrl = result.stdout.trim()
+  return remoteUrl.length > 0 ? remoteUrl : null
+}
+
+export function extractGitHubRepoSlug(remoteUrl: string | null | undefined) {
+  if (!remoteUrl) return null
+
+  const sshMatch = /^git@github\.com:(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
+  if (sshMatch?.groups?.owner && sshMatch.groups.repo) {
+    return `${sshMatch.groups.owner}/${sshMatch.groups.repo}`
+  }
+
+  const sshProtocolMatch = /^ssh:\/\/git@github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
+  if (sshProtocolMatch?.groups?.owner && sshProtocolMatch.groups.repo) {
+    return `${sshProtocolMatch.groups.owner}/${sshProtocolMatch.groups.repo}`
+  }
+
+  const httpsMatch = /^https?:\/\/github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
+  if (httpsMatch?.groups?.owner && httpsMatch.groups.repo) {
+    return `${httpsMatch.groups.owner}/${httpsMatch.groups.repo}`
+  }
+
+  return null
+}
+
+function buildGitHubCommitUrl(remoteUrl: string | null, sha: string) {
+  const slug = extractGitHubRepoSlug(remoteUrl)
+  return slug ? `https://github.com/${slug}/commit/${sha}` : undefined
+}
+
+async function listCommitTags(repoRoot: string, sha: string) {
+  const result = await runGit(["tag", "--points-at", sha], repoRoot)
+  if (result.exitCode !== 0) {
+    return []
+  }
+  return result.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right))
+}
+
+async function getBranchHistory(args: {
+  repoRoot: string
+  ref: string
+  limit: number
+}): Promise<ChatBranchHistorySnapshot> {
+  const logResult = await runGit(
+    [
+      "log",
+      "--max-count",
+      String(args.limit),
+      "--pretty=format:%H%x1f%s%x1f%b%x1f%an%x1f%aI%x1e",
+      args.ref,
+    ],
+    args.repoRoot
+  )
+
+  if (logResult.exitCode !== 0) {
+    throw new Error(logResult.stderr.trim() || "Failed to read git log")
+  }
+
+  const remoteUrl = await getOriginRemoteUrl(args.repoRoot)
+  const entries: ChatBranchHistoryEntry[] = []
+
+  for (const record of logResult.stdout.split("\u001e")) {
+    const trimmed = record.trim()
+    if (!trimmed) continue
+    const [sha, summary, description, authorName, authoredAt] = trimmed.split("\u001f")
+    if (!sha || !summary || !authoredAt) continue
+    entries.push({
+      sha,
+      summary,
+      description: (description ?? "").trim(),
+      authorName: authorName?.trim() || undefined,
+      authoredAt,
+      tags: await listCommitTags(args.repoRoot, sha),
+      githubUrl: buildGitHubCommitUrl(remoteUrl, sha),
+    })
+  }
+
+  return { entries }
 }
 
 function parseStatusPaths(output: string): DirtyPathEntry[] {
@@ -383,6 +488,12 @@ export class DiffStore {
       branchName: state.branchName,
       hasUpstream: state.hasUpstream,
       files: [...state.files],
+      branchHistory: {
+        entries: state.branchHistory.entries.map((entry) => ({
+          ...entry,
+          tags: [...entry.tags],
+        })),
+      },
     }
   }
 
@@ -394,6 +505,7 @@ export class DiffStore {
         branchName: undefined,
         hasUpstream: undefined,
         files: [],
+        branchHistory: { entries: [] },
       } satisfies StoredChatDiffState
       const changed = !snapshotsEqual(this.states.get(chatId), nextState)
       this.states.set(chatId, nextState)
@@ -403,11 +515,19 @@ export class DiffStore {
     const files = await computeCurrentFiles(repo.repoRoot, repo.baseCommit)
     const branchName = await getBranchName(repo.repoRoot)
     const hasUpstream = await hasUpstreamBranch(repo.repoRoot)
+    const branchHistory = repo.baseCommit
+      ? await getBranchHistory({
+          repoRoot: repo.repoRoot,
+          ref: branchName ?? "HEAD",
+          limit: 20,
+        })
+      : { entries: [] }
     const nextState = {
       status: "ready",
       branchName,
       hasUpstream,
       files,
+      branchHistory,
     } satisfies StoredChatDiffState
     const changed = !snapshotsEqual(this.states.get(chatId), nextState)
     this.states.set(chatId, nextState)

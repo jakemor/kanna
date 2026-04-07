@@ -55,6 +55,22 @@ function sameDiffs(left: ChatSnapshot["diffs"] | null | undefined, right: ChatSn
   if (left.status !== right.status) return false
   if (left.branchName !== right.branchName) return false
   if (left.hasUpstream !== right.hasUpstream) return false
+  const leftHistory = left.branchHistory?.entries ?? []
+  const rightHistory = right.branchHistory?.entries ?? []
+  if (leftHistory.length !== rightHistory.length) return false
+  const sameBranchHistory = leftHistory.every((entry, index) => {
+    const other = rightHistory[index]
+    return Boolean(other)
+      && entry.sha === other.sha
+      && entry.summary === other.summary
+      && entry.description === other.description
+      && entry.authorName === other.authorName
+      && entry.authoredAt === other.authoredAt
+      && entry.githubUrl === other.githubUrl
+      && entry.tags.length === other.tags.length
+      && entry.tags.every((tag, tagIndex) => tag === other.tags[tagIndex])
+  })
+  if (!sameBranchHistory) return false
   if (left.files.length !== right.files.length) return false
   return left.files.every((file, index) => {
     const other = right.files[index]

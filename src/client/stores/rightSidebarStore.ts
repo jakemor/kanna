@@ -15,7 +15,7 @@ interface RightSidebarState {
 
 export const RIGHT_SIDEBAR_MIN_SIZE_PERCENT = 20
 export const DEFAULT_RIGHT_SIDEBAR_SIZE = 30
-export const RIGHT_SIDEBAR_MIN_WIDTH_PX = 300
+export const RIGHT_SIDEBAR_MIN_WIDTH_PX = 370
 
 function clampSize(size: number) {
   if (!Number.isFinite(size)) return DEFAULT_RIGHT_SIDEBAR_SIZE

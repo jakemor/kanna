@@ -169,7 +169,7 @@ describe("RightSidebar", () => {
     ))
 
     expect(markup).toContain("Publish Branch")
-    expect(markup).not.toContain("Open PR")
+    expect(markup).not.toContain("PR")
   })
 
   test("shows open pr for a published non-default branch", () => {
@@ -208,7 +208,7 @@ describe("RightSidebar", () => {
     ))
 
     expect(markup).toContain("Fetch")
-    expect(markup).toContain("Open PR")
+    expect(markup).toContain("PR")
   })
 
   test("ignores only untracked files", () => {

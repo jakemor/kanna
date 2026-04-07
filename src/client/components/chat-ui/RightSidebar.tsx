@@ -877,7 +877,7 @@ function RightSidebarImpl({
                     className="h-7 gap-1.5 px-2 text-xs hover:!bg-transparent hover:!border-border/0"
                   >
                     <GitPullRequest className="h-3.5 w-3.5" />
-                    <span>Open PR</span>
+                    <span>PR</span>
                   </Button>
                 ) : null}
               </div>

@@ -1,6 +1,6 @@
 <p align="center">
   <img src="assets/icon.png" alt="Kanna" width="80" />
-</p> 
+</p>
 
 <h1 align="center">Kanna</h1>
 
@@ -82,7 +82,7 @@ Local File System (~/.kanna/data/, project dirs)
 
 - [Bun](https://bun.sh) v1.3.5+
 - A working [Claude Code](https://docs.anthropic.com/en/docs/claude-code) environment
-- *(Optional)* [Codex CLI](https://github.com/openai/codex) for Codex provider support
+- _(Optional)_ [Codex CLI](https://github.com/openai/codex) for Codex provider support
 
 Embedded terminal support uses Bun's native PTY APIs and currently works on macOS/Linux.
 
@@ -244,6 +244,10 @@ Event logs are append-only JSONL. On startup, Kanna replays the log tail after t
    <img alt="Star History Chart" src="https://api.star-history.com/image?repos=jakemor/kanna&type=date&legend=top-left" />
  </picture>
 </a>
+
+## Contributing
+
+Contributions are welcome! Feel free to open PRs
 
 ## License
 

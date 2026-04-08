@@ -76,6 +76,19 @@ export function createWsRouter({
     readPatch: async () => ({ patch: "" }),
   }
 
+  function getProtectedChatIds() {
+    return new Set([
+      ...agent.getActiveStatuses().keys(),
+      ...agent.getDrainingChatIds().values(),
+    ])
+  }
+
+  async function maybePruneStaleEmptyChats() {
+    await store.pruneStaleEmptyChats?.({
+      activeChatIds: getProtectedChatIds(),
+    })
+  }
+
   function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
     if (topic.type === "sidebar") {
       return {
@@ -179,7 +192,10 @@ export function createWsRouter({
     }
   }
 
-  function pushSnapshots(ws: ServerWebSocket<ClientState>) {
+  async function pushSnapshots(ws: ServerWebSocket<ClientState>, options?: { skipPrune?: boolean }) {
+    if (!options?.skipPrune) {
+      await maybePruneStaleEmptyChats()
+    }
     const snapshotSignatures = ensureSnapshotSignatures(ws)
     for (const [id, topic] of ws.data.subscriptions.entries()) {
       const envelope = createEnvelope(id, topic)
@@ -193,9 +209,10 @@ export function createWsRouter({
     }
   }
 
-  function broadcastSnapshots() {
+  async function broadcastSnapshots() {
+    await maybePruneStaleEmptyChats()
     for (const ws of sockets) {
-      pushSnapshots(ws)
+      await pushSnapshots(ws, { skipPrune: true })
     }
   }
 
@@ -403,7 +420,7 @@ export function createWsRouter({
           const changed = await resolvedDiffStore.refreshSnapshot(project.id, project.localPath)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           if (changed) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -415,7 +432,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -447,7 +464,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -477,7 +494,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -491,7 +508,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -504,7 +521,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -518,7 +535,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -543,7 +560,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -556,7 +573,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -569,7 +586,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            broadcastSnapshots()
+            void broadcastSnapshots()
           }
           return
         }
@@ -628,7 +645,7 @@ export function createWsRouter({
         }
       }
 
-      broadcastSnapshots()
+      await broadcastSnapshots()
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       console.error("[ws-router] command failed", {
@@ -648,7 +665,7 @@ export function createWsRouter({
       sockets.delete(ws)
     },
     broadcastSnapshots,
-    handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
+    async handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
       let parsed: unknown
       try {
         parsed = JSON.parse(String(raw))
@@ -669,12 +686,12 @@ export function createWsRouter({
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
             if (ws.data.subscriptions.has(parsed.id)) {
-              pushSnapshots(ws)
+              void pushSnapshots(ws)
             }
           })
           return
         }
-        pushSnapshots(ws)
+        await pushSnapshots(ws)
         return
       }
 
@@ -686,7 +703,7 @@ export function createWsRouter({
         return
       }
 
-      void handleCommand(ws, parsed)
+      await handleCommand(ws, parsed)
     },
     dispose() {
       agent.setBackgroundErrorReporter?.(null)

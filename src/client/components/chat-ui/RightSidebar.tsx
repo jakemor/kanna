@@ -1766,7 +1766,7 @@ function RightSidebarImpl({
                 <p className="text-sm text-muted-foreground">No file changes.</p>
               </div>
             ) : (
-              <div className="space-y-1.5 p-1.5 pb-72">
+              <div className="space-y-1.5 p-1.5 pb-10">
                 {diffs.files.map((file) => {
                   const isCollapsed = collapsedPaths[file.path] ?? true
                   const isChecked = checkedPaths[file.path] ?? true
@@ -1798,104 +1798,108 @@ function RightSidebarImpl({
                     />
                   )
                 })}
+
+                {viewMode === "changes" ? (
+                  <div className="pointer-events-none sticky inset-x-0 bottom-11 py-1 pb-6 z-30 overflow-y-auto">
+                  <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
+                  <div className="pointer-events-auto relative">
+                    <div className="space-y-0 rounded-xl  backdrop-blur-md mx-auto max-w-[700px]">
+                      <Input
+                        value={summary}
+                        onChange={(event) => {
+                          if (!projectId) return
+                          setCommitDraft(projectId, {
+                            summary: event.target.value,
+                            description,
+                          })
+                        }}
+                        onKeyDown={handleCommitKeyDown}
+                        placeholder="Commit message (override)"
+                        className="rounded-t-xl rounded-b-none px-3"
+                        disabled={isBusy || diffs.status !== "ready"}
+                      />
+                      <Textarea
+                        value={description}
+                        onChange={(event) => {
+                          if (!projectId) return
+                          setCommitDraft(projectId, {
+                            summary,
+                            description: event.target.value,
+                          })
+                        }}
+                        onKeyDown={handleCommitKeyDown}
+                        placeholder="Description"
+                        rows={3}
+                        className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border mb-2"
+                        disabled={isBusy || diffs.status !== "ready"}
+                      />
+                      <div className="w-full flex flex-row">
+                      <ContextMenu>
+                        <ContextMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            className="-mt-px w-full rounded-xl"
+                            disabled={hasSummary ? !canCommit : !canGenerate}
+                            onClick={() => {
+                              if (hasSummary) {
+                                void handleCommit(primaryCommitMode)
+                                return
+                              }
+                              void handleGenerate()
+                            }}
+                          >
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              {hasSummary ? (
+                                isCommitting ? (
+                                  <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
+                                ) : diffs.hasUpstream ? (
+                                  <Upload strokeWidth={2.5} className="size-3 shrink-0" />
+                                ) : (
+                                  <GitBranchPlus strokeWidth={2.5} className="size-3 shrink-0" />
+                                )
+                              ) : isGenerating ? (
+                                <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
+                              ) : (
+                                <PenLine strokeWidth={2.5} className="size-3 shrink-0" />
+                              )}
+                              <span className="min-w-0 truncate text-left">
+                                {hasSummary
+                                  ? (isCommitting
+                                    ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
+                                    : diffs.hasUpstream
+                                      ? <>Commit &amp; push to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
+                                      : <>Commit &amp; publish <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)
+                                  : (isGenerating
+                                    ? "Generating..."
+                                    : <>Generate message for <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)}
+                              </span>
+                            </span>
+                          </Button>
+                        </ContextMenuTrigger>
+                        {diffs.hasUpstream ? (
+                          <ContextMenuContent>
+                            <ContextMenuItem
+                              disabled={!hasSummary || !canCommit}
+                              onSelect={(event) => {
+                                event.stopPropagation()
+                                void handleCommit("commit_only")
+                              }}
+                            >
+                              Commit Only
+                            </ContextMenuItem>
+                          </ContextMenuContent>
+                        ) : null}
+                      </ContextMenu>
+                      </div>
+                    </div>
+                  </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
           
-          {viewMode === "changes" ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-3 pt-14 overflow-y-auto [scrollbar-gutter:stable]">
-            <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
-            <div className="pointer-events-auto relative mx-auto max-w-[550px]">
-              <div className="space-y-0 rounded-xl bg-background">
-                <Input
-                  value={summary}
-                  onChange={(event) => {
-                    if (!projectId) return
-                    setCommitDraft(projectId, {
-                      summary: event.target.value,
-                      description,
-                    })
-                  }}
-                  onKeyDown={handleCommitKeyDown}
-                  placeholder="Commit message (override)"
-                  className="rounded-t-xl rounded-b-none px-3"
-                  disabled={isBusy || diffs.status !== "ready"}
-                />
-                <Textarea
-                  value={description}
-                  onChange={(event) => {
-                    if (!projectId) return
-                    setCommitDraft(projectId, {
-                      summary,
-                      description: event.target.value,
-                    })
-                  }}
-                  onKeyDown={handleCommitKeyDown}
-                  placeholder="Description"
-                  rows={3}
-                  className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border mb-2"
-                  disabled={isBusy || diffs.status !== "ready"}
-                />
-                <ContextMenu>
-                  <ContextMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      className="-mt-px w-full rounded-xl"
-                      disabled={hasSummary ? !canCommit : !canGenerate}
-                      onClick={() => {
-                        if (hasSummary) {
-                          void handleCommit(primaryCommitMode)
-                          return
-                        }
-                        void handleGenerate()
-                      }}
-                    >
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        {hasSummary ? (
-                          isCommitting ? (
-                            <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
-                          ) : diffs.hasUpstream ? (
-                            <Upload strokeWidth={2.5} className="size-3 shrink-0" />
-                          ) : (
-                            <GitBranchPlus strokeWidth={2.5} className="size-3 shrink-0" />
-                          )
-                        ) : isGenerating ? (
-                          <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
-                        ) : (
-                          <PenLine strokeWidth={2.5} className="size-3 shrink-0" />
-                        )}
-                        <span className="min-w-0 truncate text-left">
-                          {hasSummary
-                            ? (isCommitting
-                              ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
-                              : diffs.hasUpstream
-                                ? <>Commit &amp; push to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
-                                : <>Commit &amp; publish <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)
-                            : (isGenerating
-                              ? "Generating..."
-                              : <>Generate message for <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)}
-                        </span>
-                      </span>
-                    </Button>
-                  </ContextMenuTrigger>
-                  {diffs.hasUpstream ? (
-                    <ContextMenuContent>
-                      <ContextMenuItem
-                        disabled={!hasSummary || !canCommit}
-                        onSelect={(event) => {
-                          event.stopPropagation()
-                          void handleCommit("commit_only")
-                        }}
-                      >
-                        Commit Only
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  ) : null}
-                </ContextMenu>
-              </div>
-            </div>
-            </div>
-          ) : null}
+          
         </div>
         <GitHubPublishModal
           open={isGitHubPublishModalOpen}

@@ -225,4 +225,64 @@ describe("EventStore", () => {
 
     expect(store.getChat("chat-1")?.unread).toBe(false)
   })
+
+  test("prunes stale empty chats after five minutes", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const staleNow = chat.createdAt + 5 * 60 * 1000
+
+    const pruned = await store.pruneStaleEmptyChats({ now: staleNow })
+
+    expect(pruned).toEqual([chat.id])
+    expect(store.getChat(chat.id)).toBeNull()
+  })
+
+  test("does not prune recent empty chats", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const pruned = await store.pruneStaleEmptyChats({ now: chat.createdAt + 5 * 60 * 1000 - 1 })
+
+    expect(pruned).toEqual([])
+    expect(store.getChat(chat.id)?.id).toBe(chat.id)
+  })
+
+  test("does not prune chats once they have transcript messages", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("user_prompt", chat.createdAt + 1, { content: "hello" }))
+
+    const pruned = await store.pruneStaleEmptyChats({ now: chat.createdAt + 5 * 60 * 1000 })
+
+    expect(pruned).toEqual([])
+    expect(store.getChat(chat.id)?.id).toBe(chat.id)
+  })
+
+  test("does not prune stale chats that are currently active", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    const pruned = await store.pruneStaleEmptyChats({
+      now: chat.createdAt + 5 * 60 * 1000,
+      activeChatIds: [chat.id],
+    })
+
+    expect(pruned).toEqual([])
+    expect(store.getChat(chat.id)?.id).toBe(chat.id)
+  })
 })

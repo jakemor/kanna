@@ -1,4 +1,4 @@
-import { Flower, Code, FolderOpen, Menu, PanelLeft, SquarePen, Terminal, GitBranch, SidebarClose, ChevronRight, ChevronLast, PanelRightClose, SquareChevronRight, PanelRight } from "lucide-react"
+import { Flower, Code, FolderOpen, Menu, PanelLeft, SquarePen, Terminal, GitBranch, PanelRight } from "lucide-react"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"

@@ -17,6 +17,7 @@ import { getProjectUploadDir } from "./paths"
 
 const MAX_UPLOAD_FILES = 10
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024
+const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
 
 export async function persistUploadedFiles(args: {
   projectId: string
@@ -99,7 +100,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const agent = new AgentCoordinator({
     store,
     onStateChange: () => {
-      router.broadcastSnapshots()
+      void router.broadcastSnapshots()
     },
   })
   router = createWsRouter({
@@ -113,6 +114,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     machineDisplayName,
     updateManager,
   })
+  const staleEmptyChatPruneInterval = setInterval(() => {
+    void router.broadcastSnapshots()
+  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -188,6 +192,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   }
 
   const shutdown = async () => {
+    clearInterval(staleEmptyChatPruneInterval)
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)
     }

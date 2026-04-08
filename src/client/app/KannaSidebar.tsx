@@ -100,8 +100,8 @@ function KannaSidebarImpl({
     [setGroupOrder]
   )
   const visibleChats = useMemo(
-    () => getVisibleSidebarChats(orderedProjectGroups, collapsedSections, expandedGroups, chatsPerProject),
-    [chatsPerProject, collapsedSections, expandedGroups, orderedProjectGroups]
+    () => getVisibleSidebarChats(orderedProjectGroups, collapsedSections, expandedGroups, chatsPerProject, nowMs),
+    [chatsPerProject, collapsedSections, expandedGroups, nowMs, orderedProjectGroups]
   )
   const visibleIndexByChatId = useMemo(
     () => new Map(visibleChats.map((entry) => [entry.chat.chatId, entry.visibleIndex])),
@@ -395,6 +395,7 @@ function KannaSidebarImpl({
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
               chatsPerProject={chatsPerProject}
+              nowMs={nowMs}
               onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {

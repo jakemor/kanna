@@ -37,13 +37,15 @@ export function formatModelLabel(modelId: string): string {
   return toTitleCase(shortModelName).replace(/^Claude\s+/i, "")
 }
 
+export const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60_000
+
 export function formatSidebarAgeLabel(lastMessageAt: number | undefined, nowMs: number): string | null {
   if (lastMessageAt === undefined) return null
 
   const deltaMs = Math.max(0, nowMs - lastMessageAt)
   const minuteMs = 60_000
   const hourMs = 60 * minuteMs
-  const dayMs = 24 * hourMs
+  const dayMs = SIDEBAR_RECENT_WINDOW_MS
   const weekMs = 7 * dayMs
 
   if (deltaMs < minuteMs) return "now"

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rename, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -19,6 +19,7 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
+const STALE_EMPTY_CHAT_MAX_AGE_MS = 5 * 60 * 1000
 interface LegacyTranscriptStats {
   hasLegacyData: boolean
   sources: Array<"snapshot" | "messages_log">
@@ -452,6 +453,41 @@ export class EventStore {
       chatId,
     }
     await this.append(this.chatsLogPath, event)
+  }
+
+  async pruneStaleEmptyChats(args?: {
+    now?: number
+    maxAgeMs?: number
+    activeChatIds?: Iterable<string>
+  }) {
+    const now = args?.now ?? Date.now()
+    const maxAgeMs = args?.maxAgeMs ?? STALE_EMPTY_CHAT_MAX_AGE_MS
+    const activeChatIds = new Set(args?.activeChatIds ?? [])
+    const prunedChatIds: string[] = []
+
+    for (const chat of this.state.chatsById.values()) {
+      if (chat.deletedAt || activeChatIds.has(chat.id)) continue
+      if (now - chat.createdAt < maxAgeMs) continue
+      if (this.getMessages(chat.id).length > 0) continue
+
+      const event: ChatEvent = {
+        v: STORE_VERSION,
+        type: "chat_deleted",
+        timestamp: now,
+        chatId: chat.id,
+      }
+      await this.append(this.chatsLogPath, event)
+
+      const transcriptPath = this.transcriptPath(chat.id)
+      await rm(transcriptPath, { force: true })
+      if (this.cachedTranscript?.chatId === chat.id) {
+        this.cachedTranscript = null
+      }
+
+      prunedChatIds.push(chat.id)
+    }
+
+    return prunedChatIds
   }
 
   async setChatProvider(chatId: string, provider: AgentProvider) {

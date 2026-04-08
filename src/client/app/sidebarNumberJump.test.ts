@@ -22,6 +22,9 @@ const KEYBINDINGS: KeybindingsSnapshot = {
   filePathDisplay: "~/.kanna/keybindings.json",
 }
 
+const nowMs = 1_000_000
+const hourMs = 60 * 60 * 1_000
+
 const PROJECT_GROUPS: SidebarProjectGroup[] = [
   {
     groupKey: "project-a",
@@ -36,6 +39,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         unread: false,
         localPath: "/tmp/project-a",
         provider: "codex",
+        lastMessageAt: nowMs - hourMs,
         hasAutomation: false,
       },
       {
@@ -47,6 +51,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         unread: false,
         localPath: "/tmp/project-a",
         provider: "codex",
+        lastMessageAt: nowMs - 2 * hourMs,
         hasAutomation: false,
       },
       {
@@ -58,6 +63,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         unread: false,
         localPath: "/tmp/project-a",
         provider: "codex",
+        lastMessageAt: nowMs - 26 * hourMs,
         hasAutomation: false,
       },
     ],
@@ -75,6 +81,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         unread: false,
         localPath: "/tmp/project-b",
         provider: "claude",
+        lastMessageAt: nowMs - 27 * hourMs,
         hasAutomation: false,
       },
       {
@@ -86,6 +93,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         unread: false,
         localPath: "/tmp/project-b",
         provider: "claude",
+        lastMessageAt: nowMs - 28 * hourMs,
         hasAutomation: false,
       },
     ],
@@ -93,8 +101,8 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
 ]
 
 describe("getVisibleSidebarChats", () => {
-  test("returns chats in visible sidebar order", () => {
-    const visibleChats = getVisibleSidebarChats(PROJECT_GROUPS, new Set(), new Set(), 2)
+  test("returns chats in visible sidebar order with 24h filtering and fallback-to-5", () => {
+    const visibleChats = getVisibleSidebarChats(PROJECT_GROUPS, new Set(), new Set(), 2, nowMs)
 
     expect(visibleChats.map((entry) => [entry.visibleIndex, entry.chat.chatId])).toEqual([
       [1, "chat-a-1"],
@@ -109,13 +117,43 @@ describe("getVisibleSidebarChats", () => {
       PROJECT_GROUPS,
       new Set(["project-b"]),
       new Set(["project-a"]),
-      2
+      2,
+      nowMs
     )
 
     expect(visibleChats.map((entry) => [entry.visibleIndex, entry.chat.chatId])).toEqual([
       [1, "chat-a-1"],
       [2, "chat-a-2"],
       [3, "chat-a-3"],
+    ])
+  })
+
+  test("falls back to the most recent 5 chats when no chats are within 24 hours", () => {
+    const staleProject: SidebarProjectGroup[] = [{
+      groupKey: "project-c",
+      localPath: "/tmp/project-c",
+      chats: Array.from({ length: 7 }, (_, index) => ({
+        _id: `c-${index + 1}`,
+        _creationTime: index + 1,
+        chatId: `chat-c-${index + 1}`,
+        title: `C${index + 1}`,
+        status: "idle" as const,
+        unread: false,
+        localPath: "/tmp/project-c",
+        provider: "codex" as const,
+        lastMessageAt: nowMs - (25 + index) * hourMs,
+        hasAutomation: false,
+      })),
+    }]
+
+    const visibleChats = getVisibleSidebarChats(staleProject, new Set(), new Set(), 10, nowMs)
+
+    expect(visibleChats.map((entry) => entry.chat.chatId)).toEqual([
+      "chat-c-1",
+      "chat-c-2",
+      "chat-c-3",
+      "chat-c-4",
+      "chat-c-5",
     ])
   })
 })

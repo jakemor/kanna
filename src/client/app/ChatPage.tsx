@@ -1195,6 +1195,11 @@ export function ChatPage() {
   const handleToggleRightSidebar = useCallback(() => {
     if (!projectId) return
 
+    if (showRightSidebar) {
+      toggleRightSidebar(projectId)
+      return
+    }
+
     if (state.chatDiffSnapshot?.status === "no_repo") {
       void (async () => {
         const confirmed = await dialog.confirm({

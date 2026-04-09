@@ -1,5 +1,5 @@
 import { memo } from "react"
-import { Archive, Loader2 } from "lucide-react"
+import { Archive, Loader2, Pencil } from "lucide-react"
 import type { SidebarChatRow } from "../../../../shared/types"
 import { AnimatedShinyText } from "../../ui/animated-shiny-text"
 import { Button } from "../../ui/button"
@@ -16,6 +16,7 @@ interface Props {
   shortcutHint?: string | null
   showShortcutHint?: boolean
   onSelectChat: (chatId: string) => void
+  onRenameChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
 }
 
@@ -26,6 +27,7 @@ function ChatRowImpl({
   shortcutHint = null,
   showShortcutHint = false,
   onSelectChat,
+  onRenameChat,
   onDeleteChat,
 }: Props) {
   const ageLabel = formatSidebarAgeLabel(chat.lastMessageAt, nowMs)
@@ -72,7 +74,7 @@ function ChatRowImpl({
           chat.title
         )}
       </span>
-      <div className="relative h-7 w-7 mr-[2px] shrink-0">
+      <div className="relative h-7 w-14 mr-[2px] shrink-0">
         {trailingLabel ? (
           showShortcutKeycap ? (
             <span className="hidden md:flex absolute inset-0 items-center justify-end pr-0.5 text-[11px] text-foreground transition-opacity group-hover:opacity-0">
@@ -86,23 +88,39 @@ function ChatRowImpl({
             </span>
           )
         ) : null}
-        <Button
-          variant="ghost"
-          size="icon"
+        <div
           className={cn(
-            "absolute inset-0 h-7 w-7 opacity-100 cursor-pointer rounded-sm hover:!bg-transparent !border-0",
+            "absolute inset-0 flex items-center justify-end gap-0.5",
             trailingLabel
               ? "md:opacity-0 md:group-hover:opacity-100"
               : "opacity-100 md:opacity-0 md:group-hover:opacity-100"
           )}
-          onClick={(event) => {
-            event.stopPropagation()
-            onDeleteChat(chat.chatId)
-          }}
-          title="Delete chat"
         >
-          <Archive className="size-3.5" />
-        </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
+            onClick={(event) => {
+              event.stopPropagation()
+              onRenameChat(chat.chatId)
+            }}
+            title="Rename chat"
+          >
+            <Pencil className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDeleteChat(chat.chatId)
+            }}
+            title="Delete chat"
+          >
+            <Archive className="size-3.5" />
+          </Button>
+        </div>
       </div>
     </div>
   )

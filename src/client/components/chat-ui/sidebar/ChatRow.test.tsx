@@ -23,6 +23,7 @@ describe("ChatRow", () => {
         activeChatId={null}
         nowMs={60_000}
         onSelectChat={() => undefined}
+        onRenameChat={() => undefined}
         onDeleteChat={() => undefined}
       />
     )
@@ -39,6 +40,7 @@ describe("ChatRow", () => {
         shortcutHint="1"
         showShortcutHint
         onSelectChat={() => undefined}
+        onRenameChat={() => undefined}
         onDeleteChat={() => undefined}
       />
     )

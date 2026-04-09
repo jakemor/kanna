@@ -34,6 +34,9 @@ function KannaLayout() {
   const handleOpenAddProjectModal = useCallback(() => {
     state.openAddProjectModal()
   }, [state])
+  const handleSidebarRenameChat = useCallback((chat: Parameters<typeof state.handleRenameChat>[0]) => {
+    void state.handleRenameChat(chat)
+  }, [state.handleRenameChat])
   const handleSidebarDeleteChat = useCallback((chat: Parameters<typeof state.handleDeleteChat>[0]) => {
     void state.handleDeleteChat(chat)
   }, [state.handleDeleteChat])
@@ -65,6 +68,7 @@ function KannaLayout() {
       onCreateChat={handleSidebarCreateChat}
       currentProjectId={state.activeProjectId}
       keybindings={state.keybindings}
+      onRenameChat={handleSidebarRenameChat}
       onDeleteChat={handleSidebarDeleteChat}
       onOpenAddProjectModal={handleOpenAddProjectModal}
       onCopyPath={handleSidebarCopyPath}
@@ -80,6 +84,7 @@ function KannaLayout() {
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarDeleteChat,
+    handleSidebarRenameChat,
     handleSidebarOpenExternalPath,
     handleSidebarRemoveProject,
     showMobileOpenButton,

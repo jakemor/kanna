@@ -34,6 +34,7 @@ interface KannaSidebarProps {
   onCreateChat: (projectId: string) => void
   currentProjectId: string | null
   keybindings: KeybindingsSnapshot | null
+  onRenameChat: (chat: SidebarChatRow) => void
   onDeleteChat: (chat: SidebarChatRow) => void
   onOpenAddProjectModal: () => void
   onCopyPath: (localPath: string) => void
@@ -59,6 +60,7 @@ function KannaSidebarImpl({
   onCreateChat,
   currentProjectId,
   keybindings,
+  onRenameChat,
   onDeleteChat,
   onOpenAddProjectModal,
   onCopyPath,
@@ -185,10 +187,11 @@ function KannaSidebarImpl({
           navigate(`/chat/${chatId}`)
           onClose()
         }}
+        onRenameChat={() => onRenameChat(chat)}
         onDeleteChat={() => onDeleteChat(chat)}
       />
     )
-  }, [activeChatId, navigate, nowMs, onClose, onDeleteChat, resolvedKeybindings, showNumberJumpHints, visibleIndexByChatId])
+  }, [activeChatId, navigate, nowMs, onClose, onRenameChat, onDeleteChat, resolvedKeybindings, showNumberJumpHints, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {

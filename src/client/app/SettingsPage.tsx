@@ -6,6 +6,7 @@ import {
   Info,
   Loader2,
   Menu,
+  Mic,
   Monitor,
   Moon,
   MessageSquareQuote,
@@ -49,6 +50,11 @@ import {
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore, type ChatSoundId, type ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import {
+  useVoiceDictationStore,
+  VOICE_DICTATION_LANGUAGES,
+  type VoiceDictationLanguage,
+} from "../stores/voiceDictationStore"
 import type { KannaState } from "./useKannaState"
 
 const sidebarItems = [
@@ -69,6 +75,12 @@ const sidebarItems = [
     label: "Keybindings",
     icon: Command,
     subtitle: "Edit global app shortcuts stored in the active keybindings file.",
+  },
+  {
+    id: "voice",
+    label: "Voice Dictation",
+    icon: Mic,
+    subtitle: "Configure voice-to-text transcription using OpenAI Whisper.",
   },
   // always last
   {
@@ -416,6 +428,13 @@ export function SettingsPage() {
   const setProviderDefaultModel = useChatPreferencesStore((store) => store.setProviderDefaultModel)
   const setProviderDefaultModelOptions = useChatPreferencesStore((store) => store.setProviderDefaultModelOptions)
   const setProviderDefaultPlanMode = useChatPreferencesStore((store) => store.setProviderDefaultPlanMode)
+  const voiceDictationEnabled = useVoiceDictationStore((store) => store.voiceDictationEnabled)
+  const openaiApiKey = useVoiceDictationStore((store) => store.openaiApiKey)
+  const voiceDictationLanguage = useVoiceDictationStore((store) => store.voiceDictationLanguage)
+  const setVoiceDictationEnabled = useVoiceDictationStore((store) => store.setVoiceDictationEnabled)
+  const setOpenaiApiKey = useVoiceDictationStore((store) => store.setOpenaiApiKey)
+  const setVoiceDictationLanguage = useVoiceDictationStore((store) => store.setVoiceDictationLanguage)
+  const [apiKeyDraft, setApiKeyDraft] = useState(openaiApiKey)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
@@ -522,6 +541,10 @@ export function SettingsPage() {
 
   function commitEditorCommand() {
     setEditorCommandTemplate(editorCommandDraft)
+  }
+
+  function commitApiKey() {
+    setOpenaiApiKey(apiKeyDraft)
   }
 
   function handleChatSoundPreferenceChange(nextValue: ChatSoundPreference) {
@@ -1056,6 +1079,63 @@ export function SettingsPage() {
                         </SettingsRow>
                       )
                     })}
+                  </div>
+                ) : selectedPage === "voice" ? (
+                  <div className="border-b border-border">
+                    <SettingsRow
+                      title="Enable Voice Dictation"
+                      description="Show a microphone button on the chat input when the field is empty. Requires an OpenAI API key."
+                      bordered={false}
+                    >
+                      <SegmentedControl
+                        value={voiceDictationEnabled ? "on" : "off"}
+                        onValueChange={(v) => setVoiceDictationEnabled(v === "on")}
+                        options={[
+                          { value: "off", label: "Off" },
+                          { value: "on", label: "On" },
+                        ]}
+                        size="sm"
+                      />
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="OpenAI API Key"
+                      description="Your OpenAI API key for Whisper transcription. Stored locally in your browser."
+                    >
+                      <Input
+                        type="password"
+                        autoComplete="off"
+                        placeholder="sk-..."
+                        value={apiKeyDraft}
+                        onChange={(e) => setApiKeyDraft(e.target.value)}
+                        onBlur={commitApiKey}
+                        onKeyDown={(e) => handleTextInputKeyDown(e, commitApiKey)}
+                        className="min-w-[280px] font-mono"
+                      />
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Language"
+                      description="The spoken language for transcription. Auto lets Whisper detect it automatically."
+                    >
+                      <Select
+                        value={voiceDictationLanguage}
+                        onValueChange={(v) => setVoiceDictationLanguage(v as VoiceDictationLanguage)}
+                      >
+                        <SelectTrigger className="min-w-[180px]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            {VOICE_DICTATION_LANGUAGES.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </SettingsRow>
                   </div>
                 ) : (
                   <ChangelogSection

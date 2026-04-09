@@ -165,6 +165,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return projectFileContentResponse
           }
 
+          const transcribeResponse = await handleTranscribe(req, url)
+          if (transcribeResponse) {
+            return transcribeResponse
+          }
+
           return serveStatic(distDir, url.pathname)
         },
         websocket: {
@@ -379,6 +384,73 @@ async function handleProjectUploadDelete(req: Request, url: URL, store: EventSto
   })
 
   return Response.json({ ok: deleted })
+}
+
+const MAX_AUDIO_SIZE_BYTES = 25 * 1024 * 1024 // OpenAI Whisper limit
+
+async function handleTranscribe(req: Request, url: URL) {
+  if (req.method !== "POST") return null
+
+  if (url.pathname !== "/api/transcribe") return null
+
+  const apiKey = req.headers.get("X-OpenAI-Api-Key")
+  if (!apiKey) {
+    return Response.json({ error: "Missing OpenAI API key" }, { status: 401 })
+  }
+
+  let formData: FormData
+  try {
+    formData = await req.formData()
+  } catch {
+    return Response.json({ error: "Invalid request body" }, { status: 400 })
+  }
+
+  const audioFile = formData.get("audio")
+  if (!(audioFile instanceof File)) {
+    return Response.json({ error: "No audio file provided" }, { status: 400 })
+  }
+
+  if (audioFile.size > MAX_AUDIO_SIZE_BYTES) {
+    return Response.json({ error: "Audio file exceeds 25 MB limit" }, { status: 413 })
+  }
+
+  const language = formData.get("language")
+
+  // Build FormData for OpenAI Whisper API
+  const whisperForm = new FormData()
+  whisperForm.append("file", audioFile, audioFile.name || "audio.webm")
+  whisperForm.append("model", "whisper-1")
+  if (typeof language === "string" && language.length > 0 && language !== "auto") {
+    whisperForm.append("language", language)
+  }
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: whisperForm,
+    })
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}))
+      const errorMessage =
+        typeof errorBody === "object" &&
+        errorBody !== null &&
+        "error" in errorBody &&
+        typeof (errorBody as { error: { message?: string } }).error?.message === "string"
+          ? (errorBody as { error: { message: string } }).error.message
+          : "Transcription failed"
+      return Response.json({ error: errorMessage }, { status: response.status })
+    }
+
+    const result = (await response.json()) as { text: string }
+    return Response.json({ text: result.text })
+  } catch (error) {
+    console.error("[transcribe] Whisper API request failed:", error)
+    return Response.json({ error: "Failed to reach OpenAI API" }, { status: 502 })
+  }
 }
 
 async function serveStatic(distDir: string, pathname: string) {

@@ -1,5 +1,5 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, Paperclip } from "lucide-react"
+import { ArrowUp, Loader2, Mic, Paperclip } from "lucide-react"
 import {
   type AgentProvider,
   type ChatAttachment,
@@ -16,6 +16,7 @@ import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { cn } from "../../lib/utils"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
+import { useVoiceRecorder } from "../../hooks/useVoiceRecorder"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
@@ -220,6 +221,36 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
   const canSubmit = value.trim().length > 0 || uploadedAttachments.length > 0
+
+  // Voice dictation
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const voiceRecorder = useVoiceRecorder({
+    onTranscription: useCallback((text: string) => {
+      setValue((current) => {
+        const separator = current.length > 0 && !current.endsWith(" ") ? " " : ""
+        const next = current + separator + text
+        if (chatId) setDraft(chatId, next)
+        return next
+      })
+      // Trigger auto-resize after transcription appends text
+      requestAnimationFrame(() => {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = "auto"
+          textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`
+        }
+        textareaRef.current?.focus()
+      })
+    }, [chatId, setDraft]),
+    onError: useCallback((message: string) => {
+      setVoiceError(message)
+      const timer = setTimeout(() => setVoiceError(null), 5000)
+      return () => clearTimeout(timer)
+    }, []),
+  })
+  const showMicButton = voiceRecorder.isAvailable && !canSubmit && !canCancel
+  const isRecording = voiceRecorder.status === "recording"
+  const isTranscribing = voiceRecorder.status === "transcribing"
+
   const orderedAttachments = [...attachments].sort((left, right) => {
     if (left.kind === right.kind) return 0
     return left.kind === "image" ? -1 : 1
@@ -667,16 +698,32 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 event.preventDefault()
                 if (canCancel) {
                   onCancel?.()
+                } else if (isRecording) {
+                  voiceRecorder.stopRecording()
+                } else if (showMicButton && !isTranscribing) {
+                  setVoiceError(null)
+                  voiceRecorder.startRecording()
                 } else if (!disabled && canSubmit && !hasPendingUploads) {
                   void handleSubmit()
                 }
               }}
-              disabled={!canCancel && (disabled || !canSubmit || hasPendingUploads)}
+              disabled={!canCancel && !isRecording && !showMicButton && !isTranscribing && (disabled || !canSubmit || hasPendingUploads)}
               size="icon"
-              className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
+              className={cn(
+                "flex-shrink-0 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation",
+                isRecording
+                  ? "bg-red-500 text-white shadow-none"
+                  : "bg-slate-600 text-white dark:bg-white dark:text-slate-900 disabled:bg-white/60 disabled:text-slate-700"
+              )}
             >
               {canCancel ? (
                 <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
+              ) : isRecording ? (
+                <div className="w-3 h-3 md:w-4 md:h-4 rounded-full bg-current animate-pulse" />
+              ) : isTranscribing ? (
+                <Loader2 className="h-5 w-5 md:h-6 md:w-6 animate-spin" />
+              ) : showMicButton ? (
+                <Mic className="h-5 w-5 md:h-6 md:w-6" />
               ) : (
                 <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
               )}
@@ -687,6 +734,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         {uploadError ? (
           <div className="max-w-[840px] mx-auto mt-2 px-1 text-sm text-destructive">
             {uploadError}
+          </div>
+        ) : null}
+        {voiceError ? (
+          <div className="max-w-[840px] mx-auto mt-2 px-1 text-sm text-destructive">
+            {voiceError}
           </div>
         ) : null}
       </div>

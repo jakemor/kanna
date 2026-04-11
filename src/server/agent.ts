@@ -375,7 +375,11 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
 
     if (sdkMessage?.type === "assistant") {
       const usageId = getClaudeAssistantMessageUsageId(sdkMessage)
-      const usageSnapshot = normalizeClaudeUsageSnapshot(sdkMessage.usage, lastKnownContextWindow)
+
+      // SDKAssistantMessage wraps the API response in .message — usage lives there, not at top level.
+      // message.usage comes from the API's message_start event and contains per-turn input_tokens.
+      const rawUsage = sdkMessage.message?.usage ?? sdkMessage.usage
+      const usageSnapshot = normalizeClaudeUsageSnapshot(rawUsage, lastKnownContextWindow)
       if (usageId && usageSnapshot && !seenAssistantUsageIds.has(usageId)) {
         seenAssistantUsageIds.add(usageId)
         latestUsageSnapshot = usageSnapshot

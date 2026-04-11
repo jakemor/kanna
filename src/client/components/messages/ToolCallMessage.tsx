@@ -1,16 +1,17 @@
 import { UserRound, X } from "lucide-react"
 import type { ProcessedToolCall } from "./types"
 import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon } from "./shared"
-import { useMemo } from "react"
+import { useMemo, useEffect, useRef, useState } from "react"
 import { stripWorkspacePath } from "../../lib/pathUtils"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
-import { formatBashCommandTitle, toTitleCase } from "../../lib/formatters"
+import { formatBashCommandTitle, toTitleCase, formatDuration, MIN_ELAPSED_MS_FOR_LABEL } from "../../lib/formatters"
 import { FileContentView } from "./FileContentView"
 
 interface Props {
   message: ProcessedToolCall
   isLoading?: boolean
   localPath?: string | null
+  elapsedMs?: number
 }
 
 type ReadImageBlock = {
@@ -83,9 +84,43 @@ export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBl
   )
 }
 
-export function ToolCallMessage({ message, isLoading = false, localPath }: Props) {
+function useElapsedTime(startTimestamp: string, isRunning: boolean): number {
+  const [elapsed, setElapsed] = useState(() =>
+    isRunning ? Math.max(0, Date.now() - Date.parse(startTimestamp)) : 0
+  )
+  const startMsRef = useRef(Date.parse(startTimestamp))
+
+  useEffect(() => {
+    startMsRef.current = Date.parse(startTimestamp)
+  }, [startTimestamp])
+
+  useEffect(() => {
+    if (!isRunning) {
+      setElapsed(0)
+      return
+    }
+
+    setElapsed(Math.max(0, Date.now() - startMsRef.current))
+
+    const id = setInterval(() => {
+      setElapsed(Math.max(0, Date.now() - startMsRef.current))
+    }, 1000)
+
+    return () => clearInterval(id)
+  }, [isRunning])
+
+  return elapsed
+}
+
+export function ToolCallMessage({ message, isLoading = false, localPath, elapsedMs }: Props) {
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
+
+  const liveElapsed = useElapsedTime(message.timestamp, showLoadingState)
+  const displayedMs = showLoadingState ? liveElapsed : elapsedMs
+  const timeLabel = displayedMs !== undefined && displayedMs >= MIN_ELAPSED_MS_FOR_LABEL
+    ? formatDuration(displayedMs)
+    : null
 
   const name = useMemo(() => {
     if (message.toolKind === "skill") {
@@ -183,6 +218,11 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   return (
     <MetaRow className="w-full">
       <ExpandableRow
+        trailingContent={timeLabel ? (
+          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+            {timeLabel}
+          </span>
+        ) : undefined}
         expandedContent={
           <VerticalLineContainer className="my-4 text-sm">
             <div className="flex flex-col gap-2">

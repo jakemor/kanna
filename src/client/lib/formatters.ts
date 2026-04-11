@@ -39,6 +39,33 @@ export function formatModelLabel(modelId: string): string {
 
 export const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60_000
 
+export const MIN_ELAPSED_MS_FOR_LABEL = 1_000
+
+const MS_PER_SECOND = 1_000
+const SECONDS_PER_MINUTE = 60
+const SECONDS_PER_HOUR = 3_600
+
+export function formatDuration(ms: number): string {
+  if (ms < MS_PER_SECOND) {
+    return `${ms}ms`
+  }
+
+  const totalSeconds = Math.floor(ms / MS_PER_SECOND)
+  const hours = Math.floor(totalSeconds / SECONDS_PER_HOUR)
+  const minutes = Math.floor((totalSeconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE)
+  const seconds = totalSeconds % SECONDS_PER_MINUTE
+
+  if (hours > 0) {
+    return `${hours}h${minutes > 0 ? ` ${minutes}m` : ""}`
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m${seconds > 0 ? ` ${seconds}s` : ""}`
+  }
+
+  return `${seconds}s`
+}
+
 export function formatSidebarAgeLabel(lastMessageAt: number | undefined, nowMs: number): string | null {
   if (lastMessageAt === undefined) return null
 

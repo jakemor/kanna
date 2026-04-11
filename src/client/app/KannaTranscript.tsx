@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useMemo, useState } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
-import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
+import type { AskUserQuestionAnswerMap, ContextWindowUsageSnapshot, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage } from "../components/messages/SystemMessage"
@@ -21,6 +21,8 @@ import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
 
 const SPECIAL_TOOL_NAMES = new Set(["AskUserQuestion", "ExitPlanMode", "TodoWrite"])
 
+const RESULT_DURATION_DISPLAY_THRESHOLD_MS = 60_000
+
 export type TranscriptRenderItem =
   | { type: "single"; message: HydratedTranscriptMessage; index: number }
   | { type: "tool-group"; messages: HydratedTranscriptMessage[]; startIndex: number }
@@ -39,6 +41,7 @@ export interface ResolvedSingleTranscriptRow {
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  elapsedMs?: number
 }
 
 export interface ResolvedToolGroupTranscriptRow {
@@ -48,6 +51,8 @@ export interface ResolvedToolGroupTranscriptRow {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string
+  tokensUsed?: number
+  toolElapsedMs?: Record<string, number>
 }
 
 export type ResolvedTranscriptRow = ResolvedSingleTranscriptRow | ResolvedToolGroupTranscriptRow
@@ -122,7 +127,7 @@ function shouldRenderTranscriptSingleRow(
     case "tool":
       return message.toolKind !== "todo_write" || isLatestTodoWrite
     case "result":
-      return !hideResult && (!message.success || message.durationMs > 60000)
+      return !hideResult && (!message.success || message.durationMs > RESULT_DURATION_DISPLAY_THRESHOLD_MS)
     case "context_window_updated":
       return false
     case "status":
@@ -137,6 +142,14 @@ function sameStringArray(left: string[] | undefined, right: string[] | undefined
   if (!left || !right) return false
   if (left.length !== right.length) return false
   return left.every((value, index) => value === right[index])
+}
+
+function sameRecord(a: Record<string, number> | undefined, b: Record<string, number> | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  const keysA = Object.keys(a)
+  if (keysA.length !== Object.keys(b).length) return false
+  return keysA.every((k) => a[k] === b[k])
 }
 
 function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptMessage) {
@@ -202,6 +215,7 @@ interface TranscriptSingleRowProps {
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  elapsedMs?: number
   onAskUserQuestionSubmit: (
     toolUseId: string,
     questions: AskUserQuestionItem[],
@@ -222,6 +236,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   isLatestTodoWrite,
   hideResult,
   isFinalStatus,
+  elapsedMs,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: TranscriptSingleRowProps) {
@@ -270,7 +285,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
           rendered = isLatestTodoWrite ? <TodoWriteMessage key={message.id} message={message} /> : null
           break
         }
-        rendered = <ToolCallMessage key={message.id} message={message} isLoading={isLoading} localPath={localPath} />
+        rendered = <ToolCallMessage key={message.id} message={message} isLoading={isLoading} localPath={localPath} elapsedMs={elapsedMs} />
         break
       case "result":
         rendered = hideResult ? null : <ResultMessage key={message.id} message={message} />
@@ -318,6 +333,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   && prev.isLatestTodoWrite === next.isLatestTodoWrite
   && prev.hideResult === next.hideResult
   && prev.isFinalStatus === next.isFinalStatus
+  && prev.elapsedMs === next.elapsedMs
   && prev.onAskUserQuestionSubmit === next.onAskUserQuestionSubmit
   && prev.onExitPlanModeConfirm === next.onExitPlanModeConfirm
   && sameMessage(prev.message, next.message)
@@ -329,6 +345,8 @@ interface TranscriptToolGroupProps {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string
+  tokensUsed?: number
+  toolElapsedMs?: Record<string, number>
   expanded: boolean
   onExpandedChange: (groupId: string, next: boolean) => void
 }
@@ -339,6 +357,8 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
   messages,
   isLoading,
   localPath,
+  tokensUsed,
+  toolElapsedMs,
   expanded,
   onExpandedChange,
 }: TranscriptToolGroupProps) {
@@ -351,6 +371,8 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
         messages={messages}
         isLoading={isLoading}
         localPath={localPath}
+        tokensUsed={tokensUsed}
+        toolElapsedMs={toolElapsedMs}
         expanded={expanded}
         onExpandedChange={(next) => onExpandedChange(id, next)}
       />
@@ -361,11 +383,67 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
   && prev.startIndex === next.startIndex
   && prev.isLoading === next.isLoading
   && prev.localPath === next.localPath
+  && prev.tokensUsed === next.tokensUsed
+  && sameRecord(prev.toolElapsedMs, next.toolElapsedMs)
   && prev.expanded === next.expanded
   && prev.onExpandedChange === next.onExpandedChange
   && prev.messages.length === next.messages.length
   && prev.messages.every((message, index) => sameMessage(message, next.messages[index]!))
 ))
+
+function getToolGroupTokensUsed(
+  messages: HydratedTranscriptMessage[],
+  startIndex: number,
+  groupLength: number,
+): number | undefined {
+  // Find context_window_updated entries that bracket this tool group.
+  // The entry just before the group has the cumulative usedTokens at the start;
+  // the entry just after has the cumulative usedTokens at the end.
+  const endIndex = startIndex + groupLength - 1
+
+  let beforeSnapshot: ContextWindowUsageSnapshot | undefined
+  for (let i = startIndex - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.kind === "context_window_updated") {
+      beforeSnapshot = msg.usage
+      break
+    }
+  }
+
+  let afterSnapshot: ContextWindowUsageSnapshot | undefined
+  for (let i = endIndex + 1; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.kind === "context_window_updated") {
+      afterSnapshot = msg.usage
+      break
+    }
+    // Stop searching if we hit another tool group or user message
+    if (msg.kind === "tool" || msg.kind === "user_prompt") break
+  }
+
+  // Only show when we have both snapshots and can compute a real delta.
+  // Without both, we'd show cumulative totals which are misleading.
+  if (!beforeSnapshot || !afterSnapshot) return undefined
+
+  const diff = afterSnapshot.usedTokens - beforeSnapshot.usedTokens
+  return diff > 0 ? diff : undefined
+}
+
+function getToolElapsedMs(
+  messages: HydratedTranscriptMessage[],
+  toolIndex: number,
+): number | undefined {
+  const tool = messages[toolIndex]
+  const next = messages[toolIndex + 1]
+  if (!tool || !next) return undefined
+
+  const startMs = Date.parse(tool.timestamp)
+  const endMs = Date.parse(next.timestamp)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return undefined
+
+  const delta = endMs - startMs
+  return delta > 0 ? delta : undefined
+}
 
 export function buildResolvedTranscriptRows(
   messages: HydratedTranscriptMessage[],
@@ -386,6 +464,15 @@ export function buildResolvedTranscriptRows(
 
   for (const item of renderItems) {
     if (item.type === "tool-group") {
+      const toolElapsedMs: Record<string, number> = {}
+      for (let i = 0; i < item.messages.length; i++) {
+        const msg = item.messages[i] as ProcessedToolCall
+        const elapsed = getToolElapsedMs(messages, item.startIndex + i)
+        if (elapsed !== undefined) {
+          toolElapsedMs[msg.toolId] = elapsed
+        }
+      }
+
       rows.push({
         kind: "tool-group",
         id: getTranscriptRenderItemId(item),
@@ -393,6 +480,8 @@ export function buildResolvedTranscriptRows(
         messages: item.messages,
         isLoading: isLoading && item.messages.some((message) => message.kind === "tool" && message.result === undefined),
         localPath,
+        tokensUsed: getToolGroupTokensUsed(messages, item.startIndex, item.messages.length),
+        toolElapsedMs: Object.keys(toolElapsedMs).length > 0 ? toolElapsedMs : undefined,
       })
       continue
     }
@@ -413,6 +502,9 @@ export function buildResolvedTranscriptRows(
       isLatestTodoWrite: item.message.id === latestToolIds.TodoWrite,
       hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
       isFinalStatus: item.index === messages.length - 1,
+      elapsedMs: item.message.kind === "tool"
+        ? getToolElapsedMs(messages, item.index)
+        : undefined,
     }
 
     if (shouldRenderTranscriptSingleRow(row.message, row)) {
@@ -464,6 +556,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
         messages={row.messages}
         isLoading={row.isLoading}
         localPath={row.localPath}
+        tokensUsed={row.tokensUsed}
+        toolElapsedMs={row.toolElapsedMs}
         expanded={toolGroupExpanded[row.id] ?? false}
         onExpandedChange={onToolGroupExpandedChange}
       />
@@ -483,6 +577,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       isLatestTodoWrite={row.isLatestTodoWrite}
       hideResult={row.hideResult}
       isFinalStatus={row.isFinalStatus}
+      elapsedMs={row.elapsedMs}
       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
       onExitPlanModeConfirm={onExitPlanModeConfirm}
     />
@@ -501,6 +596,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
     return previousRow.startIndex === nextRow.startIndex
       && previousRow.isLoading === nextRow.isLoading
       && previousRow.localPath === nextRow.localPath
+      && previousRow.tokensUsed === nextRow.tokensUsed
+      && sameRecord(previousRow.toolElapsedMs, nextRow.toolElapsedMs)
       && previousRow.messages.length === nextRow.messages.length
       && previousRow.messages.every((message, index) => sameMessage(message, nextRow.messages[index]!))
   }
@@ -516,6 +613,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       && prev.row.isLatestTodoWrite === next.row.isLatestTodoWrite
       && prev.row.hideResult === next.row.hideResult
       && prev.row.isFinalStatus === next.row.isFinalStatus
+      && prev.row.elapsedMs === next.row.elapsedMs
       && sameMessage(prev.row.message, next.row.message)
   }
 

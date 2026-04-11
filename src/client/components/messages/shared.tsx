@@ -123,9 +123,10 @@ interface ExpandableRowProps {
   children: ReactNode
   expandedContent: ReactNode
   defaultExpanded?: boolean
+  trailingContent?: ReactNode
 }
 
-export function ExpandableRow({ children, expandedContent, defaultExpanded = false }: ExpandableRowProps) {
+export function ExpandableRow({ children, expandedContent, defaultExpanded = false, trailingContent }: ExpandableRowProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
 
   return (
@@ -133,11 +134,12 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
 
       <button
         onClick={() => setExpanded(!expanded)}
-        className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
+        className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr_auto] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
       >
         <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
           {children}
         </div>
+        {trailingContent ?? <span />}
         <ChevronRight
           className={`h-4.5 w-4.5 text-muted-icon translate-y-[0.5px] transition-all duration-200 opacity-0 group-hover/expandable-row:opacity-100 ${expanded ? "rotate-90 opacity-100" : ""}`}
         />

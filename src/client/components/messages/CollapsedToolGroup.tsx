@@ -3,6 +3,8 @@ import { ChevronRight } from "lucide-react"
 import { ToolCallMessage } from "./ToolCallMessage"
 import { MetaRow, MetaLabel } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
+import { formatContextWindowTokens } from "../../lib/contextWindow"
+import { formatDuration, MIN_ELAPSED_MS_FOR_LABEL } from "../../lib/formatters"
 import type { ProcessedToolCall } from "./types"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 
@@ -59,12 +61,31 @@ interface Props {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string | null
+  tokensUsed?: number
+  toolElapsedMs?: Record<string, number>
   expanded: boolean
   onExpandedChange: (next: boolean) => void
 }
 
-export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, onExpandedChange }: Props) {
-  const label = useMemo(() => getToolGroupLabel(messages), [messages])
+export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed, toolElapsedMs, expanded, onExpandedChange }: Props) {
+  const totalElapsedMs = useMemo(() => {
+    if (!toolElapsedMs) return undefined
+    const values = Object.values(toolElapsedMs)
+    if (values.length === 0) return undefined
+    const sum = values.reduce((a, b) => a + b, 0)
+    return sum >= MIN_ELAPSED_MS_FOR_LABEL ? sum : undefined
+  }, [toolElapsedMs])
+
+  const label = useMemo(() => {
+    const parts = [getToolGroupLabel(messages)]
+    if (tokensUsed && tokensUsed > 0) {
+      parts.push(`${formatContextWindowTokens(tokensUsed)} tokens`)
+    }
+    if (totalElapsedMs !== undefined) {
+      parts.push(formatDuration(totalElapsedMs))
+    }
+    return parts.join(" · ")
+  }, [messages, tokensUsed, totalElapsedMs])
 
   // Check if any tool in the group is still in progress
   const anyInProgress = messages.some(msg => {
@@ -94,14 +115,18 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, o
         </button>
         {expanded && (
           <div className="my-4 flex flex-col gap-3">
-            {messages.map(msg => (
-              <ToolCallMessage
-                key={msg.id}
-                message={msg as ProcessedToolCall}
-                isLoading={isLoading}
-                localPath={localPath}
-              />
-            ))}
+            {messages.map(msg => {
+              const processed = msg as ProcessedToolCall
+              return (
+                <ToolCallMessage
+                  key={msg.id}
+                  message={processed}
+                  isLoading={isLoading}
+                  localPath={localPath}
+                  elapsedMs={toolElapsedMs?.[processed.toolId]}
+                />
+              )
+            })}
             {messages.length > 5 && (
               <button
                 onClick={() => onExpandedChange(false)}

@@ -15,11 +15,20 @@ function withDerivedMetrics(
   const maxTokens = typeof usage.maxTokens === "number" && Number.isFinite(usage.maxTokens)
     ? usage.maxTokens
     : null
+
+  // Use inputTokens for context window math — output tokens don't count against the window.
+  // When inputTokens exceeds maxTokens, the snapshot contains accumulated totals across
+  // all turns (from the SDK result message), not per-turn context fill. Fall back to
+  // lastInputTokens (per-turn), or cap at maxTokens.
+  const rawContextFill = usage.inputTokens ?? usage.usedTokens
+  const contextFill = maxTokens && rawContextFill > maxTokens
+    ? (usage.lastInputTokens ?? maxTokens)
+    : rawContextFill
   const usedPercentage = maxTokens && maxTokens > 0
-    ? Math.min(100, (usage.usedTokens / maxTokens) * 100)
+    ? Math.min(100, (contextFill / maxTokens) * 100)
     : null
   const remainingTokens = maxTokens !== null
-    ? Math.max(0, Math.round(maxTokens - usage.usedTokens))
+    ? Math.max(0, Math.round(maxTokens - contextFill))
     : null
   const remainingPercentage = usedPercentage !== null
     ? Math.max(0, 100 - usedPercentage)

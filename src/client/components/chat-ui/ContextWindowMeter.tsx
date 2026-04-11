@@ -15,6 +15,7 @@ function formatPercentage(value: number | null): string | null {
 export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) {
   const usedPercentage = formatPercentage(usage.usedPercentage)
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0))
+  const displayTokens = usage.inputTokens ?? usage.usedTokens
   const radius = 9.75
   const circumference = 2 * Math.PI * radius
   const dashOffset = circumference - (normalizedPercentage / 100) * circumference
@@ -25,11 +26,7 @@ export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) 
         <button
           type="button"
           className="group inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-85"
-          aria-label={
-            usage.maxTokens !== undefined && usedPercentage
-              ? `Context window ${usedPercentage} used`
-              : `Context window ${formatContextWindowTokens(usage.usedTokens)} tokens used`
-          }
+          aria-label={`${formatContextWindowTokens(displayTokens)} tokens used`}
         >
           <span className="relative flex h-6 w-6 items-center justify-center">
             <svg
@@ -73,20 +70,15 @@ export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) 
         </button>
       </TooltipTrigger>
       <TooltipContent side="top" align="center" className="w-max max-w-none px-3 py-2">
-        <div className="space-y-1.5 leading-tight">
+        <div className="space-y-1 leading-tight">
+          <div className="whitespace-nowrap text-xs font-medium text-foreground">
+            {formatContextWindowTokens(displayTokens)} tokens used
+          </div>
           {usage.maxTokens !== undefined && usedPercentage ? (
-            <div className="whitespace-nowrap text-xs font-medium text-foreground">
-              <span>{usedPercentage}</span>
-              <span className="mx-1">·</span>
-              <span>{formatContextWindowTokens(usage.usedTokens)}</span>
-              <span>/</span>
-              <span>{formatContextWindowTokens(usage.maxTokens)} context used</span>
+            <div className="whitespace-nowrap text-xs text-muted-foreground">
+              {usedPercentage} context · {formatContextWindowTokens(usage.remainingTokens)} remaining
             </div>
-          ) : (
-            <div className="text-sm text-foreground">
-              {formatContextWindowTokens(usage.usedTokens)} tokens used so far
-            </div>
-          )}
+          ) : null}
         </div>
       </TooltipContent>
     </Tooltip>

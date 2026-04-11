@@ -4,7 +4,8 @@ import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer
 import { useMemo, useEffect, useRef, useState } from "react"
 import { stripWorkspacePath } from "../../lib/pathUtils"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
-import { formatBashCommandTitle, toTitleCase, formatDuration, MIN_ELAPSED_MS_FOR_LABEL } from "../../lib/formatters"
+import { formatBashCommandTitle, toTitleCase, formatDuration } from "../../lib/formatters"
+import { useChatDisplayPreferencesStore } from "../../stores/chatDisplayPreferencesStore"
 import { FileContentView } from "./FileContentView"
 
 interface Props {
@@ -113,12 +114,15 @@ function useElapsedTime(startTimestamp: string, isRunning: boolean): number {
 }
 
 export function ToolCallMessage({ message, isLoading = false, localPath, elapsedMs }: Props) {
+  const showElapsedTime = useChatDisplayPreferencesStore((s) => s.showElapsedTime)
+  const minElapsedTimeMs = useChatDisplayPreferencesStore((s) => s.minElapsedTimeMs)
+
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
 
   const liveElapsed = useElapsedTime(message.timestamp, showLoadingState)
   const displayedMs = showLoadingState ? liveElapsed : elapsedMs
-  const timeLabel = displayedMs !== undefined && displayedMs >= MIN_ELAPSED_MS_FOR_LABEL
+  const timeLabel = showElapsedTime && displayedMs !== undefined && displayedMs >= minElapsedTimeMs
     ? formatDuration(displayedMs)
     : null
 

@@ -49,6 +49,13 @@ import {
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore, type ChatSoundId, type ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import {
+  DEFAULT_MIN_ELAPSED_TIME_MS,
+  MAX_MIN_ELAPSED_TIME_MS,
+  MIN_MIN_ELAPSED_TIME_MS,
+  useChatDisplayPreferencesStore,
+} from "../stores/chatDisplayPreferencesStore"
+import { Switch } from "../components/ui/switch"
 import type { KannaState } from "./useKannaState"
 
 const sidebarItems = [
@@ -409,6 +416,12 @@ export function SettingsPage() {
   const chatSoundId = useChatSoundPreferencesStore((store) => store.chatSoundId)
   const setChatSoundPreference = useChatSoundPreferencesStore((store) => store.setChatSoundPreference)
   const setChatSoundId = useChatSoundPreferencesStore((store) => store.setChatSoundId)
+  const showTokenCount = useChatDisplayPreferencesStore((store) => store.showTokenCount)
+  const setShowTokenCount = useChatDisplayPreferencesStore((store) => store.setShowTokenCount)
+  const showElapsedTime = useChatDisplayPreferencesStore((store) => store.showElapsedTime)
+  const setShowElapsedTime = useChatDisplayPreferencesStore((store) => store.setShowElapsedTime)
+  const minElapsedTimeMs = useChatDisplayPreferencesStore((store) => store.minElapsedTimeMs)
+  const setMinElapsedTimeMs = useChatDisplayPreferencesStore((store) => store.setMinElapsedTimeMs)
   const keybindings = state.keybindings
   const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
@@ -420,6 +433,7 @@ export function SettingsPage() {
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
   const [minColumnWidthDraft, setMinColumnWidthDraft] = useState(String(minColumnWidth))
+  const [minElapsedTimeDraft, setMinElapsedTimeDraft] = useState(String(minElapsedTimeMs))
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
@@ -450,6 +464,10 @@ export function SettingsPage() {
   useEffect(() => {
     setEditorCommandDraft(editorCommandTemplate)
   }, [editorCommandTemplate])
+
+  useEffect(() => {
+    setMinElapsedTimeDraft(String(minElapsedTimeMs))
+  }, [minElapsedTimeMs])
 
   useEffect(() => {
     setKeybindingDrafts(Object.fromEntries(
@@ -506,6 +524,15 @@ export function SettingsPage() {
       return
     }
     setMinColumnWidth(nextValue)
+  }
+
+  function commitMinElapsedTime() {
+    const nextValue = Number(minElapsedTimeDraft)
+    if (!Number.isFinite(nextValue)) {
+      setMinElapsedTimeDraft(String(minElapsedTimeMs))
+      return
+    }
+    setMinElapsedTimeMs(nextValue)
   }
 
   function handleNumberInputKeyDown(event: KeyboardEvent<HTMLInputElement>, commit: () => void) {
@@ -803,6 +830,51 @@ export function SettingsPage() {
                           </SelectContent>
                         </Select>
                       </SettingsRow>
+
+                      <SettingsRow
+                        title="Show Token Count"
+                        description="Display input and output token counts on chat messages"
+                      >
+                        <Switch
+                          checked={showTokenCount}
+                          onCheckedChange={setShowTokenCount}
+                        />
+                      </SettingsRow>
+
+                      <SettingsRow
+                        title="Show Elapsed Time"
+                        description="Display how long each model response took"
+                      >
+                        <Switch
+                          checked={showElapsedTime}
+                          onCheckedChange={setShowElapsedTime}
+                        />
+                      </SettingsRow>
+
+                      {showElapsedTime ? (
+                        <SettingsRow
+                          title="Minimum Elapsed Time"
+                          description="Only show elapsed time when it exceeds this threshold"
+                        >
+                          <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">
+                            <Input
+                              type="number"
+                              min={MIN_MIN_ELAPSED_TIME_MS}
+                              max={MAX_MIN_ELAPSED_TIME_MS}
+                              step={100}
+                              value={minElapsedTimeDraft}
+                              onChange={(event) => setMinElapsedTimeDraft(event.target.value)}
+                              onBlur={commitMinElapsedTime}
+                              onKeyDown={(event) => handleNumberInputKeyDown(event, commitMinElapsedTime)}
+                              className="hide-number-steppers w-full text-left font-mono md:w-28 md:text-right"
+                            />
+                            <div className="text-left text-xs text-muted-foreground md:text-right">
+                              {MIN_MIN_ELAPSED_TIME_MS}-{MAX_MIN_ELAPSED_TIME_MS} ms
+                              {minElapsedTimeMs === DEFAULT_MIN_ELAPSED_TIME_MS ? " (default)" : ""}
+                            </div>
+                          </div>
+                        </SettingsRow>
+                      ) : null}
 
                       <SettingsRow
                         title="Default Editor"

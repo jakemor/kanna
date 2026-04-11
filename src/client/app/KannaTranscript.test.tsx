@@ -183,7 +183,7 @@ describe("KannaTranscript", () => {
     expect(html).not.toContain("Completed")
   })
 
-  test("does not render wrappers for short successful result rows", () => {
+  test("renders result row as hidden when duration is below minimum elapsed time", () => {
     const html = renderTranscript([
       {
         id: "result-short-1",
@@ -191,15 +191,16 @@ describe("KannaTranscript", () => {
         success: true,
         cancelled: false,
         result: "Hey! 👋",
-        durationMs: 2562,
+        durationMs: 500,
         timestamp: new Date().toISOString(),
       },
     ])
 
-    expect(countRowWrappers(html)).toBe(0)
+    expect(countRowWrappers(html)).toBe(1)
+    expect(html).toContain("hidden")
   })
 
-  test("renders wrappers for long successful result rows", () => {
+  test("renders result row as visible when duration meets minimum elapsed time", () => {
     const html = renderTranscript([
       {
         id: "result-long-1",
@@ -213,6 +214,7 @@ describe("KannaTranscript", () => {
     ])
 
     expect(countRowWrappers(html)).toBe(1)
+    expect(html).toContain("Worked for")
   })
 
   test("does not render wrappers for duplicate system and account rows", () => {

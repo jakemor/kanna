@@ -4,7 +4,8 @@ import { ToolCallMessage } from "./ToolCallMessage"
 import { MetaRow, MetaLabel } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { formatContextWindowTokens } from "../../lib/contextWindow"
-import { formatDuration, MIN_ELAPSED_MS_FOR_LABEL } from "../../lib/formatters"
+import { formatDuration } from "../../lib/formatters"
+import { useChatDisplayPreferencesStore } from "../../stores/chatDisplayPreferencesStore"
 import type { ProcessedToolCall } from "./types"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 
@@ -68,24 +69,30 @@ interface Props {
 }
 
 export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed, toolElapsedMs, expanded, onExpandedChange }: Props) {
+  const showTokenCount = useChatDisplayPreferencesStore((s) => s.showTokenCount)
+  const showElapsedTime = useChatDisplayPreferencesStore((s) => s.showElapsedTime)
+  const minElapsedTimeMs = useChatDisplayPreferencesStore((s) => s.minElapsedTimeMs)
+
   const totalElapsedMs = useMemo(() => {
     if (!toolElapsedMs) return undefined
     const values = Object.values(toolElapsedMs)
     if (values.length === 0) return undefined
     const sum = values.reduce((a, b) => a + b, 0)
-    return sum >= MIN_ELAPSED_MS_FOR_LABEL ? sum : undefined
+    return sum > 0 ? sum : undefined
   }, [toolElapsedMs])
 
-  const label = useMemo(() => {
-    const parts = [getToolGroupLabel(messages)]
-    if (tokensUsed && tokensUsed > 0) {
+  const label = useMemo(() => getToolGroupLabel(messages), [messages])
+
+  const trailingLabel = useMemo(() => {
+    const parts: string[] = []
+    if (showTokenCount && tokensUsed && tokensUsed > 0) {
       parts.push(`${formatContextWindowTokens(tokensUsed)} tokens`)
     }
-    if (totalElapsedMs !== undefined) {
+    if (showElapsedTime && totalElapsedMs !== undefined && totalElapsedMs >= minElapsedTimeMs) {
       parts.push(formatDuration(totalElapsedMs))
     }
-    return parts.join(" · ")
-  }, [messages, tokensUsed, totalElapsedMs])
+    return parts.length > 0 ? parts.join(" · ") : null
+  }, [showTokenCount, showElapsedTime, minElapsedTimeMs, tokensUsed, totalElapsedMs])
 
   // Check if any tool in the group is still in progress
   const anyInProgress = messages.some(msg => {
@@ -100,7 +107,7 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed,
       <div className="flex flex-col w-full">
         <button
           onClick={() => onExpandedChange(!expanded)}
-          className={`group cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded && !showLoadingState ? "hover:opacity-60 transition-opacity" : ""}`}
+          className={`group cursor-pointer grid grid-cols-[auto_1fr_auto] items-center gap-1 text-sm ${!expanded && !showLoadingState ? "hover:opacity-60 transition-opacity" : ""}`}
         >
           <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
             <div className="w-5 h-5 relative flex items-center justify-center">
@@ -112,9 +119,15 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed,
               <AnimatedShinyText animate={showLoadingState}>{label}</AnimatedShinyText>
             </MetaLabel>
           </div>
+          {trailingLabel ? (
+            <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+              {trailingLabel}
+            </span>
+          ) : <span />}
+          <span className="w-4.5" />
         </button>
         {expanded && (
-          <div className="my-4 flex flex-col gap-3">
+          <div className="my-4 flex flex-col gap-3 pl-6">
             {messages.map(msg => {
               const processed = msg as ProcessedToolCall
               return (

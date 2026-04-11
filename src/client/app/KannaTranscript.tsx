@@ -21,7 +21,9 @@ import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
 
 const SPECIAL_TOOL_NAMES = new Set(["AskUserQuestion", "ExitPlanMode", "TodoWrite"])
 
-const RESULT_DURATION_DISPLAY_THRESHOLD_MS = 60_000
+// Result messages manage their own visibility via the chat display preferences store.
+// The render filter below only needs to exclude results that are hidden because they
+// immediately follow an assistant turn (hideResult), or represent errors.
 
 export type TranscriptRenderItem =
   | { type: "single"; message: HydratedTranscriptMessage; index: number }
@@ -127,7 +129,7 @@ function shouldRenderTranscriptSingleRow(
     case "tool":
       return message.toolKind !== "todo_write" || isLatestTodoWrite
     case "result":
-      return !hideResult && (!message.success || message.durationMs > RESULT_DURATION_DISPLAY_THRESHOLD_MS)
+      return !hideResult
     case "context_window_updated":
       return false
     case "status":
@@ -434,12 +436,20 @@ function getToolElapsedMs(
   toolIndex: number,
 ): number | undefined {
   const tool = messages[toolIndex]
-  const next = messages[toolIndex + 1]
-  if (!tool || !next) return undefined
+  if (!tool) return undefined
 
   const startMs = Date.parse(tool.timestamp)
-  const endMs = Date.parse(next.timestamp)
-  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return undefined
+  if (!Number.isFinite(startMs)) return undefined
+
+  // Prefer the result timestamp (exact end time) over the next message's timestamp.
+  // This matters for subagents where many messages appear between the tool call
+  // and its result.
+  const resultTs = tool.kind === "tool" ? (tool as ProcessedToolCall).resultTimestamp : undefined
+  const endSource = resultTs ?? messages[toolIndex + 1]?.timestamp
+  if (!endSource) return undefined
+
+  const endMs = Date.parse(endSource)
+  if (!Number.isFinite(endMs)) return undefined
 
   const delta = endMs - startMs
   return delta > 0 ? delta : undefined

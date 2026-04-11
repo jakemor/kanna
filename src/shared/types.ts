@@ -678,6 +678,7 @@ export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   rawResult?: unknown
   isError?: boolean
   timestamp: string
+  resultTimestamp?: string
 }
 
 export interface AskUserQuestionToolResult {

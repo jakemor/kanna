@@ -39,7 +39,6 @@ export function formatModelLabel(modelId: string): string {
 
 export const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60_000
 
-export const MIN_ELAPSED_MS_FOR_LABEL = 1_000
 
 const MS_PER_SECOND = 1_000
 const SECONDS_PER_MINUTE = 60

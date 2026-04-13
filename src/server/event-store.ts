@@ -305,7 +305,7 @@ export class EventStore {
         break
       }
       case "chat_created": {
-        const chat = {
+      const chat = {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
@@ -315,6 +315,7 @@ export class EventStore {
           provider: null,
           planMode: false,
           sessionToken: null,
+          hasMessages: false,
           lastTurnOutcome: null,
         }
         this.state.chatsById.set(chat.id, chat)
@@ -404,6 +405,7 @@ export class EventStore {
   private applyMessageMetadata(chatId: string, entry: TranscriptEntry) {
     const chat = this.state.chatsById.get(chatId)
     if (!chat) return
+    chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
     }
@@ -540,7 +542,11 @@ export class EventStore {
     for (const chat of this.state.chatsById.values()) {
       if (chat.deletedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
-      if (this.getMessages(chat.id).length > 0) continue
+      if (chat.hasMessages) continue
+      if (this.getMessages(chat.id).length > 0) {
+        chat.hasMessages = true
+        continue
+      }
 
       const event: ChatEvent = {
         v: STORE_VERSION,

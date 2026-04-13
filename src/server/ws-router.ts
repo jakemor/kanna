@@ -102,6 +102,16 @@ interface CreateWsRouterArgs {
   updateManager: UpdateManager | null
 }
 
+interface SnapshotBroadcastFilter {
+  includeSidebar?: boolean
+  includeLocalProjects?: boolean
+  includeUpdate?: boolean
+  includeKeybindings?: boolean
+  chatIds?: Set<string>
+  projectIds?: Set<string>
+  terminalIds?: Set<string>
+}
+
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
   const payload = JSON.stringify(message)
   ws.send(payload)
@@ -128,6 +138,9 @@ export function createWsRouter({
   updateManager,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
+  let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
+  let pendingBroadcastAll = false
+  const pendingBroadcastChatIds = new Set<string>()
   const resolvedDiffStore = diffStore ?? {
     getProjectSnapshot: () => ({ status: "unknown", branchName: undefined, defaultBranchName: undefined, hasOriginRemote: undefined, originRepoSlug: undefined, hasUpstream: undefined, aheadCount: undefined, behindCount: undefined, lastFetchedAt: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
     refreshSnapshot: async () => false,
@@ -196,6 +209,36 @@ export function createWsRouter({
         totalProjectCount: store.state.projectsById.size,
       }))
     }
+  }
+
+  function shouldIncludeTopic(topic: SubscriptionTopic, filter?: SnapshotBroadcastFilter) {
+    if (!filter) {
+      return true
+    }
+
+    if (topic.type === "sidebar") {
+      return Boolean(filter.includeSidebar)
+    }
+    if (topic.type === "local-projects") {
+      return Boolean(filter.includeLocalProjects)
+    }
+    if (topic.type === "update") {
+      return Boolean(filter.includeUpdate)
+    }
+    if (topic.type === "keybindings") {
+      return Boolean(filter.includeKeybindings)
+    }
+    if (topic.type === "chat") {
+      return filter.chatIds?.has(topic.chatId) ?? false
+    }
+    if (topic.type === "project-git") {
+      return filter.projectIds?.has(topic.projectId) ?? false
+    }
+    if (topic.type === "terminal") {
+      return filter.terminalIds?.has(topic.terminalId) ?? false
+    }
+
+    return true
   }
 
   function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
@@ -314,7 +357,10 @@ export function createWsRouter({
     }
   }
 
-  async function pushSnapshots(ws: ServerWebSocket<ClientState>, options?: { skipPrune?: boolean }) {
+  async function pushSnapshots(
+    ws: ServerWebSocket<ClientState>,
+    options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter }
+  ) {
     const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
       await maybePruneStaleEmptyChats([ws])
@@ -323,6 +369,9 @@ export function createWsRouter({
     let sentCount = 0
     let skippedCount = 0
     for (const [id, topic] of ws.data.subscriptions.entries()) {
+      if (!shouldIncludeTopic(topic, options?.filter)) {
+        continue
+      }
       const envelopeStartedAt = performance.now()
       const envelope = createEnvelope(id, topic)
       const createdAt = performance.now()
@@ -369,8 +418,6 @@ export function createWsRouter({
 
   async function broadcastSnapshots() {
     const startedAt = performance.now()
-    await maybePruneStaleEmptyChats()
-    const afterPruneAt = performance.now()
     let socketCount = 0
     for (const ws of sockets) {
       socketCount += 1
@@ -380,12 +427,89 @@ export function createWsRouter({
       console.log("[kanna/send->starting][server]", JSON.stringify({
         stage: "ws.broadcast_snapshots_completed",
         elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        pruneMs: Number((afterPruneAt - startedAt).toFixed(1)),
+        pruneMs: 0,
         socketCount,
         totalChatCount: store.state.chatsById.size,
         totalProjectCount: store.state.projectsById.size,
       }))
     }
+  }
+
+  async function broadcastFilteredSnapshots(filter: SnapshotBroadcastFilter) {
+    const startedAt = performance.now()
+    let socketCount = 0
+    for (const ws of sockets) {
+      socketCount += 1
+      await pushSnapshots(ws, { skipPrune: true, filter })
+    }
+    if (isSendToStartingProfilingEnabled()) {
+      console.log("[kanna/send->starting][server]", JSON.stringify({
+        stage: "ws.broadcast_filtered_snapshots_completed",
+        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
+        socketCount,
+        includeSidebar: Boolean(filter.includeSidebar),
+        chatCount: filter.chatIds?.size ?? 0,
+        projectCount: filter.projectIds?.size ?? 0,
+      }))
+    }
+  }
+
+  function scheduleBroadcast() {
+    pendingBroadcastAll = true
+    pendingBroadcastChatIds.clear()
+    if (pendingBroadcastTimer) {
+      return
+    }
+    pendingBroadcastTimer = setTimeout(() => {
+      pendingBroadcastTimer = null
+      const shouldBroadcastAll = pendingBroadcastAll
+      const chatIds = new Set(pendingBroadcastChatIds)
+      pendingBroadcastAll = false
+      pendingBroadcastChatIds.clear()
+      if (shouldBroadcastAll) {
+        void broadcastSnapshots()
+        return
+      }
+      if (chatIds.size > 0) {
+        void broadcastFilteredSnapshots({
+          includeSidebar: true,
+          chatIds,
+        })
+      }
+    }, 16)
+  }
+
+  function scheduleChatStateBroadcast(chatId: string) {
+    if (!pendingBroadcastAll) {
+      pendingBroadcastChatIds.add(chatId)
+    }
+    if (pendingBroadcastTimer) {
+      return
+    }
+    pendingBroadcastTimer = setTimeout(() => {
+      pendingBroadcastTimer = null
+      const shouldBroadcastAll = pendingBroadcastAll
+      const chatIds = new Set(pendingBroadcastChatIds)
+      pendingBroadcastAll = false
+      pendingBroadcastChatIds.clear()
+      if (shouldBroadcastAll) {
+        void broadcastSnapshots()
+        return
+      }
+      if (chatIds.size > 0) {
+        void broadcastFilteredSnapshots({
+          includeSidebar: true,
+          chatIds,
+        })
+      }
+    }, 16)
+  }
+
+  async function broadcastChatAndSidebar(chatId: string) {
+    await broadcastFilteredSnapshots({
+      includeSidebar: true,
+      chatIds: new Set([chatId]),
+    })
   }
 
   function broadcastError(message: string) {
@@ -563,24 +687,28 @@ export function createWsRouter({
         case "chat.create": {
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
-          break
+          await broadcastChatAndSidebar(chat.id)
+          return
         }
         case "chat.rename": {
           await store.renameChat(command.chatId, command.title)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          await broadcastChatAndSidebar(command.chatId)
+          return
         }
         case "chat.delete": {
           await agent.cancel(command.chatId)
           await agent.closeChat(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
         }
         case "chat.markRead": {
           await store.setChatReadState(command.chatId, false)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          await broadcastChatAndSidebar(command.chatId)
+          return
         }
         case "chat.setDraftProtection": {
           ws.data.protectedDraftChatIds = new Set(command.chatIds)
@@ -600,7 +728,7 @@ export function createWsRouter({
             chatId: result.chatId ?? null,
             payloadBytes,
           })
-          break
+          return
         }
         case "chat.refreshDiffs": {
           const { project } = resolveChatProject(command.chatId)
@@ -780,12 +908,12 @@ export function createWsRouter({
         case "chat.cancel": {
           await agent.cancel(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.stopDraining": {
           await agent.stopDraining(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.loadHistory": {
           const chat = store.getChat(command.chatId)
@@ -797,7 +925,7 @@ export function createWsRouter({
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "terminal.create": {
           const project = store.getProject(command.projectId)
@@ -852,6 +980,9 @@ export function createWsRouter({
       sockets.delete(ws)
     },
     broadcastSnapshots,
+    scheduleBroadcast,
+    scheduleChatStateBroadcast,
+    pruneStaleEmptyChats: () => maybePruneStaleEmptyChats(),
     async handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
       let parsed: unknown
       try {
@@ -873,12 +1004,12 @@ export function createWsRouter({
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
             if (ws.data.subscriptions.has(parsed.id)) {
-              void pushSnapshots(ws)
+              void pushSnapshots(ws, { skipPrune: true })
             }
           })
           return
         }
-        await pushSnapshots(ws)
+        await pushSnapshots(ws, { skipPrune: true })
         return
       }
 
@@ -893,6 +1024,9 @@ export function createWsRouter({
       await handleCommand(ws, parsed)
     },
     dispose() {
+      if (pendingBroadcastTimer) {
+        clearTimeout(pendingBroadcastTimer)
+      }
       agent.setBackgroundErrorReporter?.(null)
       disposeTerminalEvents()
       disposeKeybindingEvents()

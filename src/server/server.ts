@@ -99,8 +99,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     : null
   const agent = new AgentCoordinator({
     store,
-    onStateChange: () => {
-      void router.broadcastSnapshots()
+    onStateChange: (chatId?: string) => {
+      if (chatId) {
+        router.scheduleChatStateBroadcast(chatId)
+        return
+      }
+      router.scheduleBroadcast()
     },
   })
   router = createWsRouter({
@@ -115,7 +119,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     updateManager,
   })
   const staleEmptyChatPruneInterval = setInterval(() => {
-    void router.broadcastSnapshots()
+    void router.pruneStaleEmptyChats()
+      .then(() => router.broadcastSnapshots())
   }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")

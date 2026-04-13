@@ -91,7 +91,7 @@ interface ClaudeSessionState {
 
 interface AgentCoordinatorArgs {
   store: EventStore
-  onStateChange: () => void
+  onStateChange: (chatId?: string) => void
   codexManager?: CodexAppServerManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
@@ -629,7 +629,7 @@ async function startClaudeSession(args: {
 
 export class AgentCoordinator {
   private readonly store: EventStore
-  private readonly onStateChange: () => void
+  private readonly onStateChange: (chatId?: string) => void
   private readonly codexManager: CodexAppServerManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
@@ -668,6 +668,10 @@ export class AgentCoordinator {
     return new Set(this.drainingStreams.keys())
   }
 
+  private emitStateChange(chatId?: string) {
+    this.onStateChange(chatId)
+  }
+
   getActiveTurnProfile(chatId: string): SendToStartingProfile | null {
     const active = this.activeTurns.get(chatId)
     if (!active?.clientTraceId || active.profilingStartedAt === undefined) {
@@ -685,7 +689,7 @@ export class AgentCoordinator {
     if (!draining) return
     draining.turn.close()
     this.drainingStreams.delete(chatId)
-    this.onStateChange()
+    this.emitStateChange(chatId)
   }
 
   async closeChat(chatId: string) {
@@ -695,7 +699,7 @@ export class AgentCoordinator {
       claudeSession.session.close()
       this.claudeSessions.delete(chatId)
     }
-    this.onStateChange()
+    this.emitStateChange(chatId)
   }
 
   private resolveProvider(command: Extract<ClientCommand, { type: "chat.send" }>, currentProvider: AgentProvider | null) {
@@ -813,7 +817,7 @@ export class AgentCoordinator {
       }
 
       active.status = "waiting_for_user"
-      this.onStateChange()
+      this.emitStateChange(args.chatId)
 
       return await new Promise<unknown>((resolve) => {
         active.pendingTool = {
@@ -901,7 +905,7 @@ export class AgentCoordinator {
       chatId: args.chatId,
       status: active.status,
     })
-    this.onStateChange()
+    this.emitStateChange(args.chatId)
     logSendToStartingProfile(args.profile, "start_turn.state_change_emitted", {
       chatId: args.chatId,
       status: active.status,
@@ -921,7 +925,7 @@ export class AgentCoordinator {
             }
           }
           await this.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo }))
-          this.onStateChange()
+          this.emitStateChange(args.chatId)
         })
         .catch(() => undefined)
     }
@@ -1055,7 +1059,7 @@ export class AgentCoordinator {
         if (event.type === "session_token" && event.sessionToken) {
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
-          this.onStateChange()
+          this.emitStateChange(session.chatId)
           continue
         }
 
@@ -1077,7 +1081,7 @@ export class AgentCoordinator {
           this.activeTurns.delete(session.chatId)
         }
 
-        this.onStateChange()
+        this.emitStateChange(session.chatId)
       }
     } catch (error) {
       const active = this.activeTurns.get(session.chatId)
@@ -1105,7 +1109,7 @@ export class AgentCoordinator {
         this.activeTurns.delete(session.chatId)
       }
       session.session.close()
-      this.onStateChange()
+      this.emitStateChange(session.chatId)
     }
   }
 
@@ -1123,7 +1127,7 @@ export class AgentCoordinator {
       if (chat.title !== expectedCurrentTitle) return
 
       await this.store.renameChat(chatId, result.title)
-      this.onStateChange()
+      this.emitStateChange(chatId)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.reportBackgroundError?.(
@@ -1141,7 +1145,7 @@ export class AgentCoordinator {
 
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
-          this.onStateChange()
+          this.emitStateChange(active.chatId)
           continue
         }
 
@@ -1169,7 +1173,7 @@ export class AgentCoordinator {
           this.drainingStreams.set(active.chatId, { turn: active.turn })
         }
 
-        this.onStateChange()
+        this.emitStateChange(active.chatId)
       }
     } catch (error) {
       if (!active.cancelRequested) {
@@ -1199,7 +1203,7 @@ export class AgentCoordinator {
       }
       // Stream has fully ended — no longer draining.
       this.drainingStreams.delete(active.chatId)
-      this.onStateChange()
+      this.emitStateChange(active.chatId)
 
       if (active.postToolFollowUp && !active.cancelRequested) {
         try {
@@ -1227,7 +1231,7 @@ export class AgentCoordinator {
             })
           )
           await this.store.recordTurnFailed(active.chatId, message)
-          this.onStateChange()
+          this.emitStateChange(active.chatId)
         }
       }
     }
@@ -1274,7 +1278,7 @@ export class AgentCoordinator {
     // Remove from activeTurns immediately so the UI reflects the cancellation
     // right away, rather than waiting for interrupt() which may hang.
     this.activeTurns.delete(chatId)
-    this.onStateChange()
+    this.emitStateChange(chatId)
 
     // Now attempt to interrupt/close the underlying stream in the background.
     // This is best-effort — the turn is already removed from active state above,
@@ -1343,6 +1347,6 @@ export class AgentCoordinator {
 
     pending.resolve(command.result)
 
-    this.onStateChange()
+    this.emitStateChange(command.chatId)
   }
 }

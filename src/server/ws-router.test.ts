@@ -60,6 +60,7 @@ describe("ws-router", () => {
       updateManager: null,
     })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
 
     ws.data.subscriptions.set("sub-1", { type: "sidebar" })
     await router.handleMessage(
@@ -143,6 +144,7 @@ describe("ws-router", () => {
       updateManager: null,
     })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
 
     await router.handleMessage(
       ws as never,
@@ -230,6 +232,7 @@ describe("ws-router", () => {
       updateManager: null,
     })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
 
     await router.handleMessage(
       ws as never,
@@ -302,6 +305,7 @@ describe("ws-router", () => {
       updateManager: null,
     })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
 
     await router.handleMessage(
       ws as never,
@@ -383,6 +387,7 @@ describe("ws-router", () => {
       updateManager: null,
     })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
 
     await router.handleMessage(
       ws as never,
@@ -666,7 +671,7 @@ describe("ws-router", () => {
     })
   })
 
-  test("prunes stale empty chats before sending sidebar snapshots", async () => {
+  test("prunes stale empty chats during explicit maintenance runs", async () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
@@ -715,6 +720,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
+    await router.pruneStaleEmptyChats()
     await router.handleMessage(
       ws as never,
       JSON.stringify({
@@ -743,7 +749,7 @@ describe("ws-router", () => {
     })
   })
 
-  test("protects draft-bearing chats from stale pruning before sidebar snapshots", async () => {
+  test("protects draft-bearing chats during explicit maintenance runs", async () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
@@ -790,6 +796,7 @@ describe("ws-router", () => {
       updateManager: null,
     })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
 
     await router.handleMessage(
       ws as never,
@@ -804,6 +811,7 @@ describe("ws-router", () => {
       })
     )
 
+    await router.pruneStaleEmptyChats()
     await router.handleMessage(
       ws as never,
       JSON.stringify({

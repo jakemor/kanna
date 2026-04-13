@@ -15,6 +15,7 @@ export interface ChatRecord {
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
+  hasMessages?: boolean
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
 }

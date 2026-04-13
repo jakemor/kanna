@@ -33,6 +33,41 @@ interface TranscriptPageResult {
   olderCursor: string | null
 }
 
+interface ParsedReplayEvent {
+  event: StoreEvent
+  sourceIndex: number
+  lineIndex: number
+}
+
+function getReplayEventPriority(event: StoreEvent) {
+  switch (event.type) {
+    case "project_opened":
+    case "project_removed":
+      return 0
+    case "chat_created":
+      return 1
+    case "chat_renamed":
+    case "chat_provider_set":
+    case "chat_plan_mode_set":
+      return 2
+    case "message_appended":
+      return 3
+    case "turn_started":
+      return 4
+    case "session_token_set":
+      return 5
+    case "turn_cancelled":
+      return 6
+    case "turn_finished":
+    case "turn_failed":
+      return 7
+    case "chat_read_state_set":
+      return 8
+    case "chat_deleted":
+      return 9
+  }
+}
+
 function encodeHistoryCursor(index: number) {
   return `idx:${index}`
 }
@@ -166,21 +201,33 @@ export class EventStore {
 
   private async replayLogs() {
     if (this.storageReset) return
-    await this.replayLog<ProjectEvent>(this.projectsLogPath)
+    const replayEvents = [
+      ...await this.loadReplayEvents(this.projectsLogPath, 0),
+      ...await this.loadReplayEvents(this.chatsLogPath, 1),
+      ...await this.loadReplayEvents(this.messagesLogPath, 2),
+      ...await this.loadReplayEvents(this.turnsLogPath, 3),
+    ]
     if (this.storageReset) return
-    await this.replayLog<ChatEvent>(this.chatsLogPath)
-    if (this.storageReset) return
-    await this.replayLog<MessageEvent>(this.messagesLogPath)
-    if (this.storageReset) return
-    await this.replayLog<TurnEvent>(this.turnsLogPath)
+
+    replayEvents
+      .sort((left, right) => (
+        left.event.timestamp - right.event.timestamp
+        || getReplayEventPriority(left.event) - getReplayEventPriority(right.event)
+        || left.sourceIndex - right.sourceIndex
+        || left.lineIndex - right.lineIndex
+      ))
+      .forEach(({ event }) => {
+        this.applyEvent(event)
+      })
   }
 
-  private async replayLog<TEvent extends StoreEvent>(filePath: string) {
+  private async loadReplayEvents(filePath: string, sourceIndex: number): Promise<ParsedReplayEvent[]> {
     const file = Bun.file(filePath)
-    if (!(await file.exists())) return
+    if (!(await file.exists())) return []
     const text = await file.text()
-    if (!text.trim()) return
+    if (!text.trim()) return []
 
+    const parsedEvents: ParsedReplayEvent[] = []
     const lines = text.split("\n")
     let lastNonEmpty = -1
     for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -198,19 +245,25 @@ export class EventStore {
         if (event.v !== STORE_VERSION) {
           console.warn(`${LOG_PREFIX} Resetting local history from incompatible event log`)
           await this.clearStorage()
-          return
+          return []
         }
-        this.applyEvent(event as StoreEvent)
+        parsedEvents.push({
+          event: event as StoreEvent,
+          sourceIndex,
+          lineIndex: index,
+        })
       } catch (error) {
         if (index === lastNonEmpty) {
           console.warn(`${LOG_PREFIX} Ignoring corrupt trailing line in ${path.basename(filePath)}`)
-          return
+          return parsedEvents
         }
         console.warn(`${LOG_PREFIX} Failed to replay ${path.basename(filePath)}, resetting local history:`, error)
         await this.clearStorage()
-        return
+        return []
       }
     }
+
+    return parsedEvents
   }
 
   private applyEvent(event: StoreEvent) {

@@ -46,9 +46,9 @@ function KannaLayout() {
   const handleSidebarRemoveProject = useCallback((projectId: string) => {
     void state.handleRemoveProject(projectId)
   }, [state.handleRemoveProject])
-  const handleInstallUpdate = useCallback(() => {
-    void state.handleInstallUpdate()
-  }, [state.handleInstallUpdate])
+  const handleOpenChangelog = useCallback(() => {
+    navigate("/settings/changelog")
+  }, [navigate])
   const sidebarElement = useMemo(() => (
     <KannaSidebar
       data={state.sidebarData}
@@ -72,10 +72,10 @@ function KannaLayout() {
       onRemoveProject={handleSidebarRemoveProject}
       editorLabel={state.editorLabel}
       updateSnapshot={state.updateSnapshot}
-      onInstallUpdate={handleInstallUpdate}
+      onOpenChangelog={handleOpenChangelog}
     />
   ), [
-    handleInstallUpdate,
+    handleOpenChangelog,
     handleOpenAddProjectModal,
     handleSidebarCopyPath,
     handleSidebarCreateChat,

@@ -41,7 +41,7 @@ interface KannaSidebarProps {
   onRemoveProject: (projectId: string) => void
   editorLabel: string
   updateSnapshot: UpdateSnapshot | null
-  onInstallUpdate: () => void
+  onOpenChangelog: () => void
 }
 
 function KannaSidebarImpl({
@@ -66,7 +66,7 @@ function KannaSidebarImpl({
   onRemoveProject,
   editorLabel,
   updateSnapshot,
-  onInstallUpdate,
+  onOpenChangelog,
 }: KannaSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -355,12 +355,12 @@ function KannaSidebarImpl({
                 variant="outline"
                 size="sm"
                 className="rounded-full !h-auto mr-1 py-0.5 px-2 bg-logo/20 hover:bg-logo text-logo border-logo/20 hover:text-foreground hover:border-logo/20  text-[11px] font-bold tracking-wider"
-                onClick={onInstallUpdate}
+                onClick={onOpenChangelog}
                 disabled={isUpdating}
-                title={updateSnapshot?.latestVersion ? `Update to ${updateSnapshot.latestVersion}` : "Update Kanna"}
+                title={updateSnapshot?.latestVersion ? `View changelog for ${updateSnapshot.latestVersion}` : "Open changelog"}
               >
                 {isUpdating ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
-                UPDATE
+                CHANGELOG
               </Button>
             ) : null}
             <Button

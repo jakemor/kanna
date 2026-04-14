@@ -10,6 +10,7 @@ import {
   getUiUpdateRestartReconnectAction,
   reconcileOptimisticUserPrompts,
   resolveComposeIntent,
+  shouldHandleUiUpdateReloadRequest,
   shouldMarkActiveChatRead,
   shouldAutoFollowTranscript,
 } from "./useKannaState"
@@ -164,14 +165,27 @@ describe("getUiUpdateRestartReconnectAction", () => {
     expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "disconnected")).toBe("awaiting_reconnect")
   })
 
-  test("navigates to changelog after reconnect", () => {
-    expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "connected")).toBe("navigate_changelog")
+  test("reloads the app after reconnect", () => {
+    expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "connected")).toBe("reload_app")
   })
 
   test("does nothing for unrelated phase and connection combinations", () => {
     expect(getUiUpdateRestartReconnectAction(null, "connected")).toBe("none")
     expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "connected")).toBe("none")
     expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "disconnected")).toBe("none")
+  })
+})
+
+describe("shouldHandleUiUpdateReloadRequest", () => {
+  test("handles a new backend reload request", () => {
+    expect(shouldHandleUiUpdateReloadRequest(123, null)).toBe(true)
+    expect(shouldHandleUiUpdateReloadRequest(123, "122")).toBe(true)
+  })
+
+  test("ignores missing or already handled reload requests", () => {
+    expect(shouldHandleUiUpdateReloadRequest(null, null)).toBe(false)
+    expect(shouldHandleUiUpdateReloadRequest(undefined, null)).toBe(false)
+    expect(shouldHandleUiUpdateReloadRequest(123, "123")).toBe(false)
   })
 })
 

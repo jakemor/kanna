@@ -366,13 +366,13 @@ export function shouldAutoFollowTranscript(distanceFromBottom: number) {
 export function getUiUpdateRestartReconnectAction(
   phase: string | null,
   connectionStatus: SocketStatus
-): "none" | "awaiting_reconnect" | "navigate_changelog" {
+): "none" | "awaiting_reconnect" | "reload_app" {
   if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
     return "awaiting_reconnect"
   }
 
   if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
-    return "navigate_changelog"
+    return "reload_app"
   }
 
   return "none"
@@ -380,6 +380,7 @@ export function getUiUpdateRestartReconnectAction(
 
 export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
+const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "kanna:last-update-reload-request"
 
 export function getTranscriptPaddingBottom(inputHeight: number) {
   return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
@@ -399,6 +400,22 @@ function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_reconn
 
 function clearUiUpdateRestartPhase() {
   window.sessionStorage.removeItem(UI_UPDATE_RESTART_STORAGE_KEY)
+}
+
+export function shouldHandleUiUpdateReloadRequest(
+  reloadRequestedAt: number | null | undefined,
+  lastHandledReloadRequest: string | null
+) {
+  if (!reloadRequestedAt) return false
+  return String(reloadRequestedAt) !== lastHandledReloadRequest
+}
+
+function getLastHandledUiUpdateReloadRequest() {
+  return window.sessionStorage.getItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY)
+}
+
+function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
+  window.sessionStorage.setItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY, String(reloadRequestedAt))
 }
 
 export interface ProjectRequest {
@@ -596,6 +613,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [connectionStatus, socket])
 
   useEffect(() => {
+    const reloadRequestedAt = updateSnapshot?.reloadRequestedAt
+    if (!shouldHandleUiUpdateReloadRequest(reloadRequestedAt, getLastHandledUiUpdateReloadRequest())) {
+      return
+    }
+    if (!reloadRequestedAt) {
+      return
+    }
+
+    setLastHandledUiUpdateReloadRequest(reloadRequestedAt)
+    clearUiUpdateRestartPhase()
+    window.location.reload()
+  }, [updateSnapshot?.reloadRequestedAt])
+
+  useEffect(() => {
     const phase = getUiUpdateRestartPhase()
     const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
     if (reconnectAction === "awaiting_reconnect") {
@@ -603,11 +634,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return
     }
 
-    if (reconnectAction === "navigate_changelog") {
+    if (reconnectAction === "reload_app") {
       clearUiUpdateRestartPhase()
-      navigate("/settings/changelog", { replace: true })
+      window.location.reload()
     }
-  }, [connectionStatus, navigate])
+  }, [connectionStatus])
 
   useEffect(() => {
     function handleWindowFocus() {

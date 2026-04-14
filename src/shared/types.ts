@@ -263,6 +263,7 @@ export interface UpdateSnapshot {
   lastCheckedAt: number | null
   error: string | null
   installAction: "restart" | "reload"
+  reloadRequestedAt: number | null
 }
 
 export type UpdateInstallErrorCode =

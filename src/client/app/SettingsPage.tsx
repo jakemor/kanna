@@ -9,10 +9,8 @@ import {
   Monitor,
   Moon,
   MessageSquareQuote,
-  RefreshCw,
   Settings2,
   Sun,
-  CloudDownload,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -135,28 +133,6 @@ export function getKeybindingsSubtitle(filePathDisplay: string) {
   return `Edit global app shortcuts stored in ${filePathDisplay}.`
 }
 
-export function getGeneralHeaderAction(updateSnapshot: UpdateSnapshot | null) {
-  const isChecking = updateSnapshot?.status === "checking"
-  const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
-
-  if (updateSnapshot?.updateAvailable) {
-    return {
-      disabled: isUpdating,
-      kind: "update" as const,
-      label: "Update",
-      variant: "default" as const,
-    }
-  }
-
-  return {
-    disabled: isChecking || isUpdating,
-    kind: "check" as const,
-    label: "Check for updates",
-    spinning: isChecking,
-    variant: "outline" as const,
-  }
-}
-
 export function shouldPreviewChatSoundChange(
   previousValue: string,
   nextValue: string
@@ -227,14 +203,80 @@ export function ChangelogSection({
   releases,
   error,
   onRetry,
+  updateSnapshot,
+  currentVersion,
+  onInstallUpdate,
+  onCheckForUpdates,
 }: {
   status: ChangelogStatus
   releases: GithubRelease[]
   error: string | null
   onRetry: () => void
+  updateSnapshot: UpdateSnapshot | null
+  currentVersion: string
+  onInstallUpdate: () => void
+  onCheckForUpdates: () => void
 }) {
+  const latestVersion = updateSnapshot?.latestVersion ?? releases[0]?.tag_name ?? "Unknown"
+  const currentVersionLabel = updateSnapshot?.currentVersion ?? currentVersion
+  const isChecking = updateSnapshot?.status === "checking"
+  const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
+  const canInstallUpdate = updateSnapshot?.updateAvailable === true
+
   return (
     <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <article className="rounded-xl border border-border bg-card/30 px-5 py-4">
+          <div className="text-2xl font-semibold tracking-[-0.3px] text-foreground">
+            {currentVersionLabel}
+          </div>
+          <div className="mt-2 text-sm text-muted-foreground">
+            You are currently running this version of Kanna.
+          </div>
+        </article>
+
+        <article className="rounded-xl border border-primary/30 bg-primary/5 px-5 py-4">
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div className="min-w-0">
+              <div className="text-2xl font-semibold tracking-[-0.3px] text-foreground">
+                {latestVersion}
+              </div>
+              <div className="mt-2 text-sm text-muted-foreground">
+                {updateSnapshot?.status === "checking"
+                  ? "Checking for the newest release."
+                  : canInstallUpdate
+                    ? "A newer version is available."
+                    : updateSnapshot?.status === "up_to_date"
+                      ? "You already have the latest version."
+                      : updateSnapshot?.status === "restart_pending"
+                        ? "Update installed. Waiting for the app to restart."
+                        : updateSnapshot?.status === "updating"
+                          ? "Installing the latest version now."
+                          : "Use this panel to check for and install updates."}
+                {updateSnapshot?.error ? ` ${updateSnapshot.error}` : ""}
+              </div>
+            </div>
+            {canInstallUpdate ? (
+              <SettingsHeaderButton
+                variant="default"
+                onClick={onInstallUpdate}
+                disabled={isUpdating}
+              >
+                {isUpdating ? "Updating…" : "Update"}
+              </SettingsHeaderButton>
+            ) : (
+              <SettingsHeaderButton
+                variant="outline"
+                onClick={onCheckForUpdates}
+                disabled={isChecking || isUpdating}
+              >
+                {isChecking ? "Checking…" : "Check for updates"}
+              </SettingsHeaderButton>
+            )}
+          </div>
+        </article>
+      </div>
+
       {status === "loading" || status === "idle" ? (
         <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-border bg-card/40 px-6 py-8 text-sm text-muted-foreground">
           <div className="flex items-center gap-3">
@@ -317,7 +359,6 @@ export function ChangelogSection({
                 >
                   <GitHubIcon className="h-4 w-4" />
                 </a>
-
               </div>
             
              
@@ -424,7 +465,6 @@ export function SettingsPage() {
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
   const updateSnapshot = state.updateSnapshot
-  const generalHeaderAction = getGeneralHeaderAction(updateSnapshot)
   const updateStatusLabel = updateSnapshot?.status === "checking"
     ? "Checking for updates…"
     : updateSnapshot?.status === "updating"
@@ -686,28 +726,6 @@ export function SettingsPage() {
                       >
                         Open in {state.editorLabel}
                       </SettingsHeaderButton>
-                    ) : null}
-                    {selectedPage === "general" ? (
-                      <div className="flex items-center gap-2">
-                        <SettingsHeaderButton
-                          variant={generalHeaderAction.variant}
-                          onClick={() => {
-                            if (generalHeaderAction.kind === "update") {
-                              void state.handleInstallUpdate()
-                              return
-                            }
-                            void state.handleCheckForUpdates({ force: true })
-                          }}
-                          disabled={generalHeaderAction.disabled}
-                          icon={generalHeaderAction.kind === "check"
-                            ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
-                            : generalHeaderAction.kind === "update"
-                            ? <CloudDownload className={cn("size-3.5")} />
-                            : undefined}
-                        >
-                          {generalHeaderAction.label}
-                        </SettingsHeaderButton>
-                      </div>
                     ) : null}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
@@ -1063,6 +1081,14 @@ export function SettingsPage() {
                     releases={releases}
                     error={changelogError}
                     onRetry={retryChangelog}
+                    updateSnapshot={updateSnapshot}
+                    currentVersion={appVersion}
+                    onInstallUpdate={() => {
+                      void state.handleInstallUpdate()
+                    }}
+                    onCheckForUpdates={() => {
+                      void state.handleCheckForUpdates({ force: true })
+                    }}
                   />
                 )}
               </div>

@@ -309,6 +309,7 @@ export function createWsRouter({
             lastCheckedAt: null,
             error: null,
             installAction: "restart",
+            reloadRequestedAt: null,
           },
         },
       }
@@ -618,6 +619,7 @@ export function createWsRouter({
                 lastCheckedAt: Date.now(),
                 error: "Update manager unavailable.",
                 installAction: "restart",
+                reloadRequestedAt: null,
               }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return

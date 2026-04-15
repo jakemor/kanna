@@ -82,7 +82,9 @@ Options:
   --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
   --host <host>        Bind to a specific host or IP
   --remote             Shortcut for --host 0.0.0.0
-  --share [token]      Create a public Cloudflare share URL with terminal QR
+  --share              Create a public Cloudflare quick tunnel with terminal QR
+  --cloudflared <token>
+                       Run a named Cloudflare tunnel from a token
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
   --version            Print version and exit
@@ -116,14 +118,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--host") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --host")
-      if (isShareEnabled(share)) throw new Error("--share cannot be used with --host")
+      if (isShareEnabled(share)) {
+        throw new Error(typeof share === "string" ? "--share cannot be used with --host" : "--cloudflared cannot be used with --host")
+      }
       host = next
       sawHost = true
       index += 1
       continue
     }
     if (arg === "--remote") {
-      if (isShareEnabled(share)) throw new Error("--share cannot be used with --remote")
+      if (isShareEnabled(share)) {
+        throw new Error(typeof share === "string" ? "--share cannot be used with --remote" : "--cloudflared cannot be used with --remote")
+      }
       host = "0.0.0.0"
       sawRemote = true
       continue
@@ -131,13 +137,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--share") {
       if (sawHost) throw new Error("--share cannot be used with --host")
       if (sawRemote) throw new Error("--share cannot be used with --remote")
-      const next = argv[index + 1]
-      if (next && !next.startsWith("-")) {
-        share = { kind: "token", token: next }
-        index += 1
-        continue
-      }
       share = "quick"
+      continue
+    }
+    if (arg === "--cloudflared") {
+      if (sawHost) throw new Error("--cloudflared cannot be used with --host")
+      if (sawRemote) throw new Error("--cloudflared cannot be used with --remote")
+      const next = argv[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --cloudflared")
+      share = { kind: "token", token: next }
+      index += 1
       continue
     }
     if (arg === "--no-open") {

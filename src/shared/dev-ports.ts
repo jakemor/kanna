@@ -59,14 +59,17 @@ export function stripShareArg(args: string[]) {
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
-    if (arg !== "--share") {
-      stripped.push(arg)
+    if (arg === "--share") {
       continue
     }
 
-    const next = args[index + 1]
-    if (next && !next.startsWith("-")) {
+    if (arg === "--cloudflared") {
       index += 1
+      continue
+    }
+
+    if (arg !== "--share") {
+      stripped.push(arg)
     }
   }
 
@@ -88,17 +91,22 @@ export function parseDevArgs(args: string[], localHostname: string): DevArgResol
     if (arg === "--share") {
       if (sawHost) throw new Error("--share cannot be used with --host")
       if (sawRemote) throw new Error("--share cannot be used with --remote")
-      const next = args[index + 1]
-      if (next && !next.startsWith("-")) {
-        share = { kind: "token", token: next }
-        index += 1
-        continue
-      }
       share = "quick"
       continue
     }
+    if (arg === "--cloudflared") {
+      if (sawHost) throw new Error("--cloudflared cannot be used with --host")
+      if (sawRemote) throw new Error("--cloudflared cannot be used with --remote")
+      const next = args[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --cloudflared")
+      share = { kind: "token", token: next }
+      index += 1
+      continue
+    }
     if (arg === "--remote") {
-      if (isShareEnabled(share)) throw new Error("--share cannot be used with --remote")
+      if (isShareEnabled(share)) {
+        throw new Error(typeof share === "string" ? "--share cannot be used with --remote" : "--cloudflared cannot be used with --remote")
+      }
       sawRemote = true
       backendTargetHost = "127.0.0.1"
       allowAllHosts = true
@@ -108,7 +116,9 @@ export function parseDevArgs(args: string[], localHostname: string): DevArgResol
 
     const next = args[index + 1]
     if (!next || next.startsWith("-")) continue
-    if (isShareEnabled(share)) throw new Error("--share cannot be used with --host")
+    if (isShareEnabled(share)) {
+      throw new Error(typeof share === "string" ? "--share cannot be used with --host" : "--cloudflared cannot be used with --host")
+    }
     sawHost = true
     hosts.add(next)
     backendTargetHost = next === "0.0.0.0" ? "127.0.0.1" : next

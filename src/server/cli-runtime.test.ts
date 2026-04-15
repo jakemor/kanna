@@ -146,8 +146,8 @@ describe("parseArgs", () => {
     })
   })
 
-  test("--share accepts a token", () => {
-    expect(parseArgs(["--share", "secret-token"])).toEqual({
+  test("--cloudflared accepts a token", () => {
+    expect(parseArgs(["--cloudflared", "secret-token"])).toEqual({
       kind: "run",
       options: {
         port: 3210,
@@ -157,6 +157,11 @@ describe("parseArgs", () => {
         strictPort: false,
       },
     })
+  })
+
+  test("--cloudflared without a token throws", () => {
+    expect(() => parseArgs(["--cloudflared"])).toThrow("Missing value for --cloudflared")
+    expect(() => parseArgs(["--cloudflared", "--no-open"])).toThrow("Missing value for --cloudflared")
   })
 
   test("--host with IP binds to that address", () => {
@@ -195,6 +200,13 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--host", "dev-box", "--share"])).toThrow("--share cannot be used with --host")
     expect(() => parseArgs(["--share", "--remote"])).toThrow("--share cannot be used with --remote")
     expect(() => parseArgs(["--remote", "--share"])).toThrow("--share cannot be used with --remote")
+  })
+
+  test("--cloudflared is incompatible with --host and --remote", () => {
+    expect(() => parseArgs(["--cloudflared", "secret-token", "--host", "dev-box"])).toThrow("--cloudflared cannot be used with --host")
+    expect(() => parseArgs(["--host", "dev-box", "--cloudflared", "secret-token"])).toThrow("--cloudflared cannot be used with --host")
+    expect(() => parseArgs(["--cloudflared", "secret-token", "--remote"])).toThrow("--cloudflared cannot be used with --remote")
+    expect(() => parseArgs(["--remote", "--cloudflared", "secret-token"])).toThrow("--cloudflared cannot be used with --remote")
   })
 
   test("returns version and help actions without running startup", () => {
@@ -409,7 +421,7 @@ describe("runCli", () => {
       },
     })
 
-    const result = await runCli(["--share", "secret-token"], deps)
+    const result = await runCli(["--cloudflared", "secret-token"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.shareTunnel).toEqual([{

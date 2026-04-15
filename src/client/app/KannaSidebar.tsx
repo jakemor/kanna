@@ -357,10 +357,10 @@ function KannaSidebarImpl({
                 className="rounded-full !h-auto mr-1 py-0.5 px-2 bg-logo/20 hover:bg-logo text-logo border-logo/20 hover:text-foreground hover:border-logo/20  text-[11px] font-bold tracking-wider"
                 onClick={onOpenChangelog}
                 disabled={isUpdating}
-                title={updateSnapshot?.latestVersion ? `View changelog for ${updateSnapshot.latestVersion}` : "Open changelog"}
+                title={updateSnapshot?.latestVersion ? `Update to ${updateSnapshot.latestVersion}` : "Update Kanna"}
               >
                 {isUpdating ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
-                CHANGELOG
+                UPDATE
               </Button>
             ) : null}
             <Button

@@ -717,6 +717,14 @@ export function SettingsPage() {
                     <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                       {selectedSection.label}
                     </div>
+                    {selectedPage === "general" ? (
+                      <SettingsHeaderButton
+                        variant="outline"
+                        onClick={() => navigate("/settings/changelog")}
+                      >
+                        Check for updates
+                      </SettingsHeaderButton>
+                    ) : null}
                     {selectedPage === "keybindings" ? (
                       <SettingsHeaderButton
                         onClick={() => {

@@ -195,17 +195,16 @@ describe("ChangelogSection", () => {
         releases={SAMPLE_RELEASES}
         error={null}
         onRetry={() => {}}
-        updateSnapshot={createUpdateSnapshot()}
+        updateSnapshot={createUpdateSnapshot({ latestVersion: "0.8.1", currentVersion: "0.8.1" })}
         currentVersion="1.0.0"
         onInstallUpdate={() => {}}
         onCheckForUpdates={() => {}}
       />
     )
 
-    expect(html).not.toContain("Current Version")
-    expect(html).not.toContain("Latest version")
-    expect(html).toContain("1.0.0")
-    expect(html).toContain("1.1.0")
+    expect(html).not.toContain("You are currently running this version of Kanna.")
+    expect(html).toContain("Current")
+    expect(html).toContain("Update")
     expect(html).toContain("Update")
     expect(html).toContain("v0.8.1")
     expect(html).toContain("Better cursor color")
@@ -266,6 +265,7 @@ describe("ChangelogSection", () => {
         error={null}
         onRetry={() => {}}
         updateSnapshot={createUpdateSnapshot({
+          latestVersion: "0.8.1",
           status: "restart_pending",
         })}
         currentVersion="1.0.0"

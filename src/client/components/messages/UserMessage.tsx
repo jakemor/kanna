@@ -1,4 +1,4 @@
-import { ChevronRight, GalleryVertical, ListPlus, MessageCircleDashed, SquircleDashed } from "lucide-react"
+import { SquircleDashed } from "lucide-react"
 import { useMemo, useState } from "react"
 import type { ChatAttachment } from "../../../shared/types"
 import Markdown from "react-markdown"

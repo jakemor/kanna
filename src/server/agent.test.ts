@@ -10,10 +10,6 @@ import {
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 
-const STEERED_MESSAGE_PREFIX = `<system-message>
-The user would like you to know the following. Please address the message as you see fit then continue with what you were doing
-</system-message>`
-
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
     _id: crypto.randomUUID(),

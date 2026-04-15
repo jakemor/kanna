@@ -11,8 +11,6 @@ import {
   MessageSquareQuote,
   Settings2,
   Sun,
-  Download,
-  Cloud,
   DownloadCloud,
 } from "lucide-react"
 import Markdown from "react-markdown"

@@ -691,18 +691,18 @@ export function ChatPage() {
     }
   }, [onIsAtEndChange])
 
-  const scrollToTranscriptEnd = useCallback((animated = true) => {
+  const scrollToTranscriptEnd = useCallback(async (animated = true) => {
     isAtEndRef.current = true
     clearShowScrollTimeout()
     setShowScrollToBottom(false)
-    void transcriptListRef.current?.scrollToEnd?.({ animated })
+    await transcriptListRef.current?.scrollToEnd?.({ animated })
   }, [clearShowScrollTimeout])
 
   const handleChatSubmit = useCallback(async (
     content: string,
     options?: Parameters<typeof state.handleSend>[1],
   ) => {
-    scrollToTranscriptEnd(false)
+    await scrollToTranscriptEnd(false)
     await state.handleSend(content, options)
   }, [scrollToTranscriptEnd, state])
 

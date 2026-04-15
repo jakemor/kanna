@@ -1,5 +1,6 @@
 import type { ShareMode } from "./share"
 import { isShareEnabled } from "./share"
+import { parseNetworkFlags } from "./network-flags"
 
 export const DEFAULT_DEV_CLIENT_PORT = 5174
 
@@ -79,58 +80,26 @@ export function stripShareArg(args: string[]) {
 export function parseDevArgs(args: string[], localHostname: string): DevArgResolution {
   const { clientPort, serverPort } = resolveDevPorts(args)
   const serverArgs = stripShareArg(stripPortArg(args))
-  let share: ShareMode = false
-  let sawHost = false
-  let sawRemote = false
+  const network = parseNetworkFlags(args)
+  const hosts = new Set<string>(["localhost", "127.0.0.1", "0.0.0.0", localHostname])
   let backendTargetHost = "127.0.0.1"
   let allowAllHosts = false
-  const hosts = new Set<string>(["localhost", "127.0.0.1", "0.0.0.0", localHostname])
 
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]
-    if (arg === "--share") {
-      if (sawHost) throw new Error("--share cannot be used with --host")
-      if (sawRemote) throw new Error("--share cannot be used with --remote")
-      share = "quick"
-      continue
-    }
-    if (arg === "--cloudflared") {
-      if (sawHost) throw new Error("--cloudflared cannot be used with --host")
-      if (sawRemote) throw new Error("--cloudflared cannot be used with --remote")
-      const next = args[index + 1]
-      if (!next || next.startsWith("-")) throw new Error("Missing value for --cloudflared")
-      share = { kind: "token", token: next }
-      index += 1
-      continue
-    }
-    if (arg === "--remote") {
-      if (isShareEnabled(share)) {
-        throw new Error(typeof share === "string" ? "--share cannot be used with --remote" : "--cloudflared cannot be used with --remote")
-      }
-      sawRemote = true
-      backendTargetHost = "127.0.0.1"
-      allowAllHosts = true
-      continue
-    }
-    if (arg !== "--host") continue
-
-    const next = args[index + 1]
-    if (!next || next.startsWith("-")) continue
-    if (isShareEnabled(share)) {
-      throw new Error(typeof share === "string" ? "--share cannot be used with --host" : "--cloudflared cannot be used with --host")
-    }
-    sawHost = true
-    hosts.add(next)
-    backendTargetHost = next === "0.0.0.0" ? "127.0.0.1" : next
-    index += 1
+  // Resolve dev-specific host behavior (allowed hosts list, backend target)
+  if (network.sawRemote) {
+    allowAllHosts = true
+  }
+  if (network.sawHost) {
+    hosts.add(network.host)
+    backendTargetHost = network.host === "0.0.0.0" ? "127.0.0.1" : network.host
   }
 
   return {
     clientPort,
     serverPort,
-    share,
+    share: network.share,
     backendTargetHost,
-    allowedHosts: isShareEnabled(share) || allowAllHosts ? true : [...hosts],
+    allowedHosts: isShareEnabled(network.share) || allowAllHosts ? true : [...hosts],
     serverArgs,
   }
 }

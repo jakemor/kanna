@@ -52,39 +52,10 @@ function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: Ch
     && left.recentLimit === right.recentLimit
 }
 
-function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
-  return left.id === right.id
-    && left.content === right.content
-    && left.createdAt === right.createdAt
-    && left.provider === right.provider
-    && left.model === right.model
-    && left.planMode === right.planMode
-    && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
-    && sameAttachmentArray(left.attachments, right.attachments)
-}
-
-function sameAttachmentArray(left: ChatAttachment[], right: ChatAttachment[]) {
-  if (left === right) return true
-  if (left.length !== right.length) return false
-  return left.every((attachment, index) => {
-    const other = right[index]
-    return Boolean(other)
-      && attachment.id === other.id
-      && attachment.kind === other.kind
-      && attachment.displayName === other.displayName
-      && attachment.absolutePath === other.absolutePath
-      && attachment.relativePath === other.relativePath
-      && attachment.contentUrl === other.contentUrl
-      && attachment.mimeType === other.mimeType
-      && attachment.size === other.size
-  })
-}
-
 function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefined, right: ChatSnapshot["queuedMessages"] | null | undefined) {
   if (left === right) return true
-  if (!left || !right) return false
-  if (left.length !== right.length) return false
-  return left.every((message, index) => sameQueuedMessage(message, right[index]!))
+  if (!left || !right || left.length !== right.length) return false
+  return left.every((msg, i) => JSON.stringify(msg) === JSON.stringify(right[i]))
 }
 
 function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSnapshot | null | undefined) {
@@ -513,6 +484,7 @@ export interface KannaState {
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  authEnabled: boolean
   handleSignOut: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
@@ -544,6 +516,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const socket = useKannaSocket()
   const dialog = useAppDialog()
 
+  const [authEnabled, setAuthEnabled] = useState(false)
   const [sidebarData, setSidebarData] = useState<SidebarData>({ projectGroups: [] })
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
@@ -582,6 +555,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
+
+  useEffect(() => {
+    let cancelled = false
+    void fetch("/auth/status", { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
+      .then(async (r) => r.ok ? await r.json() as { enabled?: boolean } : { enabled: false })
+      .then((p) => { if (!cancelled) setAuthEnabled(p.enabled === true) })
+      .catch(() => { if (!cancelled) setAuthEnabled(false) })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     return socket.subscribe<SidebarData>({ type: "sidebar" }, (snapshot) => {
@@ -1308,33 +1290,28 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
 
-  const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
+  const sendQueueCommand = useCallback(async (
+    type: "message.steer" | "message.dequeue",
+    queuedMessageId: string,
+  ) => {
     if (!activeChatId) return
     try {
-      await socket.command({
-        type: "message.steer",
-        chatId: activeChatId,
-        queuedMessageId,
-      })
+      await socket.command({ type, chatId: activeChatId, queuedMessageId })
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
   }, [activeChatId, socket])
 
-  const handleRemoveQueuedMessage = useCallback(async (queuedMessageId: string) => {
-    if (!activeChatId) return
-    try {
-      await socket.command({
-        type: "message.dequeue",
-        chatId: activeChatId,
-        queuedMessageId,
-      })
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
+  const handleSteerQueuedMessage = useCallback(
+    (queuedMessageId: string) => sendQueueCommand("message.steer", queuedMessageId),
+    [sendQueueCommand],
+  )
+
+  const handleRemoveQueuedMessage = useCallback(
+    (queuedMessageId: string) => sendQueueCommand("message.dequeue", queuedMessageId),
+    [sendQueueCommand],
+  )
 
   const handleCancel = useCallback(async () => {
     if (!activeChatId) return
@@ -1558,6 +1535,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     isDraining,
     navbarLocalPath,
     editorLabel,
+    authEnabled,
     hasSelectedProject,
     addProjectModalOpen,
     openSidebar,

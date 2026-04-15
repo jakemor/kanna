@@ -63,48 +63,13 @@ function createNamedTunnel(token: string, localUrl: string) {
   return tunnel
 }
 
-async function awaitQuickTunnelUrl(tunnel: ShareTunnelProcess) {
-  return await new Promise<string>((resolve, reject) => {
-    let settled = false
-
-    const cleanup = () => {
-      tunnel.off("url", handleUrl)
-      tunnel.off("error", handleError)
-      tunnel.off("exit", handleExit)
-    }
-
-    const settle = (callback: () => void) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      callback()
-    }
-
-    const handleUrl = (url: string) => {
-      settle(() => resolve(normalizePublicUrl(url)))
-    }
-
-    const handleError = (error: Error) => {
-      settle(() => reject(error))
-    }
-
-    const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      settle(() => reject(new Error(`Cloudflare tunnel exited before a public URL was ready (code: ${String(code)}, signal: ${String(signal)})`)))
-    }
-
-    tunnel.once("url", handleUrl)
-    tunnel.once("error", handleError)
-    tunnel.once("exit", handleExit)
-  })
-}
-
-async function awaitNamedTunnelReady(tunnel: ShareTunnelProcess) {
+async function awaitTunnelReady(tunnel: ShareTunnelProcess, options?: { resolveOnConnected?: boolean }) {
   return await new Promise<string | null>((resolve, reject) => {
     let settled = false
 
     const cleanup = () => {
       tunnel.off("url", handleUrl)
-      tunnel.off("connected", handleConnected)
+      if (options?.resolveOnConnected) tunnel.off("connected", handleConnected)
       tunnel.off("error", handleError)
       tunnel.off("exit", handleExit)
     }
@@ -133,7 +98,7 @@ async function awaitNamedTunnelReady(tunnel: ShareTunnelProcess) {
     }
 
     tunnel.once("url", handleUrl)
-    tunnel.once("connected", handleConnected)
+    if (options?.resolveOnConnected) tunnel.once("connected", handleConnected)
     tunnel.once("error", handleError)
     tunnel.once("exit", handleExit)
   })
@@ -148,9 +113,7 @@ export async function startShareTunnel(
   const tunnel = isTokenShareMode(shareMode)
     ? (deps.createNamedTunnel ?? createNamedTunnel)(shareMode.token, localUrl)
     : (deps.createQuickTunnel ?? ((url) => Tunnel.quick(url)))(localUrl)
-  const publicUrl = isTokenShareMode(shareMode)
-    ? await awaitNamedTunnelReady(tunnel)
-    : await awaitQuickTunnelUrl(tunnel)
+  const publicUrl = await awaitTunnelReady(tunnel, isTokenShareMode(shareMode) ? { resolveOnConnected: true } : undefined)
 
   return {
     publicUrl,

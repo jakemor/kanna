@@ -4,6 +4,7 @@ import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import type { ShareMode } from "../shared/share"
 import { isShareEnabled, isTokenShareMode } from "../shared/share"
+import { parseNetworkFlags } from "../shared/network-flags"
 import type { UpdateInstallErrorCode } from "../shared/types"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
@@ -95,12 +96,8 @@ Options:
 
 export function parseArgs(argv: string[]): ParsedArgs {
   let port = PROD_SERVER_PORT
-  let host = "127.0.0.1"
   let openBrowser = true
-  let share: ShareMode = false
   let password: string | null = null
-  let sawHost = false
-  let sawRemote = false
   let strictPort = false
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -121,34 +118,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--host") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --host")
-      if (isShareEnabled(share)) {
-        throw new Error(typeof share === "string" ? "--share cannot be used with --host" : "--cloudflared cannot be used with --host")
-      }
-      host = next
-      sawHost = true
       index += 1
       continue
     }
-    if (arg === "--remote") {
-      if (isShareEnabled(share)) {
-        throw new Error(typeof share === "string" ? "--share cannot be used with --remote" : "--cloudflared cannot be used with --remote")
-      }
-      host = "0.0.0.0"
-      sawRemote = true
-      continue
-    }
-    if (arg === "--share") {
-      if (sawHost) throw new Error("--share cannot be used with --host")
-      if (sawRemote) throw new Error("--share cannot be used with --remote")
-      share = "quick"
-      continue
-    }
     if (arg === "--cloudflared") {
-      if (sawHost) throw new Error("--cloudflared cannot be used with --host")
-      if (sawRemote) throw new Error("--cloudflared cannot be used with --remote")
-      const next = argv[index + 1]
-      if (!next || next.startsWith("-")) throw new Error("Missing value for --cloudflared")
-      share = { kind: "token", token: next }
       index += 1
       continue
     }
@@ -167,16 +140,19 @@ export function parseArgs(argv: string[]): ParsedArgs {
       strictPort = true
       continue
     }
+    if (arg === "--share" || arg === "--remote") continue
     if (!arg.startsWith("-")) throw new Error(`Unexpected positional argument: ${arg}`)
   }
+
+  const network = parseNetworkFlags(argv)
 
   return {
     kind: "run",
     options: {
       port,
-      host,
+      host: network.host,
       openBrowser,
-      share,
+      share: network.share,
       password,
       strictPort,
     },

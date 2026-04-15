@@ -312,15 +312,6 @@ export function ChangelogSection({
 
 
               <div className="flex flex-row items-center justify-end min-w-0 flex-1 gap-2 ">
-                {/* <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  
-                  <span className="rounded-full bg-muted px-2.5 py-1 font-mono text-foreground/80">
-                    {release.tag_name}
-                  </span>
-                </div> */}
-
-             
-            
                   <a
                   href={release.html_url}
                   target="_blank"
@@ -435,7 +426,7 @@ export function SettingsPage() {
   const { theme, setTheme } = useTheme()
   const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
   const [signingOut, setSigningOut] = useState(false)
-  const [authEnabled, setAuthEnabled] = useState(false)
+  const authEnabled = state.authEnabled
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
@@ -510,34 +501,6 @@ export function SettingsPage() {
     if (resolveSettingsSectionId(sectionId)) return
     navigate("/settings/general", { replace: true })
   }, [navigate, sectionId])
-
-  useEffect(() => {
-    let cancelled = false
-
-    void fetch("/auth/status", {
-      method: "GET",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-      },
-    })
-      .then(async (response) => {
-        if (!response.ok) return { enabled: false }
-        return await response.json() as { enabled?: boolean }
-      })
-      .then((payload) => {
-        if (cancelled) return
-        setAuthEnabled(payload.enabled === true)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setAuthEnabled(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   useEffect(() => {
     if (selectedPage !== "changelog" || isConnecting) return

@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto"
-import { APP_NAME } from "../shared/branding"
+
 
 const SESSION_COOKIE_NAME = "kanna_session"
 
@@ -18,7 +18,6 @@ export interface AuthManager {
   handleLogin(req: Request, nextPath: string): Promise<Response>
   handleLogout(req: Request): Response
   handleStatus(req: Request): Response
-  renderLoginPage(req: Request): Response
   unauthorizedResponse(req: Request): Response
 }
 
@@ -68,37 +67,11 @@ function buildCookie(name: string, value: string, req: Request, extras: string[]
 }
 
 async function readLoginForm(req: Request) {
-  const contentType = req.headers.get("content-type") ?? ""
-
-  if (contentType.includes("application/json")) {
-    const payload = await req.json() as { password?: unknown; next?: unknown }
-    return {
-      password: typeof payload.password === "string" ? payload.password : "",
-      nextPath: sanitizeNextPath(typeof payload.next === "string" ? payload.next : "/"),
-      wantsJson: true,
-    }
-  }
-
-  const formData = await req.formData()
+  const payload = await req.json() as { password?: unknown; next?: unknown }
   return {
-    password: String(formData.get("password") ?? ""),
-    nextPath: sanitizeNextPath(String(formData.get("next") ?? "/")),
-    wantsJson: false,
+    password: typeof payload.password === "string" ? payload.password : "",
+    nextPath: sanitizeNextPath(typeof payload.next === "string" ? payload.next : "/"),
   }
-}
-
-function requestWantsHtml(req: Request) {
-  const accept = req.headers.get("accept") ?? ""
-  return accept.includes("text/html")
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("'", "&#39;")
 }
 
 export function createAuthManager(password: string): AuthManager {
@@ -149,108 +122,8 @@ export function createAuthManager(password: string): AuthManager {
     } satisfies AuthStatusPayload)
   }
 
-  function unauthorizedResponse(req: Request) {
-    if (req.method === "GET" && requestWantsHtml(req)) {
-      const url = new URL(req.url)
-      const loginUrl = new URL("/auth/login", req.url)
-      loginUrl.searchParams.set("next", sanitizeNextPath(`${url.pathname}${url.search}`))
-      return Response.redirect(loginUrl, 302)
-    }
-
+  function unauthorizedResponse(_req: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 })
-  }
-
-  function renderLoginPage(req: Request) {
-    if (isAuthenticated(req)) {
-      const currentUrl = new URL(req.url)
-      return Response.redirect(new URL(sanitizeNextPath(currentUrl.searchParams.get("next")), req.url), 302)
-    }
-
-    const currentUrl = new URL(req.url)
-    const nextPath = sanitizeNextPath(currentUrl.searchParams.get("next"))
-    const showError = currentUrl.searchParams.get("error") === "1"
-    const html = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(APP_NAME)} Login</title>
-    <style>
-      :root { color-scheme: dark; }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        font-family: ui-sans-serif, system-ui, sans-serif;
-        background:
-          radial-gradient(circle at top, rgba(255,255,255,0.10), transparent 28%),
-          linear-gradient(160deg, #16181d 0%, #0b0d10 55%, #050608 100%);
-        color: #f4f7fb;
-        display: grid;
-        place-items: center;
-        padding: 24px;
-      }
-      .card {
-        width: min(420px, 100%);
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(12, 15, 20, 0.88);
-        backdrop-filter: blur(10px);
-        border-radius: 24px;
-        padding: 28px;
-        box-shadow: 0 24px 70px rgba(0,0,0,0.35);
-      }
-      h1 { margin: 0 0 8px; font-size: 28px; }
-      p { margin: 0 0 20px; color: #a6b0bd; line-height: 1.5; }
-      label { display: block; font-size: 13px; margin-bottom: 8px; color: #d7dce4; }
-      input {
-        width: 100%;
-        border-radius: 14px;
-        border: 1px solid rgba(255,255,255,0.16);
-        background: rgba(255,255,255,0.04);
-        color: inherit;
-        padding: 14px 16px;
-        font-size: 15px;
-        margin-bottom: 16px;
-      }
-      button {
-        width: 100%;
-        border: 0;
-        border-radius: 14px;
-        padding: 14px 16px;
-        background: linear-gradient(135deg, #f4ede0 0%, #d9c4a1 100%);
-        color: #16181d;
-        font-size: 15px;
-        font-weight: 700;
-        cursor: pointer;
-      }
-      .error {
-        margin-bottom: 16px;
-        border-radius: 14px;
-        background: rgba(255, 106, 106, 0.12);
-        border: 1px solid rgba(255, 106, 106, 0.24);
-        color: #ffb8b8;
-        padding: 12px 14px;
-        font-size: 14px;
-      }
-    </style>
-  </head>
-  <body>
-    <form class="card" method="post" action="/auth/login">
-      <h1>${escapeHtml(APP_NAME)}</h1>
-      <p>This server is password protected. Enter the launch password to continue.</p>
-      ${showError ? '<div class="error">Incorrect password. Try again.</div>' : ""}
-      <input type="hidden" name="next" value="${escapeHtml(nextPath)}" />
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required />
-      <button type="submit">Unlock</button>
-    </form>
-  </body>
-</html>`
-    return new Response(html, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-      },
-    })
   }
 
   async function handleLogin(req: Request, fallbackNextPath: string) {
@@ -258,21 +131,12 @@ export function createAuthManager(password: string): AuthManager {
       return Response.json({ error: "Forbidden" }, { status: 403 })
     }
 
-    const { password: candidate, nextPath, wantsJson } = await readLoginForm(req)
+    const { password: candidate, nextPath } = await readLoginForm(req)
     if (!verifyPassword(candidate)) {
-      if (wantsJson) {
-        return Response.json({ error: "Invalid password" }, { status: 401 })
-      }
-
-      const redirectUrl = new URL("/auth/login", req.url)
-      redirectUrl.searchParams.set("error", "1")
-      redirectUrl.searchParams.set("next", sanitizeNextPath(nextPath || fallbackNextPath))
-      return Response.redirect(redirectUrl, 302)
+      return Response.json({ error: "Invalid password" }, { status: 401 })
     }
 
-    const response = wantsJson
-      ? Response.json({ ok: true, nextPath: sanitizeNextPath(nextPath || fallbackNextPath) })
-      : Response.redirect(new URL(sanitizeNextPath(nextPath || fallbackNextPath), req.url), 302)
+    const response = Response.json({ ok: true, nextPath: sanitizeNextPath(nextPath || fallbackNextPath) })
 
     response.headers.set("Set-Cookie", createSessionCookie(req))
     return response
@@ -298,7 +162,6 @@ export function createAuthManager(password: string): AuthManager {
     handleLogin,
     handleLogout,
     handleStatus,
-    renderLoginPage,
     unauthorizedResponse,
   }
 }

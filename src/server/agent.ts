@@ -127,6 +127,13 @@ function logClaudeSteer(stage: string, details?: Record<string, unknown>) {
   }))
 }
 
+class SteerLogger {
+  constructor(private chatId: string, private sessionId: string) {}
+  log(stage: string, extra?: Record<string, unknown>) {
+    logClaudeSteer(stage, { chatId: this.chatId, sessionId: this.sessionId, ...extra })
+  }
+}
+
 const STEERED_MESSAGE_PREFIX = `<system-message>
 The user would like to inform you of something while you continue to work. Acknowledge receipt immediately with a text response, then continue with the task at hand, incorporating the user's feedback if needed.
 </system-message>`
@@ -1018,9 +1025,7 @@ export class AgentCoordinator {
       session.nextPromptSeq = promptSeq
       session.pendingPromptSeqs.push(promptSeq)
       active.claudePromptSeq = promptSeq
-      logClaudeSteer("claude_prompt_sent", {
-        chatId: args.chatId,
-        sessionId: session.id,
+      new SteerLogger(args.chatId, session.id).log("claude_prompt_sent", {
         promptSeq,
         activeStatus: active.status,
         contentPreview: args.content.slice(0, 160),
@@ -1207,6 +1212,7 @@ export class AgentCoordinator {
   }
 
   private async runClaudeSession(session: ClaudeSessionState) {
+    const steerLog = new SteerLogger(session.chatId, session.id)
     try {
       for await (const event of session.session.stream) {
         if (event.type === "session_token" && event.sessionToken) {
@@ -1221,9 +1227,7 @@ export class AgentCoordinator {
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
-          logClaudeSteer("claude_event_system_init", {
-            chatId: session.chatId,
-            sessionId: session.id,
+          steerLog.log("claude_event_system_init", {
             activePromptSeq: active.claudePromptSeq ?? null,
             pendingPromptSeqs: [...session.pendingPromptSeqs],
           })
@@ -1233,9 +1237,7 @@ export class AgentCoordinator {
           ? (session.pendingPromptSeqs.shift() ?? null)
           : null
 
-        logClaudeSteer("claude_event", {
-          chatId: session.chatId,
-          sessionId: session.id,
+        steerLog.log("claude_event", {
           entryKind: event.entry.kind,
           activePromptSeq: active?.claudePromptSeq ?? null,
           completedPromptSeq: completedClaudePromptSeq,

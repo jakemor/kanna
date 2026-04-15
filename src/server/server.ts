@@ -162,7 +162,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
           if (auth) {
             if (url.pathname === "/auth/login") {
               if (req.method === "GET") {
-                return auth.renderLoginPage(req)
+                return Response.redirect(new URL("/", req.url), 302)
               }
               if (req.method === "POST") {
                 return auth.handleLogin(req, "/")

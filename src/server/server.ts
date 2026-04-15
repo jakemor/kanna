@@ -2,6 +2,7 @@ import path from "node:path"
 import { stat } from "node:fs/promises"
 import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
+import { createAuthManager } from "./auth"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { DiffStore } from "./diff-store"
@@ -56,6 +57,7 @@ export async function persistUploadedFiles(args: {
 export interface StartKannaServerOptions {
   port?: number
   host?: string
+  password?: string | null
   strictPort?: boolean
   onMigrationProgress?: (message: string) => void
   update?: {
@@ -69,6 +71,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
+  const auth = options.password ? createAuthManager(options.password) : null
   const store = new EventStore()
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
@@ -139,6 +142,45 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         hostname,
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
+
+          if (url.pathname === "/auth/status") {
+            return auth
+              ? auth.handleStatus(req)
+              : Response.json({ enabled: false, authenticated: true })
+          }
+
+          if (url.pathname === "/auth/logout") {
+            if (req.method !== "POST") {
+              return new Response(null, { status: 405, headers: { Allow: "POST" } })
+            }
+
+            return auth
+              ? auth.handleLogout(req)
+              : Response.json({ ok: true })
+          }
+
+          if (auth) {
+            if (url.pathname === "/auth/login") {
+              if (req.method === "GET") {
+                return auth.renderLoginPage(req)
+              }
+              if (req.method === "POST") {
+                return auth.handleLogin(req, "/")
+              }
+              return new Response(null, { status: 405, headers: { Allow: "GET, POST" } })
+            }
+
+            if (url.pathname === "/ws") {
+              if (!auth.validateOrigin(req)) {
+                return new Response("Forbidden", { status: 403 })
+              }
+              if (!auth.isAuthenticated(req)) {
+                return new Response("Unauthorized", { status: 401 })
+              }
+            } else if (!auth.isAuthenticated(req)) {
+              return auth.unauthorizedResponse(req)
+            }
+          }
 
           if (url.pathname === "/ws") {
             const upgraded = serverInstance.upgrade(req, {

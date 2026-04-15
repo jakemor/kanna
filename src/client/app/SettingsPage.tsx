@@ -12,6 +12,7 @@ import {
   Settings2,
   Sun,
   DownloadCloud,
+  LogOut,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -433,6 +434,8 @@ export function SettingsPage() {
   const state = useOutletContext<KannaState>()
   const { theme, setTheme } = useTheme()
   const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
+  const [signingOut, setSigningOut] = useState(false)
+  const [authEnabled, setAuthEnabled] = useState(false)
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
@@ -507,6 +510,34 @@ export function SettingsPage() {
     if (resolveSettingsSectionId(sectionId)) return
     navigate("/settings/general", { replace: true })
   }, [navigate, sectionId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void fetch("/auth/status", {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then(async (response) => {
+        if (!response.ok) return { enabled: false }
+        return await response.json() as { enabled?: boolean }
+      })
+      .then((payload) => {
+        if (cancelled) return
+        setAuthEnabled(payload.enabled === true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAuthEnabled(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (selectedPage !== "changelog" || isConnecting) return
@@ -641,6 +672,16 @@ export function SettingsPage() {
       : selectedSection.subtitle
   const showFooter = !isConnecting
 
+  async function handleSidebarSignOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    try {
+      await state.handleSignOut()
+    } finally {
+      setSigningOut(false)
+    }
+  }
+
   return (
     <div className="relative flex h-full flex-1 min-w-0 bg-background">
       <div className="flex min-w-0 flex-1">
@@ -666,6 +707,21 @@ export function SettingsPage() {
                 </div>
               </button>
             ))}
+            {authEnabled ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSidebarSignOut()
+                }}
+                disabled={signingOut}
+                className="cursor-pointer rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2.5">
+                  <LogOut className="h-4 w-4 shrink-0" />
+                  <span>{signingOut ? "Signing out..." : "Sign out"}</span>
+                </div>
+              </button>
+            ) : null}
           </div>
         </aside>
 
@@ -700,6 +756,23 @@ export function SettingsPage() {
                     <span className="whitespace-nowrap">{item.label}</span>
                   </button>
                 ))}
+                {authEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleSidebarSignOut()
+                    }}
+                    disabled={signingOut}
+                    className={cn(
+                      "flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-sm transition-colors",
+                      "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      "disabled:cursor-not-allowed disabled:opacity-50"
+                    )}
+                  >
+                    <LogOut className="h-4 w-4 shrink-0" />
+                    <span className="whitespace-nowrap">{signingOut ? "Signing out..." : "Sign out"}</span>
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>

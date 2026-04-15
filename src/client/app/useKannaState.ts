@@ -513,6 +513,7 @@ export interface KannaState {
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  handleSignOut: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
@@ -1151,6 +1152,26 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [dialog, socket])
 
+  const handleSignOut = useCallback(async () => {
+    try {
+      const response = await fetch("/auth/logout", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Sign out failed with status ${response.status}`)
+      }
+
+      setCommandError(null)
+      window.location.reload()
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
   const handleSend = useCallback(async (
     content: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
@@ -1551,6 +1572,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCreateProject,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleSignOut,
     handleSend,
     handleSteerQueuedMessage,
     handleRemoveQueuedMessage,

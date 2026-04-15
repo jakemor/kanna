@@ -25,6 +25,7 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
       host: string
       openBrowser: boolean
       share: false | "quick" | { kind: "token"; token: string }
+      password: string | null
       strictPort: boolean
       update: {
         version: string
@@ -102,6 +103,7 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: false,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -115,6 +117,7 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: true,
       },
     })
@@ -128,6 +131,7 @@ describe("parseArgs", () => {
         host: "0.0.0.0",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -141,6 +145,7 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: true,
         share: "quick",
+        password: null,
         strictPort: false,
       },
     })
@@ -154,9 +159,29 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: true,
         share: { kind: "token", token: "secret-token" },
+        password: null,
         strictPort: false,
       },
     })
+  })
+
+  test("--password accepts a secret", () => {
+    expect(parseArgs(["--password", "secret"])).toEqual({
+      kind: "run",
+      options: {
+        port: 3210,
+        host: "127.0.0.1",
+        openBrowser: true,
+        share: false,
+        password: "secret",
+        strictPort: false,
+      },
+    })
+  })
+
+  test("--password without a value throws", () => {
+    expect(() => parseArgs(["--password"])).toThrow("Missing value for --password")
+    expect(() => parseArgs(["--password", "--no-open"])).toThrow("Missing value for --password")
   })
 
   test("--cloudflared without a token throws", () => {
@@ -172,6 +197,7 @@ describe("parseArgs", () => {
         host: "100.64.0.1",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -185,6 +211,7 @@ describe("parseArgs", () => {
         host: "dev-box",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -261,6 +288,7 @@ describe("runCli", () => {
       host: "127.0.0.1",
       openBrowser: false,
       share: false,
+      password: null,
       strictPort: false,
       update: {
         version: "0.3.0",

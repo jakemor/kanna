@@ -115,6 +115,7 @@ bun run build
 kanna                  # start with defaults (localhost only)
 kanna --port 4000      # custom port
 kanna --no-open        # don't open browser
+kanna --password <secret>      # require a password before loading the app
 kanna --share                # create a public quick tunnel + terminal QR
 kanna --cloudflared <token>  # run a named Cloudflare tunnel from a token
 ```
@@ -133,6 +134,18 @@ kanna --host 100.64.x.x            # bind to a specific Tailscale IP
 ```
 
 When `--host <hostname>` is given, the browser opens `http://<hostname>:3210` automatically. Other machines on your network can connect to the same URL:
+
+### Password protection
+
+Use `--password` to require a launch password before the app or websocket can connect:
+
+```bash
+kanna --password my-secret
+bun run dev --password my-secret
+```
+
+Kanna verifies the password once, then sets a browser-session cookie. The password itself is not stored in the browser.
+When password protection is enabled, the backend requires authentication for API routes, `/health`, and `/ws`, and the production server redirects unauthenticated browser requests to a login screen.
 
 ### Public share link
 

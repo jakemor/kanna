@@ -14,6 +14,7 @@ export interface CliOptions {
   host: string
   openBrowser: boolean
   share: ShareMode
+  password: string | null
   strictPort: boolean
 }
 
@@ -85,6 +86,7 @@ Options:
   --share              Create a public Cloudflare quick tunnel with terminal QR
   --cloudflared <token>
                        Run a named Cloudflare tunnel from a token
+  --password <secret>  Require a password before loading the app
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
   --version            Print version and exit
@@ -96,6 +98,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let host = "127.0.0.1"
   let openBrowser = true
   let share: ShareMode = false
+  let password: string | null = null
   let sawHost = false
   let sawRemote = false
   let strictPort = false
@@ -153,6 +156,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
       openBrowser = false
       continue
     }
+    if (arg === "--password") {
+      const next = argv[index + 1]
+      if (!next || next.startsWith("-")) throw new Error("Missing value for --password")
+      password = next
+      index += 1
+      continue
+    }
     if (arg === "--strict-port") {
       strictPort = true
       continue
@@ -167,6 +177,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       host,
       openBrowser,
       share,
+      password,
       strictPort,
     },
   }

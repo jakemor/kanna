@@ -48,6 +48,9 @@ export default defineConfig({
       "/health": {
         target: `http://${backendTargetHost}:${backendPort}`,
       },
+      "/auth": {
+        target: `http://${backendTargetHost}:${backendPort}`,
+      },
     },
     allowedHosts: getAllowedHosts(),
   },

@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  --bg: #090909;
+  --text: #d9d5cb;
+  --text-h: #fffdf6;
+  --muted: #a09888;
+  --border: rgba(250, 248, 242, 0.1);
+  --chalk: rgba(255, 253, 246, 0.38);
+  --marker: rgba(255, 220, 80, 0.22);
+  font-family:
+    'Chalkboard SE', 'Marker Felt', 'Bradley Hand', 'Comic Sans MS',
+    'Segoe Print', cursive;
+  line-height: 1.6;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-size: 18px;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+a {
+  color: inherit;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+h1, h2, h3, p {
+  margin: 0;
+}
+
+h1, h2, h3 {
+  color: var(--text-h);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: clamp(2.8rem, 6vw, 5.2rem);
+  line-height: 1.08;
+}
+
+h2 {
+  font-size: clamp(1.8rem, 3.5vw, 3rem);
+  line-height: 1.12;
+}
+
+p, li {
+  font-size: 1.15rem;
+  line-height: 1.7;
+}

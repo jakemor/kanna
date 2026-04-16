@@ -6,6 +6,7 @@ import type {
   ChatBranchHistoryEntry,
   ChatBranchListEntry,
   ChatBranchListResult,
+  ChatDiffComparisonSnapshot,
   ChatDiffSnapshot,
   DiffComparisonMode,
   DiffCommitMode,
@@ -66,6 +67,31 @@ function createSingleDiffPanelVisibility(panel: DiffPanelKey): Record<DiffPanelK
 
 function createDiffPatchCacheKey(comparisonMode: DiffComparisonMode, path: string) {
   return `${comparisonMode}\u0000${path}`
+}
+
+export function getInitialDiffComparisonMode(args: {
+  workingTreeFiles: ChatDiffSnapshot["files"]
+  defaultBranchComparison?: ChatDiffComparisonSnapshot
+}): DiffComparisonMode {
+  const defaultBranchComparisonFiles = args.defaultBranchComparison?.status === "ready"
+    ? args.defaultBranchComparison.files
+    : []
+  return args.workingTreeFiles.length === 0 && defaultBranchComparisonFiles.length > 0
+    ? "default_branch"
+    : DEFAULT_DIFF_COMPARISON_MODE
+}
+
+export function resolveDiffComparisonMode(
+  currentMode: DiffComparisonMode,
+  args: {
+    diffsStatus: ChatDiffSnapshot["status"]
+    defaultBranchComparison?: ChatDiffComparisonSnapshot
+  }
+): DiffComparisonMode {
+  if (currentMode === "default_branch" && !(args.diffsStatus === "ready" && args.defaultBranchComparison)) {
+    return DEFAULT_DIFF_COMPARISON_MODE
+  }
+  return currentMode
 }
 
 function getDiffPreviewAttachment(projectId: string | null, file: DiffFile): ChatAttachment | null {
@@ -1846,11 +1872,10 @@ function RightSidebarImpl({
   const [isSyncing, setIsSyncing] = useState(false)
   const [isGitHubPublishModalOpen, setIsGitHubPublishModalOpen] = useState(false)
   const [allowMultipleDiffPanels, setAllowMultipleDiffPanels] = useState(false)
-  const [diffComparisonMode, setDiffComparisonMode] = useState<DiffComparisonMode>(() => (
-    diffs.files.length === 0 && defaultBranchComparisonFiles.length > 0
-      ? "default_branch"
-      : DEFAULT_DIFF_COMPARISON_MODE
-  ))
+  const [diffComparisonMode, setDiffComparisonMode] = useState<DiffComparisonMode>(() => getInitialDiffComparisonMode({
+    workingTreeFiles: diffs.files,
+    defaultBranchComparison,
+  }))
   const [diffPanelVisibility, setDiffPanelVisibility] = useState<Record<DiffPanelKey, boolean>>(DEFAULT_DIFF_PANEL_VISIBILITY)
   const [patchesByPath, setPatchesByPath] = useState<Record<string, string>>({})
   const [patchErrorsByPath, setPatchErrorsByPath] = useState<Record<string, string>>({})
@@ -1887,16 +1912,11 @@ function RightSidebarImpl({
   const previousHasChangesRef = useRef(hasChanges)
 
   useEffect(() => {
-    if (diffComparisonMode !== "default_branch") return
-    if (diffs.status === "ready" && defaultBranchComparison) return
-    setDiffComparisonMode(DEFAULT_DIFF_COMPARISON_MODE)
-  }, [defaultBranchComparison, diffComparisonMode, diffs.status])
-
-  useEffect(() => {
-    if (diffComparisonMode !== "working_tree") return
-    if (diffs.files.length > 0 || defaultBranchComparisonFiles.length === 0) return
-    setDiffComparisonMode("default_branch")
-  }, [defaultBranchComparisonFiles.length, diffComparisonMode, diffs.files.length])
+    setDiffComparisonMode((currentMode) => resolveDiffComparisonMode(currentMode, {
+      diffsStatus: diffs.status,
+      defaultBranchComparison,
+    }))
+  }, [defaultBranchComparison, diffs.status])
 
   useEffect(() => {
     if (!projectId) return

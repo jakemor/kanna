@@ -66,10 +66,6 @@ export class DiffAnalysisStore {
     paths: string[]
     comparisonMode?: DiffComparisonMode
   }) {
-    if (this.active.has(args.projectId)) {
-      throw new Error("A diff analysis is already running.")
-    }
-
     const comparisonMode = args.comparisonMode ?? "working_tree"
     const selectedPaths = [...new Set(args.paths)].sort((left, right) => left.localeCompare(right))
     if (selectedPaths.length === 0) {
@@ -93,9 +89,17 @@ export class DiffAnalysisStore {
         : `File is no longer changed: ${missingPath}`)
     }
 
+    const requestKey = createDiffAnalysisRequestKey(analysisFiles, selectedPaths, comparisonMode)
+    if (this.active.has(args.projectId)) {
+      const current = this.getProjectSnapshot(args.projectId)
+      if (current.requestKey === requestKey) {
+        return
+      }
+      throw new Error("A diff analysis is already running.")
+    }
+
     const runId = randomUUID()
     const chatId = `diff-analysis-${args.projectId}`
-    const requestKey = createDiffAnalysisRequestKey(analysisFiles, selectedPaths, comparisonMode)
     this.active.set(args.projectId, { runId, chatId })
     this.itemBuffersByRun.set(runId, new Map())
     this.patchState(args.projectId, {

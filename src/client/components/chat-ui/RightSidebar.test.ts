@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test"
 import { createElement, type ComponentProps } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { createDiffAnalysisRequestKey } from "../../../shared/diff-analysis"
-import { RightSidebar, canIgnoreDiffFile, canIgnoreDiffFolder } from "./RightSidebar"
+import { RightSidebar, canIgnoreDiffFile, canIgnoreDiffFolder, getInitialDiffComparisonMode, resolveDiffComparisonMode } from "./RightSidebar"
 import { TooltipProvider } from "../ui/tooltip"
 
 type RightSidebarProps = ComponentProps<typeof RightSidebar>
@@ -70,6 +70,55 @@ function renderRightSidebar(overrides: Partial<RightSidebarProps>) {
 }
 
 describe("RightSidebar", () => {
+  test("defaults comparison mode to the default branch when it is the only available diff", () => {
+    expect(getInitialDiffComparisonMode({
+      workingTreeFiles: [],
+      defaultBranchComparison: {
+        mode: "default_branch",
+        status: "ready",
+        baseBranchName: "main",
+        baseRef: "main",
+        headBranchName: "feature/current",
+        files: [{
+          path: "src/branch-only.ts",
+          changeType: "modified",
+          isUntracked: false,
+          additions: 3,
+          deletions: 1,
+          patchDigest: "branch-digest",
+        }],
+      },
+    })).toBe("default_branch")
+  })
+
+  test("keeps local comparison selectable after local changes are cleared", () => {
+    expect(resolveDiffComparisonMode("working_tree", {
+      diffsStatus: "ready",
+      defaultBranchComparison: {
+        mode: "default_branch",
+        status: "ready",
+        baseBranchName: "main",
+        baseRef: "main",
+        headBranchName: "feature/current",
+        files: [{
+          path: "src/branch-only.ts",
+          changeType: "modified",
+          isUntracked: false,
+          additions: 3,
+          deletions: 1,
+          patchDigest: "branch-digest",
+        }],
+      },
+    })).toBe("working_tree")
+  })
+
+  test("falls back to local comparison when branch comparison is unavailable", () => {
+    expect(resolveDiffComparisonMode("default_branch", {
+      diffsStatus: "ready",
+      defaultBranchComparison: undefined,
+    })).toBe("working_tree")
+  })
+
   test("defaults to history when there are no changes", () => {
     const markup = renderRightSidebar({
       diffs: {

@@ -419,6 +419,13 @@ export interface ItemCompletedNotification {
   turnId: string
 }
 
+export interface AgentMessageDeltaNotification {
+  itemId: string
+  delta: string
+  threadId: string
+  turnId: string
+}
+
 export interface ErrorNotification {
   error: {
     message: string
@@ -437,6 +444,7 @@ export type ServerNotification =
   | { method: "turn/completed"; params: TurnCompletedNotification }
   | { method: "turn/plan/updated"; params: TurnPlanUpdatedNotification }
   | { method: "item/started"; params: ItemStartedNotification }
+  | { method: "item/agentMessage/delta"; params: AgentMessageDeltaNotification }
   | { method: "item/completed"; params: ItemCompletedNotification }
   | { method: "item/plan/delta"; params: PlanDeltaNotification }
   | { method: "thread/compacted"; params: ContextCompactedNotification }
@@ -468,6 +476,7 @@ export function isServerNotification(value: unknown): value is ServerNotificatio
     || candidate.method === "turn/completed"
     || candidate.method === "turn/plan/updated"
     || candidate.method === "item/started"
+    || candidate.method === "item/agentMessage/delta"
     || candidate.method === "item/completed"
     || candidate.method === "item/plan/delta"
     || candidate.method === "thread/compacted"

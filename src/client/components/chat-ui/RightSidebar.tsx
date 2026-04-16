@@ -14,6 +14,7 @@ import type {
   GitHubPublishInfo,
   GitHubRepoAvailabilityResult,
 } from "../../../shared/types"
+import { createDiffAnalysisRequestKey, type DiffAnalysisSnapshot, type DiffAnalysisSourceBlock } from "../../../shared/diff-analysis"
 import { useStickyState } from "../../hooks/useStickyState"
 import { cn } from "../../lib/utils"
 import { useDiffCommitStore } from "../../stores/diffCommitStore"
@@ -36,13 +37,6 @@ type DiffFile = ChatDiffSnapshot["files"][number]
 type SidebarViewMode = "changes" | "history"
 type DiffPanelKey = "raw" | "ai" | "summary"
 const EMPTY_CHECKED_PATHS: Record<string, boolean> = {}
-
-interface PrototypeAiOrderedDiffEntry {
-  file: DiffFile
-  summary: string
-  orderLabel: string
-  sortKey: number
-}
 
 const DEFAULT_DIFF_PANEL_VISIBILITY: Record<DiffPanelKey, boolean> = {
   raw: true,
@@ -84,6 +78,7 @@ export interface DiffFileActions {
 interface RightSidebarProps extends DiffFileActions {
   projectId: string | null
   diffs: ChatDiffSnapshot
+  diffAnalysis: DiffAnalysisSnapshot | null
   editorLabel: string
   diffRenderMode: DiffRenderMode
   wrapLines: boolean
@@ -94,6 +89,8 @@ interface RightSidebarProps extends DiffFileActions {
   onCheckoutBranch: (branch: ChatBranchListEntry) => Promise<void>
   onCreateBranch: () => Promise<void>
   onGenerateCommitMessage: (args: { paths: string[] }) => Promise<{ subject: string; body: string }>
+  onAnalyzeDiff: (paths: string[]) => Promise<void>
+  onCancelDiffAnalysis: () => Promise<void>
   onInitializeGit: () => Promise<unknown>
   onGetGitHubPublishInfo: () => Promise<GitHubPublishInfo>
   onCheckGitHubRepoAvailability: (args: { owner: string; name: string }) => Promise<GitHubRepoAvailabilityResult>
@@ -225,54 +222,330 @@ function formatFetchTooltip(isoTimestamp?: string) {
   return `Last fetched ${formatRelativeTime(isoTimestamp)}`
 }
 
-function hashDiffPath(path: string) {
-  let hash = 0
-  for (const char of path) {
-    hash = (hash * 33 + char.charCodeAt(0)) % 1_000_003
-  }
-  return hash
+function isAnalysisRunning(analysis: DiffAnalysisSnapshot | null) {
+  return analysis?.status === "starting" || analysis?.status === "running" || analysis?.status === "cancelling"
 }
 
-function buildPrototypeDiffSummary(file: DiffFile) {
-  const fileName = file.path.split("/").pop() ?? file.path
-  const lineDelta = file.additions > 0 || file.deletions > 0
-    ? ` (+${file.additions}/-${file.deletions})`
-    : ""
-
-  switch (file.changeType) {
-    case "added":
-      return `Introduces ${fileName} as a new piece of the flow${lineDelta}.`
-    case "deleted":
-      return `Removes ${fileName} to simplify the change set${lineDelta}.`
-    case "renamed":
-      return `Repositions ${fileName} so the story reads in a different place${lineDelta}.`
-    case "modified":
-    default:
-      return `Updates ${fileName} to reshape existing behavior${lineDelta}.`
-  }
+function getAnalysisStatusText(analysis: DiffAnalysisSnapshot | null, isStale: boolean) {
+  if (isStale) return "Analysis is stale"
+  if (!analysis || analysis.status === "idle") return "Not analyzed"
+  if (analysis.status === "failed") return analysis.error || analysis.statusText
+  return analysis.statusText
 }
 
-export function buildPrototypeAiOrderedDiff(files: DiffFile[]): PrototypeAiOrderedDiffEntry[] {
-  return files
-    .map((file) => {
-      const sortKey = (hashDiffPath(file.path) + file.additions * 17 + file.deletions * 29 + file.changeType.length * 31) % 10_000
-      return {
-        file,
-        summary: buildPrototypeDiffSummary(file),
-        orderLabel: "",
-        sortKey,
-      }
-    })
-    .sort((left, right) => {
-      if (left.sortKey !== right.sortKey) {
-        return right.sortKey - left.sortKey
-      }
-      return left.file.path.localeCompare(right.file.path)
-    })
-    .map((entry, index) => ({
-      ...entry,
-      orderLabel: `Step ${index + 1}`,
+function classifyDiffLine(line: string) {
+  if (line.startsWith("diff --git ") || line.startsWith("---") || line.startsWith("+++")) {
+    return "bg-muted/60 text-muted-foreground font-medium"
+  }
+  if (line.startsWith("@@")) {
+    return "bg-accent text-muted-foreground"
+  }
+  if (line.startsWith("+")) {
+    return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+  }
+  if (line.startsWith("-")) {
+    return "bg-red-500/10 text-red-700 dark:text-red-300"
+  }
+  return "text-muted-foreground"
+}
+
+function DiffLine({ line, expanded = false }: { line: string; expanded?: boolean }) {
+  return (
+    <div className={cn(
+      "grid min-h-6 grid-cols-[28px_minmax(max-content,1fr)] border-b border-border/50 font-mono text-xs",
+      classifyDiffLine(line),
+      expanded && "bg-amber-500/10"
+    )}>
+      <span className="select-none px-2 py-1 text-center text-muted-foreground">{line.slice(0, 1) || " "}</span>
+      <code className="whitespace-pre py-1 pr-3">{line}</code>
+    </div>
+  )
+}
+
+function DiffBlockView({
+  block,
+  showBefore,
+  showAfter,
+}: {
+  block: DiffAnalysisSourceBlock
+  showBefore: boolean
+  showAfter: boolean
+}) {
+  const lines = block.diff.split(/\r?\n/u)
+  const hunkHeaderIndex = lines.findIndex((line) => line.startsWith("@@"))
+  const rows: ReactNode[] = []
+
+  lines.forEach((line, index) => {
+    rows.push(<DiffLine key={`line-${index}`} line={line} />)
+    if (showBefore && index === hunkHeaderIndex) {
+      rows.push(...block.contextBefore.map((contextLine, contextIndex) => (
+        <DiffLine key={`before-${contextIndex}`} line={contextLine} expanded />
+      )))
+    }
+  })
+
+  if (showBefore && hunkHeaderIndex === -1) {
+    rows.unshift(...block.contextBefore.map((contextLine, contextIndex) => (
+      <DiffLine key={`before-${contextIndex}`} line={contextLine} expanded />
+    )))
+  }
+
+  if (showAfter) {
+    rows.push(...block.contextAfter.map((contextLine, contextIndex) => (
+      <DiffLine key={`after-${contextIndex}`} line={contextLine} expanded />
+    )))
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-md border border-border bg-background">
+      {rows}
+    </div>
+  )
+}
+
+function DiffAnalysisAction({
+  analysis,
+  selectedPaths,
+  isStale,
+  onAnalyze,
+  onCancel,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  isStale: boolean
+  onAnalyze: () => void
+  onCancel: () => void
+}) {
+  const running = isAnalysisRunning(analysis)
+  const disabled = running ? analysis?.status === "cancelling" : selectedPaths.length === 0
+  return (
+    <Button
+      type="button"
+      variant={running ? "ghost" : "default"}
+      size="sm"
+      className="h-7 px-2 text-xs"
+      disabled={disabled}
+      onClick={() => {
+        if (running) {
+          onCancel()
+          return
+        }
+        onAnalyze()
+      }}
+    >
+      {running ? (
+        <>
+          <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          Cancel
+        </>
+      ) : analysis?.status === "completed" && !isStale ? (
+        "Refresh"
+      ) : (
+        "Analyze"
+      )}
+    </Button>
+  )
+}
+
+function DiffAnalysisOrderPanel({
+  analysis,
+  selectedPaths,
+  currentRequestKey,
+  onAnalyze,
+  onCancel,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  currentRequestKey: string | null
+  onAnalyze: () => void
+  onCancel: () => void
+}) {
+  const [contextVisibility, setContextVisibility] = useState<Record<string, { before?: boolean; after?: boolean }>>({})
+
+  useEffect(() => {
+    setContextVisibility({})
+  }, [analysis?.startedAt])
+
+  const isStale = Boolean(analysis?.requestKey && currentRequestKey && analysis.requestKey !== currentRequestKey)
+  const sourceBlocksById = new Map((analysis?.sourceBlocks ?? []).map((block) => [block.id, block]))
+  const notes = analysis?.parsed.hunks ?? []
+  const hasStarted = Boolean(analysis && analysis.status !== "idle")
+  const running = isAnalysisRunning(analysis)
+
+  function toggleContext(blockId: string, side: "before" | "after") {
+    setContextVisibility((current) => ({
+      ...current,
+      [blockId]: {
+        ...(current[blockId] ?? {}),
+        [side]: !(current[blockId]?.[side] ?? false),
+      },
     }))
+  }
+
+  return (
+    <section className="min-w-0 rounded-xl border border-border bg-background">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">AI Order</div>
+          <div className={cn(
+            "truncate text-[11px]",
+            analysis?.status === "failed" || isStale ? "text-destructive" : "text-muted-foreground"
+          )}>
+            {getAnalysisStatusText(analysis, isStale)}
+          </div>
+        </div>
+        <DiffAnalysisAction
+          analysis={analysis}
+          selectedPaths={selectedPaths}
+          isStale={isStale}
+          onAnalyze={onAnalyze}
+          onCancel={onCancel}
+        />
+      </div>
+      <div className="space-y-2 p-2">
+        {selectedPaths.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Select files to analyze.
+          </div>
+        ) : notes.length > 0 ? (
+          notes.map((note, index) => {
+            const block = sourceBlocksById.get(note.id)
+            const visibility = contextVisibility[note.id] ?? {}
+            return (
+              <div key={`${note.id}-${index}`} className="space-y-1.5 rounded-lg border border-border bg-background p-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Step {index + 1}</div>
+                    <div className="mt-0.5 truncate text-sm font-medium text-foreground">{block?.title ?? note.id}</div>
+                    <div className="mt-1 text-sm text-foreground">{note.description || "No description was provided."}</div>
+                  </div>
+                  <div className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                    {note.id}
+                  </div>
+                </div>
+                {block ? (
+                  <>
+                    <div className="flex flex-wrap gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={block.contextBefore.length === 0}
+                        onClick={() => toggleContext(note.id, "before")}
+                      >
+                        {visibility.before ? "Hide before lines" : "Show 10 lines before"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={block.contextAfter.length === 0}
+                        onClick={() => toggleContext(note.id, "after")}
+                      >
+                        {visibility.after ? "Hide after lines" : "Show 10 lines after"}
+                      </Button>
+                    </div>
+                    <DiffBlockView
+                      block={block}
+                      showBefore={Boolean(visibility.before)}
+                      showAfter={Boolean(visibility.after)}
+                    />
+                  </>
+                ) : (
+                  <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
+                    Source block was not found for this note.
+                  </div>
+                )}
+              </div>
+            )
+          })
+        ) : hasStarted ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            {running ? "Waiting for change notes from Codex." : "No change notes were returned."}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Run analysis to see reordered change blocks.
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DiffAnalysisSummaryPanel({
+  analysis,
+  selectedPaths,
+  currentRequestKey,
+  onAnalyze,
+  onCancel,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  currentRequestKey: string | null
+  onAnalyze: () => void
+  onCancel: () => void
+}) {
+  const isStale = Boolean(analysis?.requestKey && currentRequestKey && analysis.requestKey !== currentRequestKey)
+  const notes = analysis?.parsed.hunks ?? []
+  const summary = analysis?.parsed.summary.trim() ?? ""
+
+  return (
+    <section className="min-w-0 rounded-xl border border-border bg-background">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Summary</div>
+          <div className={cn(
+            "truncate text-[11px]",
+            analysis?.status === "failed" || isStale ? "text-destructive" : "text-muted-foreground"
+          )}>
+            {getAnalysisStatusText(analysis, isStale)}
+          </div>
+        </div>
+        <DiffAnalysisAction
+          analysis={analysis}
+          selectedPaths={selectedPaths}
+          isStale={isStale}
+          onAnalyze={onAnalyze}
+          onCancel={onCancel}
+        />
+      </div>
+      <div className="space-y-2 p-2">
+        {summary ? (
+          <div className="rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm leading-6 text-foreground">
+            {summary}
+          </div>
+        ) : selectedPaths.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Select files to summarize.
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Run analysis to generate a summary.
+          </div>
+        )}
+        {notes.length > 0 ? (
+          <div className="space-y-2">
+            {notes.map((note, index) => (
+              <div key={`${note.id}-${index}`} className="rounded-lg border border-border bg-background px-3 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 shrink-0 rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground">
+                    Step {index + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm text-foreground">{note.description}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{note.id}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  )
 }
 
 function CommitHistoryRow({ entry, isPendingPush = false }: { entry: ChatBranchHistoryEntry; isPendingPush?: boolean }) {
@@ -1436,6 +1709,7 @@ function DiffFileCard({
 function RightSidebarImpl({
   projectId,
   diffs,
+  diffAnalysis,
   editorLabel,
   diffRenderMode,
   wrapLines,
@@ -1452,6 +1726,8 @@ function RightSidebarImpl({
   onCheckoutBranch,
   onCreateBranch,
   onGenerateCommitMessage,
+  onAnalyzeDiff,
+  onCancelDiffAnalysis,
   onInitializeGit,
   onGetGitHubPublishInfo,
   onCheckGitHubRepoAvailability,
@@ -1575,7 +1851,10 @@ function RightSidebarImpl({
     && !isBusy
   const primaryCommitMode: DiffCommitMode = hasRemoteOrigin ? "commit_and_push" : "commit_only"
   const resolvedBranchName = diffs.branchName ?? "current branch"
-  const prototypeAiOrderedDiff = useMemo(() => buildPrototypeAiOrderedDiff(diffs.files), [diffs.files])
+  const currentAnalysisRequestKey = useMemo(
+    () => selectedPaths.length > 0 ? createDiffAnalysisRequestKey(diffs.files, selectedPaths) : null,
+    [diffs.files, selectedPaths]
+  )
 
   async function handleCommit(mode: DiffCommitMode) {
     if (!canCommit) return
@@ -1611,6 +1890,14 @@ function RightSidebarImpl({
     } finally {
       setIsGenerating(false)
     }
+  }
+
+  function handleAnalyzeSelectedDiff() {
+    void onAnalyzeDiff(selectedPaths)
+  }
+
+  function handleCancelSelectedDiffAnalysis() {
+    void onCancelDiffAnalysis()
   }
 
   function handleCommitKeyDown(event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
@@ -1971,74 +2258,23 @@ function RightSidebarImpl({
                       ) : null}
 
                       {diffPanelVisibility.ai ? (
-                        <section className="min-w-0 rounded-xl border border-border bg-background">
-                          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-3 py-2">
-                            <div>
-                              <div className="text-sm font-medium text-foreground">AI Order</div>
-                              <div className="text-[11px] text-muted-foreground">Prototype reordered story of the diff</div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => toggleDiffPanel("ai")}
-                              className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                            >
-                              Collapse
-                            </button>
-                          </div>
-                          <div className="space-y-1.5 p-2">
-                            {prototypeAiOrderedDiff.map((entry) => (
-                              <div key={entry.file.path} className="space-y-1.5">
-                                <div className="rounded-lg border border-border bg-muted/30 px-3 py-2">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                                        {entry.orderLabel}
-                                      </div>
-                                      <div className="mt-1 text-sm text-foreground">{entry.summary}</div>
-                                    </div>
-                                    <div className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
-                                      LLM
-                                    </div>
-                                  </div>
-                                </div>
-                                {renderDiffFile(entry.file)}
-                              </div>
-                            ))}
-                          </div>
-                        </section>
+                        <DiffAnalysisOrderPanel
+                          analysis={diffAnalysis}
+                          selectedPaths={selectedPaths}
+                          currentRequestKey={currentAnalysisRequestKey}
+                          onAnalyze={handleAnalyzeSelectedDiff}
+                          onCancel={handleCancelSelectedDiffAnalysis}
+                        />
                       ) : null}
 
                       {diffPanelVisibility.summary ? (
-                        <section className="min-w-0 rounded-xl border border-border bg-background">
-                          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-3 py-2">
-                            <div>
-                              <div className="text-sm font-medium text-foreground">Summary</div>
-                              <div className="text-[11px] text-muted-foreground">One-line natural language descriptions</div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => toggleDiffPanel("summary")}
-                              className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                            >
-                              Collapse
-                            </button>
-                          </div>
-                          <div className="space-y-2 p-2">
-                            {prototypeAiOrderedDiff.map((entry) => (
-                              <div key={entry.file.path} className="rounded-lg border border-border bg-background px-3 py-3">
-                                <div className="flex items-start gap-3">
-                                  <div className="mt-0.5 shrink-0 rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground">
-                                    {entry.orderLabel}
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="text-sm text-foreground">{entry.summary}</div>
-                                    <div className="mt-1 text-xs text-muted-foreground">{entry.file.path}</div>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </section>
+                        <DiffAnalysisSummaryPanel
+                          analysis={diffAnalysis}
+                          selectedPaths={selectedPaths}
+                          currentRequestKey={currentAnalysisRequestKey}
+                          onAnalyze={handleAnalyzeSelectedDiff}
+                          onCancel={handleCancelSelectedDiffAnalysis}
+                        />
                       ) : null}
                     </div>
                   </div>

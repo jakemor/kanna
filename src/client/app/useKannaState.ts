@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
 import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import type { DiffAnalysisSnapshot } from "../../shared/diff-analysis"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -477,6 +478,7 @@ export interface KannaState {
   updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
   chatDiffSnapshot: ChatDiffSnapshot | null
+  diffAnalysisSnapshot: DiffAnalysisSnapshot | null
   keybindings: KeybindingsSnapshot | null
   llmProvider: LlmProviderSnapshot | null
   connectionStatus: SocketStatus
@@ -557,6 +559,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [historyCursor, setHistoryCursor] = useState<string | null>(null)
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
+  const [projectDiffAnalysisSnapshots, setProjectDiffAnalysisSnapshots] = useState<Record<string, DiffAnalysisSnapshot | null>>({})
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [llmProvider, setLlmProvider] = useState<LlmProviderSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
@@ -892,6 +895,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     return currentDiffs
   }, [activeProjectId, projectDiffSnapshots])
+  const diffAnalysisSnapshot = activeProjectId ? (projectDiffAnalysisSnapshots[activeProjectId] ?? null) : null
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -916,6 +920,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
 
     return unsubscribe
+  }, [activeProjectId, socket])
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return
+    }
+
+    return socket.subscribe<DiffAnalysisSnapshot | null>({ type: "project-diff-analysis", projectId: activeProjectId }, (snapshot) => {
+      setProjectDiffAnalysisSnapshots((current) => ({
+        ...current,
+        [activeProjectId]: snapshot ?? null,
+      }))
+      setCommandError(null)
+    })
   }, [activeProjectId, socket])
   useEffect(() => {
     logKannaState("active snapshot resolved", {
@@ -1584,6 +1602,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     updateSnapshot,
     chatSnapshot,
     chatDiffSnapshot,
+    diffAnalysisSnapshot,
     keybindings,
     llmProvider,
     connectionStatus,

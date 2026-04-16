@@ -5,6 +5,7 @@ import type { ChatAttachment } from "../shared/types"
 import { createAuthManager } from "./auth"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { DiffAnalysisStore } from "./diff-analysis-store"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
@@ -75,6 +76,13 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const auth = options.password ? createAuthManager(options.password) : null
   const store = new EventStore()
   const diffStore = new DiffStore(store.dataDir)
+  let router: ReturnType<typeof createWsRouter>
+  const diffAnalysisStore = new DiffAnalysisStore({
+    diffStore,
+    onChange: (projectId) => {
+      void router?.broadcastProjectSnapshots(projectId)
+    },
+  })
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
   await diffStore.initialize()
@@ -89,7 +97,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   await refreshDiscovery()
 
   let server: ReturnType<typeof Bun.serve<ClientState>>
-  let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
   const keybindings = new KeybindingsManager()
   await keybindings.initialize()
@@ -118,6 +125,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   router = createWsRouter({
     store,
     diffStore,
+    diffAnalysisStore,
     agent,
     terminals,
     keybindings,

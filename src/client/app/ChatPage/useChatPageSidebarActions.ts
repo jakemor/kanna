@@ -274,6 +274,31 @@ export function useChatPageSidebarActions({
     }
   }, [state.socket])
 
+  const handleAnalyzeDiff = useCallback(async (paths: string[]) => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) {
+      return
+    }
+
+    await state.socket.command({
+      type: "chat.analyzeDiff",
+      chatId,
+      paths,
+    })
+  }, [state.socket])
+
+  const handleCancelDiffAnalysis = useCallback(async () => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) {
+      return
+    }
+
+    await state.socket.command({
+      type: "chat.cancelDiffAnalysis",
+      chatId,
+    })
+  }, [state.socket])
+
   const handleInitializeGit = useCallback(async () => {
     const chatId = activeChatIdRef.current
     if (!chatId) {
@@ -651,6 +676,8 @@ export function useChatPageSidebarActions({
     handleCommitDiffs,
     handleSyncBranch,
     handleGenerateCommitMessage,
+    handleAnalyzeDiff,
+    handleCancelDiffAnalysis,
     handleInitializeGit,
     handleGetGitHubPublishInfo,
     handleCheckGitHubRepoAvailability,

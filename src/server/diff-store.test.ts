@@ -68,6 +68,48 @@ describe("DiffStore", () => {
     })
   })
 
+  test("returns combined analysis patches with expanded context", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), [
+      "line 1",
+      "line 2",
+      "line 3",
+      "line 4",
+      "line 5",
+      "line 6",
+      "",
+    ].join("\n"), "utf8")
+    await writeFile(path.join(repoRoot, "notes.txt"), "before\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), [
+      "line 1",
+      "line 2",
+      "changed",
+      "line 4",
+      "line 5",
+      "line 6",
+      "",
+    ].join("\n"), "utf8")
+    await writeFile(path.join(repoRoot, "notes.txt"), "after\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    const result = await store.readPatchesForAnalysis({
+      projectPath: repoRoot,
+      paths: ["app.txt", "notes.txt"],
+      contextLines: 12,
+    })
+
+    expect(result.files.map((file) => file.path)).toEqual(["app.txt", "notes.txt"])
+    expect(result.patch).toContain("diff --git a/app.txt b/app.txt")
+    expect(result.patch).toContain("diff --git a/notes.txt b/notes.txt")
+    expect(result.patch).toContain("-line 3")
+    expect(result.patch).toContain("+changed")
+    expect(result.patch).toContain("@@ -1,6 +1,6 @@")
+  })
+
   test("returns no_repo outside a git repository", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kanna-no-repo-"))
     tempDirs.push(root)

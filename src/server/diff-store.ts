@@ -867,7 +867,13 @@ async function readBaseFile(repoRoot: string, baseCommit: string | null, relativ
   return result.stdout
 }
 
-async function createPatch(beforePathLabel: string, afterPathLabel: string, beforeText: string | null, afterText: string | null) {
+async function createPatch(
+  beforePathLabel: string,
+  afterPathLabel: string,
+  beforeText: string | null,
+  afterText: string | null,
+  contextLines = 3
+) {
   const tempDir = await mkdtemp(path.join(tmpdir(), "kanna-diff-"))
   const beforePath = path.join(tempDir, "before")
   const afterPath = path.join(tempDir, "after")
@@ -882,7 +888,7 @@ async function createPatch(beforePathLabel: string, afterPathLabel: string, befo
         "--no-index",
         "--no-ext-diff",
         "--text",
-        "--unified=3",
+        `--unified=${Math.max(0, Math.floor(contextLines))}`,
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "before",
@@ -1314,6 +1320,51 @@ export class DiffStore {
     const patch = await createPatch(beforePath, relativePath, beforeText, afterText)
 
     return { patch }
+  }
+
+  async readPatchesForAnalysis(args: {
+    projectPath: string
+    paths: string[]
+    contextLines: number
+  }) {
+    const normalizedPaths = [...new Set(args.paths.map(normalizeRepoRelativePath))]
+    if (normalizedPaths.length === 0) {
+      throw new Error("Select at least one file to analyze")
+    }
+
+    const repo = await resolveRepo(args.projectPath)
+    if (!repo) {
+      throw new Error("Project is not in a git repository")
+    }
+
+    const dirtyPaths = await listDirtyPaths(repo.repoRoot)
+    const dirtyByPath = new Map(dirtyPaths.map((entry) => [entry.path, entry]))
+    const patches: Array<{ path: string; changeType: ChatDiffFile["changeType"]; patch: string }> = []
+
+    for (const selectedPath of normalizedPaths) {
+      const entry = dirtyByPath.get(selectedPath)
+      if (!entry) {
+        throw new Error(`File is no longer changed: ${selectedPath}`)
+      }
+
+      const beforePath = entry.previousPath ?? selectedPath
+      const beforeText = await readBaseFile(repo.repoRoot, repo.baseCommit, beforePath)
+      const afterText = await readWorktreeFile(repo.repoRoot, selectedPath)
+      const patch = await createPatch(beforePath, selectedPath, beforeText, afterText, args.contextLines)
+      patches.push({
+        path: selectedPath,
+        changeType: entry.changeType,
+        patch,
+      })
+    }
+
+    return {
+      patch: patches
+        .map((entry) => entry.patch.trimEnd())
+        .filter(Boolean)
+        .join("\n\n"),
+      files: patches,
+    }
   }
 
   getProjectSnapshot(projectId: string): ChatDiffSnapshot {

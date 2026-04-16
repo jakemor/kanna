@@ -501,6 +501,187 @@ describe("ws-router", () => {
     })
   })
 
+  test("subscribes to project diff analysis snapshots", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    const router = createWsRouter({
+      store: {
+        state,
+        getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
+      } as never,
+      diffAnalysisStore: {
+        getProjectSnapshot: () => ({
+          projectId: "project-1",
+          status: "completed",
+          statusText: "Analysis complete",
+          startedAt: "2026-04-16T00:00:00.000Z",
+          completedAt: "2026-04-16T00:00:01.000Z",
+          error: null,
+          selectedPaths: ["app.txt"],
+          requestKey: "app.txt\u0000digest",
+          diffStats: null,
+          sourceBlocks: [],
+          parsed: {
+            hunks: [],
+            summary: "Done",
+            partial: "",
+            isComplete: true,
+          },
+          plan: [],
+        }),
+        startAnalysis: async () => {},
+        cancelAnalysis: async () => {},
+        dispose: () => {},
+      },
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "subscribe",
+        id: "analysis-sub-1",
+        topic: { type: "project-diff-analysis", projectId: "project-1" },
+      })
+    )
+
+    expect(ws.sent[0]).toMatchObject({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "analysis-sub-1",
+      snapshot: {
+        type: "project-diff-analysis",
+        data: {
+          projectId: "project-1",
+          status: "completed",
+          parsed: { summary: "Done" },
+        },
+      },
+    })
+  })
+
+  test("routes diff analysis commands through the analysis store", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+    const calls: string[] = []
+
+    const router = createWsRouter({
+      store: {
+        state,
+        getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
+        getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
+      } as never,
+      diffAnalysisStore: {
+        getProjectSnapshot: (projectId: string) => ({
+          projectId,
+          status: "idle",
+          statusText: "Ready",
+          startedAt: null,
+          completedAt: null,
+          error: null,
+          selectedPaths: [],
+          requestKey: null,
+          diffStats: null,
+          sourceBlocks: [],
+          parsed: {
+            hunks: [],
+            summary: "",
+            partial: "",
+            isComplete: false,
+          },
+          plan: [],
+        }),
+        startAnalysis: async (args: { projectId: string; projectPath: string; paths: string[] }) => {
+          calls.push(`start:${args.projectId}:${args.projectPath}:${args.paths.join(",")}`)
+        },
+        cancelAnalysis: async (projectId: string) => {
+          calls.push(`cancel:${projectId}`)
+        },
+        dispose: () => {},
+      },
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "analyze-1",
+        command: { type: "chat.analyzeDiff", chatId: "chat-1", paths: ["app.txt"] },
+      })
+    )
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "cancel-analysis-1",
+        command: { type: "chat.cancelDiffAnalysis", chatId: "chat-1" },
+      })
+    )
+
+    expect(calls).toEqual(["start:project-1:/tmp/project:app.txt", "cancel:project-1"])
+    expect(ws.sent).toEqual([
+      { v: PROTOCOL_VERSION, type: "ack", id: "analyze-1" },
+      { v: PROTOCOL_VERSION, type: "ack", id: "cancel-analysis-1" },
+    ])
+  })
+
   test("routes merge preview and merge commands through the diff store", async () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {

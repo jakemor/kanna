@@ -5,6 +5,7 @@ import { isClientEnvelope } from "../shared/protocol"
 import type { AgentCoordinator } from "./agent"
 import type { DiscoveredProject } from "./discovery"
 import { DiffStore } from "./diff-store"
+import type { DiffAnalysisStore } from "./diff-analysis-store"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
@@ -46,6 +47,7 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
   let update = 0
   let keybindings = 0
   let terminal = 0
+  let projectDiffAnalysis = 0
 
   for (const topic of ws.data.subscriptions.values()) {
     switch (topic.type) {
@@ -57,6 +59,9 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
         break
       case "project-git":
         projectGit += 1
+        break
+      case "project-diff-analysis":
+        projectDiffAnalysis += 1
         break
       case "local-projects":
         localProjects += 1
@@ -82,6 +87,7 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
     update,
     keybindings,
     terminal,
+    projectDiffAnalysis,
   }
 }
 
@@ -94,6 +100,7 @@ export interface ClientState {
 interface CreateWsRouterArgs {
   store: EventStore
   diffStore?: Pick<DiffStore, "getProjectSnapshot" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
+  diffAnalysisStore?: Pick<DiffAnalysisStore, "getProjectSnapshot" | "startAnalysis" | "cancelAnalysis" | "dispose">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
@@ -141,6 +148,7 @@ function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
 export function createWsRouter({
   store,
   diffStore,
+  diffAnalysisStore,
   agent,
   terminals,
   keybindings,
@@ -172,6 +180,30 @@ export function createWsRouter({
     discardFile: async () => ({ snapshotChanged: false }),
     ignoreFile: async () => ({ snapshotChanged: false }),
     readPatch: async () => ({ patch: "" }),
+  }
+  const resolvedDiffAnalysisStore = diffAnalysisStore ?? {
+    getProjectSnapshot: (projectId: string) => ({
+      projectId,
+      status: "idle" as const,
+      statusText: "Ready",
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      selectedPaths: [],
+      requestKey: null,
+      diffStats: null,
+      sourceBlocks: [],
+      parsed: {
+        hunks: [],
+        summary: "",
+        partial: "",
+        isComplete: false,
+      },
+      plan: [],
+    }),
+    startAnalysis: async () => {},
+    cancelAnalysis: async () => {},
+    dispose: () => {},
   }
   const resolvedLlmProvider = llmProvider ?? {
     read: async () => ({
@@ -276,6 +308,9 @@ export function createWsRouter({
       return filter.chatIds?.has(topic.chatId) ?? false
     }
     if (topic.type === "project-git") {
+      return filter.projectIds?.has(topic.projectId) ?? false
+    }
+    if (topic.type === "project-diff-analysis") {
       return filter.projectIds?.has(topic.projectId) ?? false
     }
     if (topic.type === "terminal") {
@@ -402,6 +437,20 @@ export function createWsRouter({
           type: "project-git",
           data: store.getProject(topic.projectId)
             ? resolvedDiffStore.getProjectSnapshot(topic.projectId)
+            : null,
+        },
+      }
+    }
+
+    if (topic.type === "project-diff-analysis") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "project-diff-analysis",
+          data: store.getProject(topic.projectId)
+            ? resolvedDiffAnalysisStore.getProjectSnapshot(topic.projectId)
             : null,
         },
       }
@@ -585,6 +634,12 @@ export function createWsRouter({
 
   async function broadcastChatStateImmediately(chatId: string) {
     await broadcastChatAndSidebar(chatId)
+  }
+
+  async function broadcastProjectSnapshots(projectId: string) {
+    await broadcastFilteredSnapshots({
+      projectIds: new Set([projectId]),
+    })
   }
 
   function broadcastError(message: string) {
@@ -833,6 +888,22 @@ export function createWsRouter({
           if (changed) {
             void broadcastSnapshots()
           }
+          return
+        }
+        case "chat.analyzeDiff": {
+          const { project } = resolveChatProject(command.chatId)
+          await resolvedDiffAnalysisStore.startAnalysis({
+            projectId: project.id,
+            projectPath: project.localPath,
+            paths: command.paths,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "chat.cancelDiffAnalysis": {
+          const { project } = resolveChatProject(command.chatId)
+          await resolvedDiffAnalysisStore.cancelAnalysis(project.id)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }
         case "chat.initGit": {
@@ -1094,6 +1165,7 @@ export function createWsRouter({
       sockets.delete(ws)
     },
     broadcastSnapshots,
+    broadcastProjectSnapshots,
     broadcastChatStateImmediately,
     scheduleBroadcast,
     scheduleChatStateBroadcast,
@@ -1143,6 +1215,7 @@ export function createWsRouter({
         clearTimeout(pendingBroadcastTimer)
       }
       agent.setBackgroundErrorReporter?.(null)
+      resolvedDiffAnalysisStore.dispose()
       disposeTerminalEvents()
       disposeKeybindingEvents()
       disposeUpdateEvents()

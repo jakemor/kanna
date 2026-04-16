@@ -68,6 +68,99 @@ describe("DiffStore", () => {
     })
   })
 
+  test("returns combined analysis patches with expanded context", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), [
+      "line 1",
+      "line 2",
+      "line 3",
+      "line 4",
+      "line 5",
+      "line 6",
+      "",
+    ].join("\n"), "utf8")
+    await writeFile(path.join(repoRoot, "notes.txt"), "before\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), [
+      "line 1",
+      "line 2",
+      "changed",
+      "line 4",
+      "line 5",
+      "line 6",
+      "",
+    ].join("\n"), "utf8")
+    await writeFile(path.join(repoRoot, "notes.txt"), "after\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    const result = await store.readPatchesForAnalysis({
+      projectPath: repoRoot,
+      paths: ["app.txt", "notes.txt"],
+      contextLines: 12,
+    })
+
+    expect(result.files.map((file) => file.path)).toEqual(["app.txt", "notes.txt"])
+    expect(result.patch).toContain("diff --git a/app.txt b/app.txt")
+    expect(result.patch).toContain("diff --git a/notes.txt b/notes.txt")
+    expect(result.patch).toContain("-line 3")
+    expect(result.patch).toContain("+changed")
+    expect(result.patch).toContain("@@ -1,6 +1,6 @@")
+  })
+
+  test("returns current branch diffs against the default branch", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await run(["git", "branch", "-M", "main"], repoRoot)
+    await run(["git", "checkout", "-b", "feature/current"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "feature\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "feature"], repoRoot)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const snapshot = store.getProjectSnapshot("project-1")
+    expect(snapshot.files).toHaveLength(0)
+    expect(snapshot.defaultBranchComparison).toMatchObject({
+      status: "ready",
+      baseBranchName: "main",
+      headBranchName: "feature/current",
+    })
+    expect(snapshot.defaultBranchComparison?.files).toHaveLength(1)
+    expect(snapshot.defaultBranchComparison?.files[0]).toMatchObject({
+      path: "app.txt",
+      changeType: "modified",
+      additions: 1,
+      deletions: 1,
+      isUntracked: false,
+    })
+
+    await expect(store.readPatch({
+      projectPath: repoRoot,
+      path: "app.txt",
+      comparisonMode: "default_branch",
+    })).resolves.toMatchObject({
+      patch: expect.stringContaining("+feature"),
+    })
+
+    const result = await store.readPatchesForAnalysis({
+      projectPath: repoRoot,
+      paths: ["app.txt"],
+      contextLines: 12,
+      comparisonMode: "default_branch",
+    })
+    expect(result.patch).toContain("diff --git a/app.txt b/app.txt")
+    expect(result.patch).toContain("-base")
+    expect(result.patch).toContain("+feature")
+  })
+
   test("returns no_repo outside a git repository", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kanna-no-repo-"))
     tempDirs.push(root)

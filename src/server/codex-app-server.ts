@@ -18,6 +18,7 @@ import {
   type CommandExecutionApprovalDecision,
   type CommandExecutionRequestApprovalParams,
   type CommandExecutionRequestApprovalResponse,
+  type AgentMessageDeltaNotification,
   type DynamicToolCallOutputContentItem,
   type DynamicToolCallResponse,
   type FileChangeApprovalDecision,
@@ -86,6 +87,9 @@ interface PendingTurn {
   pendingWebSearchResultToolId: string | null
   resolved: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  onAgentMessageDelta?: (notification: AgentMessageDeltaNotification) => void
+  onAgentMessageCompleted?: (args: { itemId: string; text: string }) => void
+  onPlanUpdated?: (args: { explanation: string | null; plan: TurnPlanStep[] }) => void
   onApprovalRequest?: (
     request:
       | {
@@ -128,6 +132,9 @@ export interface StartCodexTurnArgs {
   content: string
   planMode: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  onAgentMessageDelta?: PendingTurn["onAgentMessageDelta"]
+  onAgentMessageCompleted?: PendingTurn["onAgentMessageCompleted"]
+  onPlanUpdated?: PendingTurn["onPlanUpdated"]
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
 }
 
@@ -796,6 +803,9 @@ export class CodexAppServerManager {
       pendingWebSearchResultToolId: null,
       resolved: false,
       onToolRequest: args.onToolRequest,
+      onAgentMessageDelta: args.onAgentMessageDelta,
+      onAgentMessageCompleted: args.onAgentMessageCompleted,
+      onPlanUpdated: args.onPlanUpdated,
       onApprovalRequest: args.onApprovalRequest,
     }
     context.pendingTurn = pendingTurn
@@ -1153,6 +1163,9 @@ export class CodexAppServerManager {
       case "item/started":
         this.handleItemStarted(pendingTurn, notification.params)
         return
+      case "item/agentMessage/delta":
+        this.handleAgentMessageDelta(pendingTurn, notification.params)
+        return
       case "item/completed":
         this.handleItemCompleted(pendingTurn, notification.params)
         return
@@ -1171,6 +1184,10 @@ export class CodexAppServerManager {
       default:
         return
     }
+  }
+
+  private handleAgentMessageDelta(pendingTurn: PendingTurn, notification: AgentMessageDeltaNotification) {
+    pendingTurn.onAgentMessageDelta?.(notification)
   }
 
   private handleItemStarted(pendingTurn: PendingTurn, notification: ItemStartedNotification) {
@@ -1208,6 +1225,10 @@ export class CodexAppServerManager {
 
   private handleItemCompleted(pendingTurn: PendingTurn, notification: ItemCompletedNotification) {
     if (notification.item.type === "agentMessage") {
+      pendingTurn.onAgentMessageCompleted?.({
+        itemId: notification.item.id,
+        text: notification.item.text,
+      })
       pendingTurn.queue.push({
         type: "transcript",
         entry: timestamped({
@@ -1263,6 +1284,10 @@ export class CodexAppServerManager {
   private handlePlanUpdated(pendingTurn: PendingTurn, notification: TurnPlanUpdatedNotification) {
     pendingTurn.latestPlanExplanation = notification.explanation ?? null
     pendingTurn.latestPlanSteps = notification.plan
+    pendingTurn.onPlanUpdated?.({
+      explanation: pendingTurn.latestPlanExplanation,
+      plan: notification.plan,
+    })
     if (notification.plan.length === 0) {
       return
     }

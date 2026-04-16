@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Git Diff Analyzer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <div class="intro">
+          <p class="eyebrow">Codex App Server</p>
+          <h1>Git Diff Analyzer</h1>
+          <p class="lead">Turn a raw git diff into a data-flow ordered review with hunk-level notes.</p>
+        </div>
+
+        <form id="analysis-form" class="controls">
+          <label class="field field-wide">
+            <span>Project path</span>
+            <input id="project-path" name="projectPath" autocomplete="off" spellcheck="false">
+          </label>
+
+          <label class="field">
+            <span>Diff range</span>
+            <select id="preset" name="preset">
+              <option value="lastCommit">Last commit</option>
+              <option value="working">Unstaged changes</option>
+              <option value="staged">Staged changes</option>
+              <option value="mainBranch">Branch vs main</option>
+              <option value="custom">Custom git diff</option>
+            </select>
+          </label>
+
+          <label class="field field-wide custom-command" hidden>
+            <span>Custom command</span>
+            <input id="custom-command" name="customCommand" value="git diff HEAD~1" autocomplete="off" spellcheck="false">
+          </label>
+
+          <label class="check">
+            <input id="reuse-thread" name="reuseThread" type="checkbox">
+            <span>Reuse thread for this project</span>
+          </label>
+
+          <div class="actions">
+            <button id="analyze-button" type="submit">Analyze Diff</button>
+            <button id="cancel-button" class="button-secondary" type="button" disabled>Cancel</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="status-band">
+        <div class="status-line">
+          <span id="status-dot" class="status-dot"></span>
+          <strong id="status-text">Ready</strong>
+          <span id="command-text"></span>
+        </div>
+        <div id="stats" class="stats"></div>
+      </section>
+
+      <section id="error-panel" class="error-panel" hidden></section>
+
+      <section id="plan-panel" class="plan-panel" hidden>
+        <h2>Plan</h2>
+        <ol id="plan-list"></ol>
+      </section>
+
+      <section id="summary-panel" class="summary-panel" hidden>
+        <p class="eyebrow">Summary</p>
+        <div id="summary-text"></div>
+      </section>
+
+      <section class="result-layout">
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">Annotated Changes</p>
+            <h2 id="hunk-count">No change blocks yet</h2>
+          </div>
+          <div id="streaming-pill" class="streaming-pill" hidden>Streaming</div>
+        </div>
+
+        <div id="hunks" class="hunks empty-state">
+          <p>Run an analysis to see reordered change blocks and annotations.</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

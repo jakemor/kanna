@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
 import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import type { DiffAnalysisSnapshot } from "../../shared/diff-analysis"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -87,6 +88,22 @@ function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefi
   return left.every((message, index) => sameQueuedMessage(message, right[index]!))
 }
 
+function sameDiffFiles(left: ChatDiffSnapshot["files"], right: ChatDiffSnapshot["files"]) {
+  if (left.length !== right.length) return false
+  return left.every((file, index) => {
+    const other = right[index]
+    return Boolean(other)
+      && file.path === other.path
+      && file.changeType === other.changeType
+      && file.isUntracked === other.isUntracked
+      && file.additions === other.additions
+      && file.deletions === other.deletions
+      && file.patchDigest === other.patchDigest
+      && file.mimeType === other.mimeType
+      && file.size === other.size
+  })
+}
+
 function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSnapshot | null | undefined) {
   if (left === right) return true
   if (!left || !right) return false
@@ -115,19 +132,19 @@ function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSna
       && entry.tags.every((tag, tagIndex) => tag === other.tags[tagIndex])
   })
   if (!sameBranchHistory) return false
-  if (left.files.length !== right.files.length) return false
-  return left.files.every((file, index) => {
-    const other = right.files[index]
-    return Boolean(other)
-      && file.path === other.path
-      && file.changeType === other.changeType
-      && file.isUntracked === other.isUntracked
-      && file.additions === other.additions
-      && file.deletions === other.deletions
-      && file.patchDigest === other.patchDigest
-      && file.mimeType === other.mimeType
-      && file.size === other.size
-  })
+  const leftComparison = left.defaultBranchComparison
+  const rightComparison = right.defaultBranchComparison
+  if (leftComparison || rightComparison) {
+    if (!leftComparison || !rightComparison) return false
+    if (leftComparison.mode !== rightComparison.mode) return false
+    if (leftComparison.status !== rightComparison.status) return false
+    if (leftComparison.baseBranchName !== rightComparison.baseBranchName) return false
+    if (leftComparison.baseRef !== rightComparison.baseRef) return false
+    if (leftComparison.headBranchName !== rightComparison.headBranchName) return false
+    if (leftComparison.message !== rightComparison.message) return false
+    if (!sameDiffFiles(leftComparison.files, rightComparison.files)) return false
+  }
+  return sameDiffFiles(left.files, right.files)
 }
 
 function shouldPreserveExistingProjectDiffs(
@@ -477,6 +494,7 @@ export interface KannaState {
   updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
   chatDiffSnapshot: ChatDiffSnapshot | null
+  diffAnalysisSnapshot: DiffAnalysisSnapshot | null
   keybindings: KeybindingsSnapshot | null
   llmProvider: LlmProviderSnapshot | null
   connectionStatus: SocketStatus
@@ -557,6 +575,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [historyCursor, setHistoryCursor] = useState<string | null>(null)
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
+  const [projectDiffAnalysisSnapshots, setProjectDiffAnalysisSnapshots] = useState<Record<string, DiffAnalysisSnapshot | null>>({})
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [llmProvider, setLlmProvider] = useState<LlmProviderSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
@@ -892,6 +911,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     return currentDiffs
   }, [activeProjectId, projectDiffSnapshots])
+  const diffAnalysisSnapshot = activeProjectId ? (projectDiffAnalysisSnapshots[activeProjectId] ?? null) : null
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -916,6 +936,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
 
     return unsubscribe
+  }, [activeProjectId, socket])
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      return
+    }
+
+    return socket.subscribe<DiffAnalysisSnapshot | null>({ type: "project-diff-analysis", projectId: activeProjectId }, (snapshot) => {
+      setProjectDiffAnalysisSnapshots((current) => ({
+        ...current,
+        [activeProjectId]: snapshot ?? null,
+      }))
+      setCommandError(null)
+    })
   }, [activeProjectId, socket])
   useEffect(() => {
     logKannaState("active snapshot resolved", {
@@ -1584,6 +1618,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     updateSnapshot,
     chatSnapshot,
     chatDiffSnapshot,
+    diffAnalysisSnapshot,
     keybindings,
     llmProvider,
     connectionStatus,

@@ -4,6 +4,7 @@ import type {
   ChatDiffSnapshot,
   ChatHistoryPage,
   ChatSnapshot,
+  DiffComparisonMode,
   DiffCommitMode,
   KeybindingsSnapshot,
   LlmProviderSnapshot,
@@ -12,6 +13,7 @@ import type {
   SidebarData,
   UpdateSnapshot,
 } from "./types"
+import type { DiffAnalysisSnapshot } from "./diff-analysis"
 
 export type EditorPreset = "cursor" | "vscode" | "windsurf" | "custom"
 
@@ -27,6 +29,7 @@ export type SubscriptionTopic =
   | { type: "keybindings" }
   | { type: "chat"; chatId: string; recentLimit?: number }
   | { type: "project-git"; projectId: string }
+  | { type: "project-diff-analysis"; projectId: string }
   | { type: "terminal"; terminalId: string }
 
 export interface TerminalSnapshot {
@@ -52,7 +55,9 @@ export type ClientCommand =
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.remove"; projectId: string }
   | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
-  | { type: "project.readDiffPatch"; projectId: string; path: string }
+  | { type: "project.readDiffPatch"; projectId: string; path: string; comparisonMode?: DiffComparisonMode }
+  | { type: "project.analyzeDiff"; projectId: string; paths: string[]; comparisonMode?: DiffComparisonMode }
+  | { type: "project.cancelDiffAnalysis"; projectId: string }
   | { type: "system.ping" }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
@@ -93,6 +98,8 @@ export type ClientCommand =
       planMode?: boolean
     }
   | { type: "chat.refreshDiffs"; chatId: string }
+  | { type: "chat.analyzeDiff"; chatId: string; paths: string[]; comparisonMode?: DiffComparisonMode }
+  | { type: "chat.cancelDiffAnalysis"; chatId: string }
   | { type: "chat.initGit"; chatId: string }
   | { type: "chat.getGitHubPublishInfo"; chatId: string }
   | { type: "chat.checkGitHubRepoAvailability"; chatId: string; owner: string; name: string }
@@ -202,6 +209,7 @@ export type ServerSnapshot =
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }
+  | { type: "project-diff-analysis"; data: DiffAnalysisSnapshot | null }
   | { type: "terminal"; data: TerminalSnapshot | null }
 
 export type ServerEnvelope =

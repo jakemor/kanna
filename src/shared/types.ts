@@ -522,6 +522,18 @@ export interface ChatDiffFile {
   size?: number
 }
 
+export type DiffComparisonMode = "working_tree" | "default_branch"
+
+export interface ChatDiffComparisonSnapshot {
+  mode: "default_branch"
+  status: "ready" | "unavailable"
+  baseBranchName?: string
+  baseRef?: string
+  headBranchName?: string
+  files: ChatDiffFile[]
+  message?: string
+}
+
 export interface ChatBranchHistoryEntry {
   sha: string
   summary: string
@@ -595,6 +607,7 @@ export interface UpstreamStatus {
 export interface ChatDiffSnapshot extends BranchMetadata, UpstreamStatus {
   status: "unknown" | "ready" | "no_repo"
   files: ChatDiffFile[]
+  defaultBranchComparison?: ChatDiffComparisonSnapshot
   branchHistory?: ChatBranchHistorySnapshot
 }
 

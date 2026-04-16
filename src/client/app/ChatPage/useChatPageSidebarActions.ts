@@ -9,6 +9,7 @@ import type {
   ChatMergeBranchResult,
   ChatMergePreviewResult,
   ChatSyncResult,
+  DiffComparisonMode,
   DiffCommitMode,
   DiffCommitResult,
   GitHubPublishInfo,
@@ -98,14 +99,15 @@ export function useChatPageSidebarActions({
     void state.handleCopyPath(filePath)
   }, [state.handleCopyPath])
 
-  const handleLoadDiffPatch = useCallback(async (filePath: string) => {
+  const handleLoadDiffPatch = useCallback(async (args: { path: string; comparisonMode: DiffComparisonMode }) => {
     if (!projectId) {
       throw new Error("Project not found")
     }
     const result = await state.socket.command<{ patch: string }>({
       type: "project.readDiffPatch",
       projectId,
-      path: filePath,
+      path: args.path,
+      comparisonMode: args.comparisonMode,
     })
     return result.patch
   }, [projectId, state.socket])
@@ -273,6 +275,30 @@ export function useChatPageSidebarActions({
       body: result.body,
     }
   }, [state.socket])
+
+  const handleAnalyzeDiff = useCallback(async (args: { paths: string[]; comparisonMode: DiffComparisonMode }) => {
+    if (!projectId) {
+      return
+    }
+
+    await state.socket.command({
+      type: "project.analyzeDiff",
+      projectId,
+      paths: args.paths,
+      comparisonMode: args.comparisonMode,
+    })
+  }, [projectId, state.socket])
+
+  const handleCancelDiffAnalysis = useCallback(async () => {
+    if (!projectId) {
+      return
+    }
+
+    await state.socket.command({
+      type: "project.cancelDiffAnalysis",
+      projectId,
+    })
+  }, [projectId, state.socket])
 
   const handleInitializeGit = useCallback(async () => {
     const chatId = activeChatIdRef.current
@@ -651,6 +677,8 @@ export function useChatPageSidebarActions({
     handleCommitDiffs,
     handleSyncBranch,
     handleGenerateCommitMessage,
+    handleAnalyzeDiff,
+    handleCancelDiffAnalysis,
     handleInitializeGit,
     handleGetGitHubPublishInfo,
     handleCheckGitHubRepoAvailability,

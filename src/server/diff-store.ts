@@ -6,6 +6,7 @@ import type {
   BranchMetadata,
   ChatBranchHistoryEntry,
   ChatBranchHistorySnapshot,
+  ChatDiffComparisonSnapshot,
   ChatBranchListEntry,
   ChatBranchListResult,
   ChatCheckoutBranchResult,
@@ -19,6 +20,7 @@ import type {
   ChatMergeBranchResult,
   ChatMergePreviewResult,
   ChatSyncResult,
+  DiffComparisonMode,
   DiffCommitMode,
   DiffCommitResult,
   UpstreamStatus,
@@ -29,6 +31,7 @@ import { inferProjectFileContentType } from "./uploads"
 interface StoredChatDiffState extends BranchMetadata, UpstreamStatus {
   status: ChatDiffSnapshot["status"]
   files: ChatDiffFile[]
+  defaultBranchComparison?: ChatDiffComparisonSnapshot
   branchHistory: ChatBranchHistorySnapshot
 }
 
@@ -44,6 +47,7 @@ function createEmptyState(): StoredChatDiffState {
     behindCount: undefined,
     lastFetchedAt: undefined,
     files: [],
+    defaultBranchComparison: undefined,
     branchHistory: { entries: [] },
   }
 }
@@ -78,17 +82,10 @@ function branchHistoryEqual(left: ChatBranchHistorySnapshot, right: ChatBranchHi
   })
 }
 
-function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChatDiffState) {
-  if (!left) {
-    return right.status === "unknown" && right.files.length === 0
-  }
-  if (left.status !== right.status) return false
-  if (!branchMetadataEqual(left, right)) return false
-  if (!upstreamStatusEqual(left, right)) return false
-  if (left.files.length !== right.files.length) return false
-  if (!branchHistoryEqual(left.branchHistory, right.branchHistory)) return false
-  return left.files.every((file, index) => {
-    const other = right.files[index]
+function diffFilesEqual(left: ChatDiffFile[], right: ChatDiffFile[]) {
+  if (left.length !== right.length) return false
+  return left.every((file, index) => {
+    const other = right[index]
     return Boolean(other)
       && file.path === other.path
       && file.changeType === other.changeType
@@ -99,6 +96,33 @@ function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChat
       && file.mimeType === other.mimeType
       && file.size === other.size
   })
+}
+
+function diffComparisonEqual(
+  left: ChatDiffComparisonSnapshot | undefined,
+  right: ChatDiffComparisonSnapshot | undefined
+) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.mode === right.mode
+    && left.status === right.status
+    && left.baseBranchName === right.baseBranchName
+    && left.baseRef === right.baseRef
+    && left.headBranchName === right.headBranchName
+    && left.message === right.message
+    && diffFilesEqual(left.files, right.files)
+}
+
+function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChatDiffState) {
+  if (!left) {
+    return right.status === "unknown" && right.files.length === 0
+  }
+  if (left.status !== right.status) return false
+  if (!branchMetadataEqual(left, right)) return false
+  if (!upstreamStatusEqual(left, right)) return false
+  if (!diffComparisonEqual(left.defaultBranchComparison, right.defaultBranchComparison)) return false
+  if (!branchHistoryEqual(left.branchHistory, right.branchHistory)) return false
+  return diffFilesEqual(left.files, right.files)
 }
 
 interface DirtyPathEntry {
@@ -408,6 +432,79 @@ async function resolveDefaultBranchName(repoRoot: string) {
   if (localBranches.includes("main")) return "main"
   if (localBranches.includes("master")) return "master"
   return (await getBranchName(repoRoot)) ?? localBranches[0] ?? undefined
+}
+
+async function resolveDefaultBranchRef(repoRoot: string, defaultBranchName?: string) {
+  const candidates = [
+    defaultBranchName,
+    defaultBranchName ? `origin/${defaultBranchName}` : undefined,
+    "main",
+    "origin/main",
+    "master",
+    "origin/master",
+  ].filter((value): value is string => Boolean(value))
+  const seen = new Set<string>()
+
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    const result = await runGit(["rev-parse", "--verify", `${candidate}^{commit}`], repoRoot)
+    if (result.exitCode === 0) {
+      return {
+        ref: candidate,
+        commit: result.stdout.trim(),
+        name: candidate.replace(/^origin\//u, ""),
+      }
+    }
+  }
+
+  return null
+}
+
+async function resolveDefaultBranchComparisonContext(repoRoot: string, repoHasHead: boolean) {
+  const [defaultBranchName, headBranchName] = await Promise.all([
+    resolveDefaultBranchName(repoRoot),
+    getBranchName(repoRoot),
+  ])
+
+  if (!repoHasHead) {
+    return {
+      ok: false as const,
+      baseBranchName: defaultBranchName,
+      headBranchName,
+      message: "Create an initial commit before comparing this branch with main.",
+    }
+  }
+
+  const base = await resolveDefaultBranchRef(repoRoot, defaultBranchName)
+  if (!base) {
+    return {
+      ok: false as const,
+      baseBranchName: defaultBranchName,
+      headBranchName,
+      message: "Could not find a main or default branch to compare against.",
+    }
+  }
+
+  const mergeBase = await runGit(["merge-base", base.ref, "HEAD"], repoRoot)
+  if (mergeBase.exitCode !== 0) {
+    return {
+      ok: false as const,
+      baseBranchName: base.name,
+      baseRef: base.ref,
+      headBranchName,
+      message: summarizeGitFailure(formatGitFailure(mergeBase), "Could not find a merge base with the default branch."),
+    }
+  }
+
+  return {
+    ok: true as const,
+    baseBranchName: base.name,
+    baseRef: base.ref,
+    baseCommit: mergeBase.stdout.trim(),
+    headRef: "HEAD",
+    headBranchName,
+  }
 }
 
 async function getRecentBranchNames(repoRoot: string) {
@@ -836,6 +933,47 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
   return entries.sort((left, right) => left.path.localeCompare(right.path))
 }
 
+function parseNameStatusPaths(output: string): DirtyPathEntry[] {
+  const entries: DirtyPathEntry[] = []
+  for (const rawLine of output.split(/\r?\n/u)) {
+    const line = rawLine.trimEnd()
+    if (!line) continue
+
+    const [statusCode = "", firstPath = "", secondPath = ""] = line.split("\t")
+    if (!statusCode || !firstPath) continue
+
+    const isRename = statusCode.startsWith("R")
+    const isDelete = statusCode.startsWith("D")
+    const isAdd = statusCode.startsWith("A")
+    const changeType: ChatDiffFile["changeType"] = isRename
+      ? "renamed"
+      : isDelete
+        ? "deleted"
+        : isAdd
+          ? "added"
+          : "modified"
+
+    if (isRename) {
+      if (!secondPath) continue
+      entries.push({
+        path: secondPath,
+        previousPath: firstPath,
+        changeType,
+        isUntracked: false,
+      })
+      continue
+    }
+
+    entries.push({
+      path: firstPath,
+      changeType,
+      isUntracked: false,
+    })
+  }
+
+  return entries.sort((left, right) => left.path.localeCompare(right.path))
+}
+
 async function listDirtyPaths(repoRoot: string) {
   const status = await runGit(["status", "--short", "--untracked-files=all"], repoRoot)
   if (status.exitCode !== 0) {
@@ -844,6 +982,15 @@ async function listDirtyPaths(repoRoot: string) {
 
   const paths = parseStatusPaths(status.stdout)
   return paths
+}
+
+async function listCommitRangePaths(repoRoot: string, baseRef: string, headRef: string) {
+  const result = await runGit(["diff", "--name-status", "-M", baseRef, headRef], repoRoot)
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || "Failed to read branch comparison paths")
+  }
+
+  return parseNameStatusPaths(result.stdout)
 }
 
 async function readWorktreeFile(repoRoot: string, relativePath: string): Promise<string | null> {
@@ -855,19 +1002,29 @@ async function readWorktreeFile(repoRoot: string, relativePath: string): Promise
   return await readFile(absolutePath, "utf8")
 }
 
-async function readBaseFile(repoRoot: string, baseCommit: string | null, relativePath: string): Promise<string | null> {
-  if (!baseCommit) {
-    return null
-  }
-
-  const result = await runGit(["show", `${baseCommit}:${relativePath}`], repoRoot)
+async function readGitFile(repoRoot: string, ref: string, relativePath: string): Promise<string | null> {
+  const result = await runGit(["show", `${ref}:${relativePath}`], repoRoot)
   if (result.exitCode !== 0) {
     return null
   }
   return result.stdout
 }
 
-async function createPatch(beforePathLabel: string, afterPathLabel: string, beforeText: string | null, afterText: string | null) {
+async function readBaseFile(repoRoot: string, baseCommit: string | null, relativePath: string): Promise<string | null> {
+  if (!baseCommit) {
+    return null
+  }
+
+  return await readGitFile(repoRoot, baseCommit, relativePath)
+}
+
+async function createPatch(
+  beforePathLabel: string,
+  afterPathLabel: string,
+  beforeText: string | null,
+  afterText: string | null,
+  contextLines = 3
+) {
   const tempDir = await mkdtemp(path.join(tmpdir(), "kanna-diff-"))
   const beforePath = path.join(tempDir, "before")
   const afterPath = path.join(tempDir, "after")
@@ -882,7 +1039,7 @@ async function createPatch(beforePathLabel: string, afterPathLabel: string, befo
         "--no-index",
         "--no-ext-diff",
         "--text",
-        "--unified=3",
+        `--unified=${Math.max(0, Math.floor(contextLines))}`,
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "before",
@@ -978,6 +1135,41 @@ async function getTrackedDiffStats(repoRoot: string, baseCommit: string | null) 
   return statsByPath
 }
 
+async function getCommitRangeDiffStats(repoRoot: string, baseRef: string, headRef: string) {
+  const statsByPath = new Map<string, { additions: number; deletions: number }>()
+  const result = await runGit(["diff", "--numstat", "-z", "-M", baseRef, headRef], repoRoot)
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || "Failed to read branch comparison stats")
+  }
+
+  const tokens = result.stdout.split("\u0000")
+  for (let index = 0; index < tokens.length;) {
+    const header = tokens[index++] ?? ""
+    if (!header) continue
+
+    const [additionsValue, deletionsValue, pathValue = ""] = header.split("\t")
+    if (typeof additionsValue !== "string" || typeof deletionsValue !== "string") continue
+
+    if (pathValue) {
+      statsByPath.set(pathValue, {
+        additions: parseNumstatValue(additionsValue),
+        deletions: parseNumstatValue(deletionsValue),
+      })
+      continue
+    }
+
+    index += 1
+    const nextPath = tokens[index++] ?? ""
+    if (!nextPath) continue
+    statsByPath.set(nextPath, {
+      additions: parseNumstatValue(additionsValue),
+      deletions: parseNumstatValue(deletionsValue),
+    })
+  }
+
+  return statsByPath
+}
+
 async function computeCurrentFiles(repoRoot: string, baseCommit: string | null): Promise<ChatDiffFile[]> {
   const currentDirtyPaths = await listDirtyPaths(repoRoot)
   const trackedStatsByPath = await getTrackedDiffStats(repoRoot, baseCommit)
@@ -1020,6 +1212,92 @@ async function computeCurrentFiles(repoRoot: string, baseCommit: string | null):
   }
 
   return files
+}
+
+async function computeCommitRangeFiles(repoRoot: string, baseRef: string, headRef: string): Promise<ChatDiffFile[]> {
+  const changedPaths = await listCommitRangePaths(repoRoot, baseRef, headRef)
+  const trackedStatsByPath = await getCommitRangeDiffStats(repoRoot, baseRef, headRef)
+  const files: ChatDiffFile[] = []
+
+  for (const entry of changedPaths) {
+    const relativePath = entry.path
+    const beforePath = entry.previousPath ?? relativePath
+    const beforeText = await readGitFile(repoRoot, baseRef, beforePath)
+    const afterText = await readGitFile(repoRoot, headRef, relativePath)
+    const absolutePath = path.join(repoRoot, relativePath)
+    const fileInfo = await stat(absolutePath).catch(() => null)
+    const file = fileInfo?.isFile() ? Bun.file(absolutePath) : null
+    const mimeType = file ? inferProjectFileContentType(relativePath, file.type) : undefined
+    const size = fileInfo?.isFile() ? fileInfo.size : undefined
+
+    if (beforeText === afterText && entry.changeType !== "renamed") {
+      continue
+    }
+
+    const trackedStats = trackedStatsByPath.get(relativePath)
+    const additions = trackedStats?.additions ?? countTextLines(afterText)
+    const deletions = trackedStats?.deletions ?? countTextLines(beforeText)
+    files.push({
+      path: relativePath,
+      changeType: entry.changeType,
+      isUntracked: false,
+      additions,
+      deletions,
+      patchDigest: getContentDigest({
+        changeType: entry.changeType,
+        beforePath,
+        afterPath: relativePath,
+        beforeText,
+        afterText,
+      }),
+      mimeType,
+      size,
+    })
+  }
+
+  return files
+}
+
+async function computeDefaultBranchComparison(
+  repoRoot: string,
+  repoHasHead: boolean,
+  defaultBranchName?: string,
+  headBranchName?: string
+): Promise<ChatDiffComparisonSnapshot> {
+  const context = await resolveDefaultBranchComparisonContext(repoRoot, repoHasHead)
+  if (!context.ok) {
+    return {
+      mode: "default_branch",
+      status: "unavailable",
+      baseBranchName: context.baseBranchName ?? defaultBranchName,
+      baseRef: "baseRef" in context ? context.baseRef : undefined,
+      headBranchName: context.headBranchName ?? headBranchName,
+      files: [],
+      message: context.message,
+    }
+  }
+
+  try {
+    const files = await computeCommitRangeFiles(repoRoot, context.baseCommit, context.headRef)
+    return {
+      mode: "default_branch",
+      status: "ready",
+      baseBranchName: context.baseBranchName,
+      baseRef: context.baseRef,
+      headBranchName: context.headBranchName ?? headBranchName,
+      files,
+    }
+  } catch (error) {
+    return {
+      mode: "default_branch",
+      status: "unavailable",
+      baseBranchName: context.baseBranchName,
+      baseRef: context.baseRef,
+      headBranchName: context.headBranchName ?? headBranchName,
+      files: [],
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
 }
 
 function normalizeRepoRelativePath(inputPath: string) {
@@ -1296,11 +1574,32 @@ export class DiffStore {
   async readPatch(args: {
     projectPath: string
     path: string
+    comparisonMode?: DiffComparisonMode
   }) {
     const relativePath = normalizeRepoRelativePath(args.path)
     const repo = await resolveRepo(args.projectPath)
     if (!repo) {
       throw new Error("Project is not in a git repository")
+    }
+
+    if (args.comparisonMode === "default_branch") {
+      const context = await resolveDefaultBranchComparisonContext(repo.repoRoot, repo.baseCommit !== null)
+      if (!context.ok) {
+        throw new Error(context.message)
+      }
+
+      const changedPaths = await listCommitRangePaths(repo.repoRoot, context.baseCommit, context.headRef)
+      const entry = changedPaths.find((candidate) => candidate.path === relativePath)
+      if (!entry) {
+        throw new Error(`File is not changed against ${context.baseBranchName}: ${relativePath}`)
+      }
+
+      const beforePath = entry.previousPath ?? relativePath
+      const beforeText = await readGitFile(repo.repoRoot, context.baseCommit, beforePath)
+      const afterText = await readGitFile(repo.repoRoot, context.headRef, relativePath)
+      const patch = await createPatch(beforePath, relativePath, beforeText, afterText)
+
+      return { patch }
     }
 
     const entry = await findDirtyPath(repo.repoRoot, relativePath)
@@ -1316,6 +1615,88 @@ export class DiffStore {
     return { patch }
   }
 
+  async readPatchesForAnalysis(args: {
+    projectPath: string
+    paths: string[]
+    contextLines: number
+    comparisonMode?: DiffComparisonMode
+  }) {
+    const normalizedPaths = [...new Set(args.paths.map(normalizeRepoRelativePath))]
+    if (normalizedPaths.length === 0) {
+      throw new Error("Select at least one file to analyze")
+    }
+
+    const repo = await resolveRepo(args.projectPath)
+    if (!repo) {
+      throw new Error("Project is not in a git repository")
+    }
+
+    if (args.comparisonMode === "default_branch") {
+      const context = await resolveDefaultBranchComparisonContext(repo.repoRoot, repo.baseCommit !== null)
+      if (!context.ok) {
+        throw new Error(context.message)
+      }
+
+      const changedPaths = await listCommitRangePaths(repo.repoRoot, context.baseCommit, context.headRef)
+      const changedByPath = new Map(changedPaths.map((entry) => [entry.path, entry]))
+      const patches: Array<{ path: string; changeType: ChatDiffFile["changeType"]; patch: string }> = []
+
+      for (const selectedPath of normalizedPaths) {
+        const entry = changedByPath.get(selectedPath)
+        if (!entry) {
+          throw new Error(`File is not changed against ${context.baseBranchName}: ${selectedPath}`)
+        }
+
+        const beforePath = entry.previousPath ?? selectedPath
+        const beforeText = await readGitFile(repo.repoRoot, context.baseCommit, beforePath)
+        const afterText = await readGitFile(repo.repoRoot, context.headRef, selectedPath)
+        const patch = await createPatch(beforePath, selectedPath, beforeText, afterText, args.contextLines)
+        patches.push({
+          path: selectedPath,
+          changeType: entry.changeType,
+          patch,
+        })
+      }
+
+      return {
+        patch: patches
+          .map((entry) => entry.patch.trimEnd())
+          .filter(Boolean)
+          .join("\n\n"),
+        files: patches,
+      }
+    }
+
+    const dirtyPaths = await listDirtyPaths(repo.repoRoot)
+    const dirtyByPath = new Map(dirtyPaths.map((entry) => [entry.path, entry]))
+    const patches: Array<{ path: string; changeType: ChatDiffFile["changeType"]; patch: string }> = []
+
+    for (const selectedPath of normalizedPaths) {
+      const entry = dirtyByPath.get(selectedPath)
+      if (!entry) {
+        throw new Error(`File is no longer changed: ${selectedPath}`)
+      }
+
+      const beforePath = entry.previousPath ?? selectedPath
+      const beforeText = await readBaseFile(repo.repoRoot, repo.baseCommit, beforePath)
+      const afterText = await readWorktreeFile(repo.repoRoot, selectedPath)
+      const patch = await createPatch(beforePath, selectedPath, beforeText, afterText, args.contextLines)
+      patches.push({
+        path: selectedPath,
+        changeType: entry.changeType,
+        patch,
+      })
+    }
+
+    return {
+      patch: patches
+        .map((entry) => entry.patch.trimEnd())
+        .filter(Boolean)
+        .join("\n\n"),
+      files: patches,
+    }
+  }
+
   getProjectSnapshot(projectId: string): ChatDiffSnapshot {
     const state = this.states.get(projectId) ?? createEmptyState()
     return {
@@ -1329,6 +1710,12 @@ export class DiffStore {
       behindCount: state.behindCount,
       lastFetchedAt: state.lastFetchedAt,
       files: [...state.files],
+      defaultBranchComparison: state.defaultBranchComparison
+        ? {
+            ...state.defaultBranchComparison,
+            files: [...state.defaultBranchComparison.files],
+          }
+        : undefined,
       branchHistory: {
         entries: state.branchHistory.entries.map((entry) => ({
           ...entry,
@@ -1352,6 +1739,7 @@ export class DiffStore {
         behindCount: undefined,
         lastFetchedAt: undefined,
         files: [],
+        defaultBranchComparison: undefined,
         branchHistory: { entries: [] },
       } satisfies StoredChatDiffState
       const changed = !snapshotsEqual(this.states.get(projectId), nextState)
@@ -1362,6 +1750,12 @@ export class DiffStore {
     const files = await computeCurrentFiles(repo.repoRoot, repo.baseCommit)
     const branchName = await getBranchName(repo.repoRoot)
     const defaultBranchName = await resolveDefaultBranchName(repo.repoRoot)
+    const defaultBranchComparison = await computeDefaultBranchComparison(
+      repo.repoRoot,
+      repo.baseCommit !== null,
+      defaultBranchName,
+      branchName
+    )
     const originRemoteUrl = await getOriginRemoteUrl(repo.repoRoot)
     const hasOriginRemote = originRemoteUrl !== null
     const originRepoSlug = extractGitHubRepoSlug(originRemoteUrl) ?? undefined
@@ -1388,6 +1782,7 @@ export class DiffStore {
       behindCount,
       lastFetchedAt,
       files,
+      defaultBranchComparison,
       branchHistory,
     } satisfies StoredChatDiffState
     const changed = !snapshotsEqual(this.states.get(projectId), nextState)

@@ -6,7 +6,9 @@ import type {
   ChatBranchHistoryEntry,
   ChatBranchListEntry,
   ChatBranchListResult,
+  ChatDiffComparisonSnapshot,
   ChatDiffSnapshot,
+  DiffComparisonMode,
   DiffCommitMode,
   DiffCommitResult,
   ChatMergeBranchResult,
@@ -14,6 +16,8 @@ import type {
   GitHubPublishInfo,
   GitHubRepoAvailabilityResult,
 } from "../../../shared/types"
+import { createDiffAnalysisRequestKey, type DiffAnalysisSnapshot, type DiffAnalysisSourceBlock } from "../../../shared/diff-analysis"
+import { extractPartialSummaryPreview } from "../../../shared/diff-analysis-parser"
 import { useStickyState } from "../../hooks/useStickyState"
 import { cn } from "../../lib/utils"
 import { useDiffCommitStore } from "../../stores/diffCommitStore"
@@ -34,7 +38,61 @@ import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, Dia
 type DiffRenderMode = "unified" | "split"
 type DiffFile = ChatDiffSnapshot["files"][number]
 type SidebarViewMode = "changes" | "history"
+type DiffPanelKey = "raw" | "reordered" | "natural" | "summary"
 const EMPTY_CHECKED_PATHS: Record<string, boolean> = {}
+const DEFAULT_DIFF_COMPARISON_MODE: DiffComparisonMode = "working_tree"
+
+const DEFAULT_DIFF_PANEL_VISIBILITY: Record<DiffPanelKey, boolean> = {
+  raw: true,
+  reordered: false,
+  natural: false,
+  summary: false,
+}
+
+const DIFF_PANEL_OPTIONS: Array<{ value: DiffPanelKey; label: string }> = [
+  { value: "raw", label: "Raw" },
+  { value: "reordered", label: "Reordered" },
+  { value: "natural", label: "Natural Language" },
+  { value: "summary", label: "Summary" },
+]
+
+function createSingleDiffPanelVisibility(panel: DiffPanelKey): Record<DiffPanelKey, boolean> {
+  return {
+    raw: panel === "raw",
+    reordered: panel === "reordered",
+    natural: panel === "natural",
+    summary: panel === "summary",
+  }
+}
+
+function createDiffPatchCacheKey(comparisonMode: DiffComparisonMode, path: string) {
+  return `${comparisonMode}\u0000${path}`
+}
+
+export function getInitialDiffComparisonMode(args: {
+  workingTreeFiles: ChatDiffSnapshot["files"]
+  defaultBranchComparison?: ChatDiffComparisonSnapshot
+}): DiffComparisonMode {
+  const defaultBranchComparisonFiles = args.defaultBranchComparison?.status === "ready"
+    ? args.defaultBranchComparison.files
+    : []
+  return args.workingTreeFiles.length === 0 && defaultBranchComparisonFiles.length > 0
+    ? "default_branch"
+    : DEFAULT_DIFF_COMPARISON_MODE
+}
+
+export function resolveDiffComparisonMode(
+  currentMode: DiffComparisonMode,
+  args: {
+    diffsStatus: ChatDiffSnapshot["status"]
+    defaultBranchComparison?: ChatDiffComparisonSnapshot
+  }
+): DiffComparisonMode {
+  if (currentMode === "default_branch" && !(args.diffsStatus === "ready" && args.defaultBranchComparison)) {
+    return DEFAULT_DIFF_COMPARISON_MODE
+  }
+  return currentMode
+}
 
 function getDiffPreviewAttachment(projectId: string | null, file: DiffFile): ChatAttachment | null {
   if (!projectId || !file.mimeType || typeof file.size !== "number" || file.changeType === "deleted") {
@@ -70,16 +128,19 @@ export interface DiffFileActions {
 interface RightSidebarProps extends DiffFileActions {
   projectId: string | null
   diffs: ChatDiffSnapshot
+  diffAnalysis: DiffAnalysisSnapshot | null
   editorLabel: string
   diffRenderMode: DiffRenderMode
   wrapLines: boolean
-  onLoadPatch: (path: string) => Promise<string>
+  onLoadPatch: (args: { path: string; comparisonMode: DiffComparisonMode }) => Promise<string>
   onListBranches: () => Promise<ChatBranchListResult>
   onPreviewMergeBranch: (branch: ChatBranchListEntry) => Promise<ChatMergePreviewResult>
   onMergeBranch: (branch: ChatBranchListEntry) => Promise<ChatMergeBranchResult | null>
   onCheckoutBranch: (branch: ChatBranchListEntry) => Promise<void>
   onCreateBranch: () => Promise<void>
   onGenerateCommitMessage: (args: { paths: string[] }) => Promise<{ subject: string; body: string }>
+  onAnalyzeDiff: (args: { paths: string[]; comparisonMode: DiffComparisonMode }) => Promise<void>
+  onCancelDiffAnalysis: () => Promise<void>
   onInitializeGit: () => Promise<unknown>
   onGetGitHubPublishInfo: () => Promise<GitHubPublishInfo>
   onCheckGitHubRepoAvailability: (args: { owner: string; name: string }) => Promise<GitHubRepoAvailabilityResult>
@@ -209,6 +270,400 @@ function formatFetchTooltip(isoTimestamp?: string) {
     return "No local fetch recorded"
   }
   return `Last fetched ${formatRelativeTime(isoTimestamp)}`
+}
+
+function isAnalysisRunning(analysis: DiffAnalysisSnapshot | null) {
+  return analysis?.status === "starting" || analysis?.status === "running" || analysis?.status === "cancelling"
+}
+
+function getAnalysisStatusText(analysis: DiffAnalysisSnapshot | null, isStale: boolean) {
+  if (isStale) return "Analysis is stale"
+  if (!analysis || analysis.status === "idle") return "Not analyzed"
+  if (analysis.status === "failed") return analysis.error || analysis.statusText
+  return analysis.statusText
+}
+
+function classifyDiffLine(line: string) {
+  if (line.startsWith("diff --git ") || line.startsWith("---") || line.startsWith("+++")) {
+    return "bg-muted/60 text-muted-foreground font-medium"
+  }
+  if (line.startsWith("@@")) {
+    return "bg-accent text-muted-foreground"
+  }
+  if (line.startsWith("+")) {
+    return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+  }
+  if (line.startsWith("-")) {
+    return "bg-red-500/10 text-red-700 dark:text-red-300"
+  }
+  return "text-muted-foreground"
+}
+
+export function getDiffBlockDisplayLines(diffText: string) {
+  const lines = String(diffText).split(/\r?\n/u)
+  while (lines.length > 0 && lines.at(-1) === "") {
+    lines.pop()
+  }
+
+  const hunkHeaderIndex = lines.findIndex((line) => line.startsWith("@@"))
+  if (hunkHeaderIndex >= 0) {
+    return lines.slice(hunkHeaderIndex + 1)
+  }
+
+  return lines.filter((line) => (
+    !line.startsWith("diff --git ")
+    && !line.startsWith("index ")
+    && !line.startsWith("---")
+    && !line.startsWith("+++")
+  ))
+}
+
+function DiffLine({ line, expanded = false }: { line: string; expanded?: boolean }) {
+  return (
+    <div className={cn(
+      "min-h-6 border-b border-border/50 font-mono text-xs",
+      classifyDiffLine(line),
+      expanded && "bg-amber-500/10"
+    )}>
+      <code className="block whitespace-pre px-3 py-1">{line}</code>
+    </div>
+  )
+}
+
+function DiffBlockView({
+  block,
+  showBefore,
+  showAfter,
+}: {
+  block: DiffAnalysisSourceBlock
+  showBefore: boolean
+  showAfter: boolean
+}) {
+  const lines = getDiffBlockDisplayLines(block.diff)
+  const rows: ReactNode[] = []
+
+  if (showBefore) {
+    rows.push(...block.contextBefore.map((contextLine, contextIndex) => (
+      <DiffLine key={`before-${contextIndex}`} line={contextLine} expanded />
+    )))
+  }
+
+  rows.push(...lines.map((line, index) => <DiffLine key={`line-${index}`} line={line} />))
+
+  if (showAfter) {
+    rows.push(...block.contextAfter.map((contextLine, contextIndex) => (
+      <DiffLine key={`after-${contextIndex}`} line={contextLine} expanded />
+    )))
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-md border border-border bg-background">
+      {rows}
+    </div>
+  )
+}
+
+function formatDiffAnalysisBlockTitle(block: DiffAnalysisSourceBlock | undefined, fallbackId: string) {
+  return (block?.title ?? fallbackId).replace(/\s+block\s+\d+$/iu, "")
+}
+
+function DiffAnalysisToolbarAction({
+  analysis,
+  selectedPaths,
+  isStale,
+  onAnalyze,
+  onCancel,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  isStale: boolean
+  onAnalyze: () => void
+  onCancel: () => void
+}) {
+  const running = isAnalysisRunning(analysis)
+  if (!running && !isStale && analysis?.status !== "failed") {
+    return null
+  }
+
+  const disabled = running ? analysis?.status === "cancelling" : selectedPaths.length === 0
+  return (
+    <Button
+      type="button"
+      variant={running || isStale ? "ghost" : "default"}
+      size="sm"
+      className={cn(
+        "h-7 px-2 text-xs",
+        isStale && !running && "group border border-amber-500/60 bg-amber-400/15 text-amber-800 hover:bg-amber-400/25 dark:text-amber-200"
+      )}
+      disabled={disabled}
+      onClick={() => {
+        if (running) {
+          onCancel()
+          return
+        }
+        onAnalyze()
+      }}
+    >
+      {running ? (
+        <>
+          <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          Cancel
+        </>
+      ) : isStale ? (
+        <>
+          <span className="group-hover:hidden">Stale</span>
+          <span className="hidden group-hover:inline">Analyze</span>
+        </>
+      ) : analysis?.status === "failed" ? (
+        "Retry"
+      ) : (
+        null
+      )}
+    </Button>
+  )
+}
+
+function DiffAnalysisReorderedPanel({
+  analysis,
+  selectedPaths,
+  currentRequestKey,
+  scrollable = false,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  currentRequestKey: string | null
+  scrollable?: boolean
+}) {
+  const [contextVisibility, setContextVisibility] = useState<Record<string, { before?: boolean; after?: boolean }>>({})
+
+  useEffect(() => {
+    setContextVisibility({})
+  }, [analysis?.startedAt])
+
+  const isStale = Boolean(analysis?.requestKey && currentRequestKey && analysis.requestKey !== currentRequestKey)
+  const sourceBlocksById = new Map((analysis?.sourceBlocks ?? []).map((block) => [block.id, block]))
+  const notes = analysis?.parsed.hunks ?? []
+  const orderedBlocks = notes
+    .map((note) => sourceBlocksById.get(note.id))
+    .filter((block): block is DiffAnalysisSourceBlock => Boolean(block))
+  const hasStarted = Boolean(analysis && analysis.status !== "idle")
+  const running = isAnalysisRunning(analysis)
+
+  function toggleContext(blockId: string, side: "before" | "after") {
+    setContextVisibility((current) => ({
+      ...current,
+      [blockId]: {
+        ...(current[blockId] ?? {}),
+        [side]: !(current[blockId]?.[side] ?? false),
+      },
+    }))
+  }
+
+  return (
+    <section className={cn("min-w-0 rounded-xl border border-border bg-background", scrollable && "flex h-full min-h-0 flex-col overflow-hidden")}>
+      <div className={cn(
+        "flex items-center justify-between gap-3 border-b border-border bg-background px-3 py-2",
+        scrollable ? "shrink-0" : "sticky top-0 z-10"
+      )}>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Reordered</div>
+          <div className={cn(
+            "truncate text-[11px]",
+            analysis?.status === "failed" || isStale ? "text-destructive" : "text-muted-foreground"
+          )}>
+            {getAnalysisStatusText(analysis, isStale)}
+          </div>
+        </div>
+      </div>
+      <div className={cn("flex flex-col gap-2 p-2", scrollable && "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]")}>
+        {selectedPaths.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Select files to analyze.
+          </div>
+        ) : orderedBlocks.length > 0 ? (
+          orderedBlocks.map((block, index) => {
+            const visibility = contextVisibility[block.id] ?? {}
+            return (
+              <div key={`${block.id}-${index}`} className="space-y-1.5 rounded-lg border border-border bg-background p-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Block {index + 1}</div>
+                    <div className="mt-0.5 truncate text-sm font-medium text-foreground">{formatDiffAnalysisBlockTitle(block, block.id)}</div>
+                  </div>
+                  <div className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+                    {block.id}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={block.contextBefore.length === 0}
+                    onClick={() => toggleContext(block.id, "before")}
+                  >
+                    {visibility.before ? "Hide before lines" : "Show 10 lines before"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={block.contextAfter.length === 0}
+                    onClick={() => toggleContext(block.id, "after")}
+                  >
+                    {visibility.after ? "Hide after lines" : "Show 10 lines after"}
+                  </Button>
+                </div>
+                <DiffBlockView
+                  block={block}
+                  showBefore={Boolean(visibility.before)}
+                  showAfter={Boolean(visibility.after)}
+                />
+              </div>
+            )
+          })
+        ) : hasStarted ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            {running ? "Waiting for reordered blocks from Codex." : "No reordered blocks were returned."}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Analysis starts automatically for selected files.
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DiffAnalysisNaturalLanguagePanel({
+  analysis,
+  selectedPaths,
+  currentRequestKey,
+  scrollable = false,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  currentRequestKey: string | null
+  scrollable?: boolean
+}) {
+  const isStale = Boolean(analysis?.requestKey && currentRequestKey && analysis.requestKey !== currentRequestKey)
+  const sourceBlocksById = new Map((analysis?.sourceBlocks ?? []).map((block) => [block.id, block]))
+  const notes = analysis?.parsed.hunks ?? []
+  const hasStarted = Boolean(analysis && analysis.status !== "idle")
+  const running = isAnalysisRunning(analysis)
+
+  return (
+    <section className={cn("min-w-0 rounded-xl border border-border bg-background", scrollable && "flex h-full min-h-0 flex-col overflow-hidden")}>
+      <div className={cn(
+        "border-b border-border bg-background px-3 py-2",
+        scrollable ? "shrink-0" : "sticky top-0 z-10"
+      )}>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Natural Language</div>
+          <div className={cn(
+            "truncate text-[11px]",
+            analysis?.status === "failed" || isStale ? "text-destructive" : "text-muted-foreground"
+          )}>
+            {getAnalysisStatusText(analysis, isStale)}
+          </div>
+        </div>
+      </div>
+      <div className={cn("flex flex-col gap-2 p-2", scrollable && "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]")}>
+        {selectedPaths.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Select files to analyze.
+          </div>
+        ) : notes.length > 0 ? (
+          notes.map((note, index) => {
+            const block = sourceBlocksById.get(note.id)
+            return (
+              <div key={`${note.id}-${index}`} className="rounded-lg border border-border bg-background px-3 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 shrink-0 rounded-full bg-accent px-2 py-0.5 text-[11px] font-medium text-foreground">
+                    Block {index + 1}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate text-xs text-muted-foreground">{formatDiffAnalysisBlockTitle(block, note.id)}</div>
+                    <div className="mt-1 text-sm leading-6 text-foreground">{note.description || "No description was provided."}</div>
+                  </div>
+                </div>
+              </div>
+            )
+          })
+        ) : hasStarted ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            {running ? "Waiting for descriptions from Codex." : "No descriptions were returned."}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Analysis starts automatically for selected files.
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DiffAnalysisSummaryPanel({
+  analysis,
+  selectedPaths,
+  currentRequestKey,
+  scrollable = false,
+}: {
+  analysis: DiffAnalysisSnapshot | null
+  selectedPaths: string[]
+  currentRequestKey: string | null
+  scrollable?: boolean
+}) {
+  const isStale = Boolean(analysis?.requestKey && currentRequestKey && analysis.requestKey !== currentRequestKey)
+  const summary = analysis?.parsed.summary.trim() ?? ""
+  const recoveredSummary = analysis?.status === "completed"
+    ? extractPartialSummaryPreview(analysis?.parsed.partial ?? "")
+    : ""
+  const displaySummary = summary || recoveredSummary
+  const hasStarted = Boolean(analysis && analysis.status !== "idle")
+  const running = isAnalysisRunning(analysis)
+
+  return (
+    <section className={cn("min-w-0 rounded-xl border border-border bg-background", scrollable && "flex h-full min-h-0 flex-col overflow-hidden")}>
+      <div className={cn(
+        "border-b border-border bg-background px-3 py-2",
+        scrollable ? "shrink-0" : "sticky top-0 z-10"
+      )}>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Summary</div>
+          <div className={cn(
+            "truncate text-[11px]",
+            analysis?.status === "failed" || isStale ? "text-destructive" : "text-muted-foreground"
+          )}>
+            {getAnalysisStatusText(analysis, isStale)}
+          </div>
+        </div>
+      </div>
+      <div className={cn("flex flex-col gap-2 p-2", scrollable && "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]")}>
+        {displaySummary ? (
+          <div className="rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm leading-6 text-foreground">
+            {displaySummary}
+          </div>
+        ) : selectedPaths.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Select files to summarize.
+          </div>
+        ) : hasStarted ? (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            {running ? "Waiting for the summary from Codex." : "No summary was returned."}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+            Analysis starts automatically for selected files.
+          </div>
+        )}
+      </div>
+    </section>
+  )
 }
 
 function CommitHistoryRow({ entry, isPendingPush = false }: { entry: ChatBranchHistoryEntry; isPendingPush?: boolean }) {
@@ -1111,6 +1566,8 @@ function DiffFileCard({
   projectId,
   isCollapsed,
   isChecked,
+  checkboxLabel,
+  enableWorktreeActions,
   editorLabel,
   diffRenderMode,
   wrapLines,
@@ -1127,6 +1584,8 @@ function DiffFileCard({
   projectId: string | null
   isCollapsed: boolean
   isChecked: boolean
+  checkboxLabel?: string
+  enableWorktreeActions: boolean
   editorLabel: string
   diffRenderMode: DiffRenderMode
   wrapLines: boolean
@@ -1195,7 +1654,7 @@ function DiffFileCard({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div ref={cardRef} key={file.path} className="relative rounded-lg border border-border bg-background">
+        <div ref={cardRef} key={file.path} className="relative z-0 rounded-lg border border-border bg-background">
           {!isCollapsed ? <div ref={sentinelRef} className="pointer-events-none absolute inset-x-0 top-0 h-px" aria-hidden="true" /> : null}
           <div
             role="button"
@@ -1207,7 +1666,7 @@ function DiffFileCard({
               handleToggleRequest()
             }}
             className={cn(
-              "group/header sticky top-0 z-20 flex cursor-pointer items-center justify-between gap-3 bg-background pl-[7px] pr-2.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              "group/header flex cursor-pointer items-center justify-between gap-3 bg-background pl-[7px] pr-2.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
               !isCollapsed && !isStuck && "rounded-t-[calc(theme(borderRadius.lg)-1px)]",
               isCollapsed && "rounded-[calc(theme(borderRadius.lg)-1px)]",
               !isCollapsed && "border-b border-border/50"
@@ -1216,6 +1675,7 @@ function DiffFileCard({
             <div className="flex min-w-0 items-center">
               <StageCheckbox
                 checked={isChecked}
+                label={checkboxLabel}
                 onClick={onToggleChecked}
               />
               <div className="min-w-0 truncate select-none ml-2 mr-1">{file.path}</div>
@@ -1313,38 +1773,42 @@ function DiffFileCard({
           <FolderOpen className="h-3.5 w-3.5" />
           <span className="text-xs font-medium">Open in Finder</span>
         </ContextMenuItem>
-        <ContextMenuItem
-          onSelect={(event) => {
-            event.stopPropagation()
-            fileActions.onDiscardFile(file.path)
-          }}
-          className="text-destructive dark:text-red-400 hover:bg-destructive/10 focus:bg-destructive/10 dark:hover:bg-red-500/20 dark:focus:bg-red-500/20"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Discard Changes</span>
-        </ContextMenuItem>
-        <ContextMenuItem
-          disabled={!canIgnore}
-          onSelect={(event) => {
-            event.stopPropagation()
-            if (!canIgnore) return
-            fileActions.onIgnoreFile(file.path)
-          }}
-        >
-          <Ban className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Ignore File</span>
-        </ContextMenuItem>
-        <ContextMenuItem
-          disabled={!canIgnoreFolder}
-          onSelect={(event) => {
-            event.stopPropagation()
-            if (!canIgnoreFolder) return
-            fileActions.onIgnoreFolder(file.path)
-          }}
-        >
-          <Ban className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Ignore folder...</span>
-        </ContextMenuItem>
+        {enableWorktreeActions ? (
+          <>
+            <ContextMenuItem
+              onSelect={(event) => {
+                event.stopPropagation()
+                fileActions.onDiscardFile(file.path)
+              }}
+              className="text-destructive dark:text-red-400 hover:bg-destructive/10 focus:bg-destructive/10 dark:hover:bg-red-500/20 dark:focus:bg-red-500/20"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium">Discard Changes</span>
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!canIgnore}
+              onSelect={(event) => {
+                event.stopPropagation()
+                if (!canIgnore) return
+                fileActions.onIgnoreFile(file.path)
+              }}
+            >
+              <Ban className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium">Ignore File</span>
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!canIgnoreFolder}
+              onSelect={(event) => {
+                event.stopPropagation()
+                if (!canIgnoreFolder) return
+                fileActions.onIgnoreFolder(file.path)
+              }}
+            >
+              <Ban className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium">Ignore folder...</span>
+            </ContextMenuItem>
+          </>
+        ) : null}
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={(event) => {
@@ -1372,6 +1836,7 @@ function DiffFileCard({
 function RightSidebarImpl({
   projectId,
   diffs,
+  diffAnalysis,
   editorLabel,
   diffRenderMode,
   wrapLines,
@@ -1388,6 +1853,8 @@ function RightSidebarImpl({
   onCheckoutBranch,
   onCreateBranch,
   onGenerateCommitMessage,
+  onAnalyzeDiff,
+  onCancelDiffAnalysis,
   onInitializeGit,
   onGetGitHubPublishInfo,
   onCheckGitHubRepoAvailability,
@@ -1408,17 +1875,36 @@ function RightSidebarImpl({
     onCopyFilePath,
     onCopyRelativePath,
   }), [onOpenFile, onOpenInFinder, onDiscardFile, onIgnoreFile, onIgnoreFolder, onCopyFilePath, onCopyRelativePath])
-  const hasChanges = diffs.files.length > 0
+  const defaultBranchComparison = diffs.defaultBranchComparison
+  const defaultBranchComparisonFiles = defaultBranchComparison?.status === "ready" ? defaultBranchComparison.files : []
   const [isGenerating, setIsGenerating] = useState(false)
   const [commitModeInFlight, setCommitModeInFlight] = useState<DiffCommitMode | null>(null)
   const [isSyncing, setIsSyncing] = useState(false)
   const [isGitHubPublishModalOpen, setIsGitHubPublishModalOpen] = useState(false)
+  const [allowMultipleDiffPanels, setAllowMultipleDiffPanels] = useState(false)
+  const [diffComparisonMode, setDiffComparisonMode] = useState<DiffComparisonMode>(() => getInitialDiffComparisonMode({
+    workingTreeFiles: diffs.files,
+    defaultBranchComparison,
+  }))
+  const [diffPanelVisibility, setDiffPanelVisibility] = useState<Record<DiffPanelKey, boolean>>(DEFAULT_DIFF_PANEL_VISIBILITY)
   const [patchesByPath, setPatchesByPath] = useState<Record<string, string>>({})
   const [patchErrorsByPath, setPatchErrorsByPath] = useState<Record<string, string>>({})
   const [loadingPatchPaths, setLoadingPatchPaths] = useState<Record<string, boolean>>({})
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const rawPanelScrollRef = useRef<HTMLDivElement | null>(null)
   const patchDigestsByPathRef = useRef<Record<string, string>>({})
-  const filePaths = useMemo(() => diffs.files.map((file) => file.path), [diffs.files])
+  const autoAnalysisRequestKeysRef = useRef<Set<string>>(new Set())
+  const activeDiffFiles = diffComparisonMode === "default_branch" ? defaultBranchComparisonFiles : diffs.files
+  const activeDiffUnavailableMessage = diffComparisonMode === "default_branch" && defaultBranchComparison?.status === "unavailable"
+    ? defaultBranchComparison.message ?? "Default branch comparison is unavailable."
+    : null
+  const hasChanges = diffs.files.length > 0 || defaultBranchComparisonFiles.length > 0
+  const hasActiveDiffFiles = activeDiffFiles.length > 0
+  const defaultBranchLabel = defaultBranchComparison?.baseBranchName ?? diffs.defaultBranchName ?? "main"
+  const comparisonDescription = diffComparisonMode === "default_branch"
+    ? `${diffs.branchName ?? "current branch"} vs ${defaultBranchLabel}`
+    : "Local worktree changes"
+  const filePaths = useMemo(() => activeDiffFiles.map((file) => file.path), [activeDiffFiles])
   const filePathsKey = useMemo(() => filePaths.join("\u0000"), [filePaths])
   const viewMode = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.viewMode ?? (hasChanges ? "changes" : "history")) : (hasChanges ? "changes" : "history")))
   const collapsedPaths = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.collapsedPaths ?? EMPTY_CHECKED_PATHS) : EMPTY_CHECKED_PATHS))
@@ -1436,20 +1922,31 @@ function RightSidebarImpl({
   const previousHasChangesRef = useRef(hasChanges)
 
   useEffect(() => {
+    setDiffComparisonMode((currentMode) => resolveDiffComparisonMode(currentMode, {
+      diffsStatus: diffs.status,
+      defaultBranchComparison,
+    }))
+  }, [defaultBranchComparison, diffs.status])
+
+  useEffect(() => {
     if (!projectId) return
     reconcileCollapsedPaths(projectId, filePaths)
   }, [filePaths, filePathsKey, projectId, reconcileCollapsedPaths])
 
   useEffect(() => {
-    const nextDigestsByPath = Object.fromEntries(diffs.files.map((file) => [file.path, file.patchDigest]))
-    const isCurrentDigest = (path: string) => patchDigestsByPathRef.current[path] === nextDigestsByPath[path]
+    const nextDigestsByPath = Object.fromEntries(activeDiffFiles.map((file) => [
+      createDiffPatchCacheKey(diffComparisonMode, file.path),
+      file.patchDigest,
+    ]))
+    const activeKeys = new Set(Object.keys(nextDigestsByPath))
+    const isCurrentDigest = (key: string) => patchDigestsByPathRef.current[key] === nextDigestsByPath[key]
     setPatchesByPath((current) => Object.fromEntries(
-      Object.entries(current).filter(([path]) => filePaths.includes(path) && isCurrentDigest(path))
+      Object.entries(current).filter(([key]) => activeKeys.has(key) && isCurrentDigest(key))
     ))
-    setPatchErrorsByPath((current) => Object.fromEntries(Object.entries(current).filter(([path]) => filePaths.includes(path) && isCurrentDigest(path))))
-    setLoadingPatchPaths((current) => Object.fromEntries(Object.entries(current).filter(([path]) => filePaths.includes(path) && isCurrentDigest(path))))
+    setPatchErrorsByPath((current) => Object.fromEntries(Object.entries(current).filter(([key]) => activeKeys.has(key) && isCurrentDigest(key))))
+    setLoadingPatchPaths((current) => Object.fromEntries(Object.entries(current).filter(([key]) => activeKeys.has(key) && isCurrentDigest(key))))
     patchDigestsByPathRef.current = nextDigestsByPath
-  }, [diffs.files, filePaths, filePathsKey])
+  }, [activeDiffFiles, diffComparisonMode, filePathsKey])
 
   useEffect(() => {
     if (!projectId) return
@@ -1468,12 +1965,12 @@ function RightSidebarImpl({
   }, [hasChanges, projectId, setViewMode])
 
   const selectedPaths = useMemo(
-    () => diffs.files.filter((file) => checkedPaths[file.path] ?? true).map((file) => file.path),
-    [checkedPaths, diffs.files]
+    () => activeDiffFiles.filter((file) => checkedPaths[file.path] ?? true).map((file) => file.path),
+    [activeDiffFiles, checkedPaths]
   )
   const selectedCount = selectedPaths.length
-  const allSelected = diffs.files.length > 0 && selectedCount === diffs.files.length
-  const someSelected = selectedCount > 0 && selectedCount < diffs.files.length
+  const allSelected = activeDiffFiles.length > 0 && selectedCount === activeDiffFiles.length
+  const someSelected = selectedCount > 0 && selectedCount < activeDiffFiles.length
   const trimmedSummary = summary.trim()
   const hasSummary = trimmedSummary.length > 0
   const isCommitting = commitModeInFlight !== null
@@ -1501,15 +1998,44 @@ function RightSidebarImpl({
     && diffs.branchName
     && diffs.branchName !== diffs.defaultBranchName
   )
-  const canGenerate = diffs.status === "ready"
+  const canGenerate = diffComparisonMode === "working_tree"
+    && diffs.status === "ready"
     && selectedCount > 0
     && !isBusy
-  const canCommit = diffs.status === "ready"
+  const canCommit = diffComparisonMode === "working_tree"
+    && diffs.status === "ready"
     && selectedCount > 0
     && hasSummary
     && !isBusy
   const primaryCommitMode: DiffCommitMode = hasRemoteOrigin ? "commit_and_push" : "commit_only"
   const resolvedBranchName = diffs.branchName ?? "current branch"
+  const currentAnalysisRequestKey = useMemo(
+    () => selectedPaths.length > 0 ? createDiffAnalysisRequestKey(activeDiffFiles, selectedPaths, diffComparisonMode) : null,
+    [activeDiffFiles, diffComparisonMode, selectedPaths]
+  )
+  const analysisRunning = isAnalysisRunning(diffAnalysis)
+  const analysisIsStale = Boolean(diffAnalysis?.requestKey && currentAnalysisRequestKey && diffAnalysis.requestKey !== currentAnalysisRequestKey)
+  const autoAnalysisKey = projectId && currentAnalysisRequestKey ? `${projectId}:${currentAnalysisRequestKey}` : null
+
+  useEffect(() => {
+    if (
+      viewMode !== "changes"
+      || diffs.status !== "ready"
+      || !currentAnalysisRequestKey
+      || !autoAnalysisKey
+      || selectedPaths.length === 0
+      || analysisRunning
+      || diffAnalysis?.requestKey
+      || autoAnalysisRequestKeysRef.current.has(autoAnalysisKey)
+    ) {
+      return
+    }
+
+    autoAnalysisRequestKeysRef.current.add(autoAnalysisKey)
+    void onAnalyzeDiff({ paths: selectedPaths, comparisonMode: diffComparisonMode }).catch(() => {
+      autoAnalysisRequestKeysRef.current.delete(autoAnalysisKey)
+    })
+  }, [analysisRunning, autoAnalysisKey, currentAnalysisRequestKey, diffAnalysis?.requestKey, diffComparisonMode, diffs.status, onAnalyzeDiff, selectedPaths, viewMode])
 
   async function handleCommit(mode: DiffCommitMode) {
     if (!canCommit) return
@@ -1547,6 +2073,14 @@ function RightSidebarImpl({
     }
   }
 
+  function handleAnalyzeSelectedDiff() {
+    void onAnalyzeDiff({ paths: selectedPaths, comparisonMode: diffComparisonMode })
+  }
+
+  function handleCancelSelectedDiffAnalysis() {
+    void onCancelDiffAnalysis()
+  }
+
   function handleCommitKeyDown(event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
     if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter") {
       return
@@ -1570,39 +2104,113 @@ function RightSidebarImpl({
   }
 
   const handleLoadPatch = useCallback(async (path: string) => {
-    if (patchesByPath[path] !== undefined || loadingPatchPaths[path]) {
-      return patchesByPath[path] ?? ""
+    const cacheKey = createDiffPatchCacheKey(diffComparisonMode, path)
+    if (patchesByPath[cacheKey] !== undefined || loadingPatchPaths[cacheKey]) {
+      return patchesByPath[cacheKey] ?? ""
     }
 
-    setLoadingPatchPaths((current) => ({ ...current, [path]: true }))
+    setLoadingPatchPaths((current) => ({ ...current, [cacheKey]: true }))
     setPatchErrorsByPath((current) => {
-      if (!(path in current)) return current
-      const { [path]: _removed, ...rest } = current
+      if (!(cacheKey in current)) return current
+      const { [cacheKey]: _removed, ...rest } = current
       return rest
     })
 
     try {
-      const patch = await onLoadPatch(path)
-      setPatchesByPath((current) => ({ ...current, [path]: patch }))
-      const digest = diffs.files.find((file) => file.path === path)?.patchDigest
+      const patch = await onLoadPatch({ path, comparisonMode: diffComparisonMode })
+      setPatchesByPath((current) => ({ ...current, [cacheKey]: patch }))
+      const digest = activeDiffFiles.find((file) => file.path === path)?.patchDigest
       if (digest) {
         patchDigestsByPathRef.current = {
           ...patchDigestsByPathRef.current,
-          [path]: digest,
+          [cacheKey]: digest,
         }
       }
       return patch
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setPatchErrorsByPath((current) => ({ ...current, [path]: message }))
+      setPatchErrorsByPath((current) => ({ ...current, [cacheKey]: message }))
       throw error
     } finally {
       setLoadingPatchPaths((current) => {
-        const { [path]: _removed, ...rest } = current
+        const { [cacheKey]: _removed, ...rest } = current
         return rest
       })
     }
-  }, [diffs.files, loadingPatchPaths, onLoadPatch, patchesByPath])
+  }, [activeDiffFiles, diffComparisonMode, loadingPatchPaths, onLoadPatch, patchesByPath])
+
+  const visibleDiffPanelKeys = DIFF_PANEL_OPTIONS
+    .filter((panel) => diffPanelVisibility[panel.value])
+    .map((panel) => panel.value)
+  const visiblePanelCount = visibleDiffPanelKeys.length
+  const showInlineDiffControls = viewMode === "changes" && diffPanelVisibility.raw
+
+  function renderDiffFile(file: DiffFile, rootRef: RefObject<HTMLDivElement | null> = scrollContainerRef) {
+    const isCollapsed = collapsedPaths[file.path] ?? true
+    const isChecked = checkedPaths[file.path] ?? true
+    const patchCacheKey = createDiffPatchCacheKey(diffComparisonMode, file.path)
+
+    return (
+      <DiffFileCard
+        key={file.path}
+        file={file}
+        rootRef={rootRef}
+        projectId={projectId}
+        isCollapsed={isCollapsed}
+        isChecked={isChecked}
+        checkboxLabel={diffComparisonMode === "default_branch"
+          ? (isChecked ? "Exclude file from analysis" : "Include file in analysis")
+          : undefined}
+        enableWorktreeActions={diffComparisonMode === "working_tree"}
+        editorLabel={editorLabel}
+        diffRenderMode={diffRenderMode}
+        wrapLines={wrapLines}
+        onToggleCollapsed={() => {
+          if (!projectId) return
+          toggleCollapsedPath(projectId, file.path)
+        }}
+        onToggleChecked={() => {
+          if (!projectId) return
+          setCheckedPath(projectId, file.path, !isChecked)
+        }}
+        fileActions={fileActions}
+        patch={patchesByPath[patchCacheKey]}
+        patchError={patchErrorsByPath[patchCacheKey]}
+        isPatchLoading={Boolean(loadingPatchPaths[patchCacheKey])}
+        onLoadPatch={handleLoadPatch}
+      />
+    )
+  }
+
+  function selectDiffPanel(panel: DiffPanelKey) {
+    if (!allowMultipleDiffPanels) {
+      setDiffPanelVisibility(createSingleDiffPanelVisibility(panel))
+      return
+    }
+
+    setDiffPanelVisibility((current) => {
+      const currentlyVisible = current[panel]
+      const visibleCount = Object.values(current).filter(Boolean).length
+      if (currentlyVisible && visibleCount <= 1) {
+        return current
+      }
+      return {
+        ...current,
+        [panel]: !currentlyVisible,
+      }
+    })
+  }
+
+  function toggleMultiDiffPanels() {
+    if (allowMultipleDiffPanels) {
+      const firstVisiblePanel = DIFF_PANEL_OPTIONS.find((panel) => diffPanelVisibility[panel.value])?.value ?? "raw"
+      setDiffPanelVisibility(createSingleDiffPanelVisibility(firstVisiblePanel))
+      setAllowMultipleDiffPanels(false)
+      return
+    }
+
+    setAllowMultipleDiffPanels(true)
+  }
 
   return (
     <div className="h-full min-h-0 border-l border-border bg-background md:min-w-[370px]">
@@ -1706,9 +2314,9 @@ function RightSidebarImpl({
             )
           ) : null}
         </div>
-        <div className="relative min-h-0 flex-1">
-          <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] bg-gradient-to-b from-background to-transparent">
-            <div className="relative h-[40px]  flex min-w-0 items-center justify-center gap-[13px]">
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 pl-[14px] pr-[12px] pt-[6px] pb-[6px] border-b border-border bg-background">
+            <div className="relative min-h-10 flex min-w-0 items-center justify-center gap-[13px]">
               <div className="flex min-w-0 flex-1 items-center justify-between gap-[13px] relative">
                 {viewMode === "changes" ? (
                   <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
@@ -1716,18 +2324,42 @@ function RightSidebarImpl({
                       checked={allSelected}
                       mixed={someSelected}
                       label={
-                        someSelected
-                          ? "Select all files for commit"
-                          : allSelected
-                            ? "Unselect all files from commit"
-                            : "Select all files for commit"
+                        diffComparisonMode === "default_branch"
+                          ? (someSelected
+                            ? "Select all files for analysis"
+                            : allSelected
+                              ? "Unselect all files from analysis"
+                              : "Select all files for analysis")
+                          : (someSelected
+                            ? "Select all files for commit"
+                            : allSelected
+                              ? "Unselect all files from commit"
+                              : "Select all files for commit")
                       }
                       onClick={() => {
-                        if (!projectId || diffs.files.length === 0) return
+                        if (!projectId || activeDiffFiles.length === 0) return
                         setAllCheckedPaths(projectId, filePaths, someSelected ? true : !allSelected)
                       }}
                     />
                     <span>{selectedCount} files</span>
+                    <SegmentedControl<DiffComparisonMode>
+                      value={diffComparisonMode}
+                      onValueChange={setDiffComparisonMode}
+                      size="sm"
+                      className="ml-1"
+                      optionClassName="px-2 py-0.5 text-[11px]"
+                      options={[
+                        { value: "working_tree", label: "Local" },
+                        {
+                          value: "default_branch",
+                          label: defaultBranchLabel,
+                          disabled: diffs.status !== "ready" || !defaultBranchComparison,
+                          tooltip: defaultBranchComparison?.status === "unavailable"
+                            ? defaultBranchComparison.message
+                            : `Compare ${diffs.branchName ?? "current branch"} with ${defaultBranchLabel}`,
+                        },
+                      ]}
+                    />
                   </div>
                 ) : <div />}
                 <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2">
@@ -1747,35 +2379,84 @@ function RightSidebarImpl({
                     />
                   </div>
                 </div>
-                {viewMode === "changes" ? (
-                  <div className="flex items-center gap-1">
-                    <IconButton
-                      label="Unified diff"
-                      active={diffRenderMode === "unified"}
-                      onClick={() => onDiffRenderModeChange("unified")}
-                    >
-                      <Rows3 className="h-4 w-4" />
-                    </IconButton>
-                    <IconButton
-                      label="Side-by-side diff"
-                      active={diffRenderMode === "split"}
-                      onClick={() => onDiffRenderModeChange("split")}
-                    >
-                      <Columns2 className="h-4 w-4" />
-                    </IconButton>
-                    <IconButton
-                      label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
-                      active={wrapLines}
-                      onClick={() => onWrapLinesChange(!wrapLines)}
-                    >
-                      <WrapText className="h-4 w-4" />
-                    </IconButton>
-                  </div>
-                ) : <div />}
+                <div className="flex items-center gap-1.5">
+                  {showInlineDiffControls ? (
+                    <>
+                      <IconButton
+                        label="Unified diff"
+                        active={diffRenderMode === "unified"}
+                        onClick={() => onDiffRenderModeChange("unified")}
+                      >
+                        <Rows3 className="h-4 w-4" />
+                      </IconButton>
+                      <IconButton
+                        label="Side-by-side diff"
+                        active={diffRenderMode === "split"}
+                        onClick={() => onDiffRenderModeChange("split")}
+                      >
+                        <Columns2 className="h-4 w-4" />
+                      </IconButton>
+                      <IconButton
+                        label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
+                        active={wrapLines}
+                        onClick={() => onWrapLinesChange(!wrapLines)}
+                      >
+                        <WrapText className="h-4 w-4" />
+                      </IconButton>
+                    </>
+                  ) : null}
+                </div>
               </div>
             </div>
+            {viewMode === "changes" && (hasActiveDiffFiles || activeDiffUnavailableMessage) ? (
+              <div className="mt-1 flex flex-wrap items-center justify-end gap-1.5">
+                <DiffAnalysisToolbarAction
+                  analysis={diffAnalysis}
+                  selectedPaths={selectedPaths}
+                  isStale={analysisIsStale}
+                  onAnalyze={handleAnalyzeSelectedDiff}
+                  onCancel={handleCancelSelectedDiffAnalysis}
+                />
+                <button
+                  type="button"
+                  onClick={toggleMultiDiffPanels}
+                  className={cn(
+                    "mr-2 whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
+                    allowMultipleDiffPanels
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+                  )}
+                >
+                  Multi
+                </button>
+                {DIFF_PANEL_OPTIONS.map((panel) => {
+                  const visible = diffPanelVisibility[panel.value]
+                  return (
+                    <button
+                      key={panel.value}
+                      type="button"
+                      onClick={() => selectDiffPanel(panel.value)}
+                      className={cn(
+                        "whitespace-nowrap rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
+                        visible
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+                      )}
+                    >
+                      {panel.label}
+                    </button>
+                  )
+                })}
+              </div>
+            ) : null}
           </div>
-          <div ref={scrollContainerRef} className="h-full overflow-y-auto [scrollbar-gutter:stable]">
+          <div
+            ref={scrollContainerRef}
+            className={cn(
+              "min-h-0 flex-1 [scrollbar-gutter:stable]",
+              allowMultipleDiffPanels ? "overflow-hidden" : "overflow-auto"
+            )}
+          >
             {diffs.status === "no_repo" ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
                 <div className="flex max-w-[280px] flex-col items-center gap-3">
@@ -1795,149 +2476,190 @@ function RightSidebarImpl({
                   {branchHistory.map((entry, index) => <CommitHistoryRow key={entry.sha} entry={entry} isPendingPush={index < aheadCount} />)}
                 </div>
               )
-            ) : diffs.files.length === 0 ? (
+            ) : activeDiffUnavailableMessage ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
-                <p className="text-sm text-muted-foreground">No file changes.</p>
+                <p className="max-w-[320px] text-sm text-muted-foreground">{activeDiffUnavailableMessage}</p>
+              </div>
+            ) : !hasActiveDiffFiles ? (
+              <div className="flex h-full items-center justify-center px-6 py-3 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {diffComparisonMode === "default_branch"
+                    ? `No changes between ${diffs.branchName ?? "current branch"} and ${defaultBranchLabel}.`
+                    : "No file changes."}
+                </p>
               </div>
             ) : (
-              <div className="space-y-1.5 p-1.5 pb-10">
-                {diffs.files.map((file) => {
-                  const isCollapsed = collapsedPaths[file.path] ?? true
-                  const isChecked = checkedPaths[file.path] ?? true
-
-                  return (
-                    <DiffFileCard
-                      key={file.path}
-                      file={file}
-                      rootRef={scrollContainerRef}
-                      projectId={projectId}
-                      isCollapsed={isCollapsed}
-                      isChecked={isChecked}
-                      editorLabel={editorLabel}
-                      diffRenderMode={diffRenderMode}
-                      wrapLines={wrapLines}
-                      onToggleCollapsed={() => {
-                        if (!projectId) return
-                        toggleCollapsedPath(projectId, file.path)
-                      }}
-                      onToggleChecked={() => {
-                        if (!projectId) return
-                        setCheckedPath(projectId, file.path, !isChecked)
-                      }}
-                      fileActions={fileActions}
-                      patch={patchesByPath[file.path]}
-                      patchError={patchErrorsByPath[file.path]}
-                      isPatchLoading={Boolean(loadingPatchPaths[file.path])}
-                      onLoadPatch={handleLoadPatch}
-                    />
-                  )
-                })}
-
-                {viewMode === "changes" ? (
-                  <div className="pointer-events-none sticky inset-x-0 bottom-11 py-1 pb-6 z-30 overflow-y-auto">
-                  <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
-                  <div className="pointer-events-auto relative">
-                    <div className="space-y-0 rounded-xl  backdrop-blur-md mx-auto max-w-[700px]">
-                      <Input
-                        value={summary}
-                        onChange={(event) => {
-                          if (!projectId) return
-                          setCommitDraft(projectId, {
-                            summary: event.target.value,
-                            description,
-                          })
-                        }}
-                        onKeyDown={handleCommitKeyDown}
-                        placeholder="Commit message (override)"
-                        className="rounded-t-xl rounded-b-none px-3"
-                        disabled={isBusy || diffs.status !== "ready"}
-                      />
-                      <Textarea
-                        value={description}
-                        onChange={(event) => {
-                          if (!projectId) return
-                          setCommitDraft(projectId, {
-                            summary,
-                            description: event.target.value,
-                          })
-                        }}
-                        onKeyDown={handleCommitKeyDown}
-                        placeholder="Description"
-                        rows={5}
-                        className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border mb-2"
-                        disabled={isBusy || diffs.status !== "ready"}
-                      />
-                      <div className="w-full flex flex-row">
-                      <ContextMenu>
-                        <ContextMenuTrigger asChild>
-                          <Button
-                            type="button"
-                            className="-mt-px w-full rounded-xl"
-                            disabled={hasSummary ? !canCommit : !canGenerate}
-                            onClick={() => {
-                              if (hasSummary) {
-                                void handleCommit(primaryCommitMode)
-                                return
-                              }
-                              void handleGenerate()
-                            }}
+              <div className={cn("p-1.5", allowMultipleDiffPanels && "h-full min-h-0")}>
+                {visiblePanelCount === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+                    All diff views are collapsed.
+                  </div>
+                ) : (
+                  <div className={cn("pb-2", allowMultipleDiffPanels && "h-full min-h-0 pb-0")}>
+                    <div
+                      className={cn(
+                        "grid gap-3",
+                        allowMultipleDiffPanels ? "h-full min-h-0 items-stretch" : "items-start",
+                        visiblePanelCount === 1 && "grid-cols-1",
+                        visiblePanelCount === 2 && "grid-cols-2",
+                        visiblePanelCount >= 3 && "grid-cols-3"
+                      )}
+                    >
+                      {diffPanelVisibility.raw ? (
+                        <section className={cn(
+                          "min-w-0 rounded-xl border border-border bg-background",
+                          allowMultipleDiffPanels && "flex h-full min-h-0 flex-col overflow-hidden"
+                        )}>
+                          <div className={cn(
+                            "border-b border-border bg-background px-3 py-2",
+                            allowMultipleDiffPanels ? "shrink-0" : "sticky top-0 z-10"
+                          )}>
+                            <div>
+                              <div className="text-sm font-medium text-foreground">Raw Diff</div>
+                              <div className="text-[11px] text-muted-foreground">{comparisonDescription}</div>
+                            </div>
+                          </div>
+                          <div
+                            ref={allowMultipleDiffPanels ? rawPanelScrollRef : undefined}
+                            className={cn(
+                              "flex flex-col gap-1.5 p-2",
+                              allowMultipleDiffPanels && "min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]"
+                            )}
                           >
-                            <span className="flex min-w-0 items-center gap-1.5">
-                              {hasSummary ? (
-                                isCommitting ? (
-                                  <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
-                                ) : primaryCommitMode === "commit_and_push" ? diffs.hasUpstream ? (
-                                  <Upload strokeWidth={2.5} className="size-3 shrink-0" />
-                                ) : (
-                                  <GitBranchPlus strokeWidth={2.5} className="size-3 shrink-0" />
-                                ) : (
-                                  <Check strokeWidth={2.5} className="size-3 shrink-0" />
-                                )
-                              ) : isGenerating ? (
-                                <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
-                              ) : (
-                                <PenLine strokeWidth={2.5} className="size-3 shrink-0" />
-                              )}
-                              <span className="min-w-0 truncate text-left">
-                                {hasSummary
-                                  ? (isCommitting
-                                    ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
-                                    : primaryCommitMode === "commit_only"
-                                      ? <>Commit to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
-                                      : diffs.hasUpstream
-                                      ? <>Commit &amp; push to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
-                                      : <>Commit &amp; publish <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)
-                                  : (isGenerating
-                                    ? "Generating..."
-                                    : <>Generate message for <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)}
-                              </span>
-                            </span>
-                          </Button>
-                        </ContextMenuTrigger>
-                        {diffs.hasUpstream ? (
-                          <ContextMenuContent>
-                            <ContextMenuItem
-                              disabled={!hasSummary || !canCommit}
-                              onSelect={(event) => {
-                                event.stopPropagation()
-                                void handleCommit("commit_only")
-                              }}
-                            >
-                              Commit Only
-                            </ContextMenuItem>
-                          </ContextMenuContent>
-                        ) : null}
-                      </ContextMenu>
-                      </div>
+                            {activeDiffFiles.map((file) => renderDiffFile(file, allowMultipleDiffPanels ? rawPanelScrollRef : scrollContainerRef))}
+                          </div>
+                        </section>
+                      ) : null}
+
+                      {diffPanelVisibility.reordered ? (
+                        <DiffAnalysisReorderedPanel
+                          analysis={diffAnalysis}
+                          selectedPaths={selectedPaths}
+                          currentRequestKey={currentAnalysisRequestKey}
+                          scrollable={allowMultipleDiffPanels}
+                        />
+                      ) : null}
+
+                      {diffPanelVisibility.natural ? (
+                        <DiffAnalysisNaturalLanguagePanel
+                          analysis={diffAnalysis}
+                          selectedPaths={selectedPaths}
+                          currentRequestKey={currentAnalysisRequestKey}
+                          scrollable={allowMultipleDiffPanels}
+                        />
+                      ) : null}
+
+                      {diffPanelVisibility.summary ? (
+                        <DiffAnalysisSummaryPanel
+                          analysis={diffAnalysis}
+                          selectedPaths={selectedPaths}
+                          currentRequestKey={currentAnalysisRequestKey}
+                          scrollable={allowMultipleDiffPanels}
+                        />
+                      ) : null}
                     </div>
                   </div>
-                  </div>
-                ) : null}
+                )}
               </div>
             )}
           </div>
-          
-          
+          {viewMode === "changes" && diffComparisonMode === "working_tree" && diffs.files.length > 0 ? (
+            <div className="shrink-0 border-t border-border bg-background p-2">
+              <div className="mx-auto max-w-[700px] space-y-0 rounded-xl">
+                <Input
+                  value={summary}
+                  onChange={(event) => {
+                    if (!projectId) return
+                    setCommitDraft(projectId, {
+                      summary: event.target.value,
+                      description,
+                    })
+                  }}
+                  onKeyDown={handleCommitKeyDown}
+                  placeholder="Commit message (override)"
+                  className="rounded-t-xl rounded-b-none px-3"
+                  disabled={isBusy || diffs.status !== "ready"}
+                />
+                <Textarea
+                  value={description}
+                  onChange={(event) => {
+                    if (!projectId) return
+                    setCommitDraft(projectId, {
+                      summary,
+                      description: event.target.value,
+                    })
+                  }}
+                  onKeyDown={handleCommitKeyDown}
+                  placeholder="Description"
+                  rows={4}
+                  className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border"
+                  disabled={isBusy || diffs.status !== "ready"}
+                />
+                <div className="flex w-full flex-row pt-2">
+                  <ContextMenu>
+                    <ContextMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        className="w-full rounded-xl"
+                        disabled={hasSummary ? !canCommit : !canGenerate}
+                        onClick={() => {
+                          if (hasSummary) {
+                            void handleCommit(primaryCommitMode)
+                            return
+                          }
+                          void handleGenerate()
+                        }}
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          {hasSummary ? (
+                            isCommitting ? (
+                              <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
+                            ) : primaryCommitMode === "commit_and_push" ? diffs.hasUpstream ? (
+                              <Upload strokeWidth={2.5} className="size-3 shrink-0" />
+                            ) : (
+                              <GitBranchPlus strokeWidth={2.5} className="size-3 shrink-0" />
+                            ) : (
+                              <Check strokeWidth={2.5} className="size-3 shrink-0" />
+                            )
+                          ) : isGenerating ? (
+                            <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
+                          ) : (
+                            <PenLine strokeWidth={2.5} className="size-3 shrink-0" />
+                          )}
+                          <span className="min-w-0 truncate text-left">
+                            {hasSummary
+                              ? (isCommitting
+                                ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
+                                : primaryCommitMode === "commit_only"
+                                  ? <>Commit to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
+                                  : diffs.hasUpstream
+                                    ? <>Commit &amp; push to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
+                                    : <>Commit &amp; publish <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)
+                              : (isGenerating
+                                ? "Generating..."
+                                : <>Generate message for <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)}
+                          </span>
+                        </span>
+                      </Button>
+                    </ContextMenuTrigger>
+                    {diffs.hasUpstream ? (
+                      <ContextMenuContent>
+                        <ContextMenuItem
+                          disabled={!hasSummary || !canCommit}
+                          onSelect={(event) => {
+                            event.stopPropagation()
+                            void handleCommit("commit_only")
+                          }}
+                        >
+                          Commit Only
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    ) : null}
+                  </ContextMenu>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
         <GitHubPublishModal
           open={isGitHubPublishModalOpen}

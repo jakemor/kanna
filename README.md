@@ -1,276 +1,59 @@
-<p align="center">
-  <img src="assets/icon.png" alt="Kanna" width="80" />
-</p>
+# better-diff
+normal diff too much. what if diffs were tldrs i can zoom in and out of
 
-<h1 align="center">Kanna</h1>
+## concept
+code review has been getting harder with the volume of code to go through due to ai assisted code generation (its a good thing only)
+looking at diffs kind of became pointless. raw diffs as it is i mean.
 
-<p align="center">
-  <strong>A beautiful web UI for the Claude Code & Codex CLIs</strong>
-</p>
+you might have come across issues like these
+- large diff block and its just formatter things, but interleaved with important small changes that i might miss
+- i have to jump around multiple parts of the diff since diffs are alpahbetically ordered by file name, not diff blocks by the execution flow they appear
+- fatigue creeps in by just seeing a 2000 line change to comb through
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/kanna-code"><img src="https://img.shields.io/npm/v/kanna-code.svg?style=flat&colorA=18181b&colorB=f472b6" alt="npm version" /></a>
-</p>
+i have to aggressviely prioritize what i should go over and what i can just skim through these days
+i have to zoom in on things that need scrutiny but brush over things that are arbitary
 
-<br />
+so something i did at work is:
+1. i treat each diff block as my unit  
+<img width="500" height="984" alt="cleanshot 2026-04-16 at 15 11 37@2x" src="https://github.com/user-attachments/assets/c2bdedc0-a90f-440a-80be-fac173d86570" />
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot.png" />
-    <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png" />
-    <img src="assets/screenshot.png" alt="Kanna screenshot" width="800" />
-  </picture>
-</p>
+2. i take diffs and get the llm to rearrange it in the execution / data flow order. (it splits up blocks within the files as well)  
+<img width="500" height="1006" alt="cleanshot 2026-04-16 at 15 12 12@2x" src="https://github.com/user-attachments/assets/520fab22-a49b-486f-a687-cd325d01ee74" />
 
-<br />
+3. then i get a one liner description for each of the diff like "formatter changed" "anthropic key changed to openrouter"  
+<img width="500" height="636" alt="cleanshot 2026-04-16 at 15 13 03@2x" src="https://github.com/user-attachments/assets/3aa60edd-d454-4f75-878c-e7228c56f5b9" />
 
-## Quickstart
+4. and then i get a pr level or natural language description of the entire diff  
+<img width="500" height="296" alt="cleanshot 2026-04-16 at 15 13 30@2x" src="https://github.com/user-attachments/assets/033a2149-5510-4b6f-95d4-3090d15f16e9" />  
 
-```bash
-bun install -g kanna-code
-```
+5. and read it all the way from the bottom to top, so that i go from the least information to detail as i need
 
-If Bun isn't installed, install it first:
+i jump in and out out of my summaries, natural lang diffs, rearranged diffs, and the raw diffs. 
 
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
+this is the core idea, and i wanted this as a core primtive in my code editor / agent workspace. the old diff view just feels slow to work with.
 
-Then run from any project directory:
+in an ideal world i can blindly rely on the ai you wouldnt need this
+but in places where its no there yet, i felt like there needs to be a middle ground, and i think this is it.
 
-```bash
-kanna
-```
+this wasnt possible before this general intelligence being available.
+reordering diff blocks require some intelligence. 
+converting them into natural language defo.
+making a flexible tldr of that, yeah.
 
-That's it. Kanna opens in your browser at [`localhost:3210`](http://localhost:3210).
+cant this be just a skill, i think most things could be represented by a instruction and a text output.
+there is a seamless in and out experience i wanted and how it integrates with other system
+text could represent this but i think its too inefficient of a representation and is too much detail for me to handle at once
+i like boxes hiding away detail from me
 
-## Features
+## dev flow
+- we used codex for the most part obvs. 
+- we primarily worked on top of this ui : https://github.com/jakemor/kanna which works with codex app server part of codex cli installed locally.
+- here is a dummy we built to test if the diff viewer works : https://github.com/AlferdMurray/yt-spotify-migrations
+- what we implemented is extending the diff viewer to have the the phases, the llm part of it is all via the same app server.
 
-- **Multi-provider support** — switch between Claude and Codex (OpenAI) from the chat input, with per-provider model selection, reasoning effort controls, and Codex fast mode
-- **Project-first sidebar** — chats grouped under projects, with live status indicators (idle, running, waiting, failed)
-- **Drag-and-drop project ordering** — reorder project groups in the sidebar with persistent ordering
-- **Local project discovery** — auto-discovers projects from both Claude and Codex local history
-- **Rich transcript rendering** — hydrated tool calls, collapsible tool groups, plan mode dialogs, and interactive prompts with full result display
-- **Quick responses** — lightweight structured queries (e.g. title generation) via Haiku with automatic Codex fallback
-- **Plan mode** — review and approve agent plans before execution
-- **Persistent local history** — refresh-safe routes backed by JSONL event logs and compacted snapshots
-- **Auto-generated titles** — chat titles generated in the background via Claude Haiku
-- **Session resumption** — resume agent sessions with full context preservation
-- **WebSocket-driven** — real-time subscription model with reactive state broadcasting
-
-## Architecture
-
-```
-Browser (React + Zustand)
-    ↕  WebSocket
-Bun Server (HTTP + WS)
-    ├── WSRouter ─── subscription & command routing
-    ├── AgentCoordinator ─── multi-provider turn management
-    ├── ProviderCatalog ─── provider/model/effort normalization
-    ├── QuickResponseAdapter ─── structured queries with provider fallback
-    ├── EventStore ─── JSONL persistence + snapshot compaction
-    └── ReadModels ─── derived views (sidebar, chat, projects)
-    ↕  stdio
-Claude Agent SDK / Codex App Server (local processes)
-    ↕
-Local File System (~/.kanna/data/, project dirs)
-```
-
-**Key patterns:** Event sourcing for all state mutations. CQRS with separate write (event log) and read (derived snapshots) paths. Reactive broadcasting — subscribers get pushed fresh snapshots on every state change. Multi-provider agent coordination with tool gating for user-approval flows. Provider-agnostic transcript hydration for unified rendering.
-
-## Requirements
-
-- [Bun](https://bun.sh) v1.3.5+
-- A working [Claude Code](https://docs.anthropic.com/en/docs/claude-code) environment
-- _(Optional)_ [Codex CLI](https://github.com/openai/codex) for Codex provider support
-
-Embedded terminal support uses Bun's native PTY APIs and currently works on macOS/Linux.
-
-## Install
-
-Install Kanna globally:
-
-```bash
-bun install -g kanna-code
-```
-
-If Bun isn't installed, install it first:
-
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-Or clone and build from source:
-
-```bash
-git clone https://github.com/jakemor/kanna.git
-cd kanna
-bun install
-bun run build
-```
-
-## Usage
-
-```bash
-kanna                  # start with defaults (localhost only)
-kanna --port 4000      # custom port
-kanna --no-open        # don't open browser
-kanna --password <secret>      # require a password before loading the app
-kanna --share                # create a public quick tunnel + terminal QR
-kanna --cloudflared <token>  # run a named Cloudflare tunnel from a token
-```
-
-Default URL: `http://localhost:3210`
-
-### Network access (Tailscale / LAN)
-
-By default Kanna binds to `127.0.0.1` (localhost only). Use `--host` to bind a specific interface, or `--remote` as a shorthand for `0.0.0.0`:
-
-```bash
-kanna --remote                     # bind all interfaces — browser opens localhost:3210
-kanna --host dev-box               # bind to a specific hostname — browser opens http://dev-box:3210
-kanna --host 192.168.1.x           # bind to a specific LAN IP
-kanna --host 100.64.x.x            # bind to a specific Tailscale IP
-```
-
-When `--host <hostname>` is given, the browser opens `http://<hostname>:3210` automatically. Other machines on your network can connect to the same URL:
-
-### Password protection
-
-Use `--password` to require a launch password before the app or websocket can connect:
-
-```bash
-kanna --password my-secret
-bun run dev --password my-secret
-```
-
-Kanna verifies the password once, then sets a browser-session cookie. The password itself is not stored in the browser.
-When password protection is enabled, the backend requires authentication for API routes, `/health`, and `/ws`, and the production server redirects unauthenticated browser requests to a login screen.
-
-### Public share link
-
-Use `--share` to create a temporary public `trycloudflare.com` URL and print a terminal QR code:
-
-```bash
-kanna --share
-kanna --share --port 4000
-kanna --cloudflared <token>
-```
-
-`--share` is incompatible with `--host` and `--remote`. It does not open a browser automatically.
-
-Without a token, it prints:
-
-```text
-QR Code:
-...
-
-Public URL:
-https://<random>.trycloudflare.com
-
-Local URL:
-http://localhost:3210
-```
-
-With `--cloudflared <token>`, Kanna runs `cloudflared tunnel run --token <token> --url <local-url>`.
-If Kanna can detect the public hostname from cloudflared output, it prints the same QR/public/local block.
-If not, it keeps the tunnel running, warns that no public hostname was detected, and prints the local URL so you can use the hostname already configured for that tunnel in Cloudflare.
-
-## Development
-
-```bash
-bun run dev
-```
-
-The same `--remote` and `--host` flags can be used with `bun run dev` for remote development.
-`--share` is also supported in dev mode and exposes the Vite client URL publicly:
-
-```bash
-bun run dev --share
-bun run dev --cloudflared <token>
-bun run dev --port 3333 --share
-```
-
-In dev, `--port` sets the Vite client port and the backend runs on `port + 1`, so `bun run dev --port 3333 --share` publishes `http://localhost:3333`.
-`--share` remains incompatible with `--host` and `--remote`.
-Use `bun run dev --port 4000` to run the Vite client on `4000` and the backend on `4001`.
-
-Or run client and server separately:
-
-```bash
-bun run dev:client   # http://localhost:5174
-bun run dev:server   # http://localhost:5175
-```
-
-## Scripts
-
-| Command              | Description                  |
-| -------------------- | ---------------------------- |
-| `bun run build`      | Build for production         |
-| `bun run check`      | Typecheck + build            |
-| `bun run dev`        | Run client + server together |
-| `bun run dev:client` | Vite dev server only         |
-| `bun run dev:server` | Bun backend only             |
-| `bun run start`      | Start production server      |
-
-## Project Structure
-
-```
-src/
-├── client/          React UI layer
-│   ├── app/         App router, pages, central state hook, socket client
-│   ├── components/  Messages, chat chrome, dialogs, buttons, inputs
-│   ├── hooks/       Theme, standalone mode detection
-│   ├── stores/      Zustand stores (chat input, preferences, project order)
-│   └── lib/         Formatters, path utils, transcript parsing
-├── server/          Bun backend
-│   ├── cli.ts       CLI entry point & browser launcher
-│   ├── server.ts    HTTP/WS server setup & static serving
-│   ├── agent.ts     AgentCoordinator (multi-provider turn management)
-│   ├── codex-app-server.ts  Codex App Server JSON-RPC client
-│   ├── provider-catalog.ts  Provider/model/effort normalization
-│   ├── quick-response.ts    Structured queries with provider fallback
-│   ├── ws-router.ts WebSocket message routing & subscriptions
-│   ├── event-store.ts  JSONL persistence, replay & compaction
-│   ├── discovery.ts Auto-discover projects from Claude and Codex local state
-│   ├── read-models.ts  Derive view models from event state
-│   └── events.ts    Event type definitions
-└── shared/          Shared between client & server
-    ├── types.ts     Core data types, provider catalog, transcript entries
-    ├── tools.ts     Tool call normalization and hydration
-    ├── protocol.ts  WebSocket message protocol
-    ├── ports.ts     Port configuration
-    └── branding.ts  App name, data directory paths
-```
-
-## Data Storage
-
-All state is stored locally at `~/.kanna/data/`:
-
-| File             | Purpose                                   |
-| ---------------- | ----------------------------------------- |
-| `projects.jsonl` | Project open/remove events                |
-| `chats.jsonl`    | Chat create/rename/delete events          |
-| `messages.jsonl` | Transcript message entries                |
-| `turns.jsonl`    | Agent turn start/finish/cancel events     |
-| `snapshot.json`  | Compacted state snapshot for fast startup |
-
-Event logs are append-only JSONL. On startup, Kanna replays the log tail after the last snapshot, then compacts if the logs exceed 2 MB.
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=jakemor%2Fkanna&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=jakemor/kanna&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=jakemor/kanna&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=jakemor/kanna&type=date&legend=top-left" />
- </picture>
-</a>
-
-## Contributing
-
-Contributions are welcome! Feel free to open PRs
-
-## License
-
-[MIT](LICENSE)
+### how to run this
+1. have bun
+2. do bun install
+3. bun install
+4. bun run dev
+5. load up your project run something and check the diff out

@@ -178,7 +178,7 @@ function App() {
           normal diff too much.
           <br />
           what if diffs were{' '}
-          <span className="marker shout">tldrs</span>
+          <span className="marker"><span className="shout">TLDR</span>s</span>
           <br />
           i can <span className="zoom-in">zoom in</span> and{' '}
           <span className="zoom-out">zoom out</span> of

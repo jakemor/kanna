@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from "bun:test"
 import { createElement, type ComponentProps } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { createDiffAnalysisRequestKey } from "../../../shared/diff-analysis"
-import { RightSidebar, canIgnoreDiffFile, canIgnoreDiffFolder, getInitialDiffComparisonMode, resolveDiffComparisonMode } from "./RightSidebar"
+import { RightSidebar, canIgnoreDiffFile, canIgnoreDiffFolder, getDiffBlockDisplayLines, getInitialDiffComparisonMode, resolveDiffComparisonMode } from "./RightSidebar"
 import { TooltipProvider } from "../ui/tooltip"
 
 type RightSidebarProps = ComponentProps<typeof RightSidebar>
@@ -117,6 +117,23 @@ describe("RightSidebar", () => {
       diffsStatus: "ready",
       defaultBranchComparison: undefined,
     })).toBe("working_tree")
+  })
+
+  test("renders only hunk body lines for reordered diff blocks", () => {
+    expect(getDiffBlockDisplayLines(`diff --git a/conversation-extractor/pyproject.toml b/conversation-extractor/pyproject.toml
+index 8012335..06a691a 100644
+--- a/conversation-extractor/pyproject.toml
++++ b/conversation-extractor/pyproject.toml
+@@ -1,18 +1,25 @@
+ [project]
+ name = "conversation-extractor"
+-version = "0.1.0"
++version = "0.1.1"`)).toEqual([
+      " [project]",
+      " name = \"conversation-extractor\"",
+      "-version = \"0.1.0\"",
+      "+version = \"0.1.1\"",
+    ])
   })
 
   test("defaults to history when there are no changes", () => {

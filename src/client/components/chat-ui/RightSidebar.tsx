@@ -299,15 +299,33 @@ function classifyDiffLine(line: string) {
   return "text-muted-foreground"
 }
 
+export function getDiffBlockDisplayLines(diffText: string) {
+  const lines = String(diffText).split(/\r?\n/u)
+  while (lines.length > 0 && lines.at(-1) === "") {
+    lines.pop()
+  }
+
+  const hunkHeaderIndex = lines.findIndex((line) => line.startsWith("@@"))
+  if (hunkHeaderIndex >= 0) {
+    return lines.slice(hunkHeaderIndex + 1)
+  }
+
+  return lines.filter((line) => (
+    !line.startsWith("diff --git ")
+    && !line.startsWith("index ")
+    && !line.startsWith("---")
+    && !line.startsWith("+++")
+  ))
+}
+
 function DiffLine({ line, expanded = false }: { line: string; expanded?: boolean }) {
   return (
     <div className={cn(
-      "grid min-h-6 grid-cols-[28px_minmax(max-content,1fr)] border-b border-border/50 font-mono text-xs",
+      "min-h-6 border-b border-border/50 font-mono text-xs",
       classifyDiffLine(line),
       expanded && "bg-amber-500/10"
     )}>
-      <span className="select-none px-2 py-1 text-center text-muted-foreground">{line.slice(0, 1) || " "}</span>
-      <code className="whitespace-pre py-1 pr-3">{line}</code>
+      <code className="block whitespace-pre px-3 py-1">{line}</code>
     </div>
   )
 }
@@ -321,24 +339,16 @@ function DiffBlockView({
   showBefore: boolean
   showAfter: boolean
 }) {
-  const lines = block.diff.split(/\r?\n/u)
-  const hunkHeaderIndex = lines.findIndex((line) => line.startsWith("@@"))
+  const lines = getDiffBlockDisplayLines(block.diff)
   const rows: ReactNode[] = []
 
-  lines.forEach((line, index) => {
-    rows.push(<DiffLine key={`line-${index}`} line={line} />)
-    if (showBefore && index === hunkHeaderIndex) {
-      rows.push(...block.contextBefore.map((contextLine, contextIndex) => (
-        <DiffLine key={`before-${contextIndex}`} line={contextLine} expanded />
-      )))
-    }
-  })
-
-  if (showBefore && hunkHeaderIndex === -1) {
-    rows.unshift(...block.contextBefore.map((contextLine, contextIndex) => (
+  if (showBefore) {
+    rows.push(...block.contextBefore.map((contextLine, contextIndex) => (
       <DiffLine key={`before-${contextIndex}`} line={contextLine} expanded />
     )))
   }
+
+  rows.push(...lines.map((line, index) => <DiffLine key={`line-${index}`} line={line} />))
 
   if (showAfter) {
     rows.push(...block.contextAfter.map((contextLine, contextIndex) => (

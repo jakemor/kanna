@@ -1259,7 +1259,7 @@ function DiffFileCard({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div ref={cardRef} key={file.path} className="relative rounded-lg border border-border bg-background">
+        <div ref={cardRef} key={file.path} className="relative z-0 rounded-lg border border-border bg-background">
           {!isCollapsed ? <div ref={sentinelRef} className="pointer-events-none absolute inset-x-0 top-0 h-px" aria-hidden="true" /> : null}
           <div
             role="button"
@@ -1271,7 +1271,7 @@ function DiffFileCard({
               handleToggleRequest()
             }}
             className={cn(
-              "group/header sticky top-0 z-20 flex cursor-pointer items-center justify-between gap-3 bg-background pl-[7px] pr-2.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              "group/header flex cursor-pointer items-center justify-between gap-3 bg-background pl-[7px] pr-2.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
               !isCollapsed && !isStuck && "rounded-t-[calc(theme(borderRadius.lg)-1px)]",
               isCollapsed && "rounded-[calc(theme(borderRadius.lg)-1px)]",
               !isCollapsed && "border-b border-border/50"
@@ -1709,16 +1709,8 @@ function RightSidebarImpl({
     setDiffPanelVisibility((current) => ({ ...current, [panel]: !current[panel] }))
   }
 
-  function setAllDiffPanels(nextVisible: boolean) {
-    setDiffPanelVisibility({
-      raw: nextVisible,
-      ai: nextVisible,
-      summary: nextVisible,
-    })
-  }
-
   return (
-    <div className="h-full min-h-0 border-l border-border bg-background" style={{ minWidth: viewMode === "changes" && visiblePanelCount > 1 ? `${visiblePanelCount * 320}px` : "370px" }}>
+    <div className="h-full min-h-0 border-l border-border bg-background md:min-w-[370px]">
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center gap-2 border-b border-border pl-2.5 pr-2 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -1820,7 +1812,7 @@ function RightSidebarImpl({
           ) : null}
         </div>
         <div className="relative min-h-0 flex-1">
-          <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] bg-gradient-to-b from-background to-transparent">
+          <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] pb-[6px] border-b border-border bg-background">
             <div className="relative h-[40px]  flex min-w-0 items-center justify-center gap-[13px]">
               <div className="flex min-w-0 flex-1 items-center justify-between gap-[13px] relative">
                 {viewMode === "changes" ? (
@@ -1860,31 +1852,60 @@ function RightSidebarImpl({
                     />
                   </div>
                 </div>
-                {showInlineDiffControls ? (
-                  <div className="flex items-center gap-1">
-                    <IconButton
-                      label="Unified diff"
-                      active={diffRenderMode === "unified"}
-                      onClick={() => onDiffRenderModeChange("unified")}
-                    >
-                      <Rows3 className="h-4 w-4" />
-                    </IconButton>
-                    <IconButton
-                      label="Side-by-side diff"
-                      active={diffRenderMode === "split"}
-                      onClick={() => onDiffRenderModeChange("split")}
-                    >
-                      <Columns2 className="h-4 w-4" />
-                    </IconButton>
-                    <IconButton
-                      label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
-                      active={wrapLines}
-                      onClick={() => onWrapLinesChange(!wrapLines)}
-                    >
-                      <WrapText className="h-4 w-4" />
-                    </IconButton>
-                  </div>
-                ) : <div />}
+                <div className="flex items-center gap-1.5">
+                  {showInlineDiffControls ? (
+                    <>
+                      <IconButton
+                        label="Unified diff"
+                        active={diffRenderMode === "unified"}
+                        onClick={() => onDiffRenderModeChange("unified")}
+                      >
+                        <Rows3 className="h-4 w-4" />
+                      </IconButton>
+                      <IconButton
+                        label="Side-by-side diff"
+                        active={diffRenderMode === "split"}
+                        onClick={() => onDiffRenderModeChange("split")}
+                      >
+                        <Columns2 className="h-4 w-4" />
+                      </IconButton>
+                      <IconButton
+                        label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
+                        active={wrapLines}
+                        onClick={() => onWrapLinesChange(!wrapLines)}
+                      >
+                        <WrapText className="h-4 w-4" />
+                      </IconButton>
+                    </>
+                  ) : null}
+                  {viewMode === "changes" && diffs.files.length > 0 ? (
+                    <>
+                      {[
+                        { value: "raw", label: "Raw" },
+                        { value: "ai", label: "AI" },
+                        { value: "summary", label: "Summary" },
+                      ].map((panel) => {
+                        const panelKey = panel.value as DiffPanelKey
+                        const visible = diffPanelVisibility[panelKey]
+                        return (
+                          <button
+                            key={panel.value}
+                            type="button"
+                            onClick={() => toggleDiffPanel(panelKey)}
+                            className={cn(
+                              "rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
+                              visible
+                                ? "border-foreground bg-foreground text-background"
+                                : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+                            )}
+                          >
+                            {panel.label}
+                          </button>
+                        )
+                      })}
+                    </>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
@@ -1914,43 +1935,6 @@ function RightSidebarImpl({
               </div>
             ) : (
               <div className="p-1.5 pb-10">
-                <div className="sticky top-1.5 z-20 mb-2 rounded-xl border border-border bg-background/90 p-2 backdrop-blur">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap gap-1.5">
-                      {[
-                        { value: "raw", label: "Raw Diff" },
-                        { value: "ai", label: "AI Order" },
-                        { value: "summary", label: "Summary" },
-                      ].map((panel) => {
-                        const panelKey = panel.value as DiffPanelKey
-                        const visible = diffPanelVisibility[panelKey]
-                        return (
-                          <button
-                            key={panel.value}
-                            type="button"
-                            onClick={() => toggleDiffPanel(panelKey)}
-                            className={cn(
-                              "rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
-                              visible
-                                ? "border-foreground bg-foreground text-background"
-                                : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
-                            )}
-                          >
-                            {visible ? `Hide ${panel.label}` : `Show ${panel.label}`}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAllDiffPanels(visiblePanelCount !== 3)}
-                      className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                    >
-                      {visiblePanelCount === 3 ? "Hide all" : "Show all"}
-                    </button>
-                  </div>
-                </div>
-
                 {visiblePanelCount === 0 ? (
                   <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
                     All diff views are collapsed.
@@ -1958,12 +1942,16 @@ function RightSidebarImpl({
                 ) : (
                   <div className="pb-2">
                     <div
-                      className="flex items-start gap-3"
-                      style={{ minWidth: visiblePanelCount > 1 ? `${visiblePanelCount * 300}px` : undefined }}
+                      className={cn(
+                        "grid items-start gap-3",
+                        visiblePanelCount === 1 && "grid-cols-1",
+                        visiblePanelCount === 2 && "grid-cols-2",
+                        visiblePanelCount >= 3 && "grid-cols-3"
+                      )}
                     >
                       {diffPanelVisibility.raw ? (
-                        <section className="min-w-[300px] flex-1 rounded-xl border border-border bg-background">
-                          <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                        <section className="min-w-0 rounded-xl border border-border bg-background">
+                          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-3 py-2">
                             <div>
                               <div className="text-sm font-medium text-foreground">Raw Diff</div>
                               <div className="text-[11px] text-muted-foreground">Traditional file-by-file view</div>
@@ -1983,8 +1971,8 @@ function RightSidebarImpl({
                       ) : null}
 
                       {diffPanelVisibility.ai ? (
-                        <section className="min-w-[300px] flex-1 rounded-xl border border-border bg-background">
-                          <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                        <section className="min-w-0 rounded-xl border border-border bg-background">
+                          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-3 py-2">
                             <div>
                               <div className="text-sm font-medium text-foreground">AI Order</div>
                               <div className="text-[11px] text-muted-foreground">Prototype reordered story of the diff</div>
@@ -2021,8 +2009,8 @@ function RightSidebarImpl({
                       ) : null}
 
                       {diffPanelVisibility.summary ? (
-                        <section className="min-w-[300px] flex-1 rounded-xl border border-border bg-background">
-                          <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                        <section className="min-w-0 rounded-xl border border-border bg-background">
+                          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background px-3 py-2">
                             <div>
                               <div className="text-sm font-medium text-foreground">Summary</div>
                               <div className="text-[11px] text-muted-foreground">One-line natural language descriptions</div>

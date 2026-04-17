@@ -8,7 +8,7 @@ import { DiffStore } from "./diff-store"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
-import { ensureProjectDirectory } from "./paths"
+import { cloneRepository, ensureProjectDirectory, resolveClonePath } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
@@ -761,6 +761,14 @@ export function createWsRouter({
           const project = await store.openProject(command.localPath, command.title)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          break
+        }
+        case "project.clone": {
+          const cloneDest = await resolveClonePath(command.localPath, command.fallbackPath)
+          await cloneRepository(command.cloneUrl, cloneDest)
+          const project = await store.openProject(cloneDest, command.title)
+          await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id, localPath: cloneDest } })
           break
         }
         case "project.remove": {

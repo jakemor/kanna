@@ -50,6 +50,7 @@ export type TerminalEvent =
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
+  | { type: "project.clone"; cloneUrl: string; localPath: string; fallbackPath?: string; title: string }
   | { type: "project.remove"; projectId: string }
   | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
   | { type: "project.readDiffPatch"; projectId: string; path: string }

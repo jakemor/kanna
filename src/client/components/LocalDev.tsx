@@ -31,7 +31,7 @@ interface LocalDevProps {
   newProjectOpen: boolean
   onNewProjectOpenChange: (open: boolean) => void
   onOpenProject: (localPath: string) => Promise<void>
-  onCreateProject: (project: { mode: "new" | "existing"; localPath: string; title: string }) => Promise<void>
+  onCreateProject: (project: { mode: "new" | "existing" | "clone"; localPath: string; fallbackPath?: string; title: string; cloneUrl?: string }) => Promise<void>
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -307,9 +307,7 @@ export function LocalDev({
       <NewProjectModal
         open={newProjectOpen}
         onOpenChange={onNewProjectOpenChange}
-        onConfirm={(project) => {
-          void onCreateProject(project)
-        }}
+        onConfirm={(project) => onCreateProject(project)}
       />
 
       <div className="py-4 text-center">

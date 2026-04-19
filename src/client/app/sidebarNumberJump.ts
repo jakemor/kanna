@@ -1,6 +1,5 @@
 import { findMatchingActionBinding, getBindingsForAction } from "../lib/keybindings"
 import type { SidebarChatRow, SidebarProjectGroup, KeybindingsSnapshot } from "../../shared/types"
-import { getSidebarChatBuckets } from "../lib/sidebarChats"
 
 export const SIDEBAR_NUMBER_JUMP_LIMIT = 9
 
@@ -12,9 +11,7 @@ export interface VisibleSidebarChat {
 export function getVisibleSidebarChats(
   projectGroups: SidebarProjectGroup[],
   collapsedSections: Set<string>,
-  expandedGroups: Set<string>,
-  chatsPerProject: number,
-  nowMs: number
+  expandedGroups: Set<string>
 ): VisibleSidebarChat[] {
   const visibleChats: VisibleSidebarChat[] = []
 
@@ -23,10 +20,9 @@ export function getVisibleSidebarChats(
       continue
     }
 
-    const { collapsedChats, remainingChats } = getSidebarChatBuckets(group.chats, chatsPerProject, nowMs)
     const displayChats = expandedGroups.has(group.groupKey)
-      ? [...collapsedChats, ...remainingChats]
-      : collapsedChats
+      ? [...group.previewChats, ...group.olderChats]
+      : group.previewChats
 
     for (const chat of displayChats) {
       visibleChats.push({

@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { useChatInputStore } from "../stores/chatInputStore"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -48,6 +50,41 @@ function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: Ch
   return left.hasOlder === right.hasOlder
     && left.olderCursor === right.olderCursor
     && left.recentLimit === right.recentLimit
+}
+
+function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
+  return left.id === right.id
+    && left.content === right.content
+    && left.createdAt === right.createdAt
+    && left.provider === right.provider
+    && left.model === right.model
+    && left.planMode === right.planMode
+    && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
+    && sameAttachmentArray(left.attachments, right.attachments)
+}
+
+function sameAttachmentArray(left: ChatAttachment[], right: ChatAttachment[]) {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  return left.every((attachment, index) => {
+    const other = right[index]
+    return Boolean(other)
+      && attachment.id === other.id
+      && attachment.kind === other.kind
+      && attachment.displayName === other.displayName
+      && attachment.absolutePath === other.absolutePath
+      && attachment.relativePath === other.relativePath
+      && attachment.contentUrl === other.contentUrl
+      && attachment.mimeType === other.mimeType
+      && attachment.size === other.size
+  })
+}
+
+function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefined, right: ChatSnapshot["queuedMessages"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((message, index) => sameQueuedMessage(message, right[index]!))
 }
 
 function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSnapshot | null | undefined) {
@@ -110,6 +147,7 @@ function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | n
   if (left === right) return true
   if (!left || !right) return false
   return sameRuntime(left.runtime, right.runtime)
+    && sameQueuedMessages(left.queuedMessages, right.queuedMessages)
     && sameTranscriptEntries(left.messages, right.messages)
     && sameHistory(left.history, right.history)
     && sameProviders(left.availableProviders, right.availableProviders)
@@ -144,6 +182,11 @@ export interface OptimisticUserPrompt {
   signature: string
   requiredMatchCount: number
   entry: UserPromptEntry
+}
+
+interface OptimisticProcessingState {
+  scopeId: string
+  ackedAt: number | null
 }
 
 function serializeAttachmentSignature(attachment: ChatAttachment) {
@@ -231,6 +274,53 @@ function logKannaState(message: string, details?: unknown) {
   void details
 }
 
+const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "kanna:profile-send-to-starting"
+
+interface SendToStartingTrace {
+  traceId: string
+  optimisticId: string
+  startedAt: number
+  serverChatId: string | null
+  routeChatIdAtSend: string | null
+  contentPreview: string
+  ackAt?: number
+  snapshotAt?: number
+  startingStatusAt?: number
+  startingRenderedAt?: number
+}
+
+function isSendToStartingProfilingEnabled() {
+  try {
+    return window.sessionStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
+      || window.localStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
+  } catch {
+    return false
+  }
+}
+
+function elapsedTraceMs(startedAt: number) {
+  return Number((performance.now() - startedAt).toFixed(1))
+}
+
+function logSendToStartingTrace(
+  trace: SendToStartingTrace | null | undefined,
+  stage: string,
+  details?: Record<string, unknown>
+) {
+  if (!trace || !isSendToStartingProfilingEnabled()) {
+    return
+  }
+
+  console.debug("[kanna/send->starting][client]", {
+    traceId: trace.traceId,
+    stage,
+    elapsedMs: elapsedTraceMs(trace.startedAt),
+    serverChatId: trace.serverChatId,
+    routeChatIdAtSend: trace.routeChatIdAtSend,
+    ...details,
+  })
+}
+
 function composerStateFromSendOptions(options?: {
   provider?: AgentProvider
   model?: string
@@ -276,31 +366,64 @@ export function shouldAutoFollowTranscript(distanceFromBottom: number) {
 export function getUiUpdateRestartReconnectAction(
   phase: string | null,
   connectionStatus: SocketStatus
-): "none" | "awaiting_reconnect" | "navigate_changelog" {
+): "none" | "awaiting_server_ready" {
   if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
-    return "awaiting_reconnect"
-  }
-
-  if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
-    return "navigate_changelog"
+    return "awaiting_server_ready"
   }
 
   return "none"
 }
 
-const FIXED_TRANSCRIPT_PADDING_BOTTOM = 320
+export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
+const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "kanna:last-update-reload-request"
+
+export function getTranscriptPaddingBottom(inputHeight: number) {
+  return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
+}
+
+export function getNextMeasuredInputHeight(previousHeight: number, measuredHeight: number) {
+  return measuredHeight > 0 ? measuredHeight : previousHeight
+}
 
 function getUiUpdateRestartPhase() {
   return window.sessionStorage.getItem(UI_UPDATE_RESTART_STORAGE_KEY)
 }
 
-function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_reconnect") {
+function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_server_ready") {
   window.sessionStorage.setItem(UI_UPDATE_RESTART_STORAGE_KEY, phase)
 }
 
 function clearUiUpdateRestartPhase() {
   window.sessionStorage.removeItem(UI_UPDATE_RESTART_STORAGE_KEY)
+}
+
+export function shouldHandleUiUpdateReloadRequest(
+  reloadRequestedAt: number | null | undefined,
+  lastHandledReloadRequest: string | null
+) {
+  if (!reloadRequestedAt) return false
+  return String(reloadRequestedAt) !== lastHandledReloadRequest
+}
+
+function getLastHandledUiUpdateReloadRequest() {
+  return window.sessionStorage.getItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY)
+}
+
+function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
+  window.sessionStorage.setItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY, String(reloadRequestedAt))
+}
+
+async function isServerReady() {
+  const response = await fetch("/health", {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  })
+
+  return response.ok
 }
 
 export interface ProjectRequest {
@@ -355,6 +478,7 @@ export interface KannaState {
   chatSnapshot: ChatSnapshot | null
   chatDiffSnapshot: ChatDiffSnapshot | null
   keybindings: KeybindingsSnapshot | null
+  llmProvider: LlmProviderSnapshot | null
   connectionStatus: SocketStatus
   sidebarReady: boolean
   localProjectsReady: boolean
@@ -362,20 +486,18 @@ export interface KannaState {
   startingLocalPath: string | null
   sidebarOpen: boolean
   sidebarCollapsed: boolean
-  scrollRef: RefObject<HTMLDivElement | null>
-  inputRef: RefObject<HTMLDivElement | null>
   messages: ReturnType<typeof processTranscriptMessages>
+  queuedMessages: QueuedChatMessage[]
   previousPrompt: string | null
   latestToolIds: ReturnType<typeof getLatestToolIds>
   runtime: ChatSnapshot["runtime"] | null
+  runtimeStatus: string | null
   isHistoryLoading: boolean
   hasOlderHistory: boolean
   availableProviders: ProviderCatalogEntry[]
   isProcessing: boolean
   canCancel: boolean
   isDraining: boolean
-  transcriptPaddingBottom: number
-  showScrollButton: boolean
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
@@ -386,19 +508,24 @@ export interface KannaState {
   expandSidebar: () => void
   openAddProjectModal: () => void
   closeAddProjectModal: () => void
-  updateScrollState: () => void
-  scrollToBottom: () => void
   loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  handleReadLlmProvider: () => Promise<void>
+  handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
+  handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
+  handleSignOut: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
+  handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
+  handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
+  handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
   handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
@@ -432,6 +559,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
+  const [llmProvider, setLlmProvider] = useState<LlmProviderSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
   const [sidebarReady, setSidebarReady] = useState(false)
   const [localProjectsReady, setLocalProjectsReady] = useState(false)
@@ -440,24 +568,24 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
-  const [inputHeight, setInputHeight] = useState(148)
-  const [isAtBottom, setIsAtBottom] = useState(true)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
+  const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
+  const sendToStartingProfilesRef = useRef<Map<string, SendToStartingTrace>>(new Map())
+  const draftChatIds = useChatInputStore(useShallow((state) => Object.keys(state.drafts).sort()))
+  const attachmentDraftChatIds = useChatInputStore(
+    useShallow((state) => Object.keys(state.attachmentDrafts).sort())
+  )
   const chatSubscriptionDebugRef = useRef(0)
+  const lastStartingRenderedTraceIdRef = useRef<string | null>(null)
   const lastActiveProjectDiffRef = useRef<{ projectId: string | null; diffs: ChatDiffSnapshot | null }>({
     projectId: null,
     diffs: null,
   })
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
-
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLDivElement>(null)
-  const initialScrollCompletedRef = useRef(false)
-  const initialScrollFrameRef = useRef<number | null>(null)
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
@@ -468,6 +596,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(null)
     })
   }, [socket])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+
+    const protectedChatIds = [...new Set([...draftChatIds, ...attachmentDraftChatIds])].sort()
+    void socket.command({ type: "chat.setDraftProtection", chatIds: protectedChatIds }).catch((error) => {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    })
+  }, [attachmentDraftChatIds, connectionStatus, draftChatIds, socket])
 
   useEffect(() => {
     return socket.subscribe<LocalProjectsSnapshot>({ type: "local-projects" }, (snapshot) => {
@@ -492,18 +629,62 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [connectionStatus, socket])
 
   useEffect(() => {
-    const phase = getUiUpdateRestartPhase()
-    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
-    if (reconnectAction === "awaiting_reconnect") {
-      setUiUpdateRestartPhase("awaiting_reconnect")
+    const reloadRequestedAt = updateSnapshot?.reloadRequestedAt
+    if (!shouldHandleUiUpdateReloadRequest(reloadRequestedAt, getLastHandledUiUpdateReloadRequest())) {
+      return
+    }
+    if (!reloadRequestedAt) {
       return
     }
 
-    if (reconnectAction === "navigate_changelog") {
-      clearUiUpdateRestartPhase()
-      navigate("/settings/changelog", { replace: true })
+    setLastHandledUiUpdateReloadRequest(reloadRequestedAt)
+    setUiUpdateRestartPhase("awaiting_disconnect")
+  }, [updateSnapshot?.reloadRequestedAt])
+
+  useEffect(() => {
+    const phase = getUiUpdateRestartPhase()
+    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
+    if (reconnectAction === "awaiting_server_ready") {
+      setUiUpdateRestartPhase("awaiting_server_ready")
+      return
     }
-  }, [connectionStatus, navigate])
+  }, [connectionStatus])
+
+  useEffect(() => {
+    if (getUiUpdateRestartPhase() !== "awaiting_server_ready") {
+      return
+    }
+
+    let cancelled = false
+    let timeoutId: number | null = null
+
+    const pollServerReadiness = async () => {
+      try {
+        if (await isServerReady()) {
+          if (cancelled) return
+          clearUiUpdateRestartPhase()
+          window.location.reload()
+          return
+        }
+      } catch {
+        // Keep polling while the process restarts.
+      }
+
+      if (cancelled) return
+      timeoutId = window.setTimeout(() => {
+        void pollServerReadiness()
+      }, 500)
+    }
+
+    void pollServerReadiness()
+
+    return () => {
+      cancelled = true
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [connectionStatus])
 
   useEffect(() => {
     function handleWindowFocus() {
@@ -526,6 +707,52 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(null)
     })
   }, [socket])
+
+  const handleReadLlmProvider = useCallback(async () => {
+    try {
+      const snapshot = await socket.command<LlmProviderSnapshot>({ type: "settings.readLlmProvider" })
+      setLlmProvider(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [socket])
+
+  const handleWriteLlmProvider = useCallback(async (
+    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
+  ) => {
+    try {
+      const snapshot = await socket.command<LlmProviderSnapshot>({
+        type: "settings.writeLlmProvider",
+        provider: value.provider,
+        apiKey: value.apiKey,
+        model: value.model,
+        baseUrl: value.baseUrl,
+      })
+      setLlmProvider(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
+  }, [socket])
+
+  const handleValidateLlmProvider = useCallback(async (
+    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
+  ) => {
+    return await socket.command<LlmProviderValidationResult>({
+      type: "settings.validateLlmProvider",
+      provider: value.provider,
+      apiKey: value.apiKey,
+      model: value.model,
+      baseUrl: value.baseUrl,
+    })
+  }, [socket])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+    void handleReadLlmProvider()
+  }, [connectionStatus, handleReadLlmProvider])
 
   useEffect(() => {
     function handleFocusSignal() {
@@ -559,6 +786,18 @@ export function useKannaState(activeChatId: string | null): KannaState {
     setChatSnapshot(null)
     setChatReady(false)
     const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: INITIAL_CHAT_RECENT_LIMIT }, (snapshot) => {
+      if (snapshot?.runtime.chatId) {
+        const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+          .filter((trace) => trace.serverChatId === snapshot.runtime.chatId)
+          .sort((left, right) => right.startedAt - left.startedAt)[0]
+        if (matchingTrace && matchingTrace.snapshotAt === undefined) {
+          matchingTrace.snapshotAt = performance.now()
+          logSendToStartingTrace(matchingTrace, "chat_snapshot_received", {
+            status: snapshot.runtime.status,
+            messageCount: snapshot.messages.length,
+          })
+        }
+      }
       setChatSnapshot((current) => {
         const reused = sameChatSnapshotCore(current, snapshot)
         logKannaState("chat snapshot received", {
@@ -634,37 +873,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [activeChatId, focusEpoch, sidebarData.projectGroups, sidebarReady, socket])
 
   useEffect(() => {
-    initialScrollCompletedRef.current = false
-    if (initialScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialScrollFrameRef.current)
-      initialScrollFrameRef.current = null
-    }
-    setIsAtBottom(true)
     setOlderHistoryEntries([])
     setIsHistoryLoading(false)
     setHistoryCursor(null)
     setHasOlderHistory(false)
   }, [activeChatId])
-
-  useEffect(() => {
-    return () => {
-      if (initialScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(initialScrollFrameRef.current)
-      }
-    }
-  }, [])
-
-  useLayoutEffect(() => {
-    const element = inputRef.current
-    if (!element) return
-
-    const observer = new ResizeObserver(() => {
-      setInputHeight(element.getBoundingClientRect().height)
-    })
-    observer.observe(element)
-    setInputHeight(element.getBoundingClientRect().height)
-    return () => observer.disconnect()
-  }, [])
 
   const activeChatSnapshot = useMemo(
     () => getActiveChatSnapshot(chatSnapshot, activeChatId),
@@ -746,12 +959,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const previousPrompt = useMemo(() => getPreviousPrompt(messages), [messages])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
   const runtime = activeChatSnapshot?.runtime ?? null
+  const queuedMessages = activeChatSnapshot?.queuedMessages ?? []
+  const optimisticRuntimeStatus = optimisticProcessing?.scopeId === optimisticScopeId && (!runtime || runtime.status === "idle")
+    ? "starting"
+    : null
+  const effectiveRuntimeStatus = optimisticRuntimeStatus ?? runtime?.status ?? null
   const availableProviders = activeChatSnapshot?.availableProviders ?? PROVIDERS
-  const isProcessing = isProcessingStatus(runtime?.status)
-  const canCancel = canCancelStatus(runtime?.status)
+  const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
+  const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
-  const transcriptPaddingBottom = FIXED_TRANSCRIPT_PADDING_BOTTOM
-  const showScrollButton = !isAtBottom && messages.length > 0
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
   const navbarLocalPath =
     runtime?.localPath
@@ -765,6 +981,93 @@ export function useKannaState(activeChatId: string | null): KannaState {
   )
 
   useEffect(() => {
+    if (optimisticProcessing?.scopeId !== optimisticScopeId) {
+      return
+    }
+    if (runtime?.status && runtime.status !== "idle") {
+      setOptimisticProcessing(null)
+    }
+  }, [optimisticProcessing, optimisticScopeId, runtime?.status])
+
+  useEffect(() => {
+    if (!optimisticProcessing?.ackedAt || optimisticProcessing.scopeId !== optimisticScopeId) {
+      return
+    }
+    if (runtime?.status && runtime.status !== "idle") {
+      return
+    }
+    const timeoutId = window.setTimeout(() => {
+      setOptimisticProcessing((current) => (
+        current?.scopeId === optimisticScopeId && current.ackedAt === optimisticProcessing.ackedAt
+          ? null
+          : current
+      ))
+    }, 300)
+    return () => window.clearTimeout(timeoutId)
+  }, [optimisticProcessing, optimisticScopeId, runtime?.status])
+
+  useEffect(() => {
+    if (!activeChatId || runtime?.status !== "starting") {
+      return
+    }
+
+    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+      .filter((trace) => trace.serverChatId === activeChatId)
+      .sort((left, right) => right.startedAt - left.startedAt)[0]
+    if (!matchingTrace || matchingTrace.startingStatusAt !== undefined) {
+      return
+    }
+
+    matchingTrace.startingStatusAt = performance.now()
+    logSendToStartingTrace(matchingTrace, "runtime_status_starting", {
+      status: runtime.status,
+    })
+  }, [activeChatId, runtime?.status])
+
+  useEffect(() => {
+    if (!activeChatId || !runtime || runtime.status === "starting") {
+      return
+    }
+
+    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+      .filter((trace) => trace.serverChatId === activeChatId)
+      .sort((left, right) => right.startedAt - left.startedAt)[0]
+    if (!matchingTrace || matchingTrace.startingRenderedAt !== undefined) {
+      return
+    }
+
+    logSendToStartingTrace(matchingTrace, "starting_not_observed", {
+      status: runtime.status,
+    })
+    sendToStartingProfilesRef.current.delete(matchingTrace.traceId)
+  }, [activeChatId, runtime])
+
+  useLayoutEffect(() => {
+    if (!activeChatId || runtime?.status !== "starting") {
+      lastStartingRenderedTraceIdRef.current = null
+      return
+    }
+
+    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
+      .filter((trace) => trace.serverChatId === activeChatId)
+      .sort((left, right) => right.startedAt - left.startedAt)[0]
+    if (!matchingTrace) {
+      return
+    }
+
+    if (lastStartingRenderedTraceIdRef.current === matchingTrace.traceId) {
+      return
+    }
+
+    lastStartingRenderedTraceIdRef.current = matchingTrace.traceId
+    matchingTrace.startingRenderedAt = performance.now()
+    logSendToStartingTrace(matchingTrace, "starting_render_committed", {
+      totalMs: elapsedTraceMs(matchingTrace.startedAt),
+    })
+    sendToStartingProfilesRef.current.delete(matchingTrace.traceId)
+  }, [activeChatId, runtime?.status])
+
+  useEffect(() => {
     setOptimisticUserPrompts((current) => {
       const reconciled = reconcileOptimisticUserPrompts(current, optimisticScopeId, serverTranscriptEntries)
       if (reconciled.length === current.length && reconciled.every((prompt, index) => prompt === current[index])) {
@@ -773,56 +1076,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return reconciled
     })
   }, [optimisticScopeId, serverTranscriptEntries])
-
-  useLayoutEffect(() => {
-    if (initialScrollCompletedRef.current) return
-
-    const element = scrollRef.current
-    if (!element) return
-    if (activeChatId && !runtime) return
-
-    element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    if (initialScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialScrollFrameRef.current)
-    }
-    initialScrollFrameRef.current = window.requestAnimationFrame(() => {
-      const currentElement = scrollRef.current
-      if (!currentElement) return
-      currentElement.scrollTo({ top: currentElement.scrollHeight, behavior: "auto" })
-      initialScrollFrameRef.current = null
-    })
-    initialScrollCompletedRef.current = true
-  }, [activeChatId, inputHeight, messages.length, runtime])
-
-  useEffect(() => {
-    if (!initialScrollCompletedRef.current || !isAtBottom) return
-
-    const frameId = window.requestAnimationFrame(() => {
-      const element = scrollRef.current
-      if (!element || !isAtBottom) return
-      element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    })
-
-    return () => window.cancelAnimationFrame(frameId)
-  }, [activeChatId, inputHeight, isAtBottom, messages.length, runtime?.status])
-
-  const updateScrollState = useCallback(() => {
-    const element = scrollRef.current
-    if (!element) return
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight
-    setIsAtBottom(shouldAutoFollowTranscript(distance))
-  }, [])
-
-  const enableAutoFollow = useCallback((behavior: ScrollBehavior) => {
-    const element = scrollRef.current
-    setIsAtBottom(true)
-    if (!element) return
-    element.scrollTo({ top: element.scrollHeight, behavior })
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    enableAutoFollow("smooth")
-  }, [enableAutoFollow])
 
   const loadOlderHistory = useCallback(async () => {
     if (!activeChatId || !historyCursor || isHistoryLoading || !hasOlderHistory) {
@@ -951,14 +1204,74 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [dialog, socket])
 
+  const handleSignOut = useCallback(async () => {
+    try {
+      const response = await fetch("/auth/logout", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Sign out failed with status ${response.status}`)
+      }
+
+      setCommandError(null)
+      window.location.reload()
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
   const handleSend = useCallback(async (
     content: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
   ) => {
     const attachments = options?.attachments ?? []
+    if (activeChatId && isProcessing) {
+      try {
+        await socket.command<{ queuedMessageId: string }>({
+          type: "message.enqueue",
+          chatId: activeChatId,
+          content,
+          attachments,
+          provider: options?.provider,
+          model: options?.model,
+          modelOptions: options?.modelOptions,
+          planMode: options?.planMode,
+        })
+        setCommandError(null)
+        return
+      } catch (error) {
+        setCommandError(error instanceof Error ? error.message : String(error))
+        throw error
+      }
+    }
+
     const optimisticId = generateUUID()
+    const clientTraceId = generateUUID()
     const signature = getUserPromptSignature(content, attachments)
     const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
+    setOptimisticProcessing({
+      scopeId: optimisticScopeId,
+      ackedAt: null,
+    })
+    const sendTrace: SendToStartingTrace = {
+      traceId: clientTraceId,
+      optimisticId,
+      startedAt: performance.now(),
+      serverChatId: activeChatId,
+      routeChatIdAtSend: activeChatId,
+      contentPreview: content.slice(0, 80),
+    }
+    sendToStartingProfilesRef.current.set(clientTraceId, sendTrace)
+    logSendToStartingTrace(sendTrace, "handle_send_called", {
+      optimisticScopeId,
+      attachments: attachments.length,
+      contentLength: content.length,
+      contentPreview: sendTrace.contentPreview,
+    })
     const requiredMatchCount = countMatchingUserPrompts(serverTranscriptEntries, signature)
       + optimisticUserPrompts.filter((prompt) => prompt.scopeId === optimisticScopeId && prompt.signature === signature).length
       + 1
@@ -976,6 +1289,10 @@ export function useKannaState(activeChatId: string | null): KannaState {
         createdAt: Date.now(),
       },
     }])
+    logSendToStartingTrace(sendTrace, "optimistic_prompt_added", {
+      optimisticId,
+      optimisticScopeId,
+    })
 
     try {
       let projectId = selectedProjectId ?? sidebarData.projectGroups[0]?.groupKey ?? null
@@ -992,18 +1309,30 @@ export function useKannaState(activeChatId: string | null): KannaState {
         throw new Error("Open a project first")
       }
 
-      enableAutoFollow("auto")
-
       const result = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? undefined,
         projectId: activeChatId ? undefined : projectId ?? undefined,
+        clientTraceId,
         provider: options?.provider,
         content,
         attachments,
         model: options?.model,
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,
+      })
+      sendTrace.ackAt = performance.now()
+      sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
+      setOptimisticProcessing((current) => {
+        if (!current) return current
+        const nextScopeId = !activeChatId && result.chatId ? result.chatId : current.scopeId
+        return {
+          scopeId: nextScopeId,
+          ackedAt: performance.now(),
+        }
+      })
+      logSendToStartingTrace(sendTrace, "chat_send_ack_received", {
+        resultChatId: result.chatId ?? null,
       })
 
       if (!activeChatId && result.chatId) {
@@ -1021,10 +1350,43 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(null)
     } catch (error) {
       setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
+      setOptimisticProcessing(null)
+      logSendToStartingTrace(sendTrace, "handle_send_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      sendToStartingProfilesRef.current.delete(clientTraceId)
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }, [activeChatId, fallbackLocalProjectPath, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
+  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
+
+  const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
+    if (!activeChatId) return
+    try {
+      await socket.command({
+        type: "message.steer",
+        chatId: activeChatId,
+        queuedMessageId,
+      })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, socket])
+
+  const handleRemoveQueuedMessage = useCallback(async (queuedMessageId: string) => {
+    if (!activeChatId) return
+    try {
+      await socket.command({
+        type: "message.dequeue",
+        chatId: activeChatId,
+        queuedMessageId,
+      })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, socket])
 
   const handleCancel = useCallback(async () => {
     if (!activeChatId) return
@@ -1087,6 +1449,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
   }, [dialog, navigate, runtime?.projectId, sidebarData.projectGroups, socket])
+
+  const handleReorderProjectGroups = useCallback(async (projectIds: string[]) => {
+    try {
+      await socket.command({ type: "sidebar.reorderProjectGroups", projectIds })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [socket])
 
   const openExternal = useCallback(async (command: {
     action: "open_finder" | "open_terminal" | "open_editor"
@@ -1227,6 +1598,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     chatSnapshot,
     chatDiffSnapshot,
     keybindings,
+    llmProvider,
     connectionStatus,
     sidebarReady,
     localProjectsReady,
@@ -1234,20 +1606,18 @@ export function useKannaState(activeChatId: string | null): KannaState {
     startingLocalPath,
     sidebarOpen,
     sidebarCollapsed,
-    scrollRef,
-    inputRef,
     messages,
+    queuedMessages,
     previousPrompt,
     latestToolIds,
     runtime,
+    runtimeStatus: effectiveRuntimeStatus,
     isHistoryLoading,
     hasOlderHistory,
     availableProviders,
     isProcessing,
     canCancel,
     isDraining,
-    transcriptPaddingBottom,
-    showScrollButton,
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
@@ -1258,19 +1628,24 @@ export function useKannaState(activeChatId: string | null): KannaState {
     expandSidebar,
     openAddProjectModal,
     closeAddProjectModal,
-    updateScrollState,
-    scrollToBottom,
     loadOlderHistory,
     handleCreateChat,
     handleOpenLocalProject,
     handleCreateProject,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleReadLlmProvider,
+    handleWriteLlmProvider,
+    handleValidateLlmProvider,
+    handleSignOut,
     handleSend,
+    handleSteerQueuedMessage,
+    handleRemoveQueuedMessage,
     handleCancel,
     handleStopDraining,
     handleDeleteChat,
     handleRemoveProject,
+    handleReorderProjectGroups,
     handleCopyPath,
     handleOpenExternal,
     handleOpenExternalPath,

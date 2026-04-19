@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import type { HydratedTranscriptMessage } from "../../shared/types"
-import { buildResolvedTranscriptRows, KannaTranscript } from "./KannaTranscript"
+import {
+  buildResolvedTranscriptRows,
+  computeStableResolvedTranscriptRows,
+  KannaTranscript,
+  type StableResolvedTranscriptRowsState,
+} from "./KannaTranscript"
 
 const ROW_WRAPPER_CLASS = "mx-auto max-w-[800px] pb-5"
 
@@ -125,6 +130,27 @@ describe("KannaTranscript", () => {
     expect(html).toContain("justify-end gap-3")
     expect(html).toContain("justify-end gap-2")
     expect(html).toContain("Please review these.")
+  })
+
+  test("hides steer system-message text and renders a steer icon left of the user bubble", () => {
+    const html = renderTranscript([
+      {
+        id: "user-steer-1",
+        kind: "user_prompt",
+        content: `<system-message>
+The user would like you to know the following. Please address the message as you see fit then continue with what you were doing
+</system-message>
+
+Please check the latest error first.`,
+        steered: true,
+        attachments: [],
+        timestamp: new Date().toISOString(),
+      },
+    ])
+
+    expect(html).not.toContain("The user would like you to know the following.")
+    expect(html).toContain("Please check the latest error first.")
+    expect(html).toContain('aria-label="Sent mid-turn"')
   })
 
   test("does not render wrappers for context window updates", () => {
@@ -368,6 +394,100 @@ describe("KannaTranscript", () => {
     expect(toolRow.elapsedMs).toBe(3000)
   })
 
+  test("groups collapsible tools across hidden context window updates", () => {
+    const rows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      {
+        id: "context-window-1",
+        kind: "context_window_updated",
+        usage: { usedTokens: 100, maxTokens: 1000, compactsAutomatically: false },
+        timestamp: new Date().toISOString(),
+      },
+      createToolMessage("tool-2"),
+    ], {
+      isLoading: true,
+      latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.kind).toBe("tool-group")
+    if (rows[0]?.kind !== "tool-group") throw new Error("unexpected row kind")
+    expect(rows[0].messages.map((message) => message.id)).toEqual(["tool-1", "tool-2"])
+  })
+
+  test("groups collapsible tools across hidden non-final status rows", () => {
+    const rows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      {
+        id: "status-1",
+        kind: "status",
+        status: "working",
+        timestamp: new Date().toISOString(),
+      },
+      createToolMessage("tool-2"),
+      {
+        id: "status-2",
+        kind: "status",
+        status: "done",
+        timestamp: new Date().toISOString(),
+      },
+    ], {
+      isLoading: true,
+      latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+    })
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.kind).toBe("tool-group")
+    if (rows[0]?.kind !== "tool-group") throw new Error("unexpected row kind")
+    expect(rows[0].messages.map((message) => message.id)).toEqual(["tool-1", "tool-2"])
+    expect(rows[1]?.kind).toBe("single")
+  })
+
+  test("groups collapsible tools across hidden short result rows", () => {
+    const rows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      {
+        id: "result-short-1",
+        kind: "result",
+        success: true,
+        cancelled: false,
+        result: "Done",
+        durationMs: 1000,
+        timestamp: new Date().toISOString(),
+      },
+      createToolMessage("tool-2"),
+    ], {
+      isLoading: true,
+      latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+    })
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.kind).toBe("tool-group")
+    if (rows[0]?.kind !== "tool-group") throw new Error("unexpected row kind")
+    expect(rows[0].messages.map((message) => message.id)).toEqual(["tool-1", "tool-2"])
+  })
+
+  test("does not group collapsible tools across visible transcript rows", () => {
+    const rows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      {
+        id: "assistant-1",
+        kind: "assistant_text",
+        text: "Visible text",
+        timestamp: new Date().toISOString(),
+      },
+      createToolMessage("tool-2"),
+    ], {
+      isLoading: true,
+      latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+    })
+
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.kind).toBe("single")
+    expect(rows[1]?.kind).toBe("single")
+    expect(rows[2]?.kind).toBe("single")
+  })
+
   test("renders grouped tools as expanded across rerenders while streaming when controlled", () => {
     const initialHtml = renderToStaticMarkup(
       <CollapsedToolGroup
@@ -399,5 +519,145 @@ describe("KannaTranscript", () => {
     expect(updatedHtml).toContain("Run tool-1")
     expect(updatedHtml).toContain("Run tool-2")
     expect(updatedHtml).toContain("Run tool-3")
+  })
+
+  test("reuses unchanged single row objects across streaming updates", () => {
+    const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+    const previousRows = buildResolvedTranscriptRows([
+      {
+        id: "user-1",
+        kind: "user_prompt",
+        content: "Hello",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "assistant-1",
+        kind: "assistant_text",
+        text: "Response",
+        timestamp: new Date().toISOString(),
+      },
+    ], {
+      isLoading: true,
+      latestToolIds,
+    })
+    const previousState: StableResolvedTranscriptRowsState = {
+      byId: new Map(previousRows.map((row) => [row.id, row])),
+      result: previousRows,
+    }
+    const nextRows = buildResolvedTranscriptRows([
+      {
+        id: "user-1",
+        kind: "user_prompt",
+        content: "Hello",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "assistant-1",
+        kind: "assistant_text",
+        text: "Response",
+        timestamp: new Date().toISOString(),
+      },
+      createToolMessage("tool-1"),
+    ], {
+      isLoading: true,
+      latestToolIds,
+    })
+
+    const stableState = computeStableResolvedTranscriptRows(nextRows, previousState)
+
+    expect(stableState.result[0]).toBe(previousRows[0])
+  })
+
+  test("replaces a user row when attachment content changes", () => {
+    const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+    const previousRows = buildResolvedTranscriptRows([
+      {
+        id: "user-attachment",
+        kind: "user_prompt",
+        content: "Check this",
+        attachments: [{
+          id: "file-1",
+          kind: "file",
+          displayName: "spec-a.pdf",
+          absolutePath: "/tmp/spec-a.pdf",
+          relativePath: "./spec-a.pdf",
+          contentUrl: "/files/spec-a.pdf",
+          mimeType: "application/pdf",
+          size: 10,
+        }],
+        timestamp: new Date().toISOString(),
+      },
+    ], {
+      isLoading: false,
+      latestToolIds,
+    })
+    const previousState: StableResolvedTranscriptRowsState = {
+      byId: new Map(previousRows.map((row) => [row.id, row])),
+      result: previousRows,
+    }
+    const nextRows = buildResolvedTranscriptRows([
+      {
+        id: "user-attachment",
+        kind: "user_prompt",
+        content: "Check this",
+        attachments: [{
+          id: "file-1",
+          kind: "file",
+          displayName: "spec-b.pdf",
+          absolutePath: "/tmp/spec-b.pdf",
+          relativePath: "./spec-b.pdf",
+          contentUrl: "/files/spec-b.pdf",
+          mimeType: "application/pdf",
+          size: 10,
+        }],
+        timestamp: new Date().toISOString(),
+      },
+    ], {
+      isLoading: false,
+      latestToolIds,
+    })
+
+    const stableState = computeStableResolvedTranscriptRows(nextRows, previousState)
+
+    expect(stableState.result[0]).not.toBe(previousRows[0])
+  })
+
+  test("reuses unchanged tool-group rows across grouped run growth elsewhere", () => {
+    const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+    const previousRows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      createToolMessage("tool-2"),
+      {
+        id: "assistant-1",
+        kind: "assistant_text",
+        text: "Done",
+        timestamp: new Date().toISOString(),
+      },
+    ], {
+      isLoading: true,
+      latestToolIds,
+    })
+    const previousState: StableResolvedTranscriptRowsState = {
+      byId: new Map(previousRows.map((row) => [row.id, row])),
+      result: previousRows,
+    }
+    const nextRows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      createToolMessage("tool-2"),
+      {
+        id: "assistant-1",
+        kind: "assistant_text",
+        text: "Done",
+        timestamp: new Date().toISOString(),
+      },
+      createToolMessage("tool-3"),
+    ], {
+      isLoading: true,
+      latestToolIds,
+    })
+
+    const stableState = computeStableResolvedTranscriptRows(nextRows, previousState)
+
+    expect(stableState.result[0]).toBe(previousRows[0])
   })
 })

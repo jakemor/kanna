@@ -27,6 +27,7 @@ import {
   File,
   FilePen,
   FilePlusCorner,
+  FileX,
   Copy,
   Check,
 } from "lucide-react"
@@ -65,6 +66,7 @@ export const toolIcons: Record<string, LucideIcon> = {
   Read: File,
   Edit: FilePen,
   Write: FilePlusCorner,
+  Delete: FileX,
   NotebookEdit: Pencil,
   WebFetch: ArrowDownToLine,
   TodoWrite: CheckLine,

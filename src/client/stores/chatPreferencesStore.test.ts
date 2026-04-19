@@ -12,6 +12,25 @@ afterEach(() => {
 })
 
 describe("migrateChatPreferencesState", () => {
+  test("preserves max effort for versioned Opus Claude models", () => {
+    const migrated = migrateChatPreferencesState({
+      defaultProvider: "last_used",
+      providerDefaults: {
+        claude: {
+          model: "claude-opus-4-7",
+          modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+          planMode: false,
+        },
+      },
+    })
+
+    expect(migrated.providerDefaults.claude).toEqual({
+      model: "claude-opus-4-7",
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      planMode: false,
+    })
+  })
+
   test("normalizes provider defaults and legacy composer state", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
@@ -39,7 +58,7 @@ describe("migrateChatPreferencesState", () => {
       defaultProvider: "last_used",
       providerDefaults: {
         claude: {
-          model: "opus",
+          model: "claude-opus-4-7",
           modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
           planMode: true,
         },
@@ -52,7 +71,7 @@ describe("migrateChatPreferencesState", () => {
       chatStates: {},
       legacyComposerState: {
         provider: "claude",
-        model: "sonnet",
+        model: "claude-sonnet-4-6",
         modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
         planMode: false,
       },
@@ -82,7 +101,7 @@ describe("migrateChatPreferencesState", () => {
     expect(migrated.providerDefaults.claude.modelOptions).toEqual({ reasoningEffort: "low", contextWindow: "200k" })
     expect(migrated.chatStates.chatA).toEqual({
       provider: "claude",
-      model: "haiku",
+      model: "claude-haiku-4-5-20251001",
       modelOptions: { reasoningEffort: "high", contextWindow: "200k" },
       planMode: false,
     })
@@ -118,7 +137,7 @@ describe("chat preference store", () => {
 
     store.setComposerState("chat-a", {
       provider: "claude",
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
       modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
       planMode: false,
     })
@@ -132,7 +151,7 @@ describe("chat preference store", () => {
 
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
       modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
       planMode: true,
     })
@@ -149,7 +168,7 @@ describe("chat preference store", () => {
 
     store.setComposerState("chat-a", {
       provider: "claude",
-      model: "opus",
+      model: "claude-opus-4-7",
       modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
       planMode: false,
     })
@@ -157,7 +176,7 @@ describe("chat preference store", () => {
 
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
-      model: "haiku",
+      model: "claude-haiku-4-5-20251001",
       modelOptions: { reasoningEffort: "high", contextWindow: "200k" },
       planMode: false,
     })

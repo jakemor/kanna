@@ -3,6 +3,7 @@ import { hostname as getHostname } from "node:os"
 import { spawn, type ChildProcess } from "node:child_process"
 import { LOG_PREFIX } from "../src/shared/branding"
 import { parseDevArgs } from "../src/shared/dev-ports"
+import { isShareEnabled, isTokenShareMode } from "../src/shared/share"
 import { logShareDetails, startShareTunnel } from "../src/server/share"
 
 const cwd = process.cwd()
@@ -120,14 +121,23 @@ async function waitForLocalUrl(url: string, timeoutMs = 30_000) {
   throw new Error(`Timed out waiting for ${url}`)
 }
 
-if (share) {
+if (isShareEnabled(share)) {
   const localUrl = `http://localhost:${clientPort}`
 
   try {
     await waitForLocalUrl(localUrl)
-    const shareTunnel = await startShareTunnel(localUrl)
+    const shareTunnel = await startShareTunnel(localUrl, share)
     shareTunnelStop = shareTunnel.stop
-    await logShareDetails(console.log, shareTunnel.publicUrl, localUrl)
+    if (shareTunnel.publicUrl) {
+      await logShareDetails(console.log, shareTunnel.publicUrl, localUrl)
+    } else {
+      console.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
+      if (isTokenShareMode(share)) {
+        console.warn(`${LOG_PREFIX} use the hostname configured for the provided Cloudflare tunnel token`)
+      }
+      console.log("Local URL:")
+      console.log(localUrl)
+    }
   } catch (error) {
     console.error(`${LOG_PREFIX} failed to start dev share tunnel`)
     if (error instanceof Error && error.message) {

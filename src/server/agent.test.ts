@@ -1388,6 +1388,70 @@ describe("AgentCoordinator claude integration", () => {
 
     events.close()
   })
+
+  test("Claude steer interrupts the active run and immediately sends the steered message", async () => {
+    const events = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+
+    const store = createFakeStore()
+    await store.enqueueMessage("chat-1", {
+      id: "queued-1",
+      content: "queued follow up",
+      attachments: [],
+      provider: "claude",
+      model: "claude-opus-4-1",
+      planMode: false,
+    })
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async (content: string) => {
+          prompts.push(content)
+        },
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first prompt",
+      model: "claude-opus-4-1",
+    })
+
+    expect(prompts).toEqual(["first prompt"])
+    await coordinator.steer({
+      type: "message.steer",
+      chatId: "chat-1",
+      queuedMessageId: "queued-1",
+    })
+
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0]).toEqual("first prompt")
+    expect(prompts[1]).toContain("queued follow up")
+    expect(prompts[1]).toContain("<system-message>")
+    expect(prompts[1]).toContain("</system-message>")
+    expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(true)
+
+    events.push({
+      type: "transcript" as const,
+      entry: timestamped({
+        kind: "interrupted",
+      }),
+    })
+    expect(coordinator.getActiveStatuses().get("chat-1")).toBe("running")
+
+    events.close()
+  })
 })
 
 function createFakeStore() {
@@ -1407,6 +1471,7 @@ function createFakeStore() {
     chat,
     turnFinishedCount: 0,
     messages: [] as TranscriptEntry[],
+    queuedMessages: [] as any[],
     requireChat(chatId: string) {
       expect(chatId).toBe("chat-1")
       return chat
@@ -1443,6 +1508,29 @@ function createFakeStore() {
     },
     async createChat() {
       return chat
+    },
+    async enqueueMessage(_chatId: string, message: any) {
+      const queuedMessage = {
+        id: message.id ?? crypto.randomUUID(),
+        content: message.content,
+        attachments: message.attachments ?? [],
+        createdAt: message.createdAt ?? Date.now(),
+        provider: message.provider,
+        model: message.model,
+        modelOptions: message.modelOptions,
+        planMode: message.planMode,
+      }
+      this.queuedMessages.push(queuedMessage)
+      return queuedMessage
+    },
+    getQueuedMessages() {
+      return [...this.queuedMessages]
+    },
+    getQueuedMessage(_chatId: string, queuedMessageId: string) {
+      return this.queuedMessages.find((entry) => entry.id === queuedMessageId) ?? null
+    },
+    async removeQueuedMessage(_chatId: string, queuedMessageId: string) {
+      this.queuedMessages = this.queuedMessages.filter((entry) => entry.id !== queuedMessageId)
     },
   }
 }

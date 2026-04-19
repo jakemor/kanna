@@ -179,12 +179,20 @@ function summarizeGitFailure(detail: string, fallback: string) {
 }
 
 function createCommitFailure(mode: DiffCommitMode, detail: string): DiffCommitResult {
-  const message = summarizeGitFailure(detail, "Git could not create the commit.")
+  const normalized = detail.toLowerCase()
+  let title = "Commit failed"
+  let message = summarizeGitFailure(detail, "Git could not create the commit.")
+
+  if (normalized.includes("ignored by one of your .gitignore files")) {
+    title = "Ignored files cannot be staged"
+    message = "One or more selected paths are ignored by .gitignore. Unignore them or remove them from the commit selection."
+  }
+
   return {
     ok: false,
     mode,
     phase: "commit",
-    title: "Commit failed",
+    title,
     message,
     detail,
   }
@@ -848,7 +856,8 @@ async function listDirtyPaths(repoRoot: string) {
 
 async function readWorktreeFile(repoRoot: string, relativePath: string): Promise<string | null> {
   const absolutePath = path.join(repoRoot, relativePath)
-  if (!(await fileExists(absolutePath))) {
+  const fileInfo = await stat(absolutePath).catch(() => null)
+  if (!fileInfo?.isFile()) {
     return null
   }
 
@@ -1817,11 +1826,7 @@ export class DiffStore {
       throw new Error("Project is not in a git repository")
     }
 
-    const [hasUpstream, originRemoteUrl] = await Promise.all([
-      hasUpstreamBranch(repo.repoRoot),
-      getOriginRemoteUrl(repo.repoRoot),
-    ])
-    const hasOriginRemote = originRemoteUrl !== null
+    const hasUpstream = await hasUpstreamBranch(repo.repoRoot)
     if (args.action === "publish") {
       const publishResult = await runGit(["push", "-u", "origin", "HEAD"], repo.repoRoot)
       if (publishResult.exitCode !== 0) {
@@ -2021,15 +2026,27 @@ export class DiffStore {
     ])
     const hasOriginRemote = originRemoteUrl !== null
 
-    const currentDirtyPaths = new Set((await listDirtyPaths(repo.repoRoot)).map((entry) => entry.path))
-    const missingPaths = normalizedPaths.filter((relativePath) => !currentDirtyPaths.has(relativePath))
+    const currentDirtyEntries = await listDirtyPaths(repo.repoRoot)
+    const currentDirtyPathsByPath = new Map(currentDirtyEntries.map((entry) => [entry.path, entry]))
+    const missingPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.has(relativePath))
     if (missingPaths.length > 0) {
       throw new Error(`File is no longer changed: ${missingPaths[0]}`)
     }
 
-    const addResult = await runGit(["add", "--", ...normalizedPaths], repo.repoRoot)
-    if (addResult.exitCode !== 0) {
-      throw new Error(addResult.stderr.trim() || "Failed to stage selected files")
+    const trackedPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.get(relativePath)?.isUntracked)
+    if (trackedPaths.length > 0) {
+      const addTrackedResult = await runGit(["add", "-u", "--", ...trackedPaths], repo.repoRoot)
+      if (addTrackedResult.exitCode !== 0) {
+        return createCommitFailure(args.mode, formatGitFailure(addTrackedResult))
+      }
+    }
+
+    const untrackedPaths = normalizedPaths.filter((relativePath) => currentDirtyPathsByPath.get(relativePath)?.isUntracked)
+    if (untrackedPaths.length > 0) {
+      const addUntrackedResult = await runGit(["add", "--", ...untrackedPaths], repo.repoRoot)
+      if (addUntrackedResult.exitCode !== 0) {
+        return createCommitFailure(args.mode, formatGitFailure(addUntrackedResult))
+      }
     }
 
     const commitArgs = ["commit", "--only", "-m", summary]

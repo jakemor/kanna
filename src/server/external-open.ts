@@ -36,21 +36,24 @@ export async function openExternal(command: OpenExternalCommand) {
       editor: command.editor ?? DEFAULT_EDITOR_SETTINGS,
       platform,
     })
-    spawnDetached(editorCommand.command, editorCommand.args)
+    await spawnDetached(editorCommand.command, editorCommand.args)
     return
   }
 
   if (platform === "darwin") {
     if (command.action === "open_finder") {
       if (info?.isDirectory()) {
-        spawnDetached("open", [resolvedPath])
+        await spawnDetached("open", [resolvedPath])
       } else {
-        spawnDetached("open", ["-R", resolvedPath])
+        await spawnDetached("open", ["-R", resolvedPath])
       }
       return
     }
     if (command.action === "open_terminal") {
-      spawnDetached("open", ["-a", "Terminal", resolvedPath])
+      if (!canOpenMacApp("Terminal")) {
+        throw new Error("Terminal is not installed")
+      }
+      await spawnDetached("open", ["-a", "Terminal", resolvedPath])
       return
     }
   }
@@ -58,39 +61,39 @@ export async function openExternal(command: OpenExternalCommand) {
   if (platform === "win32") {
     if (command.action === "open_finder") {
       if (info?.isDirectory()) {
-        spawnDetached("explorer", [resolvedPath])
+        await spawnDetached("explorer", [resolvedPath])
       } else {
-        spawnDetached("explorer", ["/select,", resolvedPath])
+        await spawnDetached("explorer", ["/select,", resolvedPath])
       }
       return
     }
     if (command.action === "open_terminal") {
       if (hasCommand("wt")) {
-        spawnDetached("wt", ["-d", resolvedPath])
+        await spawnDetached("wt", ["-d", resolvedPath])
         return
       }
-      spawnDetached("cmd", ["/c", "start", "", "cmd", "/K", `cd /d ${resolvedPath}`])
+      await spawnDetached("cmd", ["/c", "start", "", "cmd", "/K", `cd /d ${resolvedPath}`])
       return
     }
   }
 
   if (command.action === "open_finder") {
-    spawnDetached("xdg-open", [info?.isDirectory() ? resolvedPath : path.dirname(resolvedPath)])
+    await spawnDetached("xdg-open", [info?.isDirectory() ? resolvedPath : path.dirname(resolvedPath)])
     return
   }
   if (command.action === "open_terminal") {
     for (const terminalCommand of ["x-terminal-emulator", "gnome-terminal", "konsole"]) {
       if (!hasCommand(terminalCommand)) continue
       if (terminalCommand === "gnome-terminal") {
-        spawnDetached(terminalCommand, ["--working-directory", resolvedPath])
+        await spawnDetached(terminalCommand, ["--working-directory", resolvedPath])
       } else if (terminalCommand === "konsole") {
-        spawnDetached(terminalCommand, ["--workdir", resolvedPath])
+        await spawnDetached(terminalCommand, ["--workdir", resolvedPath])
       } else {
-        spawnDetached(terminalCommand, ["--working-directory", resolvedPath])
+        await spawnDetached(terminalCommand, ["--working-directory", resolvedPath])
       }
       return
     }
-    spawnDetached("xdg-open", [resolvedPath])
+    await spawnDetached("xdg-open", [resolvedPath])
   }
 }
 
@@ -149,11 +152,11 @@ function resolveEditorExecutable(preset: Exclude<EditorPreset, "custom">, platfo
   if (platform === "darwin") {
     switch (preset) {
       case "cursor":
-        return { command: "open", args: ["-a", "Cursor"] }
+        throw new Error("Cursor is not installed")
       case "vscode":
-        return { command: "open", args: ["-a", "Visual Studio Code"] }
+        throw new Error("Visual Studio Code is not installed")
       case "windsurf":
-        return { command: "open", args: ["-a", "Windsurf"] }
+        throw new Error("Windsurf is not installed")
     }
   }
 

@@ -7,6 +7,7 @@ describe("getTerminalOptions", () => {
 
     expect(options.macOptionIsMeta).toBe(true)
     expect(options.scrollback).toBe(1_000)
+    expect(options.lineHeight).toBe(1)
   })
 
   test("does not enable macOS Option behavior on non-mac platforms", () => {

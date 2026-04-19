@@ -9,19 +9,29 @@ import {
   Monitor,
   Moon,
   MessageSquareQuote,
-  RefreshCw,
   Settings2,
   Sun,
-  CloudDownload,
+  DownloadCloud,
+  LogOut,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/branding"
-import { DEFAULT_KEYBINDINGS, PROVIDERS, type AgentProvider, type KeybindingAction, type UpdateSnapshot } from "../../shared/types"
+import {
+  DEFAULT_KEYBINDINGS,
+  DEFAULT_OPENAI_SDK_MODEL,
+  DEFAULT_OPENROUTER_SDK_MODEL,
+  PROVIDERS,
+  type AgentProvider,
+  type KeybindingAction,
+  type LlmProviderKind,
+  type UpdateSnapshot,
+} from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
 import { ChatPreferenceControls } from "../components/chat-ui/ChatPreferenceControls"
-import { buttonVariants } from "../components/ui/button"
+import { Button, buttonVariants } from "../components/ui/button"
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from "../components/ui/dialog"
 import { Input } from "../components/ui/input"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
 import type { EditorPreset } from "../../shared/protocol"
@@ -112,6 +122,12 @@ const chatSoundPreferenceOptions: { value: ChatSoundPreference; label: string }[
   { value: "always", label: "Always" },
 ]
 
+const QUICK_RESPONSE_PROVIDER_OPTIONS: Array<{ value: LlmProviderKind; label: string }> = [
+  { value: "openai", label: "OpenAI" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "custom", label: "Custom" },
+]
+
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/jakemor/kanna/releases"
 const CHANGELOG_CACHE_TTL_MS = 5 * 60 * 1000
 
@@ -140,28 +156,6 @@ const KEYBINDING_ACTIONS = Object.keys(KEYBINDING_ACTION_LABELS) as KeybindingAc
 
 export function getKeybindingsSubtitle(filePathDisplay: string) {
   return `Edit global app shortcuts stored in ${filePathDisplay}.`
-}
-
-export function getGeneralHeaderAction(updateSnapshot: UpdateSnapshot | null) {
-  const isChecking = updateSnapshot?.status === "checking"
-  const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
-
-  if (updateSnapshot?.updateAvailable) {
-    return {
-      disabled: isUpdating,
-      kind: "update" as const,
-      label: "Update",
-      variant: "default" as const,
-    }
-  }
-
-  return {
-    disabled: isChecking || isUpdating,
-    kind: "check" as const,
-    label: "Check for updates",
-    spinning: isChecking,
-    variant: "outline" as const,
-  }
 }
 
 export function shouldPreviewChatSoundChange(
@@ -234,12 +228,28 @@ export function ChangelogSection({
   releases,
   error,
   onRetry,
+  updateSnapshot,
+  currentVersion,
+  onInstallUpdate,
+  onCheckForUpdates,
 }: {
   status: ChangelogStatus
   releases: GithubRelease[]
   error: string | null
   onRetry: () => void
+  updateSnapshot: UpdateSnapshot | null
+  currentVersion: string
+  onInstallUpdate: () => void
+  onCheckForUpdates: () => void
 }) {
+  const latestVersion = updateSnapshot?.latestVersion ?? releases[0]?.tag_name ?? "Unknown"
+  const currentVersionLabel = updateSnapshot?.currentVersion ?? currentVersion
+  const isChecking = updateSnapshot?.status === "checking"
+  const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
+  const canInstallUpdate = updateSnapshot?.updateAvailable === true
+  const normalizedLatestVersion = latestVersion.replace(/^v/i, "")
+  const normalizedCurrentVersion = currentVersionLabel.replace(/^v/i, "")
+
   return (
     <div className="space-y-4">
       {status === "loading" || status === "idle" ? (
@@ -252,7 +262,7 @@ export function ChangelogSection({
       ) : null}
 
       {status === "error" ? (
-        <div className="rounded-2xl border border-destructive/20 bg-destructive/5 px-6 py-5">
+        <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-6 py-5">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-sm font-medium text-foreground">Could not load changelog</div>
@@ -272,7 +282,7 @@ export function ChangelogSection({
       ) : null}
 
       {status === "success" && releases.length === 0 ? (
-        <div className="rounded-2xl border border-border bg-card/30 px-6 py-8">
+        <div className="rounded-lg border border-border bg-card/30 px-6 py-8">
           <div className="text-sm font-medium text-foreground">No releases yet</div>
           <div className="mt-2 text-sm text-muted-foreground">
             GitHub did not return any published releases for this repository.
@@ -280,19 +290,39 @@ export function ChangelogSection({
         </div>
       ) : null}
 
-      {status === "success" && releases.length > 0 ? (
-        releases.map((release) => (
-          <article
-            key={release.id}
-            className="rounded-xl border border-border bg-card/30 pl-6 pr-4 py-4"
+      {!canInstallUpdate && status === "success" ? (
+        <div className="flex justify-end">
+          <SettingsHeaderButton
+            variant="outline"
+            onClick={onCheckForUpdates}
+            disabled={isChecking || isUpdating}
           >
+            {isChecking ? "Checking…" : "Check for updates"}
+          </SettingsHeaderButton>
+        </div>
+      ) : null}
+
+      {status === "success" && releases.length > 0 ? (
+        releases.map((release) => {
+          const normalizedTag = release.tag_name.replace(/^v/i, "")
+          const isLatestRelease = normalizedTag === normalizedLatestVersion
+          const isCurrentRelease = normalizedTag === normalizedCurrentVersion
+
+          return (
+            <article
+              key={release.id}
+              className={cn(
+                "rounded-xl border bg-card/30 pl-6 pr-4 py-4",
+                isLatestRelease ? "border-border bg-muted" : "border-border"
+              )}
+            >
 
             <div className="flex flex-row items-center min-w-0 flex-1 gap-3 ">
-              <div className="flex flex-row items-center min-w-0 flex-1 gap-3 ">
+              <div className="flex flex-row items-center min-w-0 flex-1 gap-2 ">
                 <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                   {release.name?.trim() || release.tag_name}
                 </div>
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
                   <span>{formatPublishedDate(release.published_at)}</span>
                   {release.prerelease ? (
                     <span className="rounded-full border border-border px-2.5 py-1 uppercase tracking-wide">
@@ -304,27 +334,56 @@ export function ChangelogSection({
               </div>
 
 
-              <div className="flex flex-row items-center justify-end min-w-0 flex-1 gap-3 ">
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex flex-row items-center justify-end min-w-0 flex-1 gap-2 ">
+                {/* <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   
                   <span className="rounded-full bg-muted px-2.5 py-1 font-mono text-foreground/80">
                     {release.tag_name}
                   </span>
-                </div>
+                </div> */}
 
-                <a
+             
+            
+                  <a
                   href={release.html_url}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="View release on GitHub"
                   className={cn(
                     buttonVariants({ variant: "ghost", size: "icon-sm" }),
-                    "h-8 w-8 shrink-0 rounded-md"
+                    "h-8 w-8 shrink-0 rounded-md hover:!bg-transparent hover:border-border/0"
                   )}
                 >
                   <GitHubIcon className="h-4 w-4" />
                 </a>
 
+                  {isCurrentRelease ? (
+                      
+                  <span
+                    className={cn(
+                      "bg-transparent border border-border text-secondary-foreground",
+                      'h-9 rounded-full px-3 text-sm',
+                      "h-auto gap-1.5 px-3 py-1.5"
+                    )}
+                  >
+                    Current
+                  </span>
+                  ) : null}
+                  
+                
+                  { isLatestRelease && canInstallUpdate  ? (
+                  <SettingsHeaderButton
+                    variant="default"
+                    className=""
+                    onClick={onInstallUpdate}
+                    disabled={isUpdating}
+                  >
+                    <div className="flex flex-row items-center justify-center gap-2">
+                    <DownloadCloud className="size-4"/>
+                    {isUpdating ? "Updating…" : "Update"}
+                    </div>
+                  </SettingsHeaderButton>
+                ) : null}
               </div>
             
              
@@ -341,7 +400,8 @@ export function ChangelogSection({
               <div className="mt-5 text-sm text-muted-foreground">No release notes were provided.</div>
             )}
           </article>
-        ))
+          )
+        })
       ) : null}
     </div>
   )
@@ -397,6 +457,8 @@ export function SettingsPage() {
   const state = useOutletContext<KannaState>()
   const { theme, setTheme } = useTheme()
   const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
+  const [signingOut, setSigningOut] = useState(false)
+  const [authEnabled, setAuthEnabled] = useState(false)
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
@@ -423,6 +485,7 @@ export function SettingsPage() {
   const minElapsedTimeMs = useChatDisplayPreferencesStore((store) => store.minElapsedTimeMs)
   const setMinElapsedTimeMs = useChatDisplayPreferencesStore((store) => store.setMinElapsedTimeMs)
   const keybindings = state.keybindings
+  const llmProvider = state.llmProvider
   const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
   const setDefaultProvider = useChatPreferencesStore((store) => store.setDefaultProvider)
@@ -437,8 +500,20 @@ export function SettingsPage() {
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
+  const [llmProviderDraft, setLlmProviderDraft] = useState({
+    provider: "openai" as LlmProviderKind,
+    apiKey: "",
+    model: "",
+    baseUrl: "",
+  })
+  const [llmProviderError, setLlmProviderError] = useState<string | null>(null)
+  const [llmValidationStatus, setLlmValidationStatus] = useState<"idle" | "valid" | "invalid">("idle")
+  const [llmValidationError, setLlmValidationError] = useState<unknown | null>(null)
+  const [llmValidationDialogOpen, setLlmValidationDialogOpen] = useState(false)
   const updateSnapshot = state.updateSnapshot
-  const generalHeaderAction = getGeneralHeaderAction(updateSnapshot)
+  const handleReadLlmProvider = state.handleReadLlmProvider
+  const handleWriteLlmProvider = state.handleWriteLlmProvider
+  const handleValidateLlmProvider = state.handleValidateLlmProvider
   const updateStatusLabel = updateSnapshot?.status === "checking"
     ? "Checking for updates…"
     : updateSnapshot?.status === "updating"
@@ -479,10 +554,58 @@ export function SettingsPage() {
   }, [resolvedKeybindings])
 
   useEffect(() => {
+    if (!llmProvider) return
+    setLlmProviderDraft({
+      provider: llmProvider.provider,
+      apiKey: llmProvider.apiKey,
+      model: llmProvider.model,
+      baseUrl: llmProvider.baseUrl,
+    })
+  }, [llmProvider])
+
+  useEffect(() => {
+    setLlmValidationStatus("idle")
+    setLlmValidationError(null)
+  }, [llmProviderDraft.provider, llmProviderDraft.apiKey, llmProviderDraft.model, llmProviderDraft.baseUrl])
+
+  useEffect(() => {
     if (!sectionId) return
     if (resolveSettingsSectionId(sectionId)) return
     navigate("/settings/general", { replace: true })
   }, [navigate, sectionId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void fetch("/auth/status", {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then(async (response) => {
+        if (!response.ok) return { enabled: false }
+        return await response.json() as { enabled?: boolean }
+      })
+      .then((payload) => {
+        if (cancelled) return
+        setAuthEnabled(payload.enabled === true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAuthEnabled(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (selectedPage !== "providers" || isConnecting) return
+    void handleReadLlmProvider()
+  }, [handleReadLlmProvider, isConnecting, selectedPage])
 
   useEffect(() => {
     if (selectedPage !== "changelog" || isConnecting) return
@@ -599,6 +722,38 @@ export function SettingsPage() {
     }
   }
 
+  async function commitLlmProvider(nextValue = llmProviderDraft) {
+    try {
+      setLlmProviderError(null)
+      await handleWriteLlmProvider(nextValue)
+      const validation = await handleValidateLlmProvider(nextValue)
+      setLlmValidationStatus(validation.ok ? "valid" : "invalid")
+      setLlmValidationError(validation.error)
+    } catch (error) {
+      const fallbackError = error instanceof Error
+        ? { name: error.name, message: error.message }
+        : error
+      setLlmValidationStatus("invalid")
+      setLlmValidationError(fallbackError)
+      setLlmProviderError(error instanceof Error ? error.message : "Unable to save quick response provider settings.")
+    }
+  }
+
+  function handleLlmProviderSelection(nextProvider: LlmProviderKind) {
+    const nextDraft = {
+      ...llmProviderDraft,
+      provider: nextProvider,
+      model: nextProvider === "openai"
+        ? DEFAULT_OPENAI_SDK_MODEL
+        : nextProvider === "openrouter"
+          ? DEFAULT_OPENROUTER_SDK_MODEL
+          : llmProviderDraft.model,
+      baseUrl: nextProvider === "custom" ? llmProviderDraft.baseUrl : "",
+    }
+    setLlmProviderDraft(nextDraft)
+    void commitLlmProvider(nextDraft)
+  }
+
   function retryChangelog() {
     changelogCache = null
     setChangelogStatus("loading")
@@ -625,6 +780,54 @@ export function SettingsPage() {
       ? getKeybindingsSubtitle(keybindingsFilePathDisplay)
       : selectedSection.subtitle
   const showFooter = !isConnecting
+  const llmValidationErrorText = llmValidationError ? JSON.stringify(llmValidationError, null, 2) : ""
+  const llmValidationDescription = (
+    <>
+      <span>
+        Use an OpenAI-compatible API for title and commit message generation before Claude and Codex. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
+      </span>
+      <span
+        className={cn(
+          "mt-2 block text-sm font-medium",
+          llmValidationStatus === "valid"
+            ? "text-emerald-600 dark:text-emerald-400"
+            : llmValidationStatus === "invalid"
+              ? "text-destructive"
+              : "hidden"
+        )}
+      >
+        {llmValidationStatus === "valid" ? (
+          "Credentials valid & saved"
+        ) : llmValidationStatus === "invalid" ? (
+          <>
+            <span>Credentials invalid.</span>
+            {llmValidationError ? (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => setLlmValidationDialogOpen(true)}
+                  className="underline underline-offset-2"
+                >
+                  See error
+                </button>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </span>
+    </>
+  )
+
+  async function handleSidebarSignOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    try {
+      await state.handleSignOut()
+    } finally {
+      setSigningOut(false)
+    }
+  }
 
   return (
     <div className="relative flex h-full flex-1 min-w-0 bg-background">
@@ -651,6 +854,21 @@ export function SettingsPage() {
                 </div>
               </button>
             ))}
+            {authEnabled ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSidebarSignOut()
+                }}
+                disabled={signingOut}
+                className="cursor-pointer rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2.5">
+                  <LogOut className="h-4 w-4 shrink-0" />
+                  <span>{signingOut ? "Signing out..." : "Sign out"}</span>
+                </div>
+              </button>
+            ) : null}
           </div>
         </aside>
 
@@ -685,6 +903,23 @@ export function SettingsPage() {
                     <span className="whitespace-nowrap">{item.label}</span>
                   </button>
                 ))}
+                {authEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleSidebarSignOut()
+                    }}
+                    disabled={signingOut}
+                    className={cn(
+                      "flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-sm transition-colors",
+                      "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      "disabled:cursor-not-allowed disabled:opacity-50"
+                    )}
+                  >
+                    <LogOut className="h-4 w-4 shrink-0" />
+                    <span className="whitespace-nowrap">{signingOut ? "Signing out..." : "Sign out"}</span>
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -704,6 +939,14 @@ export function SettingsPage() {
                     <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                       {selectedSection.label}
                     </div>
+                    {selectedPage === "general" ? (
+                      <SettingsHeaderButton
+                        variant="outline"
+                        onClick={() => navigate("/settings/changelog")}
+                      >
+                        Check for updates
+                      </SettingsHeaderButton>
+                    ) : null}
                     {selectedPage === "keybindings" ? (
                       <SettingsHeaderButton
                         onClick={() => {
@@ -713,28 +956,6 @@ export function SettingsPage() {
                       >
                         Open in {state.editorLabel}
                       </SettingsHeaderButton>
-                    ) : null}
-                    {selectedPage === "general" ? (
-                      <div className="flex items-center gap-2">
-                        <SettingsHeaderButton
-                          variant={generalHeaderAction.variant}
-                          onClick={() => {
-                            if (generalHeaderAction.kind === "update") {
-                              void state.handleInstallUpdate()
-                              return
-                            }
-                            void state.handleCheckForUpdates({ force: true })
-                          }}
-                          disabled={generalHeaderAction.disabled}
-                          icon={generalHeaderAction.kind === "check"
-                            ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
-                            : generalHeaderAction.kind === "update"
-                            ? <CloudDownload className={cn("size-3.5")} />
-                            : undefined}
-                        >
-                          {generalHeaderAction.label}
-                        </SettingsHeaderButton>
-                      </div>
                     ) : null}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
@@ -1063,16 +1284,73 @@ export function SettingsPage() {
                         />
                       </div>
                     </SettingsRow>
+
+                    <SettingsRow
+                      title="Quick Response SDK"
+                      description={llmValidationDescription}
+                      alignStart
+                    >
+                      <div className="flex w-full max-w-[420px] flex-col gap-3">
+                        {llmProviderError ? (
+                          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                            {llmProviderError}
+                          </div>
+                        ) : null}
+                        {llmProvider?.warning ? (
+                          <div className="rounded-lg border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
+                            {llmProvider.warning}
+                          </div>
+                        ) : null}
+                        <Select value={llmProviderDraft.provider} onValueChange={(value) => handleLlmProviderSelection(value as LlmProviderKind)}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {QUICK_RESPONSE_PROVIDER_OPTIONS.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        {llmProviderDraft.provider === "custom" ? (
+                          <Input
+                            value={llmProviderDraft.baseUrl}
+                            onChange={(event) => setLlmProviderDraft((current) => ({ ...current, baseUrl: event.target.value }))}
+                            onBlur={() => void commitLlmProvider()}
+                            onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
+                            placeholder="https://your-provider.example/v1"
+                          />
+                        ) : null}
+                        <Input
+                          type="password"
+                          value={llmProviderDraft.apiKey}
+                          onChange={(event) => setLlmProviderDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                          onBlur={() => void commitLlmProvider()}
+                          onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
+                          placeholder="API key"
+                        />
+                        <Input
+                          value={llmProviderDraft.model}
+                          onChange={(event) => setLlmProviderDraft((current) => ({ ...current, model: event.target.value }))}
+                          onBlur={() => void commitLlmProvider()}
+                          onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
+                          placeholder="Model id"
+                        />
+                      </div>
+                    </SettingsRow>
                   </div>
                 ) : selectedPage === "keybindings" ? (
                   <div className="border-b border-border">
                     {keybindingsError ? (
-                      <div className="mb-4 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                      <div className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                         {keybindingsError}
                       </div>
                     ) : null}
                     {resolvedKeybindings.warning ? (
-                      <div className="mb-4 rounded-2xl border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
+                      <div className="mb-4 rounded-lg border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
                         {resolvedKeybindings.warning}
                       </div>
                     ) : null}
@@ -1135,13 +1413,21 @@ export function SettingsPage() {
                     releases={releases}
                     error={changelogError}
                     onRetry={retryChangelog}
+                    updateSnapshot={updateSnapshot}
+                    currentVersion={appVersion}
+                    onInstallUpdate={() => {
+                      void state.handleInstallUpdate()
+                    }}
+                    onCheckForUpdates={() => {
+                      void state.handleCheckForUpdates({ force: true })
+                    }}
                   />
                 )}
               </div>
             )}
 
             {state.commandError ? (
-              <div className="mx-auto mt-4 flex max-w-4xl items-start gap-3 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <div className="mx-auto mt-4 flex max-w-4xl items-start gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
                 <span>{state.commandError}</span>
               </div>
@@ -1175,6 +1461,21 @@ export function SettingsPage() {
           </div>
         </div>
       ) : null}
+      <Dialog open={llmValidationDialogOpen} onOpenChange={setLlmValidationDialogOpen}>
+        <DialogContent size="lg">
+          <DialogBody className="space-y-4">
+            <DialogTitle>Validation Error</DialogTitle>
+            <pre className="max-h-[60vh] overflow-auto rounded-lg border border-border bg-muted p-3 text-xs font-mono whitespace-pre-wrap break-words">
+              {llmValidationErrorText}
+            </pre>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" size="sm" onClick={() => setLlmValidationDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test"
 import {
   countMatchingUserPrompts,
   getActiveChatSnapshot,
+  getNextMeasuredInputHeight,
   getNewestRemainingChatId,
   getPreviousPrompt,
+  getTranscriptPaddingBottom,
   getUserPromptSignature,
   getUiUpdateRestartReconnectAction,
   reconcileOptimisticUserPrompts,
   resolveComposeIntent,
+  shouldHandleUiUpdateReloadRequest,
   shouldMarkActiveChatRead,
   shouldAutoFollowTranscript,
 } from "./useKannaState"
@@ -57,6 +60,9 @@ function createSidebarData(): SidebarData {
             hasAutomation: false,
           },
         ],
+        previewChats: [],
+        olderChats: [],
+        defaultCollapsed: false,
       },
       {
         groupKey: "project-2",
@@ -75,6 +81,9 @@ function createSidebarData(): SidebarData {
             hasAutomation: false,
           },
         ],
+        previewChats: [],
+        olderChats: [],
+        defaultCollapsed: true,
       },
     ],
   }
@@ -114,6 +123,30 @@ describe("shouldAutoFollowTranscript", () => {
   })
 })
 
+describe("getTranscriptPaddingBottom", () => {
+  test("keeps the extra bottom offset even when the input height is zero", () => {
+    expect(getTranscriptPaddingBottom(0)).toBe(30)
+  })
+
+  test("adds the fixed offset to the measured input height", () => {
+    expect(getTranscriptPaddingBottom(140)).toBe(170)
+  })
+
+  test("scales linearly as the composer grows", () => {
+    expect(getTranscriptPaddingBottom(200) - getTranscriptPaddingBottom(140)).toBe(60)
+  })
+})
+
+describe("getNextMeasuredInputHeight", () => {
+  test("keeps the previous height when a transient zero measurement is reported", () => {
+    expect(getNextMeasuredInputHeight(148, 0)).toBe(148)
+  })
+
+  test("accepts the latest non-zero measurement", () => {
+    expect(getNextMeasuredInputHeight(148, 178)).toBe(178)
+  })
+})
+
 describe("shouldMarkActiveChatRead", () => {
   test("returns true only when the page is visible and focused", () => {
     expect(shouldMarkActiveChatRead({
@@ -134,18 +167,28 @@ describe("shouldMarkActiveChatRead", () => {
 })
 
 describe("getUiUpdateRestartReconnectAction", () => {
-  test("waits for reconnect after the socket disconnects", () => {
-    expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "disconnected")).toBe("awaiting_reconnect")
-  })
-
-  test("navigates to changelog after reconnect", () => {
-    expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "connected")).toBe("navigate_changelog")
+  test("waits for server readiness after the socket disconnects", () => {
+    expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "disconnected")).toBe("awaiting_server_ready")
   })
 
   test("does nothing for unrelated phase and connection combinations", () => {
     expect(getUiUpdateRestartReconnectAction(null, "connected")).toBe("none")
     expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "connected")).toBe("none")
-    expect(getUiUpdateRestartReconnectAction("awaiting_reconnect", "disconnected")).toBe("none")
+    expect(getUiUpdateRestartReconnectAction("awaiting_server_ready", "disconnected")).toBe("none")
+    expect(getUiUpdateRestartReconnectAction("awaiting_server_ready", "connected")).toBe("none")
+  })
+})
+
+describe("shouldHandleUiUpdateReloadRequest", () => {
+  test("handles a new backend reload request", () => {
+    expect(shouldHandleUiUpdateReloadRequest(123, null)).toBe(true)
+    expect(shouldHandleUiUpdateReloadRequest(123, "122")).toBe(true)
+  })
+
+  test("ignores missing or already handled reload requests", () => {
+    expect(shouldHandleUiUpdateReloadRequest(null, null)).toBe(false)
+    expect(shouldHandleUiUpdateReloadRequest(undefined, null)).toBe(false)
+    expect(shouldHandleUiUpdateReloadRequest(123, "123")).toBe(false)
   })
 })
 
@@ -205,6 +248,7 @@ describe("getActiveChatSnapshot", () => {
         planMode: false,
         sessionToken: null,
       },
+      queuedMessages: [],
       messages: [],
       history: {
         hasOlder: false,
@@ -230,6 +274,7 @@ describe("getActiveChatSnapshot", () => {
         planMode: false,
         sessionToken: null,
       },
+      queuedMessages: [],
       messages: [],
       history: {
         hasOlder: false,

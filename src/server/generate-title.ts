@@ -29,7 +29,7 @@ export interface GenerateChatTitleResult {
   failureMessage: string | null
 }
 
-function summarizeFailures(failures: Array<{ provider: "claude" | "codex"; reason: string }>) {
+function summarizeFailures(failures: Array<{ provider: "openai" | "claude" | "codex"; reason: string }>) {
   if (failures.length === 0) return null
   return failures.map((failure) => failure.reason).join("; ")
 }

@@ -51,6 +51,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           kind: "user_prompt",
           content: entry.content,
           attachments: entry.attachments ?? [],
+          steered: entry.steered,
         })
         break
       case "system_init":

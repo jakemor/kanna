@@ -67,6 +67,9 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         hasAutomation: false,
       },
     ],
+    previewChats: [],
+    olderChats: [],
+    defaultCollapsed: false,
   },
   {
     groupKey: "project-b",
@@ -97,12 +100,20 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         hasAutomation: false,
       },
     ],
+    previewChats: [],
+    olderChats: [],
+    defaultCollapsed: true,
   },
 ]
 
+PROJECT_GROUPS[0]!.previewChats = PROJECT_GROUPS[0]!.chats.slice(0, 2)
+PROJECT_GROUPS[0]!.olderChats = PROJECT_GROUPS[0]!.chats.slice(2)
+PROJECT_GROUPS[1]!.previewChats = PROJECT_GROUPS[1]!.chats
+PROJECT_GROUPS[1]!.olderChats = []
+
 describe("getVisibleSidebarChats", () => {
   test("returns chats in visible sidebar order with 24h filtering and fallback-to-5", () => {
-    const visibleChats = getVisibleSidebarChats(PROJECT_GROUPS, new Set(), new Set(), 2, nowMs)
+    const visibleChats = getVisibleSidebarChats(PROJECT_GROUPS, new Set(), new Set())
 
     expect(visibleChats.map((entry) => [entry.visibleIndex, entry.chat.chatId])).toEqual([
       [1, "chat-a-1"],
@@ -116,9 +127,7 @@ describe("getVisibleSidebarChats", () => {
     const visibleChats = getVisibleSidebarChats(
       PROJECT_GROUPS,
       new Set(["project-b"]),
-      new Set(["project-a"]),
-      2,
-      nowMs
+      new Set(["project-a"])
     )
 
     expect(visibleChats.map((entry) => [entry.visibleIndex, entry.chat.chatId])).toEqual([
@@ -144,9 +153,14 @@ describe("getVisibleSidebarChats", () => {
         lastMessageAt: nowMs - (25 + index) * hourMs,
         hasAutomation: false,
       })),
+      previewChats: [],
+      olderChats: [],
+      defaultCollapsed: true,
     }]
+    staleProject[0]!.previewChats = staleProject[0]!.chats.slice(0, 5)
+    staleProject[0]!.olderChats = staleProject[0]!.chats.slice(5)
 
-    const visibleChats = getVisibleSidebarChats(staleProject, new Set(), new Set(), 10, nowMs)
+    const visibleChats = getVisibleSidebarChats(staleProject, new Set(), new Set())
 
     expect(visibleChats.map((entry) => entry.chat.chatId)).toEqual([
       "chat-c-1",

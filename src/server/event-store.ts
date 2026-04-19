@@ -3,12 +3,12 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
-  type MessageEvent,
   type ProjectEvent,
+  type QueuedMessageEvent,
   type SnapshotFile,
   type StoreEvent,
   type StoreState,
@@ -19,7 +19,23 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
-const STALE_EMPTY_CHAT_MAX_AGE_MS = 5 * 60 * 1000
+const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
+
+function isSendToStartingProfilingEnabled() {
+  return process.env.KANNA_PROFILE_SEND_TO_STARTING === "1"
+}
+
+function logSendToStartingProfile(stage: string, details?: Record<string, unknown>) {
+  if (!isSendToStartingProfilingEnabled()) {
+    return
+  }
+
+  console.log("[kanna/send->starting][server]", JSON.stringify({
+    stage,
+    ...details,
+  }))
+}
+
 interface LegacyTranscriptStats {
   hasLegacyData: boolean
   sources: Array<"snapshot" | "messages_log">
@@ -31,6 +47,45 @@ interface TranscriptPageResult {
   entries: TranscriptEntry[]
   hasOlder: boolean
   olderCursor: string | null
+}
+
+interface ParsedReplayEvent {
+  event: StoreEvent
+  sourceIndex: number
+  lineIndex: number
+}
+
+function getReplayEventPriority(event: StoreEvent) {
+  switch (event.type) {
+    case "project_opened":
+    case "project_removed":
+    case "sidebar_project_order_set":
+      return 0
+    case "chat_created":
+      return 1
+    case "chat_renamed":
+    case "chat_provider_set":
+    case "chat_plan_mode_set":
+      return 2
+    case "message_appended":
+      return 3
+    case "queued_message_enqueued":
+    case "queued_message_removed":
+      return 4
+    case "turn_started":
+      return 5
+    case "session_token_set":
+      return 6
+    case "turn_cancelled":
+      return 7
+    case "turn_finished":
+    case "turn_failed":
+      return 8
+    case "chat_read_state_set":
+      return 9
+    case "chat_deleted":
+      return 10
+  }
 }
 
 function encodeHistoryCursor(index: number) {
@@ -66,6 +121,7 @@ export class EventStore {
   private readonly projectsLogPath: string
   private readonly chatsLogPath: string
   private readonly messagesLogPath: string
+  private readonly queuedMessagesLogPath: string
   private readonly turnsLogPath: string
   private readonly transcriptsDir: string
   private legacyMessagesByChatId = new Map<string, TranscriptEntry[]>()
@@ -78,6 +134,7 @@ export class EventStore {
     this.projectsLogPath = path.join(this.dataDir, "projects.jsonl")
     this.chatsLogPath = path.join(this.dataDir, "chats.jsonl")
     this.messagesLogPath = path.join(this.dataDir, "messages.jsonl")
+    this.queuedMessagesLogPath = path.join(this.dataDir, "queued-messages.jsonl")
     this.turnsLogPath = path.join(this.dataDir, "turns.jsonl")
     this.transcriptsDir = path.join(this.dataDir, "transcripts")
   }
@@ -88,6 +145,7 @@ export class EventStore {
     await this.ensureFile(this.projectsLogPath)
     await this.ensureFile(this.chatsLogPath)
     await this.ensureFile(this.messagesLogPath)
+    await this.ensureFile(this.queuedMessagesLogPath)
     await this.ensureFile(this.turnsLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
@@ -113,6 +171,7 @@ export class EventStore {
       Bun.write(this.projectsLogPath, ""),
       Bun.write(this.chatsLogPath, ""),
       Bun.write(this.messagesLogPath, ""),
+      Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
     ])
   }
@@ -140,6 +199,15 @@ export class EventStore {
           unread: chat.unread ?? false,
         })
       }
+      this.state.sidebarProjectOrder = [...(parsed.sidebarProjectOrder ?? [])]
+      if (parsed.queuedMessages?.length) {
+        for (const queuedSet of parsed.queuedMessages) {
+          this.state.queuedMessagesByChatId.set(queuedSet.chatId, queuedSet.entries.map((entry) => ({
+            ...entry,
+            attachments: [...entry.attachments],
+          })))
+        }
+      }
       if (parsed.messages?.length) {
         this.snapshotHasLegacyMessages = true
         for (const messageSet of parsed.messages) {
@@ -156,6 +224,8 @@ export class EventStore {
     this.state.projectsById.clear()
     this.state.projectIdsByPath.clear()
     this.state.chatsById.clear()
+    this.state.queuedMessagesByChatId.clear()
+    this.state.sidebarProjectOrder = []
     this.cachedTranscript = null
   }
 
@@ -166,21 +236,34 @@ export class EventStore {
 
   private async replayLogs() {
     if (this.storageReset) return
-    await this.replayLog<ProjectEvent>(this.projectsLogPath)
+    const replayEvents = [
+      ...await this.loadReplayEvents(this.projectsLogPath, 0),
+      ...await this.loadReplayEvents(this.chatsLogPath, 1),
+      ...await this.loadReplayEvents(this.messagesLogPath, 2),
+      ...await this.loadReplayEvents(this.queuedMessagesLogPath, 3),
+      ...await this.loadReplayEvents(this.turnsLogPath, 4),
+    ]
     if (this.storageReset) return
-    await this.replayLog<ChatEvent>(this.chatsLogPath)
-    if (this.storageReset) return
-    await this.replayLog<MessageEvent>(this.messagesLogPath)
-    if (this.storageReset) return
-    await this.replayLog<TurnEvent>(this.turnsLogPath)
+
+    replayEvents
+      .sort((left, right) => (
+        left.event.timestamp - right.event.timestamp
+        || getReplayEventPriority(left.event) - getReplayEventPriority(right.event)
+        || left.sourceIndex - right.sourceIndex
+        || left.lineIndex - right.lineIndex
+      ))
+      .forEach(({ event }) => {
+        this.applyEvent(event)
+      })
   }
 
-  private async replayLog<TEvent extends StoreEvent>(filePath: string) {
+  private async loadReplayEvents(filePath: string, sourceIndex: number): Promise<ParsedReplayEvent[]> {
     const file = Bun.file(filePath)
-    if (!(await file.exists())) return
+    if (!(await file.exists())) return []
     const text = await file.text()
-    if (!text.trim()) return
+    if (!text.trim()) return []
 
+    const parsedEvents: ParsedReplayEvent[] = []
     const lines = text.split("\n")
     let lastNonEmpty = -1
     for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -198,19 +281,25 @@ export class EventStore {
         if (event.v !== STORE_VERSION) {
           console.warn(`${LOG_PREFIX} Resetting local history from incompatible event log`)
           await this.clearStorage()
-          return
+          return []
         }
-        this.applyEvent(event as StoreEvent)
+        parsedEvents.push({
+          event: event as StoreEvent,
+          sourceIndex,
+          lineIndex: index,
+        })
       } catch (error) {
         if (index === lastNonEmpty) {
           console.warn(`${LOG_PREFIX} Ignoring corrupt trailing line in ${path.basename(filePath)}`)
-          return
+          return parsedEvents
         }
         console.warn(`${LOG_PREFIX} Failed to replay ${path.basename(filePath)}, resetting local history:`, error)
         await this.clearStorage()
-        return
+        return []
       }
     }
+
+    return parsedEvents
   }
 
   private applyEvent(event: StoreEvent) {
@@ -236,8 +325,12 @@ export class EventStore {
         this.state.projectIdsByPath.delete(project.localPath)
         break
       }
+      case "sidebar_project_order_set": {
+        this.state.sidebarProjectOrder = [...event.projectIds]
+        break
+      }
       case "chat_created": {
-        const chat = {
+      const chat = {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
@@ -247,6 +340,7 @@ export class EventStore {
           provider: null,
           planMode: false,
           sessionToken: null,
+          hasMessages: false,
           lastTurnOutcome: null,
         }
         this.state.chatsById.set(chat.id, chat)
@@ -264,6 +358,7 @@ export class EventStore {
         if (!chat) break
         chat.deletedAt = event.timestamp
         chat.updatedAt = event.timestamp
+        this.state.queuedMessagesByChatId.delete(event.chatId)
         break
       }
       case "chat_provider_set": {
@@ -292,6 +387,33 @@ export class EventStore {
         const existing = this.legacyMessagesByChatId.get(event.chatId) ?? []
         existing.push({ ...event.entry })
         this.legacyMessagesByChatId.set(event.chatId, existing)
+        break
+      }
+      case "queued_message_enqueued": {
+        const existing = this.state.queuedMessagesByChatId.get(event.chatId) ?? []
+        existing.push({
+          ...event.message,
+          attachments: [...event.message.attachments],
+        })
+        this.state.queuedMessagesByChatId.set(event.chatId, existing)
+        const chat = this.state.chatsById.get(event.chatId)
+        if (chat) {
+          chat.updatedAt = event.timestamp
+        }
+        break
+      }
+      case "queued_message_removed": {
+        const existing = this.state.queuedMessagesByChatId.get(event.chatId) ?? []
+        const next = existing.filter((entry) => entry.id !== event.queuedMessageId)
+        if (next.length > 0) {
+          this.state.queuedMessagesByChatId.set(event.chatId, next)
+        } else {
+          this.state.queuedMessagesByChatId.delete(event.chatId)
+        }
+        const chat = this.state.chatsById.get(event.chatId)
+        if (chat) {
+          chat.updatedAt = event.timestamp
+        }
         break
       }
       case "turn_started": {
@@ -336,6 +458,7 @@ export class EventStore {
   private applyMessageMetadata(chatId: string, entry: TranscriptEntry) {
     const chat = this.state.chatsById.get(chatId)
     if (!chat) return
+    chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
     }
@@ -411,6 +534,30 @@ export class EventStore {
     await this.append(this.projectsLogPath, event)
   }
 
+  async setSidebarProjectOrder(projectIds: string[]) {
+    const validProjectIds = projectIds.filter((projectId) => {
+      const project = this.state.projectsById.get(projectId)
+      return Boolean(project && !project.deletedAt)
+    })
+
+    const uniqueProjectIds = [...new Set(validProjectIds)]
+    const current = this.state.sidebarProjectOrder
+    if (
+      uniqueProjectIds.length === current.length
+      && uniqueProjectIds.every((projectId, index) => current[index] === projectId)
+    ) {
+      return
+    }
+
+    const event: ProjectEvent = {
+      v: STORE_VERSION,
+      type: "sidebar_project_order_set",
+      timestamp: Date.now(),
+      projectIds: uniqueProjectIds,
+    }
+    await this.append(this.projectsLogPath, event)
+  }
+
   async createChat(projectId: string) {
     const project = this.state.projectsById.get(projectId)
     if (!project || project.deletedAt) {
@@ -459,16 +606,24 @@ export class EventStore {
     now?: number
     maxAgeMs?: number
     activeChatIds?: Iterable<string>
+    protectedChatIds?: Iterable<string>
   }) {
     const now = args?.now ?? Date.now()
     const maxAgeMs = args?.maxAgeMs ?? STALE_EMPTY_CHAT_MAX_AGE_MS
-    const activeChatIds = new Set(args?.activeChatIds ?? [])
+    const protectedChatIds = new Set([
+      ...(args?.activeChatIds ?? []),
+      ...(args?.protectedChatIds ?? []),
+    ])
     const prunedChatIds: string[] = []
 
     for (const chat of this.state.chatsById.values()) {
-      if (chat.deletedAt || activeChatIds.has(chat.id)) continue
+      if (chat.deletedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
-      if (this.getMessages(chat.id).length > 0) continue
+      if (chat.hasMessages) continue
+      if (this.getMessages(chat.id).length > 0) {
+        chat.hasMessages = true
+        continue
+      }
 
       const event: ChatEvent = {
         v: STORE_VERSION,
@@ -533,15 +688,68 @@ export class EventStore {
     this.requireChat(chatId)
     const payload = `${JSON.stringify(entry)}\n`
     const transcriptPath = this.transcriptPath(chatId)
+    const queuedAt = performance.now()
     this.writeChain = this.writeChain.then(async () => {
+      const startedAt = performance.now()
+      const queueDelayMs = Number((startedAt - queuedAt).toFixed(1))
       await mkdir(this.transcriptsDir, { recursive: true })
+      const beforeAppendAt = performance.now()
       await appendFile(transcriptPath, payload, "utf8")
+      const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
       if (this.cachedTranscript?.chatId === chatId) {
         this.cachedTranscript.entries.push({ ...entry })
       }
+      logSendToStartingProfile("event_store.append_message", {
+        chatId,
+        entryId: entry._id,
+        kind: entry.kind,
+        payloadBytes: payload.length,
+        queueDelayMs,
+        appendMs: Number((afterAppendAt - beforeAppendAt).toFixed(1)),
+        totalMs: Number((afterAppendAt - queuedAt).toFixed(1)),
+      })
     })
     return this.writeChain
+  }
+
+  async enqueueMessage(chatId: string, message: Omit<QueuedChatMessage, "id" | "createdAt"> & Partial<Pick<QueuedChatMessage, "id" | "createdAt">>) {
+    this.requireChat(chatId)
+    const queuedMessage: QueuedChatMessage = {
+      id: message.id ?? crypto.randomUUID(),
+      content: message.content,
+      attachments: [...(message.attachments ?? [])],
+      createdAt: message.createdAt ?? Date.now(),
+      provider: message.provider,
+      model: message.model,
+      modelOptions: message.modelOptions,
+      planMode: message.planMode,
+    }
+    const event: QueuedMessageEvent = {
+      v: STORE_VERSION,
+      type: "queued_message_enqueued",
+      timestamp: queuedMessage.createdAt,
+      chatId,
+      message: queuedMessage,
+    }
+    await this.append(this.queuedMessagesLogPath, event)
+    return queuedMessage
+  }
+
+  async removeQueuedMessage(chatId: string, queuedMessageId: string) {
+    this.requireChat(chatId)
+    const existing = this.getQueuedMessages(chatId)
+    if (!existing.some((entry) => entry.id === queuedMessageId)) {
+      throw new Error("Queued message not found")
+    }
+    const event: QueuedMessageEvent = {
+      v: STORE_VERSION,
+      type: "queued_message_removed",
+      timestamp: Date.now(),
+      chatId,
+      queuedMessageId,
+    }
+    await this.append(this.queuedMessagesLogPath, event)
   }
 
   async recordTurnStarted(chatId: string) {
@@ -652,6 +860,18 @@ export class EventStore {
     return cloneTranscriptEntries(entries)
   }
 
+  getQueuedMessages(chatId: string) {
+    const entries = this.state.queuedMessagesByChatId.get(chatId) ?? []
+    return entries.map((entry) => ({
+      ...entry,
+      attachments: [...entry.attachments],
+    }))
+  }
+
+  getQueuedMessage(chatId: string, queuedMessageId: string) {
+    return this.getQueuedMessages(chatId).find((entry) => entry.id === queuedMessageId) ?? null
+  }
+
   getRecentMessagesPage(chatId: string, limit: number): ChatHistoryPage {
     if (limit <= 0) {
       return { messages: [], hasOlder: false, olderCursor: null }
@@ -741,9 +961,18 @@ export class EventStore {
       v: STORE_VERSION,
       generatedAt: Date.now(),
       projects: this.listProjects().map((project) => ({ ...project })),
+      sidebarProjectOrder: [...this.state.sidebarProjectOrder],
       chats: [...this.state.chatsById.values()]
         .filter((chat) => !chat.deletedAt)
         .map((chat) => ({ ...chat })),
+      queuedMessages: [...this.state.queuedMessagesByChatId.entries()]
+        .map(([chatId, entries]) => ({
+          chatId,
+          entries: entries.map((entry) => ({
+            ...entry,
+            attachments: [...entry.attachments],
+          })),
+        })),
     }
   }
 
@@ -754,6 +983,7 @@ export class EventStore {
       Bun.write(this.projectsLogPath, ""),
       Bun.write(this.chatsLogPath, ""),
       Bun.write(this.messagesLogPath, ""),
+      Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
     ])
   }
@@ -794,6 +1024,7 @@ export class EventStore {
       Bun.file(this.projectsLogPath).size,
       Bun.file(this.chatsLogPath).size,
       Bun.file(this.messagesLogPath).size,
+      Bun.file(this.queuedMessagesLogPath).size,
       Bun.file(this.turnsLogPath).size,
     ])
     return sizes.reduce((total, size) => total + size, 0) >= COMPACTION_THRESHOLD_BYTES

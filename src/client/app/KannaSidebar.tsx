@@ -3,14 +3,12 @@ import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-reac
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
-import { shouldDefaultCollapseSidebarProject } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import type { KeybindingsSnapshot, SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
-import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -39,9 +37,10 @@ interface KannaSidebarProps {
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRemoveProject: (projectId: string) => void
+  onReorderProjectGroups: (projectIds: string[]) => void
   editorLabel: string
   updateSnapshot: UpdateSnapshot | null
-  onInstallUpdate: () => void
+  onOpenChangelog: () => void
 }
 
 function KannaSidebarImpl({
@@ -64,9 +63,10 @@ function KannaSidebarImpl({
   onCopyPath,
   onOpenExternalPath,
   onRemoveProject,
+  onReorderProjectGroups,
   editorLabel,
   updateSnapshot,
-  onInstallUpdate,
+  onOpenChangelog,
 }: KannaSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -76,35 +76,12 @@ function KannaSidebarImpl({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
-  const chatsPerProject = 10
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
-
-  const savedOrder = useProjectGroupOrderStore((s) => s.order)
-  const setGroupOrder = useProjectGroupOrderStore((s) => s.setOrder)
-
-  const orderedProjectGroups = useMemo(() => {
-    if (savedOrder.length === 0) return data.projectGroups
-
-    const groupMap = new Map(data.projectGroups.map((g) => [g.groupKey, g]))
-    const ordered = savedOrder
-      .filter((key) => groupMap.has(key))
-      .map((key) => groupMap.get(key)!)
-
-    const orderedKeys = new Set(savedOrder)
-    for (const group of data.projectGroups) {
-      if (!orderedKeys.has(group.groupKey)) ordered.push(group)
-    }
-
-    return ordered
-  }, [data.projectGroups, savedOrder])
-  const handleReorderGroups = useCallback(
-    (newOrder: string[]) => setGroupOrder(newOrder),
-    [setGroupOrder]
-  )
   const visibleChats = useMemo(
-    () => getVisibleSidebarChats(orderedProjectGroups, collapsedSections, expandedGroups, chatsPerProject, nowMs),
-    [chatsPerProject, collapsedSections, expandedGroups, nowMs, orderedProjectGroups]
+    () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups),
+    [collapsedSections, data.projectGroups, expandedGroups]
   )
+  const visibleChatsRef = useRef(visibleChats)
   const visibleIndexByChatId = useMemo(
     () => new Map(visibleChats.map((entry) => [entry.chat.chatId, entry.visibleIndex])),
     [visibleChats]
@@ -118,9 +95,13 @@ function KannaSidebarImpl({
   const activeVisibleCount = visibleChats.length
 
   useEffect(() => {
+    visibleChatsRef.current = visibleChats
+  }, [visibleChats])
+
+  useEffect(() => {
     setCollapsedSections((previous) => {
       const next = new Set<string>()
-      const projectKeys = new Set(orderedProjectGroups.map((group) => group.groupKey))
+      const projectKeys = new Set(data.projectGroups.map((group) => group.groupKey))
       const initializedKeys = initializedCollapsedGroupKeysRef.current
 
       for (const key of previous) {
@@ -133,10 +114,10 @@ function KannaSidebarImpl({
         [...initializedKeys].filter((key) => projectKeys.has(key))
       )
 
-      for (const group of orderedProjectGroups) {
+      for (const group of data.projectGroups) {
         if (initializedCollapsedGroupKeysRef.current.has(group.groupKey)) continue
         initializedCollapsedGroupKeysRef.current.add(group.groupKey)
-        if (shouldDefaultCollapseSidebarProject(group.chats, nowMs)) {
+        if (group.defaultCollapsed) {
           next.add(group.groupKey)
         }
       }
@@ -147,7 +128,7 @@ function KannaSidebarImpl({
 
       return next
     })
-  }, [nowMs, orderedProjectGroups])
+  }, [data.projectGroups])
 
   const toggleSection = useCallback((key: string) => {
     setCollapsedSections((previous) => {
@@ -225,7 +206,7 @@ function KannaSidebarImpl({
         return
       }
 
-      const targetChat = visibleChats[targetIndex - 1]?.chat
+      const targetChat = visibleChatsRef.current[targetIndex - 1]?.chat
       if (!targetChat) {
         return
       }
@@ -252,7 +233,7 @@ function KannaSidebarImpl({
       window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("blur", clearHints)
     }
-  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, resolvedKeybindings, visibleChats])
+  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, resolvedKeybindings])
 
   useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
@@ -327,8 +308,19 @@ function KannaSidebarImpl({
           collapsed && "md:hidden"
         )}
       >
-        <div className=" pl-3 pr-[7px] h-[64px] max-h-[64px] md:h-[55px] md:max-h-[55px] border-b flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="px-[5px] h-[64px] max-h-[64px] md:h-[55px] md:max-h-[55px] border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:px-[7px] md:pl-3 md:flex md:justify-between">
+          <div className="md:hidden">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-10 rounded-lg hover:!border-border/0"
+              onClick={onClose}
+              title="Close sidebar"
+            >
+              <X className="h-5 w-5" />
+            </Button>
+          </div>
+          <div className="flex items-center justify-self-center gap-2 md:justify-self-auto">
             <button
               type="button"
               onClick={onCollapse}
@@ -340,12 +332,23 @@ function KannaSidebarImpl({
             </button>
             <Flower className="h-5 w-5 sm:h-6 sm:w-6 text-logo md:hidden" />
             <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{APP_NAME}</span>
-            
           </div>
-          <div className="flex items-center">
+          <div className="flex items-center justify-self-end md:justify-self-auto">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                navigate("/")
+                onClose()
+              }}
+              className="size-10 rounded-lg hover:!border-border/0 md:hidden"
+              title="New project"
+            >
+              <Plus className="h-5 w-5" />
+            </Button>
             {showDevBadge ? (
               <span
-                className="mr-1 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-bold tracking-wider text-muted-foreground"
+                className="mr-1 hidden md:inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-bold tracking-wider text-muted-foreground"
                 title="Development build"
               >
                 DEV
@@ -354,8 +357,8 @@ function KannaSidebarImpl({
               <Button
                 variant="outline"
                 size="sm"
-                className="rounded-full !h-auto mr-1 py-0.5 px-2 bg-logo/20 hover:bg-logo text-logo border-logo/20 hover:text-foreground hover:border-logo/20  text-[11px] font-bold tracking-wider"
-                onClick={onInstallUpdate}
+                className="hidden md:inline-flex rounded-full !h-auto mr-1 py-0.5 px-2 bg-logo/20 hover:bg-logo text-logo border-logo/20 hover:text-foreground hover:border-logo/20 text-[11px] font-bold tracking-wider"
+                onClick={onOpenChangelog}
                 disabled={isUpdating}
                 title={updateSnapshot?.latestVersion ? `Update to ${updateSnapshot.latestVersion}` : "Update Kanna"}
               >
@@ -370,18 +373,10 @@ function KannaSidebarImpl({
                 navigate("/")
                 onClose()
               }}
-              className="size-10 rounded-lg hover:!border-border/0"
+              className="hidden md:inline-flex size-10 rounded-lg hover:!border-border/0"
               title="New project"
             >
               <Plus className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="md:hidden"
-              onClick={onClose}
-            >
-              <X className="h-5 w-5" />
             </Button>
           </div>
         </div>
@@ -420,16 +415,14 @@ function KannaSidebarImpl({
             ) : null}
 
             <LocalProjectsSection
-              projectGroups={orderedProjectGroups}
+              projectGroups={data.projectGroups}
               editorLabel={editorLabel}
-              onReorderGroups={handleReorderGroups}
+              onReorderGroups={onReorderProjectGroups}
               collapsedSections={collapsedSections}
               expandedGroups={expandedGroups}
               onToggleSection={toggleSection}
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
-              chatsPerProject={chatsPerProject}
-              nowMs={nowMs}
               onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {

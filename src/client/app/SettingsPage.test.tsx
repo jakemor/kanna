@@ -5,7 +5,6 @@ import {
   ChangelogSection,
   fetchGithubReleases,
   formatPublishedDate,
-  getGeneralHeaderAction,
   getCachedChangelog,
   getKeybindingsSubtitle,
   loadChangelog,
@@ -15,6 +14,7 @@ import {
   shouldPreviewChatSoundChange,
 } from "./SettingsPage"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
+import type { UpdateSnapshot } from "../../shared/types"
 
 const SAMPLE_RELEASES = [
   {
@@ -42,6 +42,20 @@ const SAMPLE_RELEASES = [
 afterEach(() => {
   resetSettingsPageChangelogCache()
 })
+
+function createUpdateSnapshot(overrides: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
+  return {
+    currentVersion: "1.0.0",
+    latestVersion: "1.1.0",
+    status: "available",
+    updateAvailable: true,
+    lastCheckedAt: 123,
+    error: null,
+    installAction: "restart",
+    reloadRequestedAt: null,
+    ...overrides,
+  }
+}
 
 describe("fetchGithubReleases", () => {
   test("filters draft releases and sends the GitHub accept header", async () => {
@@ -139,70 +153,6 @@ describe("getKeybindingsSubtitle", () => {
   })
 })
 
-describe("getGeneralHeaderAction", () => {
-  test("returns the check action when no update is available", () => {
-    expect(getGeneralHeaderAction(null)).toEqual({
-      disabled: false,
-      kind: "check",
-      label: "Check for updates",
-      spinning: false,
-      variant: "outline",
-    })
-  })
-
-  test("returns a disabled spinning check action while checking", () => {
-    expect(getGeneralHeaderAction({
-      currentVersion: "1.0.0",
-      latestVersion: null,
-      status: "checking",
-      updateAvailable: false,
-      lastCheckedAt: 123,
-      error: null,
-      installAction: "restart",
-    })).toEqual({
-      disabled: true,
-      kind: "check",
-      label: "Check for updates",
-      spinning: true,
-      variant: "outline",
-    })
-  })
-
-  test("returns the update action when an update is available", () => {
-    expect(getGeneralHeaderAction({
-      currentVersion: "1.0.0",
-      latestVersion: "1.1.0",
-      status: "available",
-      updateAvailable: true,
-      lastCheckedAt: 123,
-      error: null,
-      installAction: "restart",
-    })).toEqual({
-      disabled: false,
-      kind: "update",
-      label: "Update",
-      variant: "default",
-    })
-  })
-
-  test("disables the update action while updating or waiting to restart", () => {
-    expect(getGeneralHeaderAction({
-      currentVersion: "1.0.0",
-      latestVersion: "1.1.0",
-      status: "restart_pending",
-      updateAvailable: true,
-      lastCheckedAt: 123,
-      error: null,
-      installAction: "restart",
-    })).toEqual({
-      disabled: true,
-      kind: "update",
-      label: "Update",
-      variant: "default",
-    })
-  })
-})
-
 describe("shouldPreviewChatSoundChange", () => {
   test("previews only when the selected value actually changes", () => {
     expect(shouldPreviewChatSoundChange("always", "always")).toBe(false)
@@ -238,16 +188,24 @@ describe("SettingsHeaderButton", () => {
 })
 
 describe("ChangelogSection", () => {
-  test("renders release cards, markdown, links, and prerelease badges", () => {
+  test("renders version highlights, release cards, markdown, links, and prerelease badges", () => {
     const html = renderToStaticMarkup(
       <ChangelogSection
         status="success"
         releases={SAMPLE_RELEASES}
         error={null}
         onRetry={() => {}}
+        updateSnapshot={createUpdateSnapshot({ latestVersion: "0.8.1", currentVersion: "0.8.1" })}
+        currentVersion="1.0.0"
+        onInstallUpdate={() => {}}
+        onCheckForUpdates={() => {}}
       />
     )
 
+    expect(html).not.toContain("You are currently running this version of Kanna.")
+    expect(html).toContain("Current")
+    expect(html).toContain("Update")
+    expect(html).toContain("Update")
     expect(html).toContain("v0.8.1")
     expect(html).toContain("Better cursor color")
     expect(html).toContain('aria-label="View release on GitHub"')
@@ -265,11 +223,58 @@ describe("ChangelogSection", () => {
         releases={[]}
         error="GitHub said no"
         onRetry={() => {}}
+        updateSnapshot={createUpdateSnapshot({ updateAvailable: false, status: "error", error: "GitHub said no" })}
+        currentVersion="1.0.0"
+        onInstallUpdate={() => {}}
+        onCheckForUpdates={() => {}}
       />
     )
 
     expect(html).toContain("Could not load changelog")
     expect(html).toContain("GitHub said no")
     expect(html).toContain("Retry")
+  })
+
+  test("renders check-for-updates when no update is available", () => {
+    const html = renderToStaticMarkup(
+      <ChangelogSection
+        status="success"
+        releases={SAMPLE_RELEASES}
+        error={null}
+        onRetry={() => {}}
+        updateSnapshot={createUpdateSnapshot({
+          latestVersion: "1.0.0",
+          status: "up_to_date",
+          updateAvailable: false,
+        })}
+        currentVersion="1.0.0"
+        onInstallUpdate={() => {}}
+        onCheckForUpdates={() => {}}
+      />
+    )
+
+    expect(html).toContain("Check for updates")
+    expect(html).not.toContain(">Update<")
+  })
+
+  test("disables the update action while updating", () => {
+    const html = renderToStaticMarkup(
+      <ChangelogSection
+        status="success"
+        releases={SAMPLE_RELEASES}
+        error={null}
+        onRetry={() => {}}
+        updateSnapshot={createUpdateSnapshot({
+          latestVersion: "0.8.1",
+          status: "restart_pending",
+        })}
+        currentVersion="1.0.0"
+        onInstallUpdate={() => {}}
+        onCheckForUpdates={() => {}}
+      />
+    )
+
+    expect(html).toContain("disabled")
+    expect(html).toContain("Updating")
   })
 })

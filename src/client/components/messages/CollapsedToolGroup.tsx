@@ -19,6 +19,7 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   read_file: { key: "read", singular: "read", plural: "reads" },
   edit_file: { key: "edit", singular: "edit", plural: "edits" },
   write_file: { key: "write", singular: "write", plural: "writes" },
+  delete_file: { key: "delete", singular: "delete", plural: "deletes" },
   bash: { key: "bash", singular: "command", plural: "commands" },
   grep: { key: "grep", singular: "search", plural: "searches" },
   glob: { key: "glob", singular: "glob", plural: "globs" },

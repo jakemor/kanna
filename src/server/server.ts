@@ -2,11 +2,13 @@ import path from "node:path"
 import { stat } from "node:fs/promises"
 import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
+import { createAuthManager } from "./auth"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
+import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
@@ -56,6 +58,7 @@ export async function persistUploadedFiles(args: {
 export interface StartKannaServerOptions {
   port?: number
   host?: string
+  password?: string | null
   strictPort?: boolean
   onMigrationProgress?: (message: string) => void
   update?: {
@@ -69,6 +72,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
+  const auth = options.password ? createAuthManager(options.password) : null
   const store = new EventStore()
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
@@ -99,8 +103,16 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     : null
   const agent = new AgentCoordinator({
     store,
-    onStateChange: () => {
-      void router.broadcastSnapshots()
+    onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
+      if (chatId) {
+        if (options?.immediate) {
+          void router.broadcastChatStateImmediately(chatId)
+          return
+        }
+        router.scheduleChatStateBroadcast(chatId)
+        return
+      }
+      router.scheduleBroadcast()
     },
   })
   router = createWsRouter({
@@ -109,13 +121,19 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     agent,
     terminals,
     keybindings,
+    llmProvider: {
+      read: readLlmProviderSnapshot,
+      write: writeLlmProviderSnapshot,
+      validate: validateLlmProviderCredentials,
+    },
     refreshDiscovery,
     getDiscoveredProjects: () => discoveredProjects,
     machineDisplayName,
     updateManager,
   })
   const staleEmptyChatPruneInterval = setInterval(() => {
-    void router.broadcastSnapshots()
+    void router.pruneStaleEmptyChats()
+      .then(() => router.broadcastSnapshots())
   }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
@@ -130,6 +148,45 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         hostname,
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
+
+          if (url.pathname === "/auth/status") {
+            return auth
+              ? auth.handleStatus(req)
+              : Response.json({ enabled: false, authenticated: true })
+          }
+
+          if (url.pathname === "/auth/logout") {
+            if (req.method !== "POST") {
+              return new Response(null, { status: 405, headers: { Allow: "POST" } })
+            }
+
+            return auth
+              ? auth.handleLogout(req)
+              : Response.json({ ok: true })
+          }
+
+          if (auth) {
+            if (url.pathname === "/auth/login") {
+              if (req.method === "GET") {
+                return auth.renderLoginPage(req)
+              }
+              if (req.method === "POST") {
+                return auth.handleLogin(req, "/")
+              }
+              return new Response(null, { status: 405, headers: { Allow: "GET, POST" } })
+            }
+
+            if (url.pathname === "/ws") {
+              if (!auth.validateOrigin(req)) {
+                return new Response("Forbidden", { status: 403 })
+              }
+              if (!auth.isAuthenticated(req)) {
+                return new Response("Unauthorized", { status: 401 })
+              }
+            } else if (!auth.isAuthenticated(req)) {
+              return auth.unauthorizedResponse(req)
+            }
+          }
 
           if (url.pathname === "/ws") {
             const upgraded = serverInstance.upgrade(req, {

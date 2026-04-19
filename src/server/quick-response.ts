@@ -1,7 +1,10 @@
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import { homedir } from "node:os"
+import OpenAI from "openai"
 import { getDataRootDir } from "../shared/branding"
+import type { LlmProviderSnapshot } from "../shared/types"
 import { CodexAppServerManager } from "./codex-app-server"
+import { readLlmProviderSnapshot } from "./llm-provider"
 
 const CLAUDE_STRUCTURED_TIMEOUT_MS = 5_000
 
@@ -22,12 +25,17 @@ export interface StructuredQuickResponseArgs<T> {
 
 interface QuickResponseAdapterArgs {
   codexManager?: CodexAppServerManager
+  readLlmProvider?: () => Promise<LlmProviderSnapshot>
+  runOpenAIStructured?: (
+    config: LlmProviderSnapshot,
+    args: Omit<StructuredQuickResponseArgs<unknown>, "parse">
+  ) => Promise<unknown | null>
   runClaudeStructured?: (args: Omit<StructuredQuickResponseArgs<unknown>, "parse">) => Promise<unknown | null>
   runCodexStructured?: (args: Omit<StructuredQuickResponseArgs<unknown>, "parse">) => Promise<unknown | null>
 }
 
 export interface StructuredQuickResponseFailure {
-  provider: "claude" | "codex"
+  provider: "openai" | "claude" | "codex"
   reason: string
 }
 
@@ -90,7 +98,7 @@ export async function runClaudeStructured(args: Omit<StructuredQuickResponseArgs
     prompt: args.prompt,
     options: {
       cwd: args.cwd,
-      model: "haiku",
+      model: "claude-haiku-4-5-20251001",
       tools: [],
       systemPrompt: "",
       effort: "low",
@@ -133,6 +141,31 @@ export async function runClaudeStructured(args: Omit<StructuredQuickResponseArgs
   }
 }
 
+export async function runOpenAIStructured(
+  config: LlmProviderSnapshot,
+  args: Omit<StructuredQuickResponseArgs<unknown>, "parse">
+): Promise<unknown | null> {
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: config.resolvedBaseUrl,
+  })
+
+  const response = await client.responses.create({
+    model: config.model,
+    input: args.prompt,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "quick_response",
+        schema: args.schema,
+        strict: true,
+      },
+    },
+  })
+
+  return parseJsonText(response.output_text)
+}
+
 export async function runCodexStructured(
   codexManager: CodexAppServerManager,
   args: Omit<StructuredQuickResponseArgs<unknown>, "parse">
@@ -148,11 +181,18 @@ export async function runCodexStructured(
 
 export class QuickResponseAdapter {
   private readonly codexManager: CodexAppServerManager
+  private readonly readLlmProvider: () => Promise<LlmProviderSnapshot>
+  private readonly runOpenAIStructured: (
+    config: LlmProviderSnapshot,
+    args: Omit<StructuredQuickResponseArgs<unknown>, "parse">
+  ) => Promise<unknown | null>
   private readonly runClaudeStructured: (args: Omit<StructuredQuickResponseArgs<unknown>, "parse">) => Promise<unknown | null>
   private readonly runCodexStructured: (args: Omit<StructuredQuickResponseArgs<unknown>, "parse">) => Promise<unknown | null>
 
   constructor(args: QuickResponseAdapterArgs = {}) {
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.readLlmProvider = args.readLlmProvider ?? (() => readLlmProviderSnapshot())
+    this.runOpenAIStructured = args.runOpenAIStructured ?? runOpenAIStructured
     this.runClaudeStructured = args.runClaudeStructured ?? runClaudeStructured
     this.runCodexStructured = args.runCodexStructured ?? ((structuredArgs) =>
       runCodexStructured(this.codexManager, structuredArgs))
@@ -171,6 +211,20 @@ export class QuickResponseAdapter {
     }
 
     const failures: StructuredQuickResponseFailure[] = []
+    const llmProvider = await this.readLlmProvider()
+    if (llmProvider.enabled) {
+      const openAIResult = await this.tryProvider("openai", args.task, args.parse, () => this.runOpenAIStructured(llmProvider, request))
+      if (openAIResult.value !== null) {
+        return {
+          value: openAIResult.value,
+          failures,
+        }
+      }
+      if (openAIResult.failure) {
+        failures.push(openAIResult.failure)
+      }
+    }
+
     const claudeResult = await this.tryProvider("claude", args.task, args.parse, () => this.runClaudeStructured(request))
     if (claudeResult.value !== null) {
       return {
@@ -200,7 +254,7 @@ export class QuickResponseAdapter {
   }
 
   private async tryProvider<T>(
-    provider: "claude" | "codex",
+    provider: "openai" | "claude" | "codex",
     task: string,
     parse: (value: unknown) => T | null,
     run: () => Promise<unknown | null>

@@ -150,7 +150,7 @@ export function getTerminalOptions(scrollback: number, theme: ITheme, platform =
     cursorBlink: true,
     cursorStyle: "bar",
     cursorWidth: 1,
-    lineHeight: 1.1,
+    lineHeight: 1,
     convertEol: false,
     allowTransparency: true,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",

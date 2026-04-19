@@ -430,6 +430,18 @@ function parseUnifiedDiff(diff: string): { oldString: string; newString: string 
   }
 }
 
+function isUnifiedDiff(diff: string) {
+  return diff.includes("@@")
+    || diff.startsWith("---")
+    || diff.startsWith("+++")
+    || diff.split(/\r?\n/).some((line) => (
+      line.startsWith("+")
+      || line.startsWith("-")
+      || line.startsWith(" ")
+      || line === "\\ No newline at end of file"
+    ))
+}
+
 function fileChangeToToolCalls(item: Extract<ThreadItem, { type: "fileChange" }>): TranscriptEntry[] {
   return item.changes.map((change, index) => {
     const payload = fileChangePayload(item, change)
@@ -453,7 +465,10 @@ function fileChangeToToolCalls(item: Extract<ThreadItem, { type: "fileChange" }>
     }
 
     if (typeof change.diff === "string") {
-      const { oldString, newString } = parseUnifiedDiff(change.diff)
+      const diffIsUnified = isUnifiedDiff(change.diff)
+      const { oldString, newString } = diffIsUnified
+        ? parseUnifiedDiff(change.diff)
+        : { oldString: change.diff, newString: change.diff }
 
       if (normalizedKind.type === "add") {
         return timestamped({
@@ -473,6 +488,22 @@ function fileChangeToToolCalls(item: Extract<ThreadItem, { type: "fileChange" }>
       }
 
       if (normalizedKind.type === "update") {
+        if (!diffIsUnified) {
+          return timestamped({
+            kind: "tool_call",
+            tool: {
+              kind: "tool",
+              toolKind: "unknown_tool",
+              toolName: "FileChange",
+              toolId,
+              input: {
+                payload,
+              },
+              rawInput: payload,
+            },
+          })
+        }
+
         return timestamped({
           kind: "tool_call",
           tool: {
@@ -484,6 +515,23 @@ function fileChangeToToolCalls(item: Extract<ThreadItem, { type: "fileChange" }>
               filePath: change.path,
               oldString,
               newString,
+            },
+            rawInput: payload,
+          },
+        })
+      }
+
+      if (normalizedKind.type === "delete") {
+        return timestamped({
+          kind: "tool_call",
+          tool: {
+            kind: "tool",
+            toolKind: "delete_file",
+            toolName: "Delete",
+            toolId,
+            input: {
+              filePath: change.path,
+              content: oldString,
             },
             rawInput: payload,
           },

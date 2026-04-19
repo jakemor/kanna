@@ -28,6 +28,7 @@ export class UpdateManager {
       lastCheckedAt: deps.devMode ? Date.now() : null,
       error: null,
       installAction: "restart",
+      reloadRequestedAt: null,
     }
   }
 
@@ -63,6 +64,7 @@ export class UpdateManager {
       ...this.snapshot,
       status: "checking",
       error: null,
+      reloadRequestedAt: null,
     })
 
     const checkPromise = this.runCheck()
@@ -83,6 +85,7 @@ export class UpdateManager {
         ...this.snapshot,
         status: "updating",
         error: null,
+        reloadRequestedAt: null,
       })
 
       this.setSnapshot({
@@ -90,6 +93,7 @@ export class UpdateManager {
         status: "restart_pending",
         updateAvailable: false,
         error: null,
+        reloadRequestedAt: Date.now(),
       })
 
       return {
@@ -138,6 +142,7 @@ export class UpdateManager {
         status: updateAvailable ? "available" : "up_to_date",
         lastCheckedAt: Date.now(),
         error: null,
+        reloadRequestedAt: null,
       }
       this.setSnapshot(nextSnapshot)
       return nextSnapshot
@@ -147,6 +152,7 @@ export class UpdateManager {
         status: "error",
         lastCheckedAt: Date.now(),
         error: error instanceof Error ? error.message : String(error),
+        reloadRequestedAt: null,
       }
       this.setSnapshot(nextSnapshot)
       return nextSnapshot
@@ -171,6 +177,7 @@ export class UpdateManager {
       ...this.snapshot,
       status: "updating",
       error: null,
+      reloadRequestedAt: null,
     })
 
     const targetVersion = this.snapshot.latestVersion
@@ -179,6 +186,7 @@ export class UpdateManager {
         ...this.snapshot,
         status: "error",
         error: "Unable to determine which version to install.",
+        reloadRequestedAt: null,
       })
       return {
         ok: false,
@@ -195,6 +203,7 @@ export class UpdateManager {
         ...this.snapshot,
         status: "error",
         error: installed.userMessage ?? "Unable to install the latest version.",
+        reloadRequestedAt: null,
       })
       return {
         ok: false,
@@ -211,6 +220,7 @@ export class UpdateManager {
       status: "restart_pending",
       updateAvailable: false,
       error: null,
+      reloadRequestedAt: Date.now(),
     })
     return {
       ok: true,

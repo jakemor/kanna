@@ -24,6 +24,8 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
       port: number
       host: string
       openBrowser: boolean
+      share: false | "quick" | { kind: "token"; token: string }
+      password: string | null
       strictPort: boolean
       update: {
         version: string
@@ -36,7 +38,7 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
     openUrl: [] as string[],
     log: [] as string[],
     warn: [] as string[],
-    shareTunnel: [] as string[],
+    shareTunnel: [] as Array<{ localUrl: string; shareMode: "quick" | { kind: "token"; token: string } }>,
     renderShareQr: [] as string[],
     shareTunnelStops: 0,
   }
@@ -77,8 +79,8 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
       calls.renderShareQr.push(url)
       return `[qr:${url}]`
     },
-    startShareTunnel: async (localUrl) => {
-      calls.shareTunnel.push(localUrl)
+    startShareTunnel: async (localUrl, shareMode) => {
+      calls.shareTunnel.push({ localUrl, shareMode })
       return {
         publicUrl: "https://kanna.trycloudflare.com",
         stop: () => {
@@ -101,6 +103,7 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: false,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -114,6 +117,7 @@ describe("parseArgs", () => {
         host: "127.0.0.1",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: true,
       },
     })
@@ -127,6 +131,7 @@ describe("parseArgs", () => {
         host: "0.0.0.0",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -139,10 +144,49 @@ describe("parseArgs", () => {
         port: 3210,
         host: "127.0.0.1",
         openBrowser: true,
-        share: true,
+        share: "quick",
+        password: null,
         strictPort: false,
       },
     })
+  })
+
+  test("--cloudflared accepts a token", () => {
+    expect(parseArgs(["--cloudflared", "secret-token"])).toEqual({
+      kind: "run",
+      options: {
+        port: 3210,
+        host: "127.0.0.1",
+        openBrowser: true,
+        share: { kind: "token", token: "secret-token" },
+        password: null,
+        strictPort: false,
+      },
+    })
+  })
+
+  test("--password accepts a secret", () => {
+    expect(parseArgs(["--password", "secret"])).toEqual({
+      kind: "run",
+      options: {
+        port: 3210,
+        host: "127.0.0.1",
+        openBrowser: true,
+        share: false,
+        password: "secret",
+        strictPort: false,
+      },
+    })
+  })
+
+  test("--password without a value throws", () => {
+    expect(() => parseArgs(["--password"])).toThrow("Missing value for --password")
+    expect(() => parseArgs(["--password", "--no-open"])).toThrow("Missing value for --password")
+  })
+
+  test("--cloudflared without a token throws", () => {
+    expect(() => parseArgs(["--cloudflared"])).toThrow("Missing value for --cloudflared")
+    expect(() => parseArgs(["--cloudflared", "--no-open"])).toThrow("Missing value for --cloudflared")
   })
 
   test("--host with IP binds to that address", () => {
@@ -153,6 +197,7 @@ describe("parseArgs", () => {
         host: "100.64.0.1",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -166,6 +211,7 @@ describe("parseArgs", () => {
         host: "dev-box",
         openBrowser: true,
         share: false,
+        password: null,
         strictPort: false,
       },
     })
@@ -181,6 +227,13 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--host", "dev-box", "--share"])).toThrow("--share cannot be used with --host")
     expect(() => parseArgs(["--share", "--remote"])).toThrow("--share cannot be used with --remote")
     expect(() => parseArgs(["--remote", "--share"])).toThrow("--share cannot be used with --remote")
+  })
+
+  test("--cloudflared is incompatible with --host and --remote", () => {
+    expect(() => parseArgs(["--cloudflared", "secret-token", "--host", "dev-box"])).toThrow("--cloudflared cannot be used with --host")
+    expect(() => parseArgs(["--host", "dev-box", "--cloudflared", "secret-token"])).toThrow("--cloudflared cannot be used with --host")
+    expect(() => parseArgs(["--cloudflared", "secret-token", "--remote"])).toThrow("--cloudflared cannot be used with --remote")
+    expect(() => parseArgs(["--remote", "--cloudflared", "secret-token"])).toThrow("--cloudflared cannot be used with --remote")
   })
 
   test("returns version and help actions without running startup", () => {
@@ -222,6 +275,7 @@ describe("runCli", () => {
 
   test("starts normally when no newer version exists", async () => {
     const { calls, deps } = createDeps()
+    process.env.KANNA_RUNTIME_PROFILE = "prod"
 
     const result = await runCli(["--port", "4000", "--no-open"], deps)
 
@@ -234,6 +288,7 @@ describe("runCli", () => {
       host: "127.0.0.1",
       openBrowser: false,
       share: false,
+      password: null,
       strictPort: false,
       update: {
         version: "0.3.0",
@@ -301,7 +356,7 @@ describe("runCli", () => {
 
     expect(result.kind).toBe("started")
     expect(calls.openUrl).toEqual([])
-    expect(calls.shareTunnel).toEqual(["http://localhost:4000"])
+    expect(calls.shareTunnel).toEqual([{ localUrl: "http://localhost:4000", shareMode: "quick" }])
     expect(calls.renderShareQr).toEqual(["https://kanna.trycloudflare.com"])
     expect(calls.log).toContain("QR Code:")
     expect(calls.log).toContain("[qr:https://kanna.trycloudflare.com]")
@@ -353,7 +408,7 @@ describe("runCli", () => {
     const result = await runCli(["--share", "--port", "4000"], deps)
 
     expect(result.kind).toBe("started")
-    expect(calls.shareTunnel).toEqual(["http://localhost:4001"])
+    expect(calls.shareTunnel).toEqual([{ localUrl: "http://localhost:4001", shareMode: "quick" }])
   })
 
   test("fails cleanly when share tunnel startup fails", async () => {
@@ -379,6 +434,33 @@ describe("runCli", () => {
     expect(serverStopped).toBe(true)
     expect(calls.warn).toContain("[kanna] failed to start Cloudflare share tunnel")
     expect(calls.warn).toContain("[kanna] cloudflared unavailable")
+  })
+
+  test("keeps running when a named tunnel starts without a detected hostname", async () => {
+    const { calls, deps } = createDeps({
+      startShareTunnel: async (localUrl, shareMode) => {
+        calls.shareTunnel.push({ localUrl, shareMode })
+        return {
+          publicUrl: null,
+          stop: () => {
+            calls.shareTunnelStops += 1
+          },
+        }
+      },
+    })
+
+    const result = await runCli(["--cloudflared", "secret-token"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(calls.shareTunnel).toEqual([{
+      localUrl: "http://localhost:3210",
+      shareMode: { kind: "token", token: "secret-token" },
+    }])
+    expect(calls.warn).toContain("[kanna] named tunnel started but no public hostname was detected")
+    expect(calls.warn).toContain("[kanna] use the hostname configured for the provided Cloudflare tunnel token")
+    expect(calls.log).toContain("Local URL:")
+    expect(calls.log).toContain("http://localhost:3210")
+    expect(calls.renderShareQr).toEqual([])
   })
 
   test("returns restarting when a newer version is available", async () => {

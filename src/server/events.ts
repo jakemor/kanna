@@ -1,4 +1,4 @@
-import type { AgentProvider, ProjectSummary, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
   deletedAt?: number
@@ -15,6 +15,7 @@ export interface ChatRecord {
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
+  hasMessages?: boolean
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
 }
@@ -23,6 +24,8 @@ export interface StoreState {
   projectsById: Map<string, ProjectRecord>
   projectIdsByPath: Map<string, string>
   chatsById: Map<string, ChatRecord>
+  queuedMessagesByChatId: Map<string, QueuedChatMessage[]>
+  sidebarProjectOrder: string[]
 }
 
 export interface SnapshotFile {
@@ -30,6 +33,8 @@ export interface SnapshotFile {
   generatedAt: number
   projects: ProjectRecord[]
   chats: ChatRecord[]
+  sidebarProjectOrder?: string[]
+  queuedMessages?: Array<{ chatId: string; entries: QueuedChatMessage[] }>
   messages?: Array<{ chatId: string; entries: TranscriptEntry[] }>
 }
 
@@ -45,6 +50,11 @@ export type ProjectEvent = {
   type: "project_removed"
   timestamp: number
   projectId: string
+} | {
+  v: 2
+  type: "sidebar_project_order_set"
+  timestamp: number
+  projectIds: string[]
 }
 
 export type ChatEvent =
@@ -99,6 +109,22 @@ export type MessageEvent = {
   entry: TranscriptEntry
 }
 
+export type QueuedMessageEvent =
+  | {
+      v: 2
+      type: "queued_message_enqueued"
+      timestamp: number
+      chatId: string
+      message: QueuedChatMessage
+    }
+  | {
+      v: 2
+      type: "queued_message_removed"
+      timestamp: number
+      chatId: string
+      queuedMessageId: string
+    }
+
 export type TurnEvent =
   | {
       v: 2
@@ -133,13 +159,15 @@ export type TurnEvent =
       sessionToken: string | null
     }
 
-export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | TurnEvent
+export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | QueuedMessageEvent | TurnEvent
 
 export function createEmptyState(): StoreState {
   return {
     projectsById: new Map(),
     projectIdsByPath: new Map(),
     chatsById: new Map(),
+    queuedMessagesByChatId: new Map(),
+    sidebarProjectOrder: [],
   }
 }
 

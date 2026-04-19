@@ -35,8 +35,6 @@ function renderSection(projectGroups: SidebarProjectGroup[], expandedGroups = ne
       onToggleSection: () => undefined,
       onToggleExpandedGroup: () => undefined,
       renderChatRow: (chat: SidebarChatRow) => createElement("div", { key: chat.chatId }, chat.title),
-      chatsPerProject: 10,
-      nowMs,
       isConnected: true,
     })
   ))
@@ -52,6 +50,12 @@ describe("LocalProjectsSection", () => {
         createChat("chat-2", nowMs - 2 * hourMs),
         createChat("chat-3", nowMs - 25 * hourMs),
       ],
+      previewChats: [
+        createChat("chat-1", nowMs - hourMs),
+        createChat("chat-2", nowMs - 2 * hourMs),
+      ],
+      olderChats: [createChat("chat-3", nowMs - 25 * hourMs)],
+      defaultCollapsed: false,
     }]
 
     const html = renderSection(projectGroups, new Set(["project-a"]))
@@ -68,6 +72,13 @@ describe("LocalProjectsSection", () => {
       chats: Array.from({ length: 7 }, (_, index) => (
         createChat(`chat-${index + 1}`, nowMs - (25 + index) * hourMs)
       )),
+      previewChats: Array.from({ length: 5 }, (_, index) => (
+        createChat(`chat-${index + 1}`, nowMs - (25 + index) * hourMs)
+      )),
+      olderChats: Array.from({ length: 2 }, (_, index) => (
+        createChat(`chat-${index + 6}`, nowMs - (30 + index) * hourMs)
+      )),
+      defaultCollapsed: true,
     }]
 
     const html = renderSection(projectGroups)

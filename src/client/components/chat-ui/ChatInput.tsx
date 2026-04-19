@@ -11,7 +11,7 @@ import {
   normalizeClaudeContextWindow,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
-import { Button } from "../ui/button"
+import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { cn } from "../../lib/utils"
@@ -91,6 +91,19 @@ export function getClipboardImageFiles(items: Iterable<ClipboardFileItem>, times
   return files
 }
 
+export function trimTrailingPastedNewlines(text: string) {
+  return text.replace(/(?:\r\n|\r|\n)+$/, "")
+}
+
+function replaceTextSelection(args: {
+  value: string
+  insertedText: string
+  selectionStart: number
+  selectionEnd: number
+}) {
+  return `${args.value.slice(0, args.selectionStart)}${args.insertedText}${args.value.slice(args.selectionEnd)}`
+}
+
 interface ComposerAttachment extends ChatAttachment {
   status: "uploading" | "uploaded" | "failed"
   previewUrl?: string
@@ -101,6 +114,7 @@ interface Props {
     value: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
   ) => Promise<void>
+  onLayoutChange?: () => void
   onCancel?: () => void
   disabled: boolean
   canCancel?: boolean
@@ -158,6 +172,7 @@ function getEffectiveComposerState(
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSubmit,
+  onLayoutChange,
   onCancel,
   disabled,
   canCancel,
@@ -189,7 +204,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
@@ -221,6 +235,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
+  const hasTextToSend = value.trim().length > 0
   const canSubmit = value.trim().length > 0 || uploadedAttachments.length > 0
   const orderedAttachments = [...attachments].sort((left, right) => {
     if (left.kind === right.kind) return 0
@@ -275,12 +290,22 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   useLayoutEffect(() => {
     autoResize()
-  }, [value, autoResize])
+    onLayoutChange?.()
+  }, [autoResize, onLayoutChange, value])
 
   useEffect(() => {
-    window.addEventListener("resize", autoResize)
-    return () => window.removeEventListener("resize", autoResize)
-  }, [autoResize])
+    const handleResize = () => {
+      autoResize()
+      onLayoutChange?.()
+    }
+
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [autoResize, onLayoutChange])
+
+  useLayoutEffect(() => {
+    onLayoutChange?.()
+  }, [attachments.length, onLayoutChange, uploadError])
 
   useEffect(() => {
     textareaRef.current?.focus()
@@ -554,7 +579,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0
-    if (event.key === "Enter" && !event.shiftKey && !canCancel && !isTouchDevice) {
+    if (event.key === "Enter" && !event.shiftKey && !isTouchDevice && !disabled && hasTextToSend && !hasPendingUploads) {
       event.preventDefault()
       void handleSubmit()
     }
@@ -562,9 +587,35 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const files = getClipboardImageFiles(event.clipboardData.items, Date.now())
-    if (files.length === 0) return
+    const pastedText = event.clipboardData.getData("text/plain")
+    const trimmedText = trimTrailingPastedNewlines(pastedText)
+    const shouldTrimTrailingNewlines = pastedText.length > 0 && trimmedText !== pastedText
 
-    enqueueFiles(files)
+    if (files.length === 0 && !shouldTrimTrailingNewlines) return
+
+    if (files.length > 0) {
+      enqueueFiles(files)
+    }
+
+    if (shouldTrimTrailingNewlines) {
+      event.preventDefault()
+      const textarea = event.currentTarget
+      const nextValue = replaceTextSelection({
+        value,
+        insertedText: trimmedText,
+        selectionStart: textarea.selectionStart,
+        selectionEnd: textarea.selectionEnd,
+      })
+      const nextCaretPosition = textarea.selectionStart + trimmedText.length
+      setValue(nextValue)
+      if (chatId) setDraft(chatId, nextValue)
+      autoResize()
+      requestAnimationFrame(() => {
+        textarea.selectionStart = nextCaretPosition
+        textarea.selectionEnd = nextCaretPosition
+      })
+      return
+    }
 
     if (!hasClipboardTextPayload(event.clipboardData)) {
       event.preventDefault()
@@ -598,10 +649,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       removedAttachmentIdsRef.current.delete(attachment.id)
       void deleteUploadedAttachment(attachment)
     }
-  }
-
-  function handleMobileFilePicker() {
-    fileInputRef.current?.click()
   }
 
   return (
@@ -638,32 +685,30 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : null}
 
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])]
-                if (files.length > 0) {
-                  enqueueFiles(files)
-                }
-                event.target.value = ""
-              }}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onPointerDown={(event) => {
-                event.preventDefault()
-                handleMobileFilePicker()
-              }}
-              disabled={disabled}
-              className="md:hidden flex-shrink-0 ml-1 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground"
+            <label
+              aria-label="Add attachment"
+              className={cn(
+                buttonVariants({ variant: "ghost", size: "icon" }),
+                "relative md:hidden flex-shrink-0 ml-1 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
+                disabled && "pointer-events-none opacity-50",
+              )}
             >
               <Paperclip className="h-5 w-5" />
-            </Button>
+              <input
+                type="file"
+                multiple
+                disabled={disabled}
+                aria-label="Add attachment"
+                className="absolute inset-0 cursor-pointer opacity-0"
+                onChange={(event) => {
+                  const files = [...(event.target.files ?? [])]
+                  if (files.length > 0) {
+                    enqueueFiles(files)
+                  }
+                  event.target.value = ""
+                }}
+              />
+            </label>
             <Textarea
               ref={setTextareaRefs}
               placeholder="Build something..."
@@ -685,17 +730,21 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               type="button"
               onPointerDown={(event) => {
                 event.preventDefault()
-                if (canCancel) {
+                if (!disabled && hasTextToSend && !hasPendingUploads) {
+                  void handleSubmit()
+                } else if (canCancel) {
                   onCancel?.()
                 } else if (!disabled && canSubmit && !hasPendingUploads) {
                   void handleSubmit()
                 }
               }}
-              disabled={!canCancel && (disabled || !canSubmit || hasPendingUploads)}
+              disabled={disabled || (!canCancel && !canSubmit) || hasPendingUploads}
               size="icon"
               className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
             >
-              {canCancel ? (
+              {hasTextToSend ? (
+                <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
+              ) : canCancel ? (
                 <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
               ) : (
                 <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />

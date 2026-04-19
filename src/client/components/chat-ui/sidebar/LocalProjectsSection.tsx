@@ -22,7 +22,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip"
 import type { SidebarChatRow, SidebarProjectGroup } from "../../../../shared/types"
 import { APP_NAME } from "../../../../shared/branding"
 import { getPathBasename } from "../../../lib/formatters"
-import { getSidebarChatBuckets } from "../../../lib/sidebarChats"
 import { cn } from "../../../lib/utils"
 import { ProjectSectionMenu } from "./Menus"
 
@@ -34,8 +33,6 @@ interface Props {
   onToggleSection: (key: string) => void
   onToggleExpandedGroup: (key: string) => void
   renderChatRow: (chat: SidebarChatRow) => ReactNode
-  chatsPerProject: number
-  nowMs: number
   onNewLocalChat?: (localPath: string) => void
   onCopyPath?: (localPath: string) => void
   onOpenExternalPath?: (action: "open_finder" | "open_editor", localPath: string) => void
@@ -53,8 +50,6 @@ interface SortableProjectGroupProps {
   onToggleSection: (key: string) => void
   onToggleExpandedGroup: (key: string) => void
   renderChatRow: (chat: SidebarChatRow) => ReactNode
-  chatsPerProject: number
-  nowMs: number
   onNewLocalChat?: (localPath: string) => void
   onCopyPath?: (localPath: string) => void
   onOpenExternalPath?: (action: "open_finder" | "open_editor", localPath: string) => void
@@ -71,8 +66,6 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
   onToggleSection,
   onToggleExpandedGroup,
   renderChatRow,
-  chatsPerProject,
-  nowMs,
   onNewLocalChat,
   onCopyPath,
   onOpenExternalPath,
@@ -80,10 +73,9 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
   isConnected,
   startingLocalPath,
 }: SortableProjectGroupProps) {
-  const { groupKey, localPath, chats: pathChats } = group
+  const { groupKey, localPath } = group
   const isExpanded = expandedGroups.has(groupKey)
-  const { collapsedChats, remainingChats } = getSidebarChatBuckets(pathChats, chatsPerProject, nowMs)
-  const hasMore = remainingChats.length > 0
+  const hasMore = group.olderChats.length > 0
 
   const {
     attributes,
@@ -186,9 +178,9 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
         </ProjectSectionMenu>
       ) : header}
 
-      {!collapsedSections.has(groupKey) && (collapsedChats.length > 0 || hasMore) && (
+      {!collapsedSections.has(groupKey) && (group.previewChats.length > 0 || hasMore) && (
         <div className="space-y-[2px] mb-2 ">
-          {collapsedChats.map(renderChatRow)}
+          {group.previewChats.map(renderChatRow)}
           {hasMore && isExpanded ? (
             <button
               onClick={() => onToggleExpandedGroup(groupKey)}
@@ -197,7 +189,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
               Hide older
             </button>
           ) : null}
-          {isExpanded ? remainingChats.map(renderChatRow) : null}
+          {isExpanded ? group.olderChats.map(renderChatRow) : null}
           {hasMore && !isExpanded ? (
             <button
               onClick={() => onToggleExpandedGroup(groupKey)}
@@ -220,8 +212,6 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   onToggleSection,
   onToggleExpandedGroup,
   renderChatRow,
-  chatsPerProject,
-  nowMs,
   onNewLocalChat,
   onCopyPath,
   onOpenExternalPath,
@@ -289,8 +279,6 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
           onToggleSection={onToggleSection}
           onToggleExpandedGroup={onToggleExpandedGroup}
           renderChatRow={renderChatRow}
-          chatsPerProject={chatsPerProject}
-          nowMs={nowMs}
           onNewLocalChat={onNewLocalChat}
           onCopyPath={onCopyPath}
           onOpenExternalPath={onOpenExternalPath}

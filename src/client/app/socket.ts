@@ -17,11 +17,21 @@ type StatusListener = (status: SocketStatus) => void
 const STALE_CONNECTION_MS = 25_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 const PING_TIMEOUT_MS = 4_000
+const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "kanna:profile-send-to-starting"
 
 interface SubscriptionEntry<TSnapshot, TEvent = never> {
   topic: SubscriptionTopic
   listener: SnapshotListener<TSnapshot>
   eventListener?: EventListener<TEvent>
+}
+
+function isSendToStartingProfilingEnabled() {
+  try {
+    return window.sessionStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
+      || window.localStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
+  } catch {
+    return false
+  }
 }
 
 export class KannaSocket {
@@ -189,11 +199,33 @@ export class KannaSocket {
 
     this.ws.addEventListener("message", (event) => {
       this.lastMessageAt = Date.now()
+      const receivedAt = performance.now()
+      const rawText = String(event.data)
       let payload: ServerEnvelope
       try {
-        payload = JSON.parse(String(event.data)) as ServerEnvelope
+        payload = JSON.parse(rawText) as ServerEnvelope
       } catch {
         return
+      }
+
+      if (isSendToStartingProfilingEnabled() && payload.type === "snapshot" && payload.snapshot.type === "chat" && payload.snapshot.data?.runtime.status === "starting") {
+        console.debug("[kanna/send->starting][client-ws]", {
+          stage: "socket_message_received",
+          receivedAt,
+          payloadBytes: rawText.length,
+          chatId: payload.snapshot.data.runtime.chatId,
+          status: payload.snapshot.data.runtime.status,
+          messageCount: payload.snapshot.data.messages.length,
+        })
+      }
+
+      if (isSendToStartingProfilingEnabled() && payload.type === "ack") {
+        console.debug("[kanna/send->starting][client-ws]", {
+          stage: "socket_ack_received",
+          receivedAt,
+          payloadBytes: rawText.length,
+          commandId: payload.id,
+        })
       }
 
       if (payload.type === "snapshot") {

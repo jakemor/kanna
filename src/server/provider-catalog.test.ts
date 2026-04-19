@@ -8,14 +8,14 @@ import { resolveClaudeApiModelId } from "../shared/types"
 
 describe("provider catalog normalization", () => {
   test("maps legacy Claude effort into shared model options", () => {
-    expect(normalizeClaudeModelOptions("opus", undefined, "max")).toEqual({
+    expect(normalizeClaudeModelOptions("claude-opus-4-7", undefined, "max")).toEqual({
       reasoningEffort: "max",
       contextWindow: "200k",
     })
   })
 
   test("normalizes Claude context window only for supported models", () => {
-    expect(normalizeClaudeModelOptions("sonnet", {
+    expect(normalizeClaudeModelOptions("claude-sonnet-4-6", {
       claude: {
         reasoningEffort: "medium",
         contextWindow: "1m",
@@ -25,7 +25,7 @@ describe("provider catalog normalization", () => {
       contextWindow: "1m",
     })
 
-    expect(normalizeClaudeModelOptions("haiku", {
+    expect(normalizeClaudeModelOptions("claude-haiku-4-5-20251001", {
       claude: {
         reasoningEffort: "medium",
         contextWindow: "1m",
@@ -56,7 +56,7 @@ describe("provider catalog normalization", () => {
   })
 
   test("resolves Claude API model ids for 1m context window", () => {
-    expect(resolveClaudeApiModelId("opus", "1m")).toBe("opus[1m]")
-    expect(resolveClaudeApiModelId("sonnet", "200k")).toBe("sonnet")
+    expect(resolveClaudeApiModelId("claude-opus-4-7", "1m")).toBe("claude-opus-4-7[1m]")
+    expect(resolveClaudeApiModelId("claude-sonnet-4-6", "200k")).toBe("claude-sonnet-4-6")
   })
 })

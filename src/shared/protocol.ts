@@ -6,6 +6,7 @@ import type {
   ChatSnapshot,
   DiffCommitMode,
   KeybindingsSnapshot,
+  LlmProviderSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
   SidebarData,
@@ -50,12 +51,28 @@ export type ClientCommand =
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.remove"; projectId: string }
+  | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
   | { type: "project.readDiffPatch"; projectId: string; path: string }
   | { type: "system.ping" }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
   | { type: "settings.readKeybindings" }
   | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
+  | { type: "settings.readLlmProvider" }
+  | {
+      type: "settings.writeLlmProvider"
+      provider: LlmProviderSnapshot["provider"]
+      apiKey: string
+      model: string
+      baseUrl: string
+    }
+  | {
+      type: "settings.validateLlmProvider"
+      provider: LlmProviderSnapshot["provider"]
+      apiKey: string
+      model: string
+      baseUrl: string
+    }
   | {
       type: "system.openExternal"
       localPath: string
@@ -67,11 +84,13 @@ export type ClientCommand =
   | { type: "chat.create"; projectId: string }
   | { type: "chat.rename"; chatId: string; title: string }
   | { type: "chat.delete"; chatId: string }
+  | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
   | {
       type: "chat.send"
       chatId?: string
       projectId?: string
+      clientTraceId?: string
       provider?: AgentProvider
       content: string
       attachments?: ChatAttachment[]
@@ -152,6 +171,26 @@ export type ClientCommand =
   | { type: "chat.stopDraining"; chatId: string }
   | { type: "chat.loadHistory"; chatId: string; beforeCursor: string; limit: number }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
+  | {
+      type: "message.enqueue"
+      chatId: string
+      content: string
+      attachments?: ChatAttachment[]
+      provider?: AgentProvider
+      model?: string
+      modelOptions?: ModelOptions
+      planMode?: boolean
+    }
+  | {
+      type: "message.steer"
+      chatId: string
+      queuedMessageId: string
+    }
+  | {
+      type: "message.dequeue"
+      chatId: string
+      queuedMessageId: string
+    }
   | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
@@ -167,6 +206,7 @@ export type ServerSnapshot =
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
+  | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }
   | { type: "terminal"; data: TerminalSnapshot | null }

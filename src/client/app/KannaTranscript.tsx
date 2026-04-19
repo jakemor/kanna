@@ -1,6 +1,6 @@
-import React, { memo, useCallback, useMemo, useState } from "react"
+import React, { memo, useCallback, useMemo, useRef, useState } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
-import type { AskUserQuestionAnswerMap, ContextWindowUsageSnapshot, HydratedTranscriptMessage } from "../../shared/types"
+import type { AskUserQuestionAnswerMap, ChatAttachment, ContextWindowUsageSnapshot, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage } from "../components/messages/SystemMessage"
@@ -59,26 +59,121 @@ export interface ResolvedToolGroupTranscriptRow {
 
 export type ResolvedTranscriptRow = ResolvedSingleTranscriptRow | ResolvedToolGroupTranscriptRow
 
+export interface StableResolvedTranscriptRowsState {
+  byId: Map<string, ResolvedTranscriptRow>
+  result: ResolvedTranscriptRow[]
+}
+
+interface TranscriptMessageRenderState {
+  isFirstSystem: boolean
+  isFirstAccount: boolean
+  isLatestTodoWrite: boolean
+  hideResult: boolean
+  isFinalStatus: boolean
+  shouldRender: boolean
+}
+
 function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
   if (message.kind !== "tool") return false
   const toolName = (message as ProcessedToolCall).toolName
   return !SPECIAL_TOOL_NAMES.has(toolName)
 }
 
-export function buildTranscriptRenderItems(messages: HydratedTranscriptMessage[]): TranscriptRenderItem[] {
+function getTranscriptMessageRenderState(
+  message: HydratedTranscriptMessage,
+  {
+    isFirstSystem,
+    isFirstAccount,
+    isLatestTodoWrite,
+    hideResult,
+    isFinalStatus,
+  }: Omit<TranscriptMessageRenderState, "shouldRender">
+): TranscriptMessageRenderState {
+  let shouldRender = !message.hidden
+
+  if (shouldRender) {
+    switch (message.kind) {
+      case "system_init":
+        shouldRender = isFirstSystem
+        break
+      case "account_info":
+        shouldRender = isFirstAccount
+        break
+      case "tool":
+        shouldRender = message.toolKind !== "todo_write" || isLatestTodoWrite
+        break
+      case "result":
+        shouldRender = !hideResult && (!message.success || message.durationMs > 60000)
+        break
+      case "context_window_updated":
+        shouldRender = false
+        break
+      case "status":
+        shouldRender = isFinalStatus
+        break
+      default:
+        shouldRender = true
+        break
+    }
+  }
+
+  return {
+    isFirstSystem,
+    isFirstAccount,
+    isLatestTodoWrite,
+    hideResult,
+    isFinalStatus,
+    shouldRender,
+  }
+}
+
+function buildTranscriptMessageRenderStates(
+  messages: HydratedTranscriptMessage[],
+  latestToolIds: Record<string, string | null>
+) {
+  const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
+  const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
+
+  return messages.map<TranscriptMessageRenderState>((message, index) => {
+    const previousMessage = messages[index - 1]
+    const nextMessage = messages[index + 1]
+    return getTranscriptMessageRenderState(message, {
+      isFirstSystem: firstSystemIndex === index,
+      isFirstAccount: firstAccountIndex === index,
+      isLatestTodoWrite: message.id === latestToolIds.TodoWrite,
+      hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
+      isFinalStatus: index === messages.length - 1,
+    })
+  })
+}
+
+export function buildTranscriptRenderItems(
+  messages: HydratedTranscriptMessage[],
+  renderStates: TranscriptMessageRenderState[]
+): TranscriptRenderItem[] {
   const result: TranscriptRenderItem[] = []
   let index = 0
 
   while (index < messages.length) {
     const message = messages[index]
-    if (isCollapsibleToolCall(message)) {
+    const renderState = renderStates[index]
+    if (renderState?.shouldRender && isCollapsibleToolCall(message)) {
       const group: HydratedTranscriptMessage[] = [message]
       const startIndex = index
       index += 1
-      while (index < messages.length && isCollapsibleToolCall(messages[index])) {
-        group.push(messages[index])
+
+      while (index < messages.length) {
+        const nextMessage = messages[index]
+        const nextRenderState = renderStates[index]
+        if (!nextRenderState?.shouldRender) {
+          index += 1
+          continue
+        }
+        if (!isCollapsibleToolCall(nextMessage)) break
+        group.push(nextMessage)
         index += 1
       }
+
       if (group.length >= 2) {
         result.push({ type: "tool-group", messages: group, startIndex })
       } else {
@@ -103,42 +198,6 @@ function getTranscriptRenderItemId(item: TranscriptRenderItem) {
   return `tool-group:${firstId}`
 }
 
-function shouldRenderTranscriptSingleRow(
-  message: HydratedTranscriptMessage,
-  {
-    isFirstSystem,
-    isFirstAccount,
-    isLatestTodoWrite,
-    hideResult,
-    isFinalStatus,
-  }: {
-    isFirstSystem: boolean
-    isFirstAccount: boolean
-    isLatestTodoWrite: boolean
-    hideResult: boolean
-    isFinalStatus: boolean
-  }
-) {
-  if (message.hidden) return false
-
-  switch (message.kind) {
-    case "system_init":
-      return isFirstSystem
-    case "account_info":
-      return isFirstAccount
-    case "tool":
-      return message.toolKind !== "todo_write" || isLatestTodoWrite
-    case "result":
-      return !hideResult
-    case "context_window_updated":
-      return false
-    case "status":
-      return isFinalStatus
-    default:
-      return true
-  }
-}
-
 function sameStringArray(left: string[] | undefined, right: string[] | undefined) {
   if (left === right) return true
   if (!left || !right) return false
@@ -146,12 +205,22 @@ function sameStringArray(left: string[] | undefined, right: string[] | undefined
   return left.every((value, index) => value === right[index])
 }
 
-function sameRecord(a: Record<string, number> | undefined, b: Record<string, number> | undefined): boolean {
-  if (a === b) return true
-  if (!a || !b) return false
-  const keysA = Object.keys(a)
-  if (keysA.length !== Object.keys(b).length) return false
-  return keysA.every((k) => a[k] === b[k])
+function sameAttachment(left: ChatAttachment, right: ChatAttachment) {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.displayName === right.displayName
+    && left.absolutePath === right.absolutePath
+    && left.relativePath === right.relativePath
+    && left.contentUrl === right.contentUrl
+    && left.mimeType === right.mimeType
+    && left.size === right.size
+}
+
+function sameAttachmentArray(left: ChatAttachment[] | undefined, right: ChatAttachment[] | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((attachment, index) => sameAttachment(attachment, right[index]!))
 }
 
 function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptMessage) {
@@ -161,7 +230,9 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
   switch (left.kind) {
     case "user_prompt":
       return left.content === (right.kind === "user_prompt" ? right.content : null)
-        && left.attachments?.length === (right.kind === "user_prompt" ? right.attachments?.length : null)
+        && right.kind === "user_prompt"
+        && left.steered === right.steered
+        && sameAttachmentArray(left.attachments, right.attachments)
     case "system_init":
       return right.kind === "system_init"
         && left.provider === right.provider
@@ -205,6 +276,67 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
   }
 }
 
+function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: ResolvedTranscriptRow) {
+  if (left.kind !== right.kind || left.id !== right.id) return false
+
+  if (left.kind === "single" && right.kind === "single") {
+    return left.index === right.index
+      && left.isLoading === right.isLoading
+      && left.localPath === right.localPath
+      && left.isFirstSystem === right.isFirstSystem
+      && left.isFirstAccount === right.isFirstAccount
+      && left.isLatestAskUserQuestion === right.isLatestAskUserQuestion
+      && left.isLatestExitPlanMode === right.isLatestExitPlanMode
+      && left.isLatestTodoWrite === right.isLatestTodoWrite
+      && left.hideResult === right.hideResult
+      && left.isFinalStatus === right.isFinalStatus
+      && sameMessage(left.message, right.message)
+  }
+
+  if (left.kind === "tool-group" && right.kind === "tool-group") {
+    return left.startIndex === right.startIndex
+      && left.isLoading === right.isLoading
+      && left.localPath === right.localPath
+      && left.messages.length === right.messages.length
+      && left.messages.every((message, index) => sameMessage(message, right.messages[index]!))
+  }
+
+  return false
+}
+
+export function computeStableResolvedTranscriptRows(
+  rows: ResolvedTranscriptRow[],
+  previous: StableResolvedTranscriptRowsState,
+): StableResolvedTranscriptRowsState {
+  const nextById = new Map<string, ResolvedTranscriptRow>()
+  let anyChanged = rows.length !== previous.byId.size
+
+  const result = rows.map((row, index) => {
+    const previousRow = previous.byId.get(row.id)
+    const nextRow = previousRow && isResolvedTranscriptRowUnchanged(previousRow, row) ? previousRow : row
+    nextById.set(row.id, nextRow)
+    if (!anyChanged && previous.result[index] !== nextRow) {
+      anyChanged = true
+    }
+    return nextRow
+  })
+
+  return anyChanged ? { byId: nextById, result } : previous
+}
+
+export function useStableResolvedRows(rows: ResolvedTranscriptRow[]) {
+  const previousState = useRef<StableResolvedTranscriptRowsState>({
+    byId: new Map<string, ResolvedTranscriptRow>(),
+    result: [],
+  })
+
+  return useMemo(() => {
+    const nextState = computeStableResolvedTranscriptRows(rows, previousState.current)
+    previousState.current = nextState
+    return nextState.result
+  }, [rows])
+}
+
 interface TranscriptSingleRowProps {
   message: HydratedTranscriptMessage
   index: number
@@ -245,7 +377,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   let rendered: React.ReactNode = null
 
   if (message.kind === "user_prompt") {
-    rendered = <UserMessage key={message.id} content={message.content} attachments={message.attachments} />
+    rendered = <UserMessage key={message.id} content={message.content} attachments={message.attachments} steered={message.steered} />
   } else {
     switch (message.kind) {
       case "unknown":
@@ -467,9 +599,8 @@ export function buildResolvedTranscriptRows(
     latestToolIds: Record<string, string | null>
   }
 ): ResolvedTranscriptRow[] {
-  const renderItems = buildTranscriptRenderItems(messages)
-  const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
-  const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
+  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds)
+  const renderItems = buildTranscriptRenderItems(messages, renderStates)
   const rows: ResolvedTranscriptRow[] = []
 
   for (const item of renderItems) {
@@ -496,8 +627,8 @@ export function buildResolvedTranscriptRows(
       continue
     }
 
-    const previousMessage = messages[item.index - 1]
-    const nextMessage = messages[item.index + 1]
+    const renderState = renderStates[item.index]
+    if (!renderState) continue
     const row: ResolvedSingleTranscriptRow = {
       kind: "single",
       id: getTranscriptRenderItemId(item),
@@ -505,19 +636,19 @@ export function buildResolvedTranscriptRows(
       index: item.index,
       isLoading: item.message.kind === "tool" && item.message.result === undefined && isLoading,
       localPath,
-      isFirstSystem: firstSystemIndex === item.index,
-      isFirstAccount: firstAccountIndex === item.index,
+      isFirstSystem: renderState.isFirstSystem,
+      isFirstAccount: renderState.isFirstAccount,
       isLatestAskUserQuestion: item.message.id === latestToolIds.AskUserQuestion,
       isLatestExitPlanMode: item.message.id === latestToolIds.ExitPlanMode,
-      isLatestTodoWrite: item.message.id === latestToolIds.TodoWrite,
-      hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
-      isFinalStatus: item.index === messages.length - 1,
+      isLatestTodoWrite: renderState.isLatestTodoWrite,
+      hideResult: renderState.hideResult,
+      isFinalStatus: renderState.isFinalStatus,
       elapsedMs: item.message.kind === "tool"
-        ? getToolElapsedMs(messages, item.index)
-        : undefined,
+          ? getToolElapsedMs(messages, item.index)
+          : undefined,
     }
 
-    if (shouldRenderTranscriptSingleRow(row.message, row)) {
+    if (renderState.shouldRender) {
       rows.push(row)
     }
   }
@@ -541,7 +672,7 @@ interface KannaTranscriptProps {
 
 interface KannaTranscriptRowProps {
   row: ResolvedTranscriptRow
-  toolGroupExpanded: Record<string, boolean>
+  toolGroupExpanded?: boolean
   onToolGroupExpandedChange: (groupId: string, next: boolean) => void
   onAskUserQuestionSubmit: (
     toolUseId: string,
@@ -566,9 +697,9 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
         messages={row.messages}
         isLoading={row.isLoading}
         localPath={row.localPath}
+        expanded={toolGroupExpanded ?? false}
         tokensUsed={row.tokensUsed}
         toolElapsedMs={row.toolElapsedMs}
-        expanded={toolGroupExpanded[row.id] ?? false}
         onExpandedChange={onToolGroupExpandedChange}
       />
     )
@@ -665,7 +796,7 @@ function KannaTranscriptImpl({
         >
           <KannaTranscriptRow
             row={row}
-            toolGroupExpanded={toolGroupExpanded}
+            toolGroupExpanded={row.kind === "tool-group" ? (toolGroupExpanded[row.id] ?? false) : undefined}
             onToolGroupExpandedChange={handleToolGroupExpandedChange}
             onAskUserQuestionSubmit={onAskUserQuestionSubmit}
             onExitPlanModeConfirm={onExitPlanModeConfirm}

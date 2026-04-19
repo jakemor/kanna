@@ -4,6 +4,8 @@ import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
   normalizeClaudeContextWindow,
+  normalizeClaudeModelId,
+  isClaudeOpusModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   type AgentProvider,
@@ -117,13 +119,13 @@ function normalizeClaudePreference(value?: {
     : isClaudeReasoningEffort(value?.effort)
       ? value.effort
       : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort
-  const model = value?.model ?? "opus"
+  const model = normalizeClaudeModelId(value?.model)
   const contextWindow = normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow)
 
   return {
     model,
     modelOptions: {
-      reasoningEffort: model !== "opus" && normalizedEffort === "max" ? "high" : normalizedEffort,
+      reasoningEffort: !isClaudeOpusModelId(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
       contextWindow,
     },
     planMode: Boolean(value?.planMode),
@@ -156,7 +158,7 @@ function normalizeCodexPreference(value?: {
 function createDefaultProviderDefaults(): ChatProviderPreferences {
   return {
     claude: {
-      model: "opus",
+      model: "claude-opus-4-7",
       modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
       planMode: false,
     },
@@ -413,7 +415,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       chatStates: {},
       legacyComposerState: {
         provider: "claude",
-        model: "opus",
+        model: "claude-opus-4-7",
         modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
         planMode: false,
       },
@@ -491,7 +493,14 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set((state) => ({
           chatStates: {
             ...state.chatStates,
-            [chatId]: cloneComposerState(composerState),
+            [chatId]: composerState.provider === "claude"
+              ? {
+                provider: "claude",
+                model: normalizeClaudePreference(composerState).model,
+                modelOptions: normalizeClaudePreference(composerState).modelOptions,
+                planMode: composerState.planMode,
+              }
+              : cloneComposerState(composerState),
           },
         })),
       setChatComposerProvider: (chatId, provider) =>
@@ -501,7 +510,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           composerState.provider === "claude"
             ? {
               provider: "claude",
-              model,
+              model: normalizeClaudePreference({
+                ...composerState,
+                model,
+              }).model,
               modelOptions: normalizeClaudePreference({
                 ...composerState,
                 model,
@@ -561,7 +573,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     }),
     {
       name: "chat-preferences",
-      version: 5,
+      version: 6,
       migrate: (persistedState) => migrateChatPreferencesState(persistedState as Partial<PersistedChatPreferencesState> | undefined),
     }
   )

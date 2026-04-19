@@ -30,7 +30,7 @@ describe("ChatPreferenceControls", () => {
       <ChatPreferenceControls
         availableProviders={PROVIDERS}
         selectedProvider="claude"
-        model="opus"
+        model="claude-opus-4-7"
         modelOptions={{ reasoningEffort: "max", contextWindow: "1m" }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
@@ -42,7 +42,7 @@ describe("ChatPreferenceControls", () => {
     )
 
     expect(html).toContain("Claude")
-    expect(html).toContain("Opus")
+    expect(html).toContain("Opus 4.7")
     expect(html).toContain("Max")
     expect(html).toContain("1M")
     expect(html).toContain("Plan Mode")

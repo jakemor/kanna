@@ -2,6 +2,9 @@ export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex"
+export type LlmProviderKind = "openai" | "openrouter" | "custom"
+export const DEFAULT_OPENAI_SDK_MODEL = "gpt-5.4-mini"
+export const DEFAULT_OPENROUTER_SDK_MODEL = "moonshotai/kimi-k2.5:nitro"
 
 export type AttachmentKind = "image" | "file"
 
@@ -14,6 +17,17 @@ export interface ChatAttachment {
   contentUrl: string
   mimeType: string
   size: number
+}
+
+export interface QueuedChatMessage {
+  id: string
+  content: string
+  attachments: ChatAttachment[]
+  createdAt: number
+  provider?: AgentProvider
+  model?: string
+  modelOptions?: ModelOptions
+  planMode?: boolean
 }
 
 export interface InternalUserAttachmentsData {
@@ -105,6 +119,26 @@ export function isClaudeContextWindow(value: unknown): value is ClaudeContextWin
   return CLAUDE_CONTEXT_WINDOW_OPTIONS.some((option) => option.id === value)
 }
 
+export function normalizeClaudeModelId(modelId?: string): string {
+  switch (modelId) {
+    case "opus":
+    case "claude-opus-4-7":
+      return "claude-opus-4-7"
+    case "sonnet":
+    case "claude-sonnet-4-6":
+      return "claude-sonnet-4-6"
+    case "haiku":
+    case "claude-haiku-4-5-20251001":
+      return "claude-haiku-4-5-20251001"
+    default:
+      return modelId ?? "claude-opus-4-7"
+  }
+}
+
+export function isClaudeOpusModelId(modelId: string): boolean {
+  return normalizeClaudeModelId(modelId).startsWith("claude-opus-")
+}
+
 export interface ProviderCatalogEntry {
   id: AgentProvider
   label: string
@@ -119,13 +153,13 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "claude",
     label: "Claude",
-    defaultModel: "sonnet",
+    defaultModel: "claude-sonnet-4-6",
     defaultEffort: "high",
     supportsPlanMode: true,
     models: [
-      { id: "opus", label: "Opus", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
-      { id: "sonnet", label: "Sonnet", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
-      { id: "haiku", label: "Haiku", supportsEffort: true },
+      { id: "claude-opus-4-7", label: "Opus 4.7", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
+      { id: "claude-sonnet-4-6", label: "Sonnet 4.6", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
+      { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", supportsEffort: true },
     ],
     efforts: [...CLAUDE_REASONING_OPTIONS],
   },
@@ -213,6 +247,9 @@ export interface SidebarProjectGroup {
   groupKey: string
   localPath: string
   chats: SidebarChatRow[]
+  previewChats: SidebarChatRow[]
+  olderChats: SidebarChatRow[]
+  defaultCollapsed: boolean
 }
 
 export interface SidebarData {
@@ -235,6 +272,29 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
+export interface LlmProviderFile {
+  provider?: LlmProviderKind
+  apiKey?: string
+  model?: string
+  baseUrl?: string | null
+}
+
+export interface LlmProviderSnapshot {
+  provider: LlmProviderKind
+  apiKey: string
+  model: string
+  baseUrl: string
+  resolvedBaseUrl: string
+  enabled: boolean
+  warning: string | null
+  filePathDisplay: string
+}
+
+export interface LlmProviderValidationResult {
+  ok: boolean
+  error: unknown | null
+}
+
 export type UpdateStatus =
   | "idle"
   | "checking"
@@ -252,6 +312,7 @@ export interface UpdateSnapshot {
   lastCheckedAt: number | null
   error: string | null
   installAction: "restart" | "reload"
+  reloadRequestedAt: number | null
 }
 
 export type UpdateInstallErrorCode =
@@ -379,6 +440,9 @@ export interface WriteFileToolCall
 export interface EditFileToolCall
   extends ToolCallBase<"edit_file", { filePath: string; oldString: string; newString: string }> { }
 
+export interface DeleteFileToolCall
+  extends ToolCallBase<"delete_file", { filePath: string; content: string }> { }
+
 export interface SubagentTaskToolCall
   extends ToolCallBase<"subagent_task", { subagentType?: string }> { }
 
@@ -400,6 +464,7 @@ export type NormalizedToolCall =
   | ReadFileToolCall
   | WriteFileToolCall
   | EditFileToolCall
+  | DeleteFileToolCall
   | SubagentTaskToolCall
   | McpGenericToolCall
   | UnknownToolCall
@@ -415,6 +480,7 @@ export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
   attachments?: ChatAttachment[]
+  steered?: boolean
 }
 
 export interface SystemInitEntry extends TranscriptEntryBase {
@@ -742,6 +808,9 @@ export type HydratedWriteFileToolCall =
 export type HydratedEditFileToolCall =
   HydratedToolCallBase<"edit_file", EditFileToolCall["input"], unknown>
 
+export type HydratedDeleteFileToolCall =
+  HydratedToolCallBase<"delete_file", DeleteFileToolCall["input"], unknown>
+
 export type HydratedSubagentTaskToolCall =
   HydratedToolCallBase<"subagent_task", SubagentTaskToolCall["input"], unknown>
 
@@ -763,12 +832,13 @@ export type HydratedToolCall =
   | HydratedReadFileToolCall
   | HydratedWriteFileToolCall
   | HydratedEditFileToolCall
+  | HydratedDeleteFileToolCall
   | HydratedSubagentTaskToolCall
   | HydratedMcpGenericToolCall
   | HydratedUnknownToolCall
 
 export type HydratedTranscriptMessage =
-  | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; steered?: boolean; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -802,6 +872,7 @@ export interface ChatHistorySnapshot {
 
 export interface ChatSnapshot {
   runtime: ChatRuntime
+  queuedMessages: QueuedChatMessage[]
   messages: TranscriptEntry[]
   history: ChatHistorySnapshot
   availableProviders: ProviderCatalogEntry[]

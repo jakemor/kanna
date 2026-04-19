@@ -20,6 +20,7 @@ describe("UpdateManager", () => {
     expect(snapshot.updateAvailable).toBe(true)
     expect(snapshot.latestVersion).toBe("0.13.0")
     expect(snapshot.installAction).toBe("restart")
+    expect(snapshot.reloadRequestedAt).toBeNull()
   })
 
   test("bypasses cache when force is true", async () => {
@@ -92,6 +93,7 @@ describe("UpdateManager", () => {
       status: "available",
       updateAvailable: true,
       installAction: "restart",
+      reloadRequestedAt: null,
     })
 
     const result = await manager.installUpdate()
@@ -103,5 +105,6 @@ describe("UpdateManager", () => {
       userMessage: null,
     })
     expect(manager.getSnapshot().status).toBe("restart_pending")
+    expect(typeof manager.getSnapshot().reloadRequestedAt).toBe("number")
   })
 })

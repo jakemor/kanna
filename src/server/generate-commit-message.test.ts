@@ -15,6 +15,16 @@ describe("generateCommitMessageDetailed", () => {
         }],
       },
       new QuickResponseAdapter({
+        readLlmProvider: async () => ({
+          provider: "openai",
+          apiKey: "",
+          model: "",
+          baseUrl: "",
+          resolvedBaseUrl: "https://api.openai.com/v1",
+          enabled: false,
+          warning: null,
+          filePathDisplay: "~/.kanna/llm-provider.json",
+        }),
         runClaudeStructured: async () => ({
           subject: "  Add login UI.\nextra line",
           body: "  - wire form\n- add validation  ",
@@ -42,6 +52,16 @@ describe("generateCommitMessageDetailed", () => {
         }],
       },
       new QuickResponseAdapter({
+        readLlmProvider: async () => ({
+          provider: "openai",
+          apiKey: "",
+          model: "",
+          baseUrl: "",
+          resolvedBaseUrl: "https://api.openai.com/v1",
+          enabled: false,
+          warning: null,
+          filePathDisplay: "~/.kanna/llm-provider.json",
+        }),
         runClaudeStructured: async () => {
           throw new Error("Not authenticated")
         },

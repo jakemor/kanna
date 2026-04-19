@@ -75,6 +75,7 @@ interface PendingTurn {
   turnId: string | null
   model: string
   planMode: boolean
+  startedAt: number
   queue: AsyncQueue<HarnessEvent>
   startedToolIds: Set<string>
   handledDynamicToolIds: Set<string>
@@ -637,6 +638,23 @@ function itemToToolCalls(item: ThreadItem): TranscriptEntry[] {
   }
 }
 
+function getItemDurationMs(item: ThreadItem): number | undefined {
+  if (
+    item.type === "commandExecution"
+    || item.type === "dynamicToolCall"
+    || item.type === "mcpToolCall"
+  ) {
+    const value = (item as { durationMs?: number | null }).durationMs
+    if (typeof value === "number") {
+      // Codex reports 0 or tiny values for sub-millisecond tools. Floor to 1ms
+      // so the UI can still show "1ms" rather than hiding the label entirely.
+      return Math.max(1, value)
+    }
+    return 1
+  }
+  return undefined
+}
+
 function itemToToolResults(item: ThreadItem): TranscriptEntry[] {
   switch (item.type) {
     case "dynamicToolCall":
@@ -833,6 +851,7 @@ export class CodexAppServerManager {
       turnId: null,
       model: args.model,
       planMode: args.planMode,
+      startedAt: Date.now(),
       queue,
       startedToolIds: new Set(),
       handledDynamicToolIds: new Set(),
@@ -1287,6 +1306,11 @@ export class CodexAppServerManager {
       return
     }
 
+    // Codex fires item/started and item/completed frequently in the same JS
+    // tick for fast tools, so wall-clock Date.now() isn't reliable. Prefer
+    // Codex's own durationMs on the tool_result entry; client reads it directly.
+    const itemDurationMs = getItemDurationMs(notification.item)
+
     const startedEntries = itemToToolCalls(notification.item)
     for (const entry of startedEntries) {
       if (entry.kind !== "tool_call") {
@@ -1301,7 +1325,10 @@ export class CodexAppServerManager {
 
     const resultEntries = itemToToolResults(notification.item)
     for (const entry of resultEntries) {
-      pendingTurn.queue.push({ type: "transcript", entry })
+      const withDuration = entry.kind === "tool_result" && itemDurationMs !== undefined
+        ? { ...entry, durationMs: itemDurationMs }
+        : entry
+      pendingTurn.queue.push({ type: "transcript", entry: withDuration })
       if (notification.item.type === "webSearch" && entry.kind === "tool_result" && !entry.isError) {
         pendingTurn.pendingWebSearchResultToolId = notification.item.id
       }
@@ -1406,7 +1433,7 @@ export class CodexAppServerManager {
         kind: "result",
         subtype: isCancelled ? "cancelled" : isError ? "error" : "success",
         isError,
-        durationMs: 0,
+        durationMs: Math.max(0, Date.now() - pendingTurn.startedAt),
         result: notification.turn.error?.message ?? "",
       }),
     })
@@ -1423,7 +1450,7 @@ export class CodexAppServerManager {
           kind: "result",
           subtype: "error",
           isError: true,
-          durationMs: 0,
+          durationMs: Math.max(0, Date.now() - pendingTurn.startedAt),
           result: message,
         }),
       })

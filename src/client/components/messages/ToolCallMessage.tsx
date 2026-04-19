@@ -1,10 +1,11 @@
 import { UserRound, X } from "lucide-react"
 import type { ProcessedToolCall } from "./types"
-import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon } from "./shared"
+import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon, RowTrailingLabel, joinRowTrailingParts } from "./shared"
 import { useMemo, useEffect, useRef, useState } from "react"
 import { stripWorkspacePath } from "../../lib/pathUtils"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { formatBashCommandTitle, toTitleCase, formatDuration } from "../../lib/formatters"
+import { formatContextWindowTokens } from "../../lib/contextWindow"
 import { useChatDisplayPreferencesStore } from "../../stores/chatDisplayPreferencesStore"
 import { FileContentView } from "./FileContentView"
 
@@ -13,6 +14,7 @@ interface Props {
   isLoading?: boolean
   localPath?: string | null
   elapsedMs?: number
+  tokensUsed?: number
 }
 
 type ReadImageBlock = {
@@ -113,18 +115,24 @@ function useElapsedTime(startTimestamp: string, isRunning: boolean): number {
   return elapsed
 }
 
-export function ToolCallMessage({ message, isLoading = false, localPath, elapsedMs }: Props) {
+export function ToolCallMessage({ message, isLoading = false, localPath, elapsedMs, tokensUsed }: Props) {
+  const showTokenCount = useChatDisplayPreferencesStore((s) => s.showTokenCount)
   const showElapsedTime = useChatDisplayPreferencesStore((s) => s.showElapsedTime)
-  const minElapsedTimeMs = useChatDisplayPreferencesStore((s) => s.minElapsedTimeMs)
 
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
 
   const liveElapsed = useElapsedTime(message.timestamp, showLoadingState)
   const displayedMs = showLoadingState ? liveElapsed : elapsedMs
-  const timeLabel = showElapsedTime && displayedMs !== undefined && displayedMs >= minElapsedTimeMs
+  // Per-tool rows ignore minElapsedTimeMs — that threshold is for the turn-level
+  // "Worked for X" footer. For tool calls, every ms is informative cost data.
+  const timeLabel = showElapsedTime && displayedMs !== undefined && displayedMs > 0
     ? formatDuration(displayedMs)
     : null
+  const tokenLabel = showTokenCount && tokensUsed !== undefined && tokensUsed > 0
+    ? `${formatContextWindowTokens(tokensUsed)} tokens`
+    : null
+  const trailingLabel = joinRowTrailingParts([tokenLabel, timeLabel])
 
   const name = useMemo(() => {
     if (message.toolKind === "skill") {
@@ -227,11 +235,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath, elapsed
   return (
     <MetaRow className="w-full">
       <ExpandableRow
-        trailingContent={timeLabel ? (
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-            {timeLabel}
-          </span>
-        ) : undefined}
+        trailingContent={trailingLabel ? <RowTrailingLabel>{trailingLabel}</RowTrailingLabel> : undefined}
         expandedContent={
           <VerticalLineContainer className="my-4 text-sm">
             <div className="flex flex-col gap-2">

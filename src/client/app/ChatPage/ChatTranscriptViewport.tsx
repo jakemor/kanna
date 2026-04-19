@@ -9,10 +9,12 @@ import { ProcessingMessage } from "../../components/messages/ProcessingMessage"
 import { cn } from "../../lib/utils"
 import {
   buildResolvedTranscriptRows,
+  getTurnTokensUsed,
   KannaTranscriptRow,
   type ResolvedTranscriptRow,
   useStableResolvedRows,
 } from "../KannaTranscript"
+import { useChatDisplayPreferencesStore } from "../../stores/chatDisplayPreferencesStore"
 import type { KannaState } from "../useKannaState"
 import {
   CHAT_NAVBAR_OFFSET_PX,
@@ -80,13 +82,30 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
 }: ChatTranscriptViewportProps) {
   const previousRowCountRef = useRef(0)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
+  const minTurnDisplayMs = useChatDisplayPreferencesStore((s) => s.minTurnDisplayMs)
 
   const rawRows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading: isProcessing,
     localPath: localPath ?? undefined,
     latestToolIds,
-  }), [isProcessing, latestToolIds, localPath, messages])
+    minTurnDisplayMs,
+  }), [isProcessing, latestToolIds, localPath, messages, minTurnDisplayMs])
   const resolvedRows = useStableResolvedRows(rawRows)
+
+  const { turnStartedAt, turnTokensUsed } = useMemo(() => {
+    if (!isProcessing || messages.length === 0) return { turnStartedAt: undefined, turnTokensUsed: undefined }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg?.kind === "user_prompt") {
+        const parsed = Date.parse(msg.timestamp)
+        return {
+          turnStartedAt: Number.isFinite(parsed) ? parsed : undefined,
+          turnTokensUsed: getTurnTokensUsed(messages, messages.length - 1),
+        }
+      }
+    }
+    return { turnStartedAt: undefined, turnTokensUsed: undefined }
+  }, [isProcessing, messages])
 
   useEffect(() => {
     setToolGroupExpanded({})
@@ -203,7 +222,13 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
 
   const listFooter = (
     <div className="mx-auto w-full max-w-[800px]">
-      {isProcessing ? <ProcessingMessage status={runtimeStatus ?? undefined} /> : null}
+      {isProcessing ? (
+        <ProcessingMessage
+          status={runtimeStatus ?? undefined}
+          turnStartedAt={turnStartedAt}
+          turnTokensUsed={turnTokensUsed}
+        />
+      ) : null}
       {queuedMessages.map((message) => (
         <QueuedUserMessage
           key={message.id}

@@ -61,8 +61,11 @@ import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore, type ChatSoundId, type ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import {
   DEFAULT_MIN_ELAPSED_TIME_MS,
+  DEFAULT_MIN_TURN_DISPLAY_MS,
   MAX_MIN_ELAPSED_TIME_MS,
+  MAX_MIN_TURN_DISPLAY_MS,
   MIN_MIN_ELAPSED_TIME_MS,
+  MIN_MIN_TURN_DISPLAY_MS,
   useChatDisplayPreferencesStore,
 } from "../stores/chatDisplayPreferencesStore"
 import { Switch } from "../components/ui/switch"
@@ -484,6 +487,8 @@ export function SettingsPage() {
   const setShowElapsedTime = useChatDisplayPreferencesStore((store) => store.setShowElapsedTime)
   const minElapsedTimeMs = useChatDisplayPreferencesStore((store) => store.minElapsedTimeMs)
   const setMinElapsedTimeMs = useChatDisplayPreferencesStore((store) => store.setMinElapsedTimeMs)
+  const minTurnDisplayMs = useChatDisplayPreferencesStore((store) => store.minTurnDisplayMs)
+  const setMinTurnDisplayMs = useChatDisplayPreferencesStore((store) => store.setMinTurnDisplayMs)
   const keybindings = state.keybindings
   const llmProvider = state.llmProvider
   const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
@@ -497,6 +502,7 @@ export function SettingsPage() {
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
   const [minColumnWidthDraft, setMinColumnWidthDraft] = useState(String(minColumnWidth))
   const [minElapsedTimeDraft, setMinElapsedTimeDraft] = useState(String(minElapsedTimeMs))
+  const [minTurnDisplayDraft, setMinTurnDisplayDraft] = useState(String(minTurnDisplayMs))
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
@@ -543,6 +549,10 @@ export function SettingsPage() {
   useEffect(() => {
     setMinElapsedTimeDraft(String(minElapsedTimeMs))
   }, [minElapsedTimeMs])
+
+  useEffect(() => {
+    setMinTurnDisplayDraft(String(minTurnDisplayMs))
+  }, [minTurnDisplayMs])
 
   useEffect(() => {
     setKeybindingDrafts(Object.fromEntries(
@@ -656,6 +666,15 @@ export function SettingsPage() {
       return
     }
     setMinElapsedTimeMs(nextValue)
+  }
+
+  function commitMinTurnDisplay() {
+    const nextValue = Number(minTurnDisplayDraft)
+    if (!Number.isFinite(nextValue)) {
+      setMinTurnDisplayDraft(String(minTurnDisplayMs))
+      return
+    }
+    setMinTurnDisplayMs(nextValue)
   }
 
   function handleNumberInputKeyDown(event: KeyboardEvent<HTMLInputElement>, commit: () => void) {
@@ -1096,6 +1115,29 @@ export function SettingsPage() {
                           </div>
                         </SettingsRow>
                       ) : null}
+
+                      <SettingsRow
+                        title="Minimum Turn Duration"
+                        description="Only show the per-turn footer (total time and tokens) when the turn took at least this long"
+                      >
+                        <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">
+                          <Input
+                            type="number"
+                            min={MIN_MIN_TURN_DISPLAY_MS}
+                            max={MAX_MIN_TURN_DISPLAY_MS}
+                            step={1000}
+                            value={minTurnDisplayDraft}
+                            onChange={(event) => setMinTurnDisplayDraft(event.target.value)}
+                            onBlur={commitMinTurnDisplay}
+                            onKeyDown={(event) => handleNumberInputKeyDown(event, commitMinTurnDisplay)}
+                            className="hide-number-steppers w-full text-left font-mono md:w-28 md:text-right"
+                          />
+                          <div className="text-left text-xs text-muted-foreground md:text-right">
+                            {MIN_MIN_TURN_DISPLAY_MS}-{MAX_MIN_TURN_DISPLAY_MS} ms
+                            {minTurnDisplayMs === DEFAULT_MIN_TURN_DISPLAY_MS ? " (default)" : ""}
+                          </div>
+                        </div>
+                      </SettingsRow>
 
                       <SettingsRow
                         title="Default Editor"

@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { ChevronRight } from "lucide-react"
 import { ToolCallMessage } from "./ToolCallMessage"
-import { MetaRow, MetaLabel } from "./shared"
+import { MetaRow, MetaLabel, RowTrailingLabel, joinRowTrailingParts } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { formatContextWindowTokens } from "../../lib/contextWindow"
 import { formatDuration } from "../../lib/formatters"
@@ -72,7 +72,6 @@ interface Props {
 export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed, toolElapsedMs, expanded, onExpandedChange }: Props) {
   const showTokenCount = useChatDisplayPreferencesStore((s) => s.showTokenCount)
   const showElapsedTime = useChatDisplayPreferencesStore((s) => s.showElapsedTime)
-  const minElapsedTimeMs = useChatDisplayPreferencesStore((s) => s.minElapsedTimeMs)
 
   const totalElapsedMs = useMemo(() => {
     if (!toolElapsedMs) return undefined
@@ -85,15 +84,14 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed,
   const label = useMemo(() => getToolGroupLabel(messages), [messages])
 
   const trailingLabel = useMemo(() => {
-    const parts: string[] = []
-    if (showTokenCount && tokensUsed && tokensUsed > 0) {
-      parts.push(`${formatContextWindowTokens(tokensUsed)} tokens`)
-    }
-    if (showElapsedTime && totalElapsedMs !== undefined && totalElapsedMs >= minElapsedTimeMs) {
-      parts.push(formatDuration(totalElapsedMs))
-    }
-    return parts.length > 0 ? parts.join(" · ") : null
-  }, [showTokenCount, showElapsedTime, minElapsedTimeMs, tokensUsed, totalElapsedMs])
+    const tokenPart = showTokenCount && tokensUsed && tokensUsed > 0
+      ? `${formatContextWindowTokens(tokensUsed)} tokens`
+      : null
+    const timePart = showElapsedTime && totalElapsedMs !== undefined && totalElapsedMs > 0
+      ? formatDuration(totalElapsedMs)
+      : null
+    return joinRowTrailingParts([tokenPart, timePart])
+  }, [showTokenCount, showElapsedTime, tokensUsed, totalElapsedMs])
 
   // Check if any tool in the group is still in progress
   const anyInProgress = messages.some(msg => {
@@ -120,11 +118,7 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, tokensUsed,
               <AnimatedShinyText animate={showLoadingState}>{label}</AnimatedShinyText>
             </MetaLabel>
           </div>
-          {trailingLabel ? (
-            <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-              {trailingLabel}
-            </span>
-          ) : <span />}
+          {trailingLabel ? <RowTrailingLabel>{trailingLabel}</RowTrailingLabel> : <span />}
           <span className="w-4.5" />
         </button>
         {expanded && (

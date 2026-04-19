@@ -120,6 +120,36 @@ export function MetaText({ children }: { children: ReactNode }) {
   return <span className="text-muted-foreground">{children}</span>
 }
 
+// Chevron gutter reserved by ExpandableRow on the right side of its grid:
+// chevron icon (h-4.5 w-4.5 → 18px) + outer grid gap-1 (4px) = 22px.
+// Non-expandable rows that want to align their trailing label with expandable
+// rows (e.g. ProcessingMessage) should reserve this same gutter via
+// `reserveChevronGutter` on RowTrailingLabel.
+export const ROW_CHEVRON_GUTTER_PX = 22
+
+export function joinRowTrailingParts(parts: Array<string | null | undefined>): string | null {
+  const filtered = parts.filter((part): part is string => Boolean(part))
+  return filtered.length > 0 ? filtered.join(" · ") : null
+}
+
+export function RowTrailingLabel({
+  children,
+  reserveChevronGutter = false,
+}: {
+  children: ReactNode
+  reserveChevronGutter?: boolean
+}) {
+  if (!children) return null
+  return (
+    <span
+      className="ml-auto pl-4 text-xs text-muted-foreground tabular-nums whitespace-nowrap shrink-0"
+      style={reserveChevronGutter ? { marginRight: `${ROW_CHEVRON_GUTTER_PX}px` } : undefined}
+    >
+      {children}
+    </span>
+  )
+}
+
 // Expandable row with chevron
 interface ExpandableRowProps {
   children: ReactNode

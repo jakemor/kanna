@@ -495,22 +495,52 @@ async function getMergeCommitCount(repoRoot: string, sourceRef: string) {
 }
 
 async function predictMergeConflicts(repoRoot: string, sourceRef: string) {
-  const result = await runGit(["merge-tree", "--write-tree", "--messages", "HEAD", sourceRef], repoRoot)
-  const output = `${result.stdout}\n${result.stderr}`.trim()
+  // Try the newer `git merge-tree --write-tree` form (requires Git 2.38+).
+  const newResult = await runGit(["merge-tree", "--write-tree", "--messages", "HEAD", sourceRef], repoRoot)
 
-  if (result.exitCode === 0) {
-    return { hasConflicts: false }
+  // Exit code 129 means the --write-tree flag is not supported (Git < 2.38).
+  // Fall back to the legacy three-argument form.
+  if (newResult.exitCode !== 129) {
+    const output = `${newResult.stdout}\n${newResult.stderr}`.trim()
+
+    if (newResult.exitCode === 0) {
+      return { hasConflicts: false }
+    }
+
+    const normalizedOutput = output.toLowerCase()
+    if (newResult.exitCode === 1 || normalizedOutput.includes("conflict")) {
+      return {
+        hasConflicts: true,
+        detail: output || "Git reported merge conflicts for this branch pair.",
+      }
+    }
+
+    throw new Error(output || "Failed to analyze merge conflicts")
   }
 
-  const normalizedOutput = output.toLowerCase()
-  if (result.exitCode === 1 || normalizedOutput.includes("conflict")) {
+  // Legacy fallback: `git merge-tree <base> HEAD <source>` (Git < 2.38).
+  const baseResult = await runGit(["merge-base", "HEAD", sourceRef], repoRoot)
+  if (baseResult.exitCode !== 0) {
+    throw new Error(baseResult.stderr.trim() || "Failed to find merge base")
+  }
+  const baseTree = baseResult.stdout.trim()
+
+  const legacyResult = await runGit(["merge-tree", baseTree, "HEAD", sourceRef], repoRoot)
+  const legacyOutput = `${legacyResult.stdout}\n${legacyResult.stderr}`.trim()
+
+  if (legacyResult.exitCode !== 0) {
+    throw new Error(legacyOutput || "Failed to analyze merge conflicts")
+  }
+
+  // In the legacy form, conflict markers (<<<<<<) appear in the output when there are conflicts.
+  if (legacyOutput.includes("<<<<<<<") || legacyOutput.toLowerCase().includes("conflict")) {
     return {
       hasConflicts: true,
-      detail: output || "Git reported merge conflicts for this branch pair.",
+      detail: legacyOutput || "Git reported merge conflicts for this branch pair.",
     }
   }
 
-  throw new Error(output || "Failed to analyze merge conflicts")
+  return { hasConflicts: false }
 }
 
 export function extractGitHubRepoSlug(remoteUrl: string | null | undefined) {

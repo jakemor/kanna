@@ -25,7 +25,7 @@ async function run(command: string[], cwd: string) {
 
 async function createRepo() {
   const root = await mkdtemp(path.join(tmpdir(), "kanna-diff-store-"))
-  await run(["git", "init"], root)
+  await run(["git", "init", "-b", "main"], root)
   await run(["git", "config", "user.email", "kanna@example.com"], root)
   await run(["git", "config", "user.name", "Kanna"], root)
   return root
@@ -33,7 +33,7 @@ async function createRepo() {
 
 async function createBareRemote() {
   const root = await mkdtemp(path.join(tmpdir(), "kanna-diff-remote-"))
-  await run(["git", "init", "--bare"], root)
+  await run(["git", "init", "--bare", "-b", "main"], root)
   return root
 }
 

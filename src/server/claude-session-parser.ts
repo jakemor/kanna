@@ -24,7 +24,7 @@ export function parseClaudeSessionFile(filePath: string): ParsedClaudeSession | 
   let sessionId: string | null = null
   let cwd: string | null = null
   let first = Number.POSITIVE_INFINITY
-  let last = 0
+  let last = Number.NEGATIVE_INFINITY
 
   for (const line of raw.split("\n")) {
     const trimmed = line.trim()
@@ -47,13 +47,18 @@ export function parseClaudeSessionFile(filePath: string): ParsedClaudeSession | 
   if (!sessionId) return null
   if (records.length === 0) return null
 
-  const mtime = statSync(filePath).mtimeMs
+  let mtime: number
+  try {
+    mtime = statSync(filePath).mtimeMs
+  } catch {
+    mtime = Date.now()
+  }
   return {
     sessionId,
     filePath,
     cwd: cwd ?? "",
     firstTimestamp: Number.isFinite(first) ? first : mtime,
-    lastTimestamp: last > 0 ? last : mtime,
+    lastTimestamp: Number.isFinite(last) ? last : mtime,
     records,
   }
 }

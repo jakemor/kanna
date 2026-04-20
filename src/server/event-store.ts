@@ -83,6 +83,8 @@ function getReplayEventPriority(event: StoreEvent) {
       return 8
     case "chat_read_state_set":
       return 9
+    case "chat_source_hash_set":
+      return 9
     case "chat_deleted":
       return 10
   }
@@ -340,6 +342,7 @@ export class EventStore {
           provider: null,
           planMode: false,
           sessionToken: null,
+          sourceHash: null,
           hasMessages: false,
           lastTurnOutcome: null,
         }
@@ -379,6 +382,13 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.unread = event.unread
+        chat.updatedAt = event.timestamp
+        break
+      }
+      case "chat_source_hash_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.sourceHash = event.sourceHash
         chat.updatedAt = event.timestamp
         break
       }
@@ -808,6 +818,19 @@ export class EventStore {
       sessionToken,
     }
     await this.append(this.turnsLogPath, event)
+  }
+
+  async setSourceHash(chatId: string, sourceHash: string | null) {
+    const chat = this.requireChat(chatId)
+    if (chat.sourceHash === sourceHash) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_source_hash_set",
+      timestamp: Date.now(),
+      chatId,
+      sourceHash,
+    }
+    await this.append(this.chatsLogPath, event)
   }
 
   getProject(projectId: string) {

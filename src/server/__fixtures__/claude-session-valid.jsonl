@@ -1,0 +1,6 @@
+{"type":"user","uuid":"u1","sessionId":"sess-abc","cwd":"/tmp/kanna-test-proj","timestamp":"2026-04-20T10:00:00.000Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"sess-abc","timestamp":"2026-04-20T10:00:01.000Z","message":{"role":"assistant","id":"msg-1","content":[{"type":"text","text":"hi back"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"sess-abc","timestamp":"2026-04-20T10:00:02.000Z","message":{"role":"user","content":"run ls"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"sess-abc","timestamp":"2026-04-20T10:00:03.000Z","message":{"role":"assistant","id":"msg-2","content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"ls","description":"list files"}}]}}
+{"type":"user","uuid":"u3","parentUuid":"a2","sessionId":"sess-abc","timestamp":"2026-04-20T10:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"file1\nfile2"}]}}
+{"type":"assistant","uuid":"a3","parentUuid":"u3","sessionId":"sess-abc","timestamp":"2026-04-20T10:00:05.000Z","message":{"role":"assistant","id":"msg-3","content":[{"type":"text","text":"done"}]}}

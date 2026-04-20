@@ -14,6 +14,7 @@ import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type { LlmProviderSnapshot } from "../shared/types"
 import type { LlmProviderValidationResult } from "../shared/types"
+import { importClaudeSessions } from "./claude-session-importer"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 
@@ -761,6 +762,15 @@ export function createWsRouter({
           const project = await store.openProject(command.localPath, command.title)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          break
+        }
+        case "sessions.importClaude": {
+          const result = await importClaudeSessions({ store })
+          if (result.newProjects > 0) {
+            await refreshDiscovery()
+          }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await broadcastFilteredSnapshots({ includeSidebar: true })
           break
         }
         case "project.remove": {

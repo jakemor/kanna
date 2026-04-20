@@ -50,6 +50,7 @@ That's it. Kanna opens in your browser at [`localhost:3210`](http://localhost:32
 - **Project-first sidebar** — chats grouped under projects, with live status indicators (idle, running, waiting, failed)
 - **Drag-and-drop project ordering** — reorder project groups in the sidebar with persistent ordering
 - **Local project discovery** — auto-discovers projects from both Claude and Codex local history
+- **Bulk import Claude Code sessions** — one-click import of existing `~/.claude/projects/` sessions with full transcript and seamless resume via the Claude Agent SDK
 - **Rich transcript rendering** — hydrated tool calls, collapsible tool groups, plan mode dialogs, and interactive prompts with full result display
 - **Quick responses** — lightweight structured queries (e.g. title generation) via Haiku with automatic Codex fallback
 - **Plan mode** — review and approve agent plans before execution

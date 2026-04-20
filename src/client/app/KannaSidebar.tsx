@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
+import { Download, Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
@@ -34,6 +34,7 @@ interface KannaSidebarProps {
   keybindings: KeybindingsSnapshot | null
   onDeleteChat: (chat: SidebarChatRow) => void
   onOpenAddProjectModal: () => void
+  onImportClaudeSessions?: () => Promise<void>
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRemoveProject: (projectId: string) => void
@@ -60,6 +61,7 @@ function KannaSidebarImpl({
   keybindings,
   onDeleteChat,
   onOpenAddProjectModal,
+  onImportClaudeSessions,
   onCopyPath,
   onOpenExternalPath,
   onRemoveProject,
@@ -257,6 +259,24 @@ function KannaSidebarImpl({
     })
   }, [activeChatId, activeVisibleCount])
 
+  const [isImporting, setIsImporting] = useState(false)
+
+  const handleImport = useCallback(async () => {
+    if (isImporting || !onImportClaudeSessions) return
+    const confirmed = window.confirm(
+      "Scan ~/.claude/projects/ and import all sessions into Kanna? Already-imported sessions are skipped.",
+    )
+    if (!confirmed) return
+    setIsImporting(true)
+    try {
+      await onImportClaudeSessions()
+    } catch (error) {
+      console.error("[kanna/import] failed", error)
+    } finally {
+      setIsImporting(false)
+    }
+  }, [isImporting, onImportClaudeSessions])
+
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
   const isSettingsActive = location.pathname.startsWith("/settings")
@@ -364,6 +384,19 @@ function KannaSidebarImpl({
               >
                 {isUpdating ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
                 UPDATE
+              </Button>
+            ) : null}
+            {onImportClaudeSessions ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => void handleImport()}
+                disabled={isImporting}
+                className="hidden md:inline-flex size-10 rounded-lg hover:!border-border/0"
+                title="Import Claude Code sessions"
+                aria-label="Import Claude Code sessions"
+              >
+                <Download className="size-4" />
               </Button>
             ) : null}
             <Button

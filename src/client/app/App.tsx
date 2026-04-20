@@ -195,6 +195,22 @@ function KannaLayout() {
   const handleOpenChangelog = useCallback(() => {
     navigate("/settings/changelog")
   }, [navigate])
+  const handleImportClaudeSessions = useCallback(async () => {
+    try {
+      const result = await state.importClaudeSessions()
+      const parts = [
+        `Imported ${result.imported}`,
+        `updated ${result.updated}`,
+        `skipped ${result.skipped}`,
+        `failed ${result.failed}`,
+      ]
+      const suffix = result.newProjects > 0 ? ` (${result.newProjects} new projects)` : ""
+      alert(`${parts.join(", ")}.${suffix}`)
+    } catch (error) {
+      console.error("[kanna/import] failed", error)
+      alert("Import failed. See console for details.")
+    }
+  }, [state])
   const sidebarElement = useMemo(() => (
     <KannaSidebar
       data={state.sidebarData}
@@ -213,6 +229,7 @@ function KannaLayout() {
       keybindings={state.keybindings}
       onDeleteChat={handleSidebarDeleteChat}
       onOpenAddProjectModal={handleOpenAddProjectModal}
+      onImportClaudeSessions={handleImportClaudeSessions}
       onCopyPath={handleSidebarCopyPath}
       onOpenExternalPath={handleSidebarOpenExternalPath}
       onRemoveProject={handleSidebarRemoveProject}
@@ -224,6 +241,7 @@ function KannaLayout() {
   ), [
     handleOpenChangelog,
     handleOpenAddProjectModal,
+    handleImportClaudeSessions,
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarDeleteChat,

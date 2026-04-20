@@ -23,6 +23,7 @@ describe("read models", () => {
       provider: "codex",
       planMode: false,
       sessionToken: "thread-1",
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -54,6 +55,7 @@ describe("read models", () => {
       provider: "claude",
       planMode: true,
       sessionToken: "session-1",
+      sourceHash: null,
       lastTurnOutcome: null,
     })
     state.queuedMessagesByChatId.set("chat-1", [{
@@ -111,6 +113,7 @@ describe("read models", () => {
       provider: "codex",
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastMessageAt: 100,
       lastTurnOutcome: null,
     })
@@ -154,6 +157,7 @@ describe("read models", () => {
       provider: "claude",
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastMessageAt: 100,
       lastTurnOutcome: null,
     })
@@ -167,6 +171,7 @@ describe("read models", () => {
       provider: "claude",
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastMessageAt: 200,
       lastTurnOutcome: null,
     })
@@ -225,6 +230,7 @@ describe("read models", () => {
       provider: "claude",
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastMessageAt: 1_000_000 - 60 * 60 * 1_000,
       lastTurnOutcome: null,
     })
@@ -238,6 +244,7 @@ describe("read models", () => {
       provider: "claude",
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastMessageAt: 1_000_000 - 26 * 60 * 60 * 1_000,
       lastTurnOutcome: null,
     })

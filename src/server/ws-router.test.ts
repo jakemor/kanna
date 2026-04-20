@@ -524,6 +524,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -639,6 +640,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -725,6 +727,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -958,6 +961,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -1038,6 +1042,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -1372,6 +1377,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 
@@ -1471,6 +1477,7 @@ describe("ws-router", () => {
       provider: null,
       planMode: false,
       sessionToken: null,
+      sourceHash: null,
       lastTurnOutcome: null,
     })
 

@@ -15,6 +15,7 @@ export interface ChatRecord {
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
+  sourceHash: string | null
   hasMessages?: boolean
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
@@ -99,6 +100,13 @@ export type ChatEvent =
       timestamp: number
       chatId: string
       unread: boolean
+    }
+  | {
+      v: 2
+      type: "chat_source_hash_set"
+      timestamp: number
+      chatId: string
+      sourceHash: string | null
     }
 
 export type MessageEvent = {

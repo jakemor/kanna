@@ -15,4 +15,22 @@ describe("parseClaudeSessionFile", () => {
     expect(parsed.firstTimestamp).toBeGreaterThan(0)
     expect(parsed.lastTimestamp).toBeGreaterThanOrEqual(parsed.firstTimestamp)
   })
+
+  test("skips malformed lines, keeps valid ones", () => {
+    const parsed = parseClaudeSessionFile(path.join(FIXTURE_DIR, "claude-session-malformed.jsonl"))
+    expect(parsed).not.toBeNull()
+    if (!parsed) return
+    expect(parsed.records.length).toBe(2)
+    expect(parsed.sessionId).toBe("sess-bad")
+  })
+
+  test("returns null for empty file", () => {
+    const parsed = parseClaudeSessionFile(path.join(FIXTURE_DIR, "claude-session-empty.jsonl"))
+    expect(parsed).toBeNull()
+  })
+
+  test("returns null for missing file", () => {
+    const parsed = parseClaudeSessionFile(path.join(FIXTURE_DIR, "does-not-exist.jsonl"))
+    expect(parsed).toBeNull()
+  })
 })

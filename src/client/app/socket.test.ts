@@ -122,27 +122,31 @@ describe("KannaSocket", () => {
   let documentTarget: FakeEventTarget & { visibilityState: "visible" | "hidden" }
   let timers: FakeTimers
 
+  function setGlobal(key: "window" | "document" | "WebSocket", value: unknown) {
+    Object.defineProperty(globalThis, key, { value, configurable: true, writable: true })
+  }
+
   beforeEach(() => {
     FakeWebSocket.instances = []
     timers = new FakeTimers()
     windowTarget = new FakeEventTarget()
     documentTarget = Object.assign(new FakeEventTarget(), { visibilityState: "visible" as const })
 
-    ;(globalThis as any).window = Object.assign(windowTarget, {
+    setGlobal("window", Object.assign(windowTarget, {
       setTimeout: timers.setTimeout,
       clearTimeout: timers.clearTimeout,
       setInterval: timers.setInterval,
       clearInterval: timers.clearInterval,
       location: { protocol: "http:", host: "localhost:3211" },
-    })
-    ;(globalThis as any).document = documentTarget
-    ;(globalThis as any).WebSocket = FakeWebSocket
+    }))
+    setGlobal("document", documentTarget)
+    setGlobal("WebSocket", FakeWebSocket)
   })
 
   afterEach(() => {
-    ;(globalThis as any).window = originalWindow
-    ;(globalThis as any).document = originalDocument
-    ;(globalThis as any).WebSocket = originalWebSocket
+    setGlobal("window", originalWindow)
+    setGlobal("document", originalDocument)
+    setGlobal("WebSocket", originalWebSocket)
   })
 
   test("does not ping when the connection is already fresh", async () => {

@@ -5,10 +5,14 @@ const originalDocument = globalThis.document
 const originalWindow = globalThis.window
 const originalGetComputedStyle = globalThis.getComputedStyle
 
+function setGlobal(key: "window" | "document" | "getComputedStyle", value: unknown) {
+  Object.defineProperty(globalThis, key, { value, configurable: true, writable: true })
+}
+
 afterEach(() => {
-  globalThis.document = originalDocument
-  globalThis.window = originalWindow
-  globalThis.getComputedStyle = originalGetComputedStyle
+  setGlobal("document", originalDocument)
+  setGlobal("window", originalWindow)
+  setGlobal("getComputedStyle", originalGetComputedStyle)
 })
 
 function createFakeDocument() {
@@ -61,9 +65,9 @@ describe("getAppleMobileWebAppStatusBarStyle", () => {
 describe("syncThemeMetadata", () => {
   test("updates theme-color and color-scheme from the active theme", () => {
     const fakeDocument = createFakeDocument()
-    globalThis.document = fakeDocument as typeof document
-    globalThis.window = {} as typeof window
-    globalThis.getComputedStyle = (() => ({ backgroundColor: "rgb(34, 34, 34)" })) as typeof getComputedStyle
+    setGlobal("document", fakeDocument)
+    setGlobal("window", {})
+    setGlobal("getComputedStyle", () => ({ backgroundColor: "rgb(34, 34, 34)" }))
 
     syncThemeMetadata("dark")
 

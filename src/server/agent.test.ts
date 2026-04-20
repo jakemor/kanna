@@ -1341,9 +1341,14 @@ describe("AgentCoordinator claude integration", () => {
     ]
 
     const store = createFakeStore()
+    const stateChanges: Array<string | undefined> = []
+    let releaseCommands: (value: SlashCommand[]) => void
+    const commandsReady = new Promise<SlashCommand[]>((resolve) => {
+      releaseCommands = resolve
+    })
     const coordinator = new AgentCoordinator({
       store: store as never,
-      onStateChange: () => {},
+      onStateChange: (chatId) => { stateChanges.push(chatId) },
       startClaudeSession: async () => ({
         provider: "claude",
         stream: events,
@@ -1352,7 +1357,7 @@ describe("AgentCoordinator claude integration", () => {
         close: () => {},
         setModel: async () => {},
         setPermissionMode: async () => {},
-        getSupportedCommands: async () => commandsFromSDK,
+        getSupportedCommands: () => commandsReady,
         sendPrompt: async () => {
           events.push({
             type: "transcript" as const,
@@ -1376,10 +1381,21 @@ describe("AgentCoordinator claude integration", () => {
       model: "claude-opus-4-1",
     })
     await waitFor(() => store.turnFinishedCount === 1)
+    // Let any pending coordinator state emits flush before we capture the
+    // baseline so the post-release growth strictly reflects the commands-
+    // loaded emit.
+    await new Promise((r) => setTimeout(r, 50))
+
+    const stateChangesBeforeLoad = stateChanges.length
+    releaseCommands!(commandsFromSDK)
+
     await waitFor(() => store.commandsLoaded.length === 1)
 
     expect(store.commandsLoaded[0].chatId).toBe("chat-1")
     expect(store.commandsLoaded[0].commands).toEqual(commandsFromSDK)
+    // Coordinator must nudge subscribers after persisting commands so freshly
+    // loaded slash commands reach the client.
+    await waitFor(() => stateChanges.length > stateChangesBeforeLoad)
 
     events.close()
   })

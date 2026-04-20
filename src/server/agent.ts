@@ -660,12 +660,7 @@ async function startClaudeSession(args: {
     },
     getSupportedCommands: async () => {
       try {
-        const commands = await q.supportedCommands()
-        return commands.map((c) => ({
-          name: c.name,
-          description: c.description,
-          argumentHint: c.argumentHint,
-        }))
+        return await q.supportedCommands()
       } catch (error) {
         console.warn("[kanna/claude] supportedCommands failed", error)
         return []

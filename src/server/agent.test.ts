@@ -1273,6 +1273,7 @@ describe("AgentCoordinator claude integration", () => {
           close: () => {},
           setModel: async () => {},
           setPermissionMode: async () => {},
+          getSupportedCommands: async () => [],
           sendPrompt: async (content: string) => {
             prompts.push(content)
             if (prompts.length === 1) {
@@ -1347,6 +1348,7 @@ describe("AgentCoordinator claude integration", () => {
         close: () => {},
         setModel: async () => {},
         setPermissionMode: async () => {},
+        getSupportedCommands: async () => [],
         sendPrompt: async () => {
           events.push({
             type: "transcript" as const,
@@ -1414,6 +1416,7 @@ describe("AgentCoordinator claude integration", () => {
         close: () => {},
         setModel: async () => {},
         setPermissionMode: async () => {},
+        getSupportedCommands: async () => [],
         sendPrompt: async (content: string) => {
           prompts.push(content)
         },

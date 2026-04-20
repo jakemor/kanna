@@ -8,6 +8,7 @@ import type {
   PendingToolSnapshot,
   KannaStatus,
   QueuedChatMessage,
+  SlashCommand,
   TranscriptEntry,
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
@@ -79,6 +80,7 @@ interface ClaudeSessionHandle {
   sendPrompt: (content: string) => Promise<void>
   setModel: (model: string) => Promise<void>
   setPermissionMode: (planMode: boolean) => Promise<void>
+  getSupportedCommands: () => Promise<SlashCommand[]>
 }
 
 interface ClaudeSessionState {
@@ -655,6 +657,19 @@ async function startClaudeSession(args: {
     },
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
+    },
+    getSupportedCommands: async () => {
+      try {
+        const commands = await q.supportedCommands()
+        return commands.map((c) => ({
+          name: c.name,
+          description: c.description,
+          argumentHint: c.argumentHint,
+        }))
+      } catch (error) {
+        console.warn("[kanna/claude] supportedCommands failed", error)
+        return []
+      }
     },
     close: () => {
       promptQueue.close()

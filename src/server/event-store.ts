@@ -465,6 +465,7 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
+      // TODO(Task 3): handle session_commands_loaded (update chat.slashCommands)
     }
   }
 

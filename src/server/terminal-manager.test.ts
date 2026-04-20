@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtemp, mkdir, rm } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { TerminalManager } from "./terminal-manager"
@@ -23,6 +23,9 @@ beforeAll(async () => {
   tempProjectPath = await mkdtemp(path.join(os.tmpdir(), "kanna-terminal-manager-"))
   tempHomePath = await mkdtemp(path.join(os.tmpdir(), "kanna-terminal-home-"))
   await mkdir(path.join(tempHomePath, ".config"), { recursive: true })
+  // Create a minimal .zshrc to prevent the zsh-newuser-install interactive dialog
+  // from running on first login (which would intercept test input).
+  await writeFile(path.join(tempHomePath, ".zshrc"), "# minimal test config\n", "utf8")
   process.env.HOME = tempHomePath
   process.env.ZDOTDIR = tempHomePath
   process.env.HISTFILE = path.join(tempHomePath, ".zsh_history")
@@ -85,7 +88,9 @@ async function createSession(terminalId: string) {
   })
 
   manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
-  await waitFor(() => output.includes("__KANNA_READY__"), SHELL_START_TIMEOUT_MS)
+  // Wait for the actual command output (the bare string on its own line: __KANNA_READY__\r\n)
+  // rather than the terminal echo of the input (which also contains __KANNA_READY__ inside quotes).
+  await waitFor(() => output.includes("__KANNA_READY__\r\n"), SHELL_START_TIMEOUT_MS)
 
   return {
     manager,

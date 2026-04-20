@@ -198,10 +198,14 @@ function KannaLayout() {
   const handleImportClaudeSessions = useCallback(async () => {
     try {
       const result = await state.importClaudeSessions()
-      alert(
-        `Imported ${result.imported}, skipped ${result.skipped}, failed ${result.failed}.`
-          + (result.newProjects > 0 ? ` (${result.newProjects} new projects)` : ""),
-      )
+      const parts = [
+        `Imported ${result.imported}`,
+        `updated ${result.updated}`,
+        `skipped ${result.skipped}`,
+        `failed ${result.failed}`,
+      ]
+      const suffix = result.newProjects > 0 ? ` (${result.newProjects} new projects)` : ""
+      alert(`${parts.join(", ")}.${suffix}`)
     } catch (error) {
       console.error("[kanna/import] failed", error)
       alert("Import failed. See console for details.")

@@ -526,7 +526,7 @@ export interface KannaState {
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
-  importClaudeSessions: () => Promise<{ imported: number; skipped: number; failed: number; newProjects: number }>
+  importClaudeSessions: () => Promise<{ imported: number; updated: number; skipped: number; failed: number; newProjects: number }>
   handleCopyPath: (localPath: string) => Promise<void>
   handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
@@ -1461,7 +1461,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [socket])
 
   const importClaudeSessions = useCallback(async () => {
-    const result = await socket.command<{ imported: number; skipped: number; failed: number; newProjects: number }>({ type: "sessions.importClaude" })
+    const result = await socket.command<{ imported: number; updated: number; skipped: number; failed: number; newProjects: number }>({ type: "sessions.importClaude" })
     return result
   }, [socket])
 

@@ -8,6 +8,7 @@ import type {
   PendingToolSnapshot,
   KannaStatus,
   QueuedChatMessage,
+  SlashCommand,
   TranscriptEntry,
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
@@ -79,6 +80,7 @@ interface ClaudeSessionHandle {
   sendPrompt: (content: string) => Promise<void>
   setModel: (model: string) => Promise<void>
   setPermissionMode: (planMode: boolean) => Promise<void>
+  getSupportedCommands: () => Promise<SlashCommand[]>
 }
 
 interface ClaudeSessionState {
@@ -656,6 +658,14 @@ async function startClaudeSession(args: {
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
     },
+    getSupportedCommands: async () => {
+      try {
+        return await q.supportedCommands()
+      } catch (error) {
+        console.warn("[kanna/claude] supportedCommands failed", error)
+        return []
+      }
+    },
     close: () => {
       promptQueue.close()
       q.close()
@@ -673,6 +683,7 @@ export class AgentCoordinator {
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
+  private readonly slashCommandsInFlight = new Set<string>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -704,6 +715,10 @@ export class AgentCoordinator {
     return new Set(this.drainingStreams.keys())
   }
 
+  getSlashCommandsLoadingChatIds(): Set<string> {
+    return new Set(this.slashCommandsInFlight)
+  }
+
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
     this.onStateChange(chatId, options)
   }
@@ -726,6 +741,50 @@ export class AgentCoordinator {
     draining.turn.close()
     this.drainingStreams.delete(chatId)
     this.emitStateChange(chatId)
+  }
+
+  async ensureSlashCommandsLoaded(chatId: string): Promise<void> {
+    const chat = this.store.getChat(chatId)
+    if (!chat) return
+    if (chat.provider === "codex") return
+    if (chat.slashCommands && chat.slashCommands.length > 0) return
+    if (this.slashCommandsInFlight.has(chatId)) return
+
+    const project = this.store.getProject(chat.projectId)
+    if (!project) return
+
+    this.slashCommandsInFlight.add(chatId)
+    this.emitStateChange(chatId)
+    try {
+      let commands: SlashCommand[]
+      const existing = this.claudeSessions.get(chatId)
+      if (existing) {
+        commands = await existing.session.getSupportedCommands()
+      } else {
+        const defaultModel = normalizeServerModel("claude")
+        const defaultOptions = normalizeClaudeModelOptions(defaultModel)
+        const ephemeral = await this.startClaudeSessionFn({
+          localPath: project.localPath,
+          model: resolveClaudeApiModelId(defaultModel, defaultOptions.contextWindow),
+          effort: defaultOptions.reasoningEffort,
+          planMode: chat.planMode ?? false,
+          sessionToken: chat.sessionToken ?? null,
+          onToolRequest: async () => null,
+        })
+        try {
+          commands = await ephemeral.getSupportedCommands()
+        } finally {
+          ephemeral.close()
+        }
+      }
+      await this.store.recordSessionCommandsLoaded(chatId, commands)
+      this.emitStateChange(chatId)
+    } catch (error) {
+      console.warn("[kanna/agent] ensureSlashCommandsLoaded failed", error)
+    } finally {
+      this.slashCommandsInFlight.delete(chatId)
+      this.emitStateChange(chatId)
+    }
   }
 
   async closeChat(chatId: string) {
@@ -1077,6 +1136,15 @@ export class AgentCoordinator {
       }
       this.claudeSessions.set(args.chatId, session)
       void this.runClaudeSession(session)
+      void (async () => {
+        try {
+          const commands = await started.getSupportedCommands()
+          await this.store.recordSessionCommandsLoaded(args.chatId, commands)
+          this.emitStateChange(args.chatId)
+        } catch (error) {
+          console.warn("[kanna/agent] failed to load slash commands", error)
+        }
+      })()
     } else {
       if (session.model !== args.model) {
         await session.session.setModel(args.model)

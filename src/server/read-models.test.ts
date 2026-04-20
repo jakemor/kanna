@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import { createEmptyState } from "./events"
+import type { SlashCommand } from "../shared/types"
 
 describe("read models", () => {
   test("include provider data in sidebar rows", () => {
@@ -71,6 +72,7 @@ describe("read models", () => {
     const chat = deriveChatSnapshot(
       state,
       new Map(),
+      new Set(),
       new Set(),
       "chat-1",
       () => ({
@@ -254,5 +256,52 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual(["chat-1"])
     expect(sidebar.projectGroups[0]?.olderChats.map((chat) => chat.chatId)).toEqual(["chat-2"])
     expect(sidebar.projectGroups[0]?.defaultCollapsed).toBe(false)
+  })
+
+  test("passes slash commands from ChatRecord through to ChatSnapshot", () => {
+    const slashCommands: SlashCommand[] = [
+      { name: "review", description: "r", argumentHint: "<pr>" },
+    ]
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: "claude",
+      planMode: false,
+      sessionToken: null,
+      sourceHash: null,
+      lastTurnOutcome: null,
+      slashCommands,
+    })
+
+    const snapshot = deriveChatSnapshot(
+      state,
+      new Map(),
+      new Set(),
+      new Set(),
+      "chat-1",
+      () => ({
+        messages: [],
+        history: {
+          hasOlder: false,
+          olderCursor: null,
+          recentLimit: 200,
+        },
+      })
+    )
+
+    expect(snapshot?.slashCommands).toEqual(slashCommands)
   })
 })

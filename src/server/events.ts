@@ -1,4 +1,4 @@
-import type { AgentProvider, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ProjectSummary, QueuedChatMessage, SlashCommand, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
   deletedAt?: number
@@ -19,6 +19,7 @@ export interface ChatRecord {
   hasMessages?: boolean
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
+  slashCommands?: SlashCommand[]
 }
 
 export interface StoreState {
@@ -165,6 +166,13 @@ export type TurnEvent =
       timestamp: number
       chatId: string
       sessionToken: string | null
+    }
+  | {
+      v: 2
+      type: "session_commands_loaded"
+      timestamp: number
+      chatId: string
+      commands: Array<{ name: string; description: string; argumentHint: string }>
     }
 
 export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | QueuedMessageEvent | TurnEvent

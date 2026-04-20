@@ -153,6 +153,7 @@ export function deriveChatSnapshot(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>,
   drainingChatIds: Set<string>,
+  slashCommandsLoadingChatIds: Set<string>,
   chatId: string,
   getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history">
 ): ChatSnapshot | null {
@@ -184,5 +185,7 @@ export function deriveChatSnapshot(
     messages: transcript.messages,
     history: transcript.history,
     availableProviders: [...SERVER_PROVIDERS],
+    slashCommands: (chat.slashCommands ?? []).map((c) => ({ ...c })),
+    slashCommandsLoading: slashCommandsLoadingChatIds.has(chat.id),
   }
 }

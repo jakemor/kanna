@@ -443,3 +443,78 @@ describe("EventStore", () => {
     expect(store.getChat(chat.id)?.id).toBe(chat.id)
   })
 })
+
+describe("recordSessionCommandsLoaded", () => {
+  test("stores latest commands on chat record", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordSessionCommandsLoaded(chat.id, [
+      { name: "review", description: "Review PR", argumentHint: "<pr>" },
+    ])
+
+    expect(store.getChat(chat.id)?.slashCommands).toEqual([
+      { name: "review", description: "Review PR", argumentHint: "<pr>" },
+    ])
+  })
+
+  test("replaces commands on subsequent load", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordSessionCommandsLoaded(chat.id, [
+      { name: "a", description: "", argumentHint: "" },
+    ])
+    await store.recordSessionCommandsLoaded(chat.id, [
+      { name: "b", description: "", argumentHint: "" },
+    ])
+
+    expect(store.getChat(chat.id)?.slashCommands).toEqual([
+      { name: "b", description: "", argumentHint: "" },
+    ])
+  })
+
+  test("skips redundant writes when commands are unchanged", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const turnsLogPath = join(dataDir, "turns.jsonl")
+
+    const commands = [{ name: "review", description: "Review", argumentHint: "<pr>" }]
+    await store.recordSessionCommandsLoaded(chat.id, commands)
+    const afterFirst = (await readFile(turnsLogPath, "utf8")).trim().split("\n").length
+
+    await store.recordSessionCommandsLoaded(chat.id, [...commands.map((c) => ({ ...c }))])
+    const afterSecond = (await readFile(turnsLogPath, "utf8")).trim().split("\n").length
+
+    expect(afterSecond).toBe(afterFirst)
+  })
+
+  test("compaction + reload preserves slashCommands on chat records", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    const commands = [
+      { name: "review", description: "Review PR", argumentHint: "<pr>" },
+      { name: "help", description: "Show help", argumentHint: "" },
+    ]
+    await store.recordSessionCommandsLoaded(chat.id, commands)
+    await store.compact()
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+
+    expect(reloaded.getChat(chat.id)?.slashCommands).toEqual(commands)
+  })
+})

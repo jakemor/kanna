@@ -869,12 +869,20 @@ export interface ChatHistorySnapshot {
   recentLimit: number
 }
 
+export interface SlashCommand {
+  name: string
+  description: string
+  argumentHint: string
+}
+
 export interface ChatSnapshot {
   runtime: ChatRuntime
   queuedMessages: QueuedChatMessage[]
   messages: TranscriptEntry[]
   history: ChatHistorySnapshot
   availableProviders: ProviderCatalogEntry[]
+  slashCommands: SlashCommand[]
+  slashCommandsLoading: boolean
 }
 
 export interface ChatHistoryPage {

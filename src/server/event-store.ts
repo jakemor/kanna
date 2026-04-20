@@ -3,7 +3,7 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, SlashCommand, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -76,6 +76,8 @@ function getReplayEventPriority(event: StoreEvent) {
       return 5
     case "session_token_set":
       return 6
+    case "session_commands_loaded":
+      return 6
     case "turn_cancelled":
       return 7
     case "turn_finished":
@@ -104,6 +106,18 @@ function decodeCursor(cursor: string) {
   }
 
   throw new Error("Invalid history cursor")
+}
+
+function slashCommandsEqual(a: SlashCommand[], b: SlashCommand[]) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    const ai = a[i]
+    const bi = b[i]
+    if (ai.name !== bi.name || ai.description !== bi.description || ai.argumentHint !== bi.argumentHint) {
+      return false
+    }
+  }
+  return true
 }
 
 function getHistorySnapshot(page: TranscriptPageResult, recentLimit: number): ChatHistorySnapshot {
@@ -462,6 +476,13 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
+      case "session_commands_loaded": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.slashCommands = event.commands.map((c) => ({ ...c }))
+        chat.updatedAt = event.timestamp
+        break
+      }
     }
   }
 
@@ -816,6 +837,26 @@ export class EventStore {
       timestamp: Date.now(),
       chatId,
       sessionToken,
+    }
+    await this.append(this.turnsLogPath, event)
+  }
+
+  async recordSessionCommandsLoaded(chatId: string, commands: SlashCommand[]) {
+    const chat = this.requireChat(chatId)
+    const normalized = commands.map((c) => ({
+      name: c.name,
+      description: c.description,
+      argumentHint: c.argumentHint,
+    }))
+    if (chat.slashCommands && slashCommandsEqual(chat.slashCommands, normalized)) {
+      return
+    }
+    const event: TurnEvent = {
+      v: STORE_VERSION,
+      type: "session_commands_loaded",
+      timestamp: Date.now(),
+      chatId,
+      commands: normalized,
     }
     await this.append(this.turnsLogPath, event)
   }

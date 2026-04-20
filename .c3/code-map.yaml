@@ -1,0 +1,228 @@
+# C3 code-map: maps component and ref IDs to source file glob patterns.
+# Edit patterns, then verify with: c3x coverage
+
+# ---- Components ----
+
+# Client foundation
+c3-101:
+  - src/client/app/socket.ts
+  - src/client/app/socket.test.ts
+c3-102:
+  - src/client/stores/**/*.ts
+c3-103:
+  - src/client/components/ui/**/*.tsx
+
+# Client features
+c3-110:
+  - src/main.tsx
+  - src/client/app/App.tsx
+  - src/client/app/App.test.tsx
+  - src/client/app/useKannaState.ts
+  - src/client/app/useKannaState.test.ts
+  - src/client/app/derived.ts
+  - src/client/app/chatFocusPolicy.ts
+  - src/client/app/chatFocusPolicy.test.ts
+  - src/client/app/chatNotifications.ts
+  - src/client/app/PageHeader.tsx
+  - src/client/components/LocalDev.tsx
+  - src/client/hooks/**/*.ts
+  - src/client/hooks/**/*.tsx
+  - src/client/lib/**/*.ts
+c3-111:
+  - src/client/app/KannaSidebar.tsx
+  - src/client/app/sidebarNumberJump.ts
+  - src/client/app/sidebarNumberJump.test.ts
+c3-112:
+  - src/client/app/ChatPage/**/*.ts
+  - src/client/app/ChatPage/**/*.tsx
+  - src/client/app/ChatPage.test.ts
+  - src/client/app/useStickyChatFocus.ts
+  - src/client/app/useRightSidebarToggleAnimation.ts
+  - src/client/app/useTerminalToggleAnimation.ts
+c3-113:
+  - src/client/app/KannaTranscript.tsx
+  - src/client/app/KannaTranscript.test.tsx
+c3-114:
+  - src/client/components/messages/**/*.tsx
+  - src/client/components/messages/**/*.ts
+c3-115:
+  - src/client/components/chat-ui/**/*.tsx
+  - src/client/components/chat-ui/**/*.ts
+c3-116:
+  - src/client/app/SettingsPage.tsx
+  - src/client/app/SettingsPage.test.tsx
+c3-117:
+  - src/client/app/LocalProjectsPage.tsx
+  - src/client/components/NewProjectModal.tsx
+c3-118:
+  - src/client/app/ChatPage/TerminalWorkspaceShell.tsx
+  - src/client/app/terminalToggleAnimation.ts
+  - src/client/app/terminalToggleAnimation.test.ts
+  - src/client/app/terminalLayoutResize.ts
+  - src/client/app/terminalLayoutResize.test.ts
+
+# Server foundation
+c3-201:
+  - src/server/cli.ts
+  - src/server/cli-runtime.ts
+  - src/server/cli-runtime.test.ts
+  - src/server/cli-supervisor.ts
+c3-202:
+  - src/server/server.ts
+c3-203:
+  - src/server/auth.ts
+  - src/server/auth.test.ts
+c3-204:
+  - src/server/paths.ts
+  - src/server/machine-name.ts
+c3-205:
+  - src/server/events.ts
+  - src/server/harness-types.ts
+c3-206:
+  - src/server/event-store.ts
+  - src/server/event-store.test.ts
+c3-207:
+  - src/server/read-models.ts
+  - src/server/read-models.test.ts
+c3-208:
+  - src/server/ws-router.ts
+  - src/server/ws-router.test.ts
+c3-209:
+  - src/server/process-utils.ts
+  - src/server/process-utils.test.ts
+
+# Server features
+c3-210:
+  - src/server/agent.ts
+  - src/server/agent.test.ts
+c3-211:
+  - src/server/codex-app-server.ts
+  - src/server/codex-app-server.test.ts
+  - src/server/codex-app-server-protocol.ts
+c3-212:
+  - src/server/provider-catalog.ts
+  - src/server/provider-catalog.test.ts
+c3-213:
+  - src/server/quick-response.ts
+  - src/server/quick-response.test.ts
+  - src/server/generate-title.ts
+  - src/server/title-generation.live.test.ts
+  - src/server/generate-commit-message.ts
+  - src/server/generate-commit-message.test.ts
+  - src/server/llm-provider.ts
+  - src/server/llm-provider.test.ts
+c3-214:
+  - src/server/discovery.ts
+  - src/server/discovery.test.ts
+c3-215:
+  - src/server/diff-store.ts
+  - src/server/diff-store.test.ts
+c3-216:
+  - src/server/terminal-manager.ts
+  - src/server/terminal-manager.test.ts
+c3-217:
+  - src/server/uploads.ts
+  - src/server/uploads.test.ts
+c3-218:
+  - src/server/share.ts
+  - src/server/share.test.ts
+c3-219:
+  - src/server/update-manager.ts
+  - src/server/update-manager.test.ts
+c3-220:
+  - src/server/restart.ts
+  - src/server/restart.test.ts
+c3-221:
+  - src/server/external-open.ts
+  - src/server/external-open.test.ts
+c3-222:
+  - src/server/keybindings.ts
+  - src/server/keybindings.test.ts
+
+# Shared
+c3-301:
+  - src/shared/types.ts
+c3-302:
+  - src/shared/protocol.ts
+c3-303:
+  - src/shared/tools.ts
+  - src/shared/tools.test.ts
+c3-304:
+  - src/shared/ports.ts
+  - src/shared/dev-ports.ts
+  - src/shared/dev-ports.test.ts
+c3-305:
+  - src/shared/branding.ts
+  - src/shared/branding.test.ts
+c3-306:
+  - src/shared/share.ts
+
+# ---- Refs ----
+
+ref-event-sourcing:
+  - src/server/events.ts
+  - src/server/event-store.ts
+  - src/server/event-store.test.ts
+ref-cqrs-read-models:
+  - src/server/read-models.ts
+  - src/server/read-models.test.ts
+ref-ws-subscription:
+  - src/shared/protocol.ts
+  - src/server/ws-router.ts
+  - src/client/app/socket.ts
+ref-provider-adapter:
+  - src/server/agent.ts
+  - src/server/provider-catalog.ts
+  - src/server/codex-app-server.ts
+  - src/server/codex-app-server-protocol.ts
+  - src/server/quick-response.ts
+  - src/server/llm-provider.ts
+ref-zustand-store:
+  - src/client/stores/**/*.ts
+ref-colocated-bun-test:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.live.test.ts"
+ref-strong-typing:
+  - src/shared/**/*.ts
+  - tsconfig.json
+ref-local-first-data:
+  - src/server/paths.ts
+  - src/shared/branding.ts
+  - src/server/cli.ts
+  - src/server/auth.ts
+ref-tool-hydration:
+  - src/shared/tools.ts
+  - src/shared/tools.test.ts
+  - src/client/components/messages/**/*.tsx
+  - src/server/agent.ts
+
+# ---- Exclusions (not counted in coverage) ----
+_exclude:
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+  - "**/*.live.test.ts"
+  - dist/**
+  - scripts/**
+  - bin/**
+  - public/**
+  - docs/**
+  - assets/**
+  - "*.config.js"
+  - "*.config.ts"
+  - "vite.config.ts"
+  - "tailwind.config.js"
+  - "postcss.config.js"
+  - "tsconfig.json"
+  - "package.json"
+  - "bun.lock"
+  - "skills-lock.json"
+  - "index.html"
+  - ".c3/**"
+  - ".claude/**"
+  - ".github/**"
+  - ".agents/**"
+  - "README.md"
+  - "LICENSE"
+  - ".gitignore"
+  - "src/index.css"

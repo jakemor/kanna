@@ -30,12 +30,12 @@ export function SlashCommandPicker({ items, activeIndex, loading, onSelect, onHo
         {Array.from({ length: SKELETON_ROWS }).map((_, i) => (
           <li
             key={i}
-            className="flex items-baseline gap-2 px-3 py-1.5"
+            className="grid grid-cols-[10rem_6rem_1fr] items-center gap-2 px-3 py-1.5"
             data-testid="slash-picker-skeleton-row"
           >
             <span className="h-3 w-20 rounded bg-muted animate-pulse" />
             <span className="h-3 w-12 rounded bg-muted/70 animate-pulse" />
-            <span className="ml-auto h-3 w-32 rounded bg-muted/60 animate-pulse" />
+            <span className="h-3 w-32 rounded bg-muted/60 animate-pulse justify-self-end" />
           </li>
         ))}
       </ul>
@@ -67,17 +67,17 @@ export function SlashCommandPicker({ items, activeIndex, loading, onSelect, onHo
           }}
           onMouseEnter={() => onHoverIndex(i)}
           className={cn(
-            "flex items-baseline gap-2 px-3 py-1.5 cursor-pointer text-sm",
+            "grid grid-cols-[10rem_6rem_1fr] items-center gap-2 px-3 py-1.5 cursor-pointer text-sm",
             i === activeIndex && "bg-accent text-accent-foreground",
           )}
         >
-          <span className="font-mono">/{cmd.name}</span>
-          {cmd.argumentHint && (
-            <span className="text-muted-foreground font-mono text-xs">{cmd.argumentHint}</span>
-          )}
-          {cmd.description && (
-            <span className="ml-auto text-muted-foreground text-xs truncate">{cmd.description}</span>
-          )}
+          <span className="font-mono truncate whitespace-nowrap">/{cmd.name}</span>
+          <span className="text-muted-foreground font-mono text-xs truncate whitespace-nowrap">
+            {cmd.argumentHint ?? ""}
+          </span>
+          <span className="text-muted-foreground text-xs truncate whitespace-nowrap text-right">
+            {cmd.description ?? ""}
+          </span>
         </li>
       ))}
     </ul>

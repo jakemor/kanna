@@ -1,0 +1,103 @@
+import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { EventStore } from "./event-store"
+import { importClaudeSessions } from "./claude-session-importer"
+
+function fresh() {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "kanna-data-"))
+  const homeDir = mkdtempSync(path.join(tmpdir(), "kanna-home-"))
+  const realProj = mkdtempSync(path.join(tmpdir(), "kanna-proj-"))
+  return {
+    dataDir,
+    homeDir,
+    realProj,
+    cleanup: () => {
+      rmSync(dataDir, { recursive: true, force: true })
+      rmSync(homeDir, { recursive: true, force: true })
+      rmSync(realProj, { recursive: true, force: true })
+    },
+  }
+}
+
+function seedSession(homeDir: string, realProj: string, sessionId: string) {
+  const folderName = realProj.replace(/\//g, "-")
+  const projDir = path.join(homeDir, ".claude", "projects", folderName)
+  mkdirSync(projDir, { recursive: true })
+  const line1 = JSON.stringify({
+    type: "user",
+    uuid: "u1",
+    sessionId,
+    cwd: realProj,
+    timestamp: "2026-04-20T10:00:00.000Z",
+    message: { role: "user", content: "hi" },
+  })
+  const line2 = JSON.stringify({
+    type: "assistant",
+    uuid: "a1",
+    sessionId,
+    cwd: realProj,
+    timestamp: "2026-04-20T10:00:01.000Z",
+    message: { role: "assistant", id: "m1", content: [{ type: "text", text: "hello" }] },
+  })
+  writeFileSync(path.join(projDir, `${sessionId}.jsonl`), `${line1}\n${line2}\n`, "utf8")
+}
+
+describe("importClaudeSessions", () => {
+  test("imports a session, creating project + chat + messages", async () => {
+    const ctx = fresh()
+    try {
+      seedSession(ctx.homeDir, ctx.realProj, "sess-aaa")
+      const store = new EventStore(ctx.dataDir)
+      await store.initialize()
+
+      const result = await importClaudeSessions({ store, homeDir: ctx.homeDir })
+
+      expect(result.imported).toBe(1)
+      expect(result.skipped).toBe(0)
+      expect(result.failed).toBe(0)
+
+      const chats = [...store.state.chatsById.values()].filter((c) => !c.deletedAt)
+      expect(chats.length).toBe(1)
+      expect(chats[0].sessionToken).toBe("sess-aaa")
+      expect(chats[0].provider).toBe("claude")
+      expect(store.getMessages(chats[0].id).length).toBe(2)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  test("re-import is a no-op (dedup by sessionToken)", async () => {
+    const ctx = fresh()
+    try {
+      seedSession(ctx.homeDir, ctx.realProj, "sess-bbb")
+      const store = new EventStore(ctx.dataDir)
+      await store.initialize()
+
+      await importClaudeSessions({ store, homeDir: ctx.homeDir })
+      const second = await importClaudeSessions({ store, homeDir: ctx.homeDir })
+
+      expect(second.imported).toBe(0)
+      expect(second.skipped).toBe(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+
+  test("skips session whose cwd no longer exists", async () => {
+    const ctx = fresh()
+    try {
+      seedSession(ctx.homeDir, ctx.realProj, "sess-ccc")
+      rmSync(ctx.realProj, { recursive: true, force: true })
+      const store = new EventStore(ctx.dataDir)
+      await store.initialize()
+
+      const result = await importClaudeSessions({ store, homeDir: ctx.homeDir })
+      expect(result.imported).toBe(0)
+      expect(result.failed).toBe(1)
+    } finally {
+      ctx.cleanup()
+    }
+  })
+})

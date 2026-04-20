@@ -1,4 +1,8 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { SlashCommandPicker } from "./SlashCommandPicker"
+import { applyCommandToInput, filterCommands, shouldShowPicker } from "../../lib/slash-commands"
+import { useSlashCommands } from "../../hooks/useSlashCommands"
+import type { SlashCommand } from "../../../shared/types"
 import { ArrowUp, Paperclip } from "lucide-react"
 import {
   type AgentProvider,
@@ -220,6 +224,50 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const providerLocked = activeProvider !== null
   const providerPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
   const selectedProvider = providerLocked ? activeProvider : composerState.provider
+  const slashCommands = useSlashCommands(chatId ?? null)
+  const [pickerIndex, setPickerIndex] = useState(0)
+  const [pickerDismissed, setPickerDismissed] = useState(false)
+  const [caretVersion, setCaretVersion] = useState(0)
+
+  useEffect(() => { setPickerDismissed(false) }, [value])
+
+  const caret = textareaRef.current?.selectionStart ?? value.length
+  const pickerTrigger = useMemo(
+    () => shouldShowPicker(value, caret),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [value, caret, caretVersion],
+  )
+  const filteredCommands = useMemo(
+    () => (pickerTrigger.open ? filterCommands(slashCommands, pickerTrigger.query) : []),
+    [pickerTrigger.open, pickerTrigger.query, slashCommands],
+  )
+  const pickerOpen =
+    pickerTrigger.open &&
+    slashCommands.length > 0 &&
+    !pickerDismissed &&
+    selectedProvider === "claude"
+
+  useEffect(() => {
+    if (pickerOpen) setPickerIndex(0)
+  }, [pickerOpen, pickerTrigger.query])
+
+  function acceptCommand(cmd: SlashCommand) {
+    const { value: nextValue, caret: nextCaret } = applyCommandToInput({
+      value,
+      caret,
+      command: cmd,
+    })
+    setValue(nextValue)
+    if (chatId) setDraft(chatId, nextValue)
+    setPickerDismissed(false)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(nextCaret, nextCaret)
+    })
+  }
+
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
   const activeContextWindow = useMemo(() => {
@@ -553,6 +601,30 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }
 
   function handleKeyDown(event: React.KeyboardEvent) {
+    if (pickerOpen) {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setPickerDismissed(true)
+        return
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault()
+        setPickerIndex((i) => Math.min(filteredCommands.length - 1, i + 1))
+        return
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault()
+        setPickerIndex((i) => Math.max(0, i - 1))
+        return
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault()
+        const cmd = filteredCommands[pickerIndex]
+        if (cmd) acceptCommand(cmd)
+        return
+      }
+    }
+
     if (event.key === "Tab" && !event.shiftKey) {
       event.preventDefault()
       focusNextChatInput(textareaRef.current, document)
@@ -684,7 +756,15 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             </ScrollArea>
           ) : null}
 
-          <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
+          <div className="relative flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
+            {pickerOpen && (
+              <SlashCommandPicker
+                items={filteredCommands}
+                activeIndex={pickerIndex}
+                onSelect={acceptCommand}
+                onHoverIndex={setPickerIndex}
+              />
+            )}
             <label
               aria-label="Add attachment"
               className={cn(
@@ -720,7 +800,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 setValue(event.target.value)
                 if (chatId) setDraft(chatId, event.target.value)
                 autoResize()
+                setCaretVersion((v) => v + 1)
               }}
+              onSelect={() => setCaretVersion((v) => v + 1)}
+              onKeyUp={() => setCaretVersion((v) => v + 1)}
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}
               disabled={disabled}

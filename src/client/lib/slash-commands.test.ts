@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { shouldShowPicker, filterCommands } from "./slash-commands"
+import { applyCommandToInput, shouldShowPicker, filterCommands } from "./slash-commands"
 import type { SlashCommand } from "../../shared/types"
 
 describe("shouldShowPicker", () => {
@@ -77,5 +77,44 @@ describe("filterCommands", () => {
       { name: "help", description: "review this", argumentHint: "<pr>" },
     ]
     expect(filterCommands(list, "review")).toEqual([])
+  })
+})
+
+describe("applyCommandToInput", () => {
+  test("replaces the /token at caret with /name and trailing space when argumentHint present", () => {
+    const result = applyCommandToInput({
+      value: "/rev",
+      caret: 4,
+      command: { name: "review", description: "", argumentHint: "<pr>" },
+    })
+    expect(result).toEqual({ value: "/review ", caret: 8 })
+  })
+
+  test("omits trailing space when argumentHint is empty", () => {
+    const result = applyCommandToInput({
+      value: "/hel",
+      caret: 4,
+      command: { name: "help", description: "", argumentHint: "" },
+    })
+    expect(result).toEqual({ value: "/help", caret: 5 })
+  })
+
+  test("leaves input unchanged if caret is not inside a slash token", () => {
+    const result = applyCommandToInput({
+      value: "hello",
+      caret: 5,
+      command: { name: "review", description: "", argumentHint: "" },
+    })
+    expect(result).toEqual({ value: "hello", caret: 5 })
+  })
+
+  test("preserves content after caret", () => {
+    const result = applyCommandToInput({
+      value: "/rev rest",
+      caret: 4,
+      command: { name: "review", description: "", argumentHint: "" },
+    })
+    // This input is "/rev" + " rest"; caret at 4 means we replace "/rev"
+    expect(result).toEqual({ value: "/review rest", caret: 7 })
   })
 })

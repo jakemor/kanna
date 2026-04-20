@@ -2,6 +2,24 @@ import type { SlashCommand } from "../../shared/types"
 
 const SLASH_TOKEN_PATTERN = /^\/(\S*)$/
 
+export function applyCommandToInput(args: {
+  value: string
+  caret: number
+  command: SlashCommand
+}): { value: string; caret: number } {
+  const { command, value, caret } = args
+  const upToCaret = value.slice(0, caret)
+  const afterCaret = value.slice(caret)
+  const match = /^\/(\S*)$/.exec(upToCaret)
+  if (!match) return { value, caret }
+  const tokenLength = match[0].length
+  const before = upToCaret.slice(0, upToCaret.length - tokenLength)
+  const replacement = command.argumentHint ? `/${command.name} ` : `/${command.name}`
+  const nextValue = `${before}${replacement}${afterCaret}`
+  const nextCaret = before.length + replacement.length
+  return { value: nextValue, caret: nextCaret }
+}
+
 export function shouldShowPicker(
   value: string,
   caret: number,

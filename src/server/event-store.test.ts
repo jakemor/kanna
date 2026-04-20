@@ -443,3 +443,40 @@ describe("EventStore", () => {
     expect(store.getChat(chat.id)?.id).toBe(chat.id)
   })
 })
+
+describe("recordSessionCommandsLoaded", () => {
+  test("stores latest commands on chat record", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordSessionCommandsLoaded(chat.id, [
+      { name: "review", description: "Review PR", argumentHint: "<pr>" },
+    ])
+
+    expect(store.getChat(chat.id)?.slashCommands).toEqual([
+      { name: "review", description: "Review PR", argumentHint: "<pr>" },
+    ])
+  })
+
+  test("replaces commands on subsequent load", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordSessionCommandsLoaded(chat.id, [
+      { name: "a", description: "", argumentHint: "" },
+    ])
+    await store.recordSessionCommandsLoaded(chat.id, [
+      { name: "b", description: "", argumentHint: "" },
+    ])
+
+    expect(store.getChat(chat.id)?.slashCommands).toEqual([
+      { name: "b", description: "", argumentHint: "" },
+    ])
+  })
+})

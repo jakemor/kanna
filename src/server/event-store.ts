@@ -3,7 +3,7 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, SlashCommand, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -87,9 +87,8 @@ function getReplayEventPriority(event: StoreEvent) {
       return 9
     case "chat_deleted":
       return 10
-    // TODO(Task 3): assign final priority once reducer is implemented
     case "session_commands_loaded":
-      return 6
+      return 6 // same priority as session_token_set; both are independent turn-metadata events
   }
 }
 
@@ -465,7 +464,13 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
-      // TODO(Task 3): handle session_commands_loaded (update chat.slashCommands)
+      case "session_commands_loaded": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.slashCommands = event.commands.map((c) => ({ ...c }))
+        chat.updatedAt = event.timestamp
+        break
+      }
     }
   }
 
@@ -820,6 +825,22 @@ export class EventStore {
       timestamp: Date.now(),
       chatId,
       sessionToken,
+    }
+    await this.append(this.turnsLogPath, event)
+  }
+
+  async recordSessionCommandsLoaded(chatId: string, commands: SlashCommand[]) {
+    this.requireChat(chatId)
+    const event: TurnEvent = {
+      v: STORE_VERSION,
+      type: "session_commands_loaded",
+      timestamp: Date.now(),
+      chatId,
+      commands: commands.map((c) => ({
+        name: c.name,
+        description: c.description,
+        argumentHint: c.argumentHint,
+      })),
     }
     await this.append(this.turnsLogPath, event)
   }

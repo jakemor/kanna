@@ -121,15 +121,6 @@ type SelectedBranch =
       remoteRef?: string
     }
 
-async function fileExists(filePath: string) {
-  try {
-    await stat(filePath)
-    return true
-  } catch {
-    return false
-  }
-}
-
 async function runGit(args: string[], cwd: string) {
   const process = Bun.spawn(["git", "-C", cwd, ...args], {
     stdout: "pipe",

@@ -27,14 +27,29 @@ function cwdExists(cwd: string): boolean {
   }
 }
 
+function extractUserText(content: unknown): string | null {
+  if (typeof content === "string") {
+    const trimmed = content.trim()
+    return trimmed ? trimmed : null
+  }
+  if (!Array.isArray(content)) return null
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue
+    const blockRec = block as { type?: unknown; text?: unknown }
+    if (blockRec.type === "text" && typeof blockRec.text === "string") {
+      const trimmed = blockRec.text.trim()
+      if (trimmed) return trimmed
+    }
+  }
+  return null
+}
+
 function deriveTitle(session: ParsedClaudeSession): string {
   for (const record of session.records) {
     if (record.type !== "user") continue
     const content = (record as { message?: { content?: unknown } }).message?.content
-    if (typeof content === "string") {
-      const trimmed = content.trim()
-      if (trimmed) return trimmed.slice(0, 60)
-    }
+    const text = extractUserText(content)
+    if (text) return text.slice(0, 60)
   }
   return "Imported session"
 }

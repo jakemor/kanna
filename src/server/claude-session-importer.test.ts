@@ -100,4 +100,44 @@ describe("importClaudeSessions", () => {
       ctx.cleanup()
     }
   })
+
+  test("derives title from array-form user text", async () => {
+    const ctx = fresh()
+    try {
+      const folderName = ctx.realProj.replace(/\//g, "-")
+      const projDir = path.join(ctx.homeDir, ".claude", "projects", folderName)
+      mkdirSync(projDir, { recursive: true })
+      const line = JSON.stringify({
+        type: "user",
+        uuid: "u1",
+        sessionId: "sess-array",
+        cwd: ctx.realProj,
+        timestamp: "2026-04-20T10:00:00.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "analyse this repo" }],
+        },
+      })
+      const line2 = JSON.stringify({
+        type: "assistant",
+        uuid: "a1",
+        sessionId: "sess-array",
+        cwd: ctx.realProj,
+        timestamp: "2026-04-20T10:00:01.000Z",
+        message: { role: "assistant", id: "m1", content: [{ type: "text", text: "sure" }] },
+      })
+      writeFileSync(path.join(projDir, "sess-array.jsonl"), `${line}\n${line2}\n`, "utf8")
+
+      const store = new EventStore(ctx.dataDir)
+      await store.initialize()
+      const result = await importClaudeSessions({ store, homeDir: ctx.homeDir })
+      expect(result.imported).toBe(1)
+
+      const chats = [...store.state.chatsById.values()].filter((c) => !c.deletedAt)
+      expect(chats.length).toBe(1)
+      expect(chats[0].title).toBe("analyse this repo")
+    } finally {
+      ctx.cleanup()
+    }
+  })
 })

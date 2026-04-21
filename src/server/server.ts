@@ -13,6 +13,7 @@ import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
+import { createUpdateStrategy } from "./update-strategy"
 import { createWsRouter, type ClientState } from "./ws-router"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
@@ -102,14 +103,26 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const terminals = new TerminalManager()
   const keybindings = new KeybindingsManager()
   await keybindings.initialize()
-  const updateManager = options.update
-    ? new UpdateManager({
+  const updateManager: UpdateManager | null = (() => {
+    if (!options.update) return null
+    let manager: UpdateManager | null = null
+    const strategy = createUpdateStrategy({
+      reloaderEnv: process.env.KANNA_RELOADER,
       currentVersion: options.update.version,
       fetchLatestVersion: options.update.fetchLatestVersion,
       installVersion: options.update.installVersion,
+      latestVersionHint: () => manager?.getSnapshot().latestVersion ?? null,
+      repoDir: process.env.KANNA_REPO_DIR,
+      pm2ProcessName: process.env.KANNA_PM2_PROCESS_NAME,
+    })
+    manager = new UpdateManager({
+      currentVersion: options.update.version,
+      checker: strategy.checker,
+      reloader: strategy.reloader,
       devMode: getRuntimeProfile() === "dev",
     })
-    : null
+    return manager
+  })()
   const agent = new AgentCoordinator({
     store,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {

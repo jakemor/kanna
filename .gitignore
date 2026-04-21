@@ -31,3 +31,6 @@ vite.config.ts.timestamp-*
 
 # git worktrees
 .worktrees/
+
+# pm2 rendered config (generated from scripts/pm2.config.cjs.tmpl)
+scripts/pm2.config.cjs

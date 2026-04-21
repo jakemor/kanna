@@ -1,0 +1,20 @@
+module.exports = {
+  apps: [
+    {
+      name: "${PM2_NAME}",
+      script: "./src/server/cli.ts",
+      interpreter: "bun",
+      cwd: "${REPO_DIR}",
+      env: {
+        KANNA_RELOADER: "pm2",
+        KANNA_REPO_DIR: "${REPO_DIR}",
+        KANNA_PM2_PROCESS_NAME: "${PM2_NAME}",
+        KANNA_DISABLE_SELF_UPDATE: "1",
+        KANNA_CLI_MODE: "child",
+      },
+      autorestart: true,
+      max_memory_restart: "1G",
+      kill_timeout: 5000,
+    },
+  ],
+}

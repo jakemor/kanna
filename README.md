@@ -258,13 +258,13 @@ All state is stored locally at `~/.kanna/data/`:
 
 Event logs are append-only JSONL. On startup, Kanna replays the log tail after the last snapshot, then compacts if the logs exceed 2 MB.
 
-## Self-hosting on macOS (launchd + Cloudflare tunnel)
+## Self-hosting on macOS (pm2 + Cloudflare tunnel)
 
-Run Kanna as a background service on macOS, exposed through a named Cloudflare tunnel. Reload after code changes with one command.
+Run Kanna as a background service on macOS under [pm2](https://pm2.keymetrics.io/), exposed through a named Cloudflare tunnel. The in-app **Update** button then pulls the latest commit, rebuilds, and hot-reloads the pm2 process — no terminal round-trip needed.
 
 ### 1. Link the repo as the global install
 
-`bun link` makes the global `kanna` binary resolve to your checkout, so rebuilds go live without reinstalling:
+`bun link` makes the global `kanna` binary resolve to your checkout:
 
 ```bash
 cd ~/path/to/kanna
@@ -275,54 +275,51 @@ bun link           # registers kanna-code → repo
 
 After this, `~/.bun/install/global/node_modules/kanna-code` is a symlink to your repo.
 
-### 2. Create a launchd agent
+### 2. (Migrating from launchd) Unload the old agent
 
-Save to `~/Library/LaunchAgents/io.silentium.kanna.plist`, replacing `<TOKEN>` and `<PASSWORD>`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>io.silentium.kanna</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/YOU/.bun/bin/kanna</string>
-    <string>--cloudflared</string><string><TOKEN></string>
-    <string>--password</string><string><PASSWORD></string>
-    <string>--no-open</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/kanna.log</string>
-  <key>StandardErrorPath</key><string>/tmp/kanna.err</string>
-</dict>
-</plist>
-```
-
-Load it:
+If you previously ran Kanna under launchd, unload it once so pm2 can take over:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/io.silentium.kanna.plist
-launchctl list | grep kanna          # should show a nonzero PID
+launchctl bootout gui/$(id -u)/io.silentium.kanna || true
 ```
 
-### 3. Deploy script
+### 3. First deploy
 
-`scripts/deploy.sh` installs deps if needed, rebuilds the client, and restarts the launchd job:
+`scripts/deploy.sh` installs pm2 if missing, renders `scripts/pm2.config.cjs` from the template (via `envsubst` from `brew install gettext`), and starts the pm2 process:
 
 ```bash
 ./scripts/deploy.sh
+pm2 list               # kanna should be "online"
+pm2 logs kanna --lines 50
 ```
 
-Typical update flow after pulling new code:
+`pm2 save` persists the running process list. To resurrect after a reboot, run `pm2 startup` once (pm2 prints the exact command) and then `pm2 save` again.
+
+The pm2 config sets `KANNA_RELOADER=pm2` and `KANNA_REPO_DIR=<repo>` so the in-app Update button triggers the pm2 reload pipeline (see next section). Override the pm2 process name with `KANNA_PM2_PROCESS_NAME` before running `./scripts/deploy.sh` if you need to run multiple instances.
+
+### 4. Redeploy / update
+
+Two ways to ship a new build:
+
+**a. From the UI (fastest).** Click **Update** in the running app. The server runs `git pull --ff-only` → conditional `bun install` → `bun run build` → `pm2.reload` internally, and the UI reconnects to the fresh build. If any step fails, the UI shows a red banner with the stderr tail and the old build keeps serving.
+
+**b. From the terminal.** Useful for non-Kanna deploys (e.g., pm2 config edits) or when the UI is unreachable:
 
 ```bash
 git pull
 ./scripts/deploy.sh
 ```
 
-The tunnel reconnects in a few seconds and keeps the same public hostname configured on your Cloudflare tunnel.
+### 5. Update strategies
+
+The update mechanism is abstracted behind `UpdateChecker` + `UpdateReloader` interfaces in `src/server/update-strategy.ts`, selected at startup by `KANNA_RELOADER`:
+
+| `KANNA_RELOADER` | Check | Reload | Notes |
+|---|---|---|---|
+| unset / `supervisor` | npm registry for `kanna-code` | `bun install -g kanna-code@latest`, exit 76, supervisor respawns | Default. End-user path for `bunx kanna`. |
+| `pm2` | `git fetch` + `HEAD` vs `origin/main` | `git pull --ff-only` → cond. `bun install` → `bun run build` → `pm2 reload` | Dev/self-host path. Requires `KANNA_REPO_DIR`. |
+
+To add another reload mechanism (e.g., docker, systemd), implement the two interfaces and branch inside `createUpdateStrategy`; no changes to `UpdateManager`, `server.ts`, or any client code are needed.
 
 ## Star History
 

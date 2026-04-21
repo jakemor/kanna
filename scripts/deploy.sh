@@ -3,11 +3,12 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLOBAL_LINK="$HOME/.bun/install/global/node_modules/kanna-code"
-LAUNCHD_LABEL="io.silentium.kanna"
+PM2_NAME="${KANNA_PM2_PROCESS_NAME:-kanna}"
+PM2_TEMPLATE="$REPO_DIR/scripts/pm2.config.cjs.tmpl"
+PM2_CONFIG="$REPO_DIR/scripts/pm2.config.cjs"
 
 cd "$REPO_DIR"
 
-# One-time: replace global copy with symlink to repo
 if [[ ! -L "$GLOBAL_LINK" ]]; then
   echo "→ Linking $GLOBAL_LINK → $REPO_DIR"
   rm -rf "$GLOBAL_LINK"
@@ -15,7 +16,6 @@ if [[ ! -L "$GLOBAL_LINK" ]]; then
   ln -s "$REPO_DIR" "$GLOBAL_LINK"
 fi
 
-# Install deps if lockfile changed
 if [[ ! -d node_modules ]] || [[ package.json -nt node_modules ]] || [[ bun.lock -nt node_modules ]]; then
   echo "→ bun install"
   bun install
@@ -24,9 +24,26 @@ fi
 echo "→ bun run build"
 bun run build
 
-echo "→ launchctl kickstart -k gui/$(id -u)/$LAUNCHD_LABEL"
-launchctl kickstart -k "gui/$(id -u)/$LAUNCHD_LABEL"
+if ! command -v pm2 >/dev/null 2>&1; then
+  echo "→ bun install -g pm2"
+  bun install -g pm2
+fi
 
-sleep 2
-PID=$(launchctl list | awk -v l="$LAUNCHD_LABEL" '$3==l{print $1}')
-echo "✓ kanna running (PID $PID)"
+if ! command -v envsubst >/dev/null 2>&1; then
+  echo "✗ envsubst not found (install gettext: brew install gettext)" >&2
+  exit 1
+fi
+
+echo "→ render $PM2_CONFIG"
+REPO_DIR="$REPO_DIR" PM2_NAME="$PM2_NAME" envsubst '${REPO_DIR} ${PM2_NAME}' < "$PM2_TEMPLATE" > "$PM2_CONFIG"
+
+if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
+  echo "→ pm2 reload $PM2_NAME"
+  pm2 reload "$PM2_CONFIG" --update-env
+else
+  echo "→ pm2 start $PM2_NAME"
+  pm2 start "$PM2_CONFIG"
+fi
+
+pm2 save
+echo "✓ kanna running under pm2"

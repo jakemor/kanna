@@ -129,6 +129,8 @@ c3-218:
 c3-219:
   - src/server/update-manager.ts
   - src/server/update-manager.test.ts
+  - src/server/update-strategy.ts
+  - src/server/update-strategy.test.ts
 c3-220:
   - src/server/restart.ts
   - src/server/restart.test.ts

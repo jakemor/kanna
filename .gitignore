@@ -34,3 +34,6 @@ vite.config.ts.timestamp-*
 
 # pm2 rendered config (generated from scripts/pm2.config.cjs.tmpl)
 scripts/pm2.config.cjs
+
+# pm2 local secrets (cloudflared token, password) — sourced by deploy.sh
+scripts/pm2.env

@@ -4,6 +4,7 @@ module.exports = {
       name: "${PM2_NAME}",
       script: "./bin/kanna",
       interpreter: "none",
+      args: "${KANNA_ARGS}",
       cwd: "${REPO_DIR}",
       env: {
         KANNA_RELOADER: "pm2",

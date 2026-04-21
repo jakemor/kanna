@@ -6,8 +6,25 @@ GLOBAL_LINK="$HOME/.bun/install/global/node_modules/kanna-code"
 PM2_NAME="${KANNA_PM2_PROCESS_NAME:-kanna}"
 PM2_TEMPLATE="$REPO_DIR/scripts/pm2.config.cjs.tmpl"
 PM2_CONFIG="$REPO_DIR/scripts/pm2.config.cjs"
+PM2_ENV_FILE="$REPO_DIR/scripts/pm2.env"
 
 cd "$REPO_DIR"
+
+# Load local secrets (cloudflared token, password) from untracked file if present.
+if [[ -f "$PM2_ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$PM2_ENV_FILE"; set +a
+fi
+
+# Compose args passed to ./bin/kanna. Tokens/password sourced from env.
+KANNA_ARGS="--no-open"
+if [[ -n "${KANNA_CLOUDFLARED_TOKEN:-}" ]]; then
+  KANNA_ARGS="$KANNA_ARGS --cloudflared $KANNA_CLOUDFLARED_TOKEN"
+fi
+if [[ -n "${KANNA_PASSWORD:-}" ]]; then
+  KANNA_ARGS="$KANNA_ARGS --password $KANNA_PASSWORD"
+fi
+export KANNA_ARGS
 
 if [[ ! -L "$GLOBAL_LINK" ]]; then
   echo "→ Linking $GLOBAL_LINK → $REPO_DIR"
@@ -35,7 +52,8 @@ if ! command -v envsubst >/dev/null 2>&1; then
 fi
 
 echo "→ render $PM2_CONFIG"
-REPO_DIR="$REPO_DIR" PM2_NAME="$PM2_NAME" envsubst '${REPO_DIR} ${PM2_NAME}' < "$PM2_TEMPLATE" > "$PM2_CONFIG"
+REPO_DIR="$REPO_DIR" PM2_NAME="$PM2_NAME" KANNA_ARGS="$KANNA_ARGS" \
+  envsubst '${REPO_DIR} ${PM2_NAME} ${KANNA_ARGS}' < "$PM2_TEMPLATE" > "$PM2_CONFIG"
 
 if pm2 describe "$PM2_NAME" >/dev/null 2>&1; then
   echo "→ pm2 reload $PM2_NAME"

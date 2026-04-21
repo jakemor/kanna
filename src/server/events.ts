@@ -18,6 +18,14 @@ export interface ChatRecord {
   hasMessages?: boolean
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
+  /**
+   * Set when a chat was forked from another chat. The value is the source
+   * chat's sessionToken at the time of forking. The agent uses this on the
+   * first turn of the forked chat to invoke Claude with `forkSession: true`,
+   * after which the field is cleared.
+   */
+  pendingForkFromSessionToken?: string | null
+  forkedFromChatId?: string
 }
 
 export interface StoreState {
@@ -65,6 +73,8 @@ export type ChatEvent =
       chatId: string
       projectId: string
       title: string
+      forkedFromChatId?: string
+      forkedFromSessionToken?: string | null
     }
   | {
       v: 2

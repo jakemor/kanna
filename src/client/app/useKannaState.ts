@@ -524,6 +524,7 @@ export interface KannaState {
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
+  handleForkChat: (chat: SidebarChatRow) => Promise<void>
   handleRemoveProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
@@ -1406,6 +1407,18 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [activeChatId, socket])
 
+  const handleForkChat = useCallback(async (chat: SidebarChatRow) => {
+    try {
+      const result = await socket.command<{ chatId: string }>({ type: "chat.fork", chatId: chat.chatId })
+      setPendingChatId(result.chatId)
+      navigate(`/chat/${result.chatId}`)
+      setSidebarOpen(false)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [navigate, socket])
+
   const handleDeleteChat = useCallback(async (chat: SidebarChatRow) => {
     const confirmed = await dialog.confirm({
       title: "Delete Chat",
@@ -1644,6 +1657,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCancel,
     handleStopDraining,
     handleDeleteChat,
+    handleForkChat,
     handleRemoveProject,
     handleReorderProjectGroups,
     handleCopyPath,

@@ -90,6 +90,7 @@ export function deriveSidebarData(
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
         hasAutomation: false,
+        canFork: chat.provider === "claude" && Boolean(chat.sessionToken),
       }))
     const { previewChats, olderChats } = getSidebarChatBuckets(chats, nowMs)
 

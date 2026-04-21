@@ -241,6 +241,12 @@ export interface SidebarChatRow {
   provider: AgentProvider | null
   lastMessageAt?: number
   hasAutomation: boolean
+  /**
+   * True when the chat has an underlying Claude session id that can be
+   * forked into a new chat via Claude's `forkSession` mechanic. Optional
+   * for backwards compatibility with existing test fixtures and snapshots.
+   */
+  canFork?: boolean
 }
 
 export interface SidebarProjectGroup {

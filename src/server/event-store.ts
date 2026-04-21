@@ -7,6 +7,7 @@ import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMes
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
+  type ChatRecord,
   type ProjectEvent,
   type QueuedMessageEvent,
   type SnapshotFile,
@@ -330,7 +331,7 @@ export class EventStore {
         break
       }
       case "chat_created": {
-      const chat = {
+      const chat: ChatRecord = {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
@@ -339,9 +340,11 @@ export class EventStore {
           unread: false,
           provider: null,
           planMode: false,
-          sessionToken: null,
+          sessionToken: event.forkedFromSessionToken ?? null,
           hasMessages: false,
           lastTurnOutcome: null,
+          pendingForkFromSessionToken: event.forkedFromSessionToken ?? null,
+          forkedFromChatId: event.forkedFromChatId,
         }
         this.state.chatsById.set(chat.id, chat)
         break
@@ -450,6 +453,12 @@ export class EventStore {
         if (!chat) break
         chat.sessionToken = event.sessionToken
         chat.updatedAt = event.timestamp
+        // Once Claude returns a new session id (different from the one we
+        // forked from), clear the pending fork token so subsequent turns
+        // resume normally instead of forking again.
+        if (chat.pendingForkFromSessionToken && event.sessionToken !== chat.pendingForkFromSessionToken) {
+          chat.pendingForkFromSessionToken = null
+        }
         break
       }
     }
@@ -574,6 +583,44 @@ export class EventStore {
     }
     await this.append(this.chatsLogPath, event)
     return this.state.chatsById.get(chatId)!
+  }
+
+  /**
+   * Fork an existing chat into a brand-new chat that resumes the source
+   * session via Claude's `forkSession` mechanic. The new chat starts with
+   * an empty transcript on Kanna's side; the underlying Claude session ID
+   * will diverge as soon as the user sends their first message in it.
+   */
+  async forkChat(sourceChatId: string) {
+    const source = this.requireChat(sourceChatId)
+    if (!source.sessionToken) {
+      throw new Error("Cannot fork a chat that has no Claude session yet")
+    }
+    const project = this.state.projectsById.get(source.projectId)
+    if (!project || project.deletedAt) {
+      throw new Error("Project not found")
+    }
+    const chatId = crypto.randomUUID()
+    const baseTitle = source.title?.trim() || "New Chat"
+    const forkedTitle = baseTitle.startsWith("Fork: ") ? baseTitle : `Fork: ${baseTitle}`
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_created",
+      timestamp: Date.now(),
+      chatId,
+      projectId: source.projectId,
+      title: forkedTitle,
+      forkedFromChatId: sourceChatId,
+      forkedFromSessionToken: source.sessionToken,
+    }
+    await this.append(this.chatsLogPath, event)
+    const created = this.state.chatsById.get(chatId)!
+    // Inherit the source provider so the agent picks Claude on first send
+    // without requiring the user to choose again.
+    if (source.provider) {
+      await this.setChatProvider(chatId, source.provider)
+    }
+    return created
   }
 
   async renameChat(chatId: string, title: string) {

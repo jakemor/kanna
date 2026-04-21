@@ -82,6 +82,7 @@ export type ClientCommand =
       editor?: EditorOpenSettings
     }
   | { type: "chat.create"; projectId: string }
+  | { type: "chat.fork"; chatId: string }
   | { type: "chat.rename"; chatId: string; title: string }
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }

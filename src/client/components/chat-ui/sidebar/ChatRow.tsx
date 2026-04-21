@@ -1,5 +1,5 @@
 import { memo } from "react"
-import { Archive, Loader2 } from "lucide-react"
+import { Archive, GitFork, Loader2 } from "lucide-react"
 import type { SidebarChatRow } from "../../../../shared/types"
 import { AnimatedShinyText } from "../../ui/animated-shiny-text"
 import { Button } from "../../ui/button"
@@ -18,6 +18,7 @@ interface Props {
   showShortcutHint?: boolean
   onSelectChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
+  onForkChat?: (chatId: string) => void
 }
 
 function ChatRowImpl({
@@ -28,7 +29,9 @@ function ChatRowImpl({
   showShortcutHint = false,
   onSelectChat,
   onDeleteChat,
+  onForkChat,
 }: Props) {
+  const canFork = Boolean(chat.canFork) && Boolean(onForkChat)
   const ageLabel = formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)
   const trailingLabel = showShortcutHint && shortcutHint ? shortcutHint : ageLabel
   const showShortcutKeycap = showShortcutHint && Boolean(shortcutHint)
@@ -73,7 +76,7 @@ function ChatRowImpl({
           chat.title
         )}
       </span>
-      <div className="relative h-7 w-7 mr-[2px] shrink-0">
+      <div className={cn("relative h-7 mr-[2px] shrink-0 flex items-center", canFork ? "w-14" : "w-7")}>
         {trailingLabel ? (
           showShortcutKeycap ? (
             <span className="hidden md:flex absolute inset-0 items-center justify-end pr-0.5 text-[11px] text-foreground transition-opacity group-hover:opacity-0">
@@ -87,11 +90,28 @@ function ChatRowImpl({
             </span>
           )
         ) : null}
+        {canFork ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "absolute right-7 top-0 h-7 w-7 cursor-pointer rounded-sm hover:!bg-transparent !border-0",
+              "opacity-0 md:group-hover:opacity-100 transition-opacity"
+            )}
+            onClick={(event) => {
+              event.stopPropagation()
+              onForkChat?.(chat.chatId)
+            }}
+            title="Fork chat (creates a new chat that branches from this Claude session)"
+          >
+            <GitFork className="size-3.5" />
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="icon"
           className={cn(
-            "absolute inset-0 h-7 w-7 opacity-100 cursor-pointer rounded-sm hover:!bg-transparent !border-0",
+            "absolute right-0 top-0 h-7 w-7 opacity-100 cursor-pointer rounded-sm hover:!bg-transparent !border-0",
             trailingLabel
               ? "md:opacity-0 md:group-hover:opacity-100"
               : "opacity-100 md:opacity-0 md:group-hover:opacity-100"

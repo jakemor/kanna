@@ -805,6 +805,12 @@ export function createWsRouter({
           await broadcastChatAndSidebar(chat.id)
           return
         }
+        case "chat.fork": {
+          const chat = await store.forkChat(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
+          await broadcastChatAndSidebar(chat.id)
+          return
+        }
         case "chat.rename": {
           await store.renameChat(command.chatId, command.title)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })

@@ -106,6 +106,7 @@ interface AgentCoordinatorArgs {
     effort?: string
     planMode: boolean
     sessionToken: string | null
+    forkSession?: boolean
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }) => Promise<ClaudeSessionHandle>
 }
@@ -552,6 +553,7 @@ async function startClaudeSession(args: {
   effort?: string
   planMode: boolean
   sessionToken: string | null
+  forkSession?: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
 }): Promise<ClaudeSessionHandle> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -618,6 +620,7 @@ async function startClaudeSession(args: {
       model: args.model,
       effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
       resume: args.sessionToken ?? undefined,
+      forkSession: args.forkSession === true ? true : undefined,
       permissionMode: args.planMode ? "plan" : "acceptEdits",
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
@@ -921,6 +924,7 @@ export class AgentCoordinator {
         effort: args.effort,
         planMode: args.planMode,
         sessionToken: chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkFromSessionToken),
         onToolRequest,
       })
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
@@ -1043,6 +1047,7 @@ export class AgentCoordinator {
     effort?: string
     planMode: boolean
     sessionToken: string | null
+    forkSession?: boolean
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }): Promise<HarnessTurn> {
     let session = this.claudeSessions.get(args.chatId)
@@ -1059,6 +1064,7 @@ export class AgentCoordinator {
         effort: args.effort,
         planMode: args.planMode,
         sessionToken: args.sessionToken,
+        forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
       })
 

@@ -1,4 +1,4 @@
-export const STORE_VERSION = 2 as const
+export const STORE_VERSION = 3 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex"
@@ -481,6 +481,7 @@ export interface UserPromptEntry extends TranscriptEntryBase {
   content: string
   attachments?: ChatAttachment[]
   steered?: boolean
+  autoContinue?: { scheduleId: string }
 }
 
 export interface SystemInitEntry extends TranscriptEntryBase {
@@ -730,6 +731,7 @@ export type TranscriptEntry =
   | CompactSummaryEntry
   | ContextClearedEntry
   | InterruptedEntry
+  | AutoContinuePromptEntry
 
 export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   id: string
@@ -837,7 +839,7 @@ export type HydratedToolCall =
   | HydratedUnknownToolCall
 
 export type HydratedTranscriptMessage =
-  | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; steered?: boolean; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; steered?: boolean; autoContinue?: { scheduleId: string }; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -849,6 +851,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "unknown"; json: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "auto_continue_prompt"; scheduleId: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 
 export interface ChatRuntime {
@@ -883,6 +886,8 @@ export interface ChatSnapshot {
   availableProviders: ProviderCatalogEntry[]
   slashCommands: SlashCommand[]
   slashCommandsLoading: boolean
+  schedules: Record<string, AutoContinueSchedule>
+  liveScheduleId: string | null
 }
 
 export interface ChatHistoryPage {
@@ -899,4 +904,20 @@ export interface KannaSnapshot {
 export interface PendingToolSnapshot {
   toolUseId: string
   toolKind: "ask_user_question" | "exit_plan_mode"
+}
+
+export type AutoContinueScheduleState = "proposed" | "scheduled" | "fired" | "cancelled"
+
+export interface AutoContinueSchedule {
+  scheduleId: string
+  state: AutoContinueScheduleState
+  scheduledAt: number | null
+  tz: string
+  resetAt: number
+  detectedAt: number
+}
+
+export interface AutoContinuePromptEntry extends TranscriptEntryBase {
+  kind: "auto_continue_prompt"
+  scheduleId: string
 }

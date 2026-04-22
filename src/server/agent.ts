@@ -1694,6 +1694,7 @@ export class AgentCoordinator {
     return Object.values(projection.schedules)
       .filter((s) => s.state === "proposed" || s.state === "scheduled")
       .map((s) => s.scheduleId)
+      .sort()
   }
 
   async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {

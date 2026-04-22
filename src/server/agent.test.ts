@@ -2012,6 +2012,8 @@ describe("AgentCoordinator auto-continue firing", () => {
 
 // ── AgentCoordinator: acceptAutoContinue / rescheduleAutoContinue / cancelAutoContinue / listLiveSchedules ──
 
+// Minimal coordinator factory for Task 14 auto-continue tests; intentionally omits
+// codexManager and generateTitle — do not use for tests that need provider flows.
 function makeCoordinatorWithStore(extraStoreFields: Partial<ReturnType<typeof createFakeStore>> = {}) {
   const store = { ...createFakeStore(), ...extraStoreFields }
   const coordinator = new AgentCoordinator({

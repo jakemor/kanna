@@ -278,3 +278,34 @@ describe("ChangelogSection", () => {
     expect(html).toContain("Updating")
   })
 })
+
+import { usePreferencesStore } from "../stores/preferences"
+import { AutoResumeToggleSection } from "./SettingsPage"
+
+test("renders the Auto-resume on rate limit toggle bound to preferences store", () => {
+  // AutoResumeToggleSection is a pure prop-driven component exported from SettingsPage.
+  // SettingsPage wires it to usePreferencesStore; here we test the component directly.
+  usePreferencesStore.setState({ autoResumeOnRateLimit: false })
+  const stateOff = usePreferencesStore.getState()
+  const htmlUnchecked = renderToStaticMarkup(
+    <AutoResumeToggleSection
+      checked={stateOff.autoResumeOnRateLimit}
+      onChange={() => {}}
+    />
+  )
+  expect(htmlUnchecked).toContain("Auto-resume on rate limit")
+  expect(htmlUnchecked).toContain('type="checkbox"')
+  expect(htmlUnchecked).not.toContain("checked")
+
+  usePreferencesStore.setState({ autoResumeOnRateLimit: true })
+  const stateOn = usePreferencesStore.getState()
+  const htmlChecked = renderToStaticMarkup(
+    <AutoResumeToggleSection
+      checked={stateOn.autoResumeOnRateLimit}
+      onChange={() => {}}
+    />
+  )
+  expect(htmlChecked).toContain("Auto-resume on rate limit")
+  expect(htmlChecked).toContain('type="checkbox"')
+  expect(htmlChecked).toContain("checked")
+})

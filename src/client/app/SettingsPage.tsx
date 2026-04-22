@@ -59,6 +59,7 @@ import {
 } from "../stores/terminalPreferencesStore"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore, type ChatSoundId, type ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import { usePreferencesStore } from "../stores/preferences"
 import type { KannaState } from "./useKannaState"
 
 const sidebarItems = [
@@ -453,6 +454,32 @@ function SettingsRow({
   )
 }
 
+export function AutoResumeToggleSection({
+  checked,
+  onChange,
+}: {
+  checked: boolean
+  onChange: (value: boolean) => void
+}) {
+  return (
+    <section>
+      <h3 className="text-sm font-medium">Auto-resume on rate limit</h3>
+      <p className="text-xs text-muted-foreground">
+        When you hit a rate limit, automatically schedule &quot;continue&quot; at the reset time instead of asking.
+        You can still cancel each one from the chat.
+      </p>
+      <label className="mt-2 inline-flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        Enabled
+      </label>
+    </section>
+  )
+}
+
 export function SettingsPage() {
   const navigate = useNavigate()
   const { sectionId } = useParams<{ sectionId: string }>()
@@ -482,6 +509,8 @@ export function SettingsPage() {
   const setChatSoundId = useChatSoundPreferencesStore((store) => store.setChatSoundId)
   const keybindings = state.keybindings
   const llmProvider = state.llmProvider
+  const autoResumeOnRateLimit = usePreferencesStore((state) => state.autoResumeOnRateLimit)
+  const setAutoResumeOnRateLimit = usePreferencesStore((state) => state.setAutoResumeOnRateLimit)
   const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
   const setDefaultProvider = useChatPreferencesStore((store) => store.setDefaultProvider)
@@ -1128,6 +1157,16 @@ export function SettingsPage() {
                             {minColumnWidth === DEFAULT_TERMINAL_MIN_COLUMN_WIDTH ? " (default)" : ""}
                           </div>
                         </div>
+                      </SettingsRow>
+
+                      <SettingsRow
+                        title="Auto-resume on rate limit"
+                        description="When you hit a rate limit, automatically schedule &quot;continue&quot; at the reset time instead of asking. You can still cancel each one from the chat."
+                      >
+                        <AutoResumeToggleSection
+                          checked={autoResumeOnRateLimit}
+                          onChange={setAutoResumeOnRateLimit}
+                        />
                       </SettingsRow>
                     </div>
                   </>

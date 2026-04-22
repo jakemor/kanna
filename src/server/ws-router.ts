@@ -837,10 +837,31 @@ export function createWsRouter({
         }
         case "chat.delete": {
           await agent.cancel(command.chatId)
+          for (const scheduleId of agent.listLiveSchedules(command.chatId)) {
+            await agent.cancelAutoContinue(command.chatId, scheduleId, "chat_deleted")
+          }
           await agent.closeChat(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
+        }
+        case "autoContinue.accept": {
+          await agent.acceptAutoContinue(command.chatId, command.scheduleId, command.scheduledAt)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "autoContinue.reschedule": {
+          await agent.rescheduleAutoContinue(command.chatId, command.scheduleId, command.scheduledAt)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "autoContinue.cancel": {
+          await agent.cancelAutoContinue(command.chatId, command.scheduleId, "user")
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
           return
         }
         case "chat.markRead": {

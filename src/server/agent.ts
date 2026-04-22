@@ -1625,6 +1625,77 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  async acceptAutoContinue(chatId: string, scheduleId: string, scheduledAt: number): Promise<void> {
+    const events = this.store.getAutoContinueEvents(chatId)
+    const projection = deriveChatSchedules(events, chatId)
+    const schedule = projection.schedules[scheduleId]
+    if (!schedule) throw new Error("Schedule not found")
+    if (schedule.state !== "proposed") throw new Error("Schedule not pending")
+    if (scheduledAt <= Date.now()) throw new Error("scheduledAt must be in the future")
+
+    const event: AutoContinueEvent = {
+      v: 3,
+      kind: "auto_continue_accepted",
+      timestamp: Date.now(),
+      chatId,
+      scheduleId,
+      scheduledAt,
+      tz: schedule.tz,
+      source: "user",
+      resetAt: schedule.resetAt,
+      detectedAt: schedule.detectedAt,
+    }
+    await this.store.appendAutoContinueEvent(event)
+    this.scheduleManager?.onEvent(event)
+    this.emitStateChange(chatId)
+  }
+
+  async rescheduleAutoContinue(chatId: string, scheduleId: string, scheduledAt: number): Promise<void> {
+    const events = this.store.getAutoContinueEvents(chatId)
+    const schedule = deriveChatSchedules(events, chatId).schedules[scheduleId]
+    if (!schedule || schedule.state !== "scheduled") throw new Error("Schedule not active")
+    if (scheduledAt <= Date.now()) throw new Error("scheduledAt must be in the future")
+
+    const event: AutoContinueEvent = {
+      v: 3,
+      kind: "auto_continue_rescheduled",
+      timestamp: Date.now(),
+      chatId,
+      scheduleId,
+      scheduledAt,
+    }
+    await this.store.appendAutoContinueEvent(event)
+    this.scheduleManager?.onEvent(event)
+    this.emitStateChange(chatId)
+  }
+
+  async cancelAutoContinue(chatId: string, scheduleId: string, reason: "user" | "chat_deleted"): Promise<void> {
+    const events = this.store.getAutoContinueEvents(chatId)
+    const schedule = deriveChatSchedules(events, chatId).schedules[scheduleId]
+    if (!schedule) return
+    if (schedule.state !== "proposed" && schedule.state !== "scheduled") return
+
+    const event: AutoContinueEvent = {
+      v: 3,
+      kind: "auto_continue_cancelled",
+      timestamp: Date.now(),
+      chatId,
+      scheduleId,
+      reason,
+    }
+    await this.store.appendAutoContinueEvent(event)
+    this.scheduleManager?.onEvent(event)
+    this.emitStateChange(chatId)
+  }
+
+  listLiveSchedules(chatId: string): string[] {
+    const events = this.store.getAutoContinueEvents(chatId)
+    const projection = deriveChatSchedules(events, chatId)
+    return Object.values(projection.schedules)
+      .filter((s) => s.state === "proposed" || s.state === "scheduled")
+      .map((s) => s.scheduleId)
+  }
+
   async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {
     // Also clean up any draining stream for this chat.
     const draining = this.drainingStreams.get(chatId)

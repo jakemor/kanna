@@ -1544,4 +1544,195 @@ describe("ws-router", () => {
       result: { snapshotChanged: false },
     })
   })
+
+  // ── autoContinue WS command tests ────────────────────────────────────────
+
+  function makeAutoContinueAgent(overrides: Record<string, unknown> = {}) {
+    const appendedEvents: unknown[] = []
+    return {
+      appendedEvents,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+        getSlashCommandsLoadingChatIds: () => new Set(),
+        ensureSlashCommandsLoaded: async () => {},
+        acceptAutoContinue: async (_chatId: string, _scheduleId: string, _scheduledAt: number) => {},
+        rescheduleAutoContinue: async (_chatId: string, _scheduleId: string, _scheduledAt: number) => {},
+        cancelAutoContinue: async (_chatId: string, _scheduleId: string, _reason: string) => {},
+        listLiveSchedules: (_chatId: string): string[] => [],
+        cancel: async () => {},
+        closeChat: async () => {},
+        ...overrides,
+      },
+    }
+  }
+
+  function makeAutoContinueStore(state: ReturnType<typeof createEmptyState>) {
+    return {
+      state,
+      deleteChat: async () => {},
+    }
+  }
+
+  test("autoContinue.accept routes to agent.acceptAutoContinue and acks", async () => {
+    const acceptCalls: Array<{ chatId: string; scheduleId: string; scheduledAt: number }> = []
+    const { agent } = makeAutoContinueAgent({
+      acceptAutoContinue: async (chatId: string, scheduleId: string, scheduledAt: number) => {
+        acceptCalls.push({ chatId, scheduleId, scheduledAt })
+      },
+    })
+
+    const router = createWsRouter({
+      store: makeAutoContinueStore(createEmptyState()) as never,
+      agent: agent as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "accept-1",
+        command: {
+          type: "autoContinue.accept",
+          chatId: "chat-1",
+          scheduleId: "sched-1",
+          scheduledAt: Date.now() + 60_000,
+        },
+      })
+    )
+
+    expect(acceptCalls).toHaveLength(1)
+    expect(acceptCalls[0]!.chatId).toBe("chat-1")
+    expect(acceptCalls[0]!.scheduleId).toBe("sched-1")
+    expect(ws.sent).toContainEqual({ v: PROTOCOL_VERSION, type: "ack", id: "accept-1" })
+  })
+
+  test("autoContinue.reschedule routes to agent.rescheduleAutoContinue and acks", async () => {
+    const rescheduleCalls: Array<{ chatId: string; scheduleId: string; scheduledAt: number }> = []
+    const { agent } = makeAutoContinueAgent({
+      rescheduleAutoContinue: async (chatId: string, scheduleId: string, scheduledAt: number) => {
+        rescheduleCalls.push({ chatId, scheduleId, scheduledAt })
+      },
+    })
+
+    const router = createWsRouter({
+      store: makeAutoContinueStore(createEmptyState()) as never,
+      agent: agent as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "reschedule-1",
+        command: {
+          type: "autoContinue.reschedule",
+          chatId: "chat-1",
+          scheduleId: "sched-1",
+          scheduledAt: Date.now() + 120_000,
+        },
+      })
+    )
+
+    expect(rescheduleCalls).toHaveLength(1)
+    expect(rescheduleCalls[0]!.chatId).toBe("chat-1")
+    expect(ws.sent).toContainEqual({ v: PROTOCOL_VERSION, type: "ack", id: "reschedule-1" })
+  })
+
+  test("autoContinue.cancel routes to agent.cancelAutoContinue and acks", async () => {
+    const cancelCalls: Array<{ chatId: string; scheduleId: string; reason: string }> = []
+    const { agent } = makeAutoContinueAgent({
+      cancelAutoContinue: async (chatId: string, scheduleId: string, reason: string) => {
+        cancelCalls.push({ chatId, scheduleId, reason })
+      },
+    })
+
+    const router = createWsRouter({
+      store: makeAutoContinueStore(createEmptyState()) as never,
+      agent: agent as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "cancel-1",
+        command: {
+          type: "autoContinue.cancel",
+          chatId: "chat-1",
+          scheduleId: "sched-1",
+        },
+      })
+    )
+
+    expect(cancelCalls).toHaveLength(1)
+    expect(cancelCalls[0]!.reason).toBe("user")
+    expect(ws.sent).toContainEqual({ v: PROTOCOL_VERSION, type: "ack", id: "cancel-1" })
+  })
+
+  test("chat.delete cancels live schedules before closing chat", async () => {
+    const cancelledScheduleIds: string[] = []
+    const callOrder: string[] = []
+
+    const { agent } = makeAutoContinueAgent({
+      listLiveSchedules: (_chatId: string) => ["sched-live"],
+      cancelAutoContinue: async (_chatId: string, scheduleId: string, _reason: string) => {
+        cancelledScheduleIds.push(scheduleId)
+        callOrder.push("cancelAutoContinue")
+      },
+      closeChat: async () => {
+        callOrder.push("closeChat")
+      },
+    })
+
+    const router = createWsRouter({
+      store: makeAutoContinueStore(createEmptyState()) as never,
+      agent: agent as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "delete-1",
+        command: { type: "chat.delete", chatId: "chat-1" },
+      })
+    )
+
+    expect(cancelledScheduleIds).toEqual(["sched-live"])
+    expect(callOrder.indexOf("cancelAutoContinue")).toBeLessThan(callOrder.indexOf("closeChat"))
+    expect(ws.sent).toContainEqual({ v: PROTOCOL_VERSION, type: "ack", id: "delete-1" })
+  })
 })

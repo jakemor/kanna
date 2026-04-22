@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import type { TranscriptEntry } from "../shared/types"
 import type { SnapshotFile } from "./events"
+import type { AutoContinueEvent } from "./auto-continue/events"
 import { EventStore } from "./event-store"
 
 const originalRuntimeProfile = process.env.KANNA_RUNTIME_PROFILE
@@ -50,7 +51,7 @@ describe("EventStore", () => {
     const chatId = "chat-1"
 
     const snapshot: SnapshotFile = {
-      v: 2,
+      v: 3,
       generatedAt: 10,
       projects: [{
         id: "project-1",
@@ -82,7 +83,7 @@ describe("EventStore", () => {
 
     await writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8")
     await writeFile(messagesLogPath, `${JSON.stringify({
-      v: 2,
+      v: 3,
       type: "message_appended",
       timestamp: 101,
       chatId,
@@ -279,7 +280,7 @@ describe("EventStore", () => {
 
     await writeFile(chatsLogPath, [
       JSON.stringify({
-        v: 2,
+        v: 3,
         type: "chat_created",
         timestamp,
         chatId,
@@ -287,7 +288,7 @@ describe("EventStore", () => {
         title: "Chat",
       }),
       JSON.stringify({
-        v: 2,
+        v: 3,
         type: "chat_read_state_set",
         timestamp,
         chatId,
@@ -297,7 +298,7 @@ describe("EventStore", () => {
     ].join("\n"), "utf8")
     await writeFile(turnsLogPath, [
       JSON.stringify({
-        v: 2,
+        v: 3,
         type: "turn_finished",
         timestamp,
         chatId,
@@ -315,8 +316,8 @@ describe("EventStore", () => {
     const dataDir = await createTempDataDir()
     const snapshotPath = join(dataDir, "snapshot.json")
 
-    const snapshot = {
-      v: 2,
+    const snapshot: SnapshotFile = {
+      v: 3,
       generatedAt: 10,
       projects: [{
         id: "project-1",
@@ -516,5 +517,73 @@ describe("recordSessionCommandsLoaded", () => {
     await reloaded.initialize()
 
     expect(reloaded.getChat(chat.id)?.slashCommands).toEqual(commands)
+  })
+})
+
+describe("EventStore auto-continue schedules", () => {
+  test("appends and replays AutoContinueEvent sequence", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/p1")
+    const chat = await store.createChat(project.id)
+
+    const proposed: AutoContinueEvent = {
+      v: 3,
+      kind: "auto_continue_proposed",
+      timestamp: 1_000,
+      chatId: chat.id,
+      scheduleId: "s1",
+      detectedAt: 1_000,
+      resetAt: 2_000,
+      tz: "Asia/Saigon",
+      turnId: "t1",
+    }
+    const accepted: AutoContinueEvent = {
+      v: 3,
+      kind: "auto_continue_accepted",
+      timestamp: 1_100,
+      chatId: chat.id,
+      scheduleId: "s1",
+      scheduledAt: 2_000,
+      tz: "Asia/Saigon",
+      source: "user",
+      resetAt: 2_000,
+      detectedAt: 1_000,
+    }
+    await store.appendAutoContinueEvent(proposed)
+    await store.appendAutoContinueEvent(accepted)
+
+    const rehydrated = new EventStore(dataDir)
+    await rehydrated.initialize()
+    const events = rehydrated.getAutoContinueEvents(chat.id)
+    expect(events).toHaveLength(2)
+    expect(events[0].kind).toBe("auto_continue_proposed")
+    expect(events[1].kind).toBe("auto_continue_accepted")
+  })
+
+  test("snapshot compaction retains auto-continue events", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/p1")
+    const chat = await store.createChat(project.id)
+
+    await store.appendAutoContinueEvent({
+      v: 3,
+      kind: "auto_continue_proposed",
+      timestamp: 1_000,
+      chatId: chat.id,
+      scheduleId: "s1",
+      detectedAt: 1_000,
+      resetAt: 2_000,
+      tz: "Asia/Saigon",
+      turnId: "t1",
+    })
+    await store.compact()
+
+    const rehydrated = new EventStore(dataDir)
+    await rehydrated.initialize()
+    expect(rehydrated.getAutoContinueEvents(chat.id)).toHaveLength(1)
   })
 })

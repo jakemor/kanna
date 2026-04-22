@@ -5,6 +5,7 @@ import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
 import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, SlashCommand, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
+import type { AutoContinueEvent } from "./auto-continue/events"
 import {
   type ChatEvent,
   type ProjectEvent,
@@ -56,7 +57,8 @@ interface ParsedReplayEvent {
 }
 
 function getReplayEventPriority(event: StoreEvent) {
-  switch (event.type) {
+  const discriminator = "type" in event ? event.type : event.kind
+  switch (discriminator) {
     case "project_opened":
     case "project_removed":
     case "sidebar_project_order_set":
@@ -75,7 +77,6 @@ function getReplayEventPriority(event: StoreEvent) {
     case "turn_started":
       return 5
     case "session_token_set":
-      return 6
     case "session_commands_loaded":
       return 6
     case "turn_cancelled":
@@ -84,11 +85,16 @@ function getReplayEventPriority(event: StoreEvent) {
     case "turn_failed":
       return 8
     case "chat_read_state_set":
-      return 9
     case "chat_source_hash_set":
       return 9
     case "chat_deleted":
       return 10
+    case "auto_continue_proposed":
+    case "auto_continue_accepted":
+    case "auto_continue_rescheduled":
+    case "auto_continue_cancelled":
+    case "auto_continue_fired":
+      return 11
   }
 }
 
@@ -139,6 +145,7 @@ export class EventStore {
   private readonly messagesLogPath: string
   private readonly queuedMessagesLogPath: string
   private readonly turnsLogPath: string
+  private readonly schedulesLogPath: string
   private readonly transcriptsDir: string
   private legacyMessagesByChatId = new Map<string, TranscriptEntry[]>()
   private snapshotHasLegacyMessages = false
@@ -152,6 +159,7 @@ export class EventStore {
     this.messagesLogPath = path.join(this.dataDir, "messages.jsonl")
     this.queuedMessagesLogPath = path.join(this.dataDir, "queued-messages.jsonl")
     this.turnsLogPath = path.join(this.dataDir, "turns.jsonl")
+    this.schedulesLogPath = path.join(this.dataDir, "schedules.jsonl")
     this.transcriptsDir = path.join(this.dataDir, "transcripts")
   }
 
@@ -163,6 +171,7 @@ export class EventStore {
     await this.ensureFile(this.messagesLogPath)
     await this.ensureFile(this.queuedMessagesLogPath)
     await this.ensureFile(this.turnsLogPath)
+    await this.ensureFile(this.schedulesLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
@@ -189,6 +198,7 @@ export class EventStore {
       Bun.write(this.messagesLogPath, ""),
       Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
+      Bun.write(this.schedulesLogPath, ""),
     ])
   }
 
@@ -230,6 +240,11 @@ export class EventStore {
           this.legacyMessagesByChatId.set(messageSet.chatId, cloneTranscriptEntries(messageSet.entries))
         }
       }
+      if (parsed.autoContinueEvents?.length) {
+        for (const entry of parsed.autoContinueEvents) {
+          this.state.autoContinueEventsByChatId.set(entry.chatId, [...entry.events])
+        }
+      }
     } catch (error) {
       console.warn(`${LOG_PREFIX} Failed to load snapshot, resetting local history:`, error)
       await this.clearStorage()
@@ -242,6 +257,7 @@ export class EventStore {
     this.state.chatsById.clear()
     this.state.queuedMessagesByChatId.clear()
     this.state.sidebarProjectOrder = []
+    this.state.autoContinueEventsByChatId.clear()
     this.cachedTranscript = null
   }
 
@@ -258,6 +274,7 @@ export class EventStore {
       ...await this.loadReplayEvents(this.messagesLogPath, 2),
       ...await this.loadReplayEvents(this.queuedMessagesLogPath, 3),
       ...await this.loadReplayEvents(this.turnsLogPath, 4),
+      ...await this.loadReplayEvents(this.schedulesLogPath, 5),
     ]
     if (this.storageReset) return
 
@@ -319,39 +336,44 @@ export class EventStore {
   }
 
   private applyEvent(event: StoreEvent) {
-    switch (event.type) {
+    if ("kind" in event && event.kind.startsWith("auto_continue_")) {
+      this.applyAutoContinueEvent(event)
+      return
+    }
+    const e = event as Exclude<StoreEvent, AutoContinueEvent>
+    switch (e.type) {
       case "project_opened": {
-        const localPath = resolveLocalPath(event.localPath)
+        const localPath = resolveLocalPath(e.localPath)
         const project = {
-          id: event.projectId,
+          id: e.projectId,
           localPath,
-          title: event.title,
-          createdAt: event.timestamp,
-          updatedAt: event.timestamp,
+          title: e.title,
+          createdAt: e.timestamp,
+          updatedAt: e.timestamp,
         }
         this.state.projectsById.set(project.id, project)
         this.state.projectIdsByPath.set(localPath, project.id)
         break
       }
       case "project_removed": {
-        const project = this.state.projectsById.get(event.projectId)
+        const project = this.state.projectsById.get(e.projectId)
         if (!project) break
-        project.deletedAt = event.timestamp
-        project.updatedAt = event.timestamp
+        project.deletedAt = e.timestamp
+        project.updatedAt = e.timestamp
         this.state.projectIdsByPath.delete(project.localPath)
         break
       }
       case "sidebar_project_order_set": {
-        this.state.sidebarProjectOrder = [...event.projectIds]
+        this.state.sidebarProjectOrder = [...e.projectIds]
         break
       }
       case "chat_created": {
       const chat = {
-          id: event.chatId,
-          projectId: event.projectId,
-          title: event.title,
-          createdAt: event.timestamp,
-          updatedAt: event.timestamp,
+          id: e.chatId,
+          projectId: e.projectId,
+          title: e.title,
+          createdAt: e.timestamp,
+          updatedAt: e.timestamp,
           unread: false,
           provider: null,
           planMode: false,
@@ -364,126 +386,132 @@ export class EventStore {
         break
       }
       case "chat_renamed": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.title = event.title
-        chat.updatedAt = event.timestamp
+        chat.title = e.title
+        chat.updatedAt = e.timestamp
         break
       }
       case "chat_deleted": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.deletedAt = event.timestamp
-        chat.updatedAt = event.timestamp
-        this.state.queuedMessagesByChatId.delete(event.chatId)
+        chat.deletedAt = e.timestamp
+        chat.updatedAt = e.timestamp
+        this.state.queuedMessagesByChatId.delete(e.chatId)
         break
       }
       case "chat_provider_set": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.provider = event.provider
-        chat.updatedAt = event.timestamp
+        chat.provider = e.provider
+        chat.updatedAt = e.timestamp
         break
       }
       case "chat_plan_mode_set": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.planMode = event.planMode
-        chat.updatedAt = event.timestamp
+        chat.planMode = e.planMode
+        chat.updatedAt = e.timestamp
         break
       }
       case "chat_read_state_set": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.unread = event.unread
-        chat.updatedAt = event.timestamp
+        chat.unread = e.unread
+        chat.updatedAt = e.timestamp
         break
       }
       case "chat_source_hash_set": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.sourceHash = event.sourceHash
-        chat.updatedAt = event.timestamp
+        chat.sourceHash = e.sourceHash
+        chat.updatedAt = e.timestamp
         break
       }
       case "message_appended": {
-        this.applyMessageMetadata(event.chatId, event.entry)
-        const existing = this.legacyMessagesByChatId.get(event.chatId) ?? []
-        existing.push({ ...event.entry })
-        this.legacyMessagesByChatId.set(event.chatId, existing)
+        this.applyMessageMetadata(e.chatId, e.entry)
+        const existing = this.legacyMessagesByChatId.get(e.chatId) ?? []
+        existing.push({ ...e.entry })
+        this.legacyMessagesByChatId.set(e.chatId, existing)
         break
       }
       case "queued_message_enqueued": {
-        const existing = this.state.queuedMessagesByChatId.get(event.chatId) ?? []
+        const existing = this.state.queuedMessagesByChatId.get(e.chatId) ?? []
         existing.push({
-          ...event.message,
-          attachments: [...event.message.attachments],
+          ...e.message,
+          attachments: [...e.message.attachments],
         })
-        this.state.queuedMessagesByChatId.set(event.chatId, existing)
-        const chat = this.state.chatsById.get(event.chatId)
+        this.state.queuedMessagesByChatId.set(e.chatId, existing)
+        const chat = this.state.chatsById.get(e.chatId)
         if (chat) {
-          chat.updatedAt = event.timestamp
+          chat.updatedAt = e.timestamp
         }
         break
       }
       case "queued_message_removed": {
-        const existing = this.state.queuedMessagesByChatId.get(event.chatId) ?? []
-        const next = existing.filter((entry) => entry.id !== event.queuedMessageId)
+        const existing = this.state.queuedMessagesByChatId.get(e.chatId) ?? []
+        const next = existing.filter((entry) => entry.id !== e.queuedMessageId)
         if (next.length > 0) {
-          this.state.queuedMessagesByChatId.set(event.chatId, next)
+          this.state.queuedMessagesByChatId.set(e.chatId, next)
         } else {
-          this.state.queuedMessagesByChatId.delete(event.chatId)
+          this.state.queuedMessagesByChatId.delete(e.chatId)
         }
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (chat) {
-          chat.updatedAt = event.timestamp
+          chat.updatedAt = e.timestamp
         }
         break
       }
       case "turn_started": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.updatedAt = event.timestamp
+        chat.updatedAt = e.timestamp
         break
       }
       case "turn_finished": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.updatedAt = event.timestamp
+        chat.updatedAt = e.timestamp
         chat.unread = true
         chat.lastTurnOutcome = "success"
         break
       }
       case "turn_failed": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.updatedAt = event.timestamp
+        chat.updatedAt = e.timestamp
         chat.unread = true
         chat.lastTurnOutcome = "failed"
         break
       }
       case "turn_cancelled": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.updatedAt = event.timestamp
+        chat.updatedAt = e.timestamp
         chat.lastTurnOutcome = "cancelled"
         break
       }
       case "session_token_set": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.sessionToken = event.sessionToken
-        chat.updatedAt = event.timestamp
+        chat.sessionToken = e.sessionToken
+        chat.updatedAt = e.timestamp
         break
       }
       case "session_commands_loaded": {
-        const chat = this.state.chatsById.get(event.chatId)
+        const chat = this.state.chatsById.get(e.chatId)
         if (!chat) break
-        chat.slashCommands = event.commands.map((c) => ({ ...c }))
-        chat.updatedAt = event.timestamp
+        chat.slashCommands = e.commands.map((c) => ({ ...c }))
+        chat.updatedAt = e.timestamp
         break
       }
     }
+  }
+
+  private applyAutoContinueEvent(event: AutoContinueEvent) {
+    const existing = this.state.autoContinueEventsByChatId.get(event.chatId) ?? []
+    existing.push(event)
+    this.state.autoContinueEventsByChatId.set(event.chatId, existing)
   }
 
   private applyMessageMetadata(chatId: string, entry: TranscriptEntry) {
@@ -1037,6 +1065,10 @@ export class EventStore {
             attachments: [...entry.attachments],
           })),
         })),
+      autoContinueEvents: [...this.state.autoContinueEventsByChatId.entries()].map(([chatId, events]) => ({
+        chatId,
+        events: [...events],
+      })),
     }
   }
 
@@ -1049,6 +1081,7 @@ export class EventStore {
       Bun.write(this.messagesLogPath, ""),
       Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
+      Bun.write(this.schedulesLogPath, ""),
     ])
   }
 
@@ -1090,7 +1123,26 @@ export class EventStore {
       Bun.file(this.messagesLogPath).size,
       Bun.file(this.queuedMessagesLogPath).size,
       Bun.file(this.turnsLogPath).size,
+      Bun.file(this.schedulesLogPath).size,
     ])
     return sizes.reduce((total, size) => total + size, 0) >= COMPACTION_THRESHOLD_BYTES
+  }
+
+  async appendAutoContinueEvent(event: AutoContinueEvent) {
+    const payload = `${JSON.stringify(event)}\n`
+    this.writeChain = this.writeChain.then(async () => {
+      await appendFile(this.schedulesLogPath, payload, "utf8")
+      this.applyAutoContinueEvent(event)
+    })
+    return this.writeChain
+  }
+
+  getAutoContinueEvents(chatId: string): AutoContinueEvent[] {
+    const list = this.state.autoContinueEventsByChatId.get(chatId)
+    return list ? [...list] : []
+  }
+
+  listAutoContinueChats(): string[] {
+    return [...this.state.autoContinueEventsByChatId.keys()]
   }
 }

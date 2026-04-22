@@ -449,8 +449,12 @@ function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
   window.sessionStorage.setItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY, String(reloadRequestedAt))
 }
 
-async function isServerReady() {
-  const response = await fetch("/health", {
+export function getUiUpdateReadinessPath() {
+  return "/auth/status"
+}
+
+async function isServerReady(fetchImpl: typeof fetch = fetch) {
+  const response = await fetchImpl(getUiUpdateReadinessPath(), {
     method: "GET",
     cache: "no-store",
     headers: {

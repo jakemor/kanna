@@ -7,6 +7,7 @@ import {
   getNewestRemainingChatId,
   getPreviousPrompt,
   getTranscriptPaddingBottom,
+  getUiUpdateReadinessPath,
   getUserPromptSignature,
   getUiUpdateRestartReconnectAction,
   reconcileOptimisticUserPrompts,
@@ -214,6 +215,12 @@ describe("shouldHandleUiUpdateReloadRequest", () => {
     expect(shouldHandleUiUpdateReloadRequest(null, null)).toBe(false)
     expect(shouldHandleUiUpdateReloadRequest(undefined, null)).toBe(false)
     expect(shouldHandleUiUpdateReloadRequest(123, "123")).toBe(false)
+  })
+})
+
+describe("getUiUpdateReadinessPath", () => {
+  test("uses a public auth endpoint so password-protected restarts can reload", () => {
+    expect(getUiUpdateReadinessPath()).toBe("/auth/status")
   })
 })
 

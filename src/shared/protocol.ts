@@ -193,6 +193,9 @@ export type ClientCommand =
       chatId: string
       queuedMessageId: string
     }
+  | { type: "autoContinue.accept"; chatId: string; scheduleId: string; scheduledAt: number }
+  | { type: "autoContinue.reschedule"; chatId: string; scheduleId: string; scheduledAt: number }
+  | { type: "autoContinue.cancel"; chatId: string; scheduleId: string }
   | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }

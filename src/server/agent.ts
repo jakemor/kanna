@@ -26,6 +26,10 @@ import {
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
+import type { AutoContinueEvent } from "./auto-continue/events"
+import { ClaudeLimitDetector, CodexLimitDetector, type LimitDetector } from "./auto-continue/limit-detector"
+import type { ScheduleManager } from "./auto-continue/schedule-manager"
+import { deriveChatSchedules } from "./auto-continue/read-model"
 
 const CLAUDE_TOOLSET = [
   "Skill",
@@ -110,6 +114,10 @@ interface AgentCoordinatorArgs {
     sessionToken: string | null
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }) => Promise<ClaudeSessionHandle>
+  claudeLimitDetector?: LimitDetector
+  codexLimitDetector?: LimitDetector
+  scheduleManager?: ScheduleManager
+  getAutoResumePreference?: () => boolean
 }
 
 interface SendToStartingProfile {
@@ -684,6 +692,11 @@ export class AgentCoordinator {
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
   private readonly slashCommandsInFlight = new Set<string>()
+  private readonly claudeLimitDetector: LimitDetector
+  private readonly codexLimitDetector: LimitDetector
+  private readonly scheduleManager: ScheduleManager | null
+  private readonly getAutoResumePreference: () => boolean
+  private readonly autoResumeByChat = new Map<string, boolean>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -691,6 +704,10 @@ export class AgentCoordinator {
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
+    this.claudeLimitDetector = args.claudeLimitDetector ?? new ClaudeLimitDetector()
+    this.codexLimitDetector = args.codexLimitDetector ?? new CodexLimitDetector()
+    this.scheduleManager = args.scheduleManager ?? null
+    this.getAutoResumePreference = args.getAutoResumePreference ?? (() => false)
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -1190,6 +1207,10 @@ export class AgentCoordinator {
       })
     }
 
+    if (typeof command.autoResumeOnRateLimit === "boolean" && chatId) {
+      this.autoResumeByChat.set(chatId, command.autoResumeOnRateLimit)
+    }
+
     const chat = this.store.requireChat(chatId)
     if (this.activeTurns.has(chatId)) {
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
@@ -1227,6 +1248,9 @@ export class AgentCoordinator {
   }
 
   async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>) {
+    if (typeof command.autoResumeOnRateLimit === "boolean") {
+      this.autoResumeByChat.set(command.chatId, command.autoResumeOnRateLimit)
+    }
     const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,
@@ -1329,18 +1353,23 @@ export class AgentCoordinator {
     } catch (error) {
       const active = this.activeTurns.get(session.chatId)
       if (active && !active.cancelRequested) {
-        const message = error instanceof Error ? error.message : String(error)
-        await this.store.appendMessage(
-          session.chatId,
-          timestamped({
-            kind: "result",
-            subtype: "error",
-            isError: true,
-            durationMs: 0,
-            result: message,
-          })
-        )
-        await this.store.recordTurnFailed(session.chatId, message)
+        const handled = await this.handleLimitError(session.chatId, this.claudeLimitDetector, error, "")
+        if (!handled) {
+          const message = error instanceof Error ? error.message : String(error)
+          await this.store.appendMessage(
+            session.chatId,
+            timestamped({
+              kind: "result",
+              subtype: "error",
+              isError: true,
+              durationMs: 0,
+              result: message,
+            })
+          )
+          await this.store.recordTurnFailed(session.chatId, message)
+        } else {
+          await this.store.recordTurnFailed(session.chatId, "rate_limit")
+        }
       }
     } finally {
       this.claudeSessions.delete(session.chatId)
@@ -1420,18 +1449,23 @@ export class AgentCoordinator {
       }
     } catch (error) {
       if (!active.cancelRequested) {
-        const message = error instanceof Error ? error.message : String(error)
-        await this.store.appendMessage(
-          active.chatId,
-          timestamped({
-            kind: "result",
-            subtype: "error",
-            isError: true,
-            durationMs: 0,
-            result: message,
-          })
-        )
-        await this.store.recordTurnFailed(active.chatId, message)
+        const handled = await this.handleLimitError(active.chatId, this.codexLimitDetector, error, "")
+        if (!handled) {
+          const message = error instanceof Error ? error.message : String(error)
+          await this.store.appendMessage(
+            active.chatId,
+            timestamped({
+              kind: "result",
+              subtype: "error",
+              isError: true,
+              durationMs: 0,
+              result: message,
+            })
+          )
+          await this.store.recordTurnFailed(active.chatId, message)
+        } else {
+          await this.store.recordTurnFailed(active.chatId, "rate_limit")
+        }
       }
     } finally {
       if (active.cancelRequested && !active.cancelRecorded) {
@@ -1496,6 +1530,63 @@ export class AgentCoordinator {
         }
       }
     }
+  }
+
+  private resolveAutoResumeFor(chatId: string): boolean {
+    const cached = this.autoResumeByChat.get(chatId)
+    if (typeof cached === "boolean") return cached
+    return this.getAutoResumePreference()
+  }
+
+  private async handleLimitError(chatId: string, detector: LimitDetector, error: unknown, turnId: string): Promise<boolean> {
+    const detection = detector.detect(chatId, error)
+    if (!detection) return false
+
+    const state = this.store.getAutoContinueEvents(chatId)
+    const live = deriveChatSchedules(state, chatId).liveScheduleId
+    if (live !== null) return true
+
+    const autoResume = this.resolveAutoResumeFor(chatId)
+    const now = Date.now()
+    const scheduleId = crypto.randomUUID()
+
+    if (autoResume) {
+      const event: AutoContinueEvent = {
+        v: 3,
+        kind: "auto_continue_accepted",
+        timestamp: now,
+        chatId,
+        scheduleId,
+        scheduledAt: detection.resetAt,
+        tz: detection.tz,
+        source: "auto_setting",
+        resetAt: detection.resetAt,
+        detectedAt: now,
+      }
+      await this.store.appendAutoContinueEvent(event)
+      this.scheduleManager?.onEvent(event)
+    } else {
+      const event: AutoContinueEvent = {
+        v: 3,
+        kind: "auto_continue_proposed",
+        timestamp: now,
+        chatId,
+        scheduleId,
+        detectedAt: now,
+        resetAt: detection.resetAt,
+        tz: detection.tz,
+        turnId,
+      }
+      await this.store.appendAutoContinueEvent(event)
+      this.scheduleManager?.onEvent(event)
+    }
+
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "auto_continue_prompt",
+      scheduleId,
+    } as Omit<TranscriptEntry, "_id" | "createdAt">))
+
+    return true
   }
 
   async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {

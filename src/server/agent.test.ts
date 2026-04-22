@@ -9,6 +9,7 @@ import {
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, SlashCommand, TranscriptEntry } from "../shared/types"
+import type { AutoContinueEvent } from "./auto-continue/events"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
@@ -30,36 +31,50 @@ async function waitFor(condition: () => boolean, timeoutMs = 2000) {
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = []
-  private readonly waiters: Array<(result: IteratorResult<T>) => void> = []
+  private readonly waiters: Array<{ resolve: (result: IteratorResult<T>) => void; reject: (error: unknown) => void }> = []
   private closed = false
+  private pendingError: unknown = null
 
   push(value: T) {
     const waiter = this.waiters.shift()
     if (waiter) {
-      waiter({ done: false, value })
+      waiter.resolve({ done: false, value })
       return
     }
     this.values.push(value)
   }
 
+  throw(error: unknown) {
+    this.pendingError = error
+    const waiter = this.waiters.shift()
+    if (waiter) {
+      waiter.reject(error)
+    }
+  }
+
   close() {
     this.closed = true
     while (this.waiters.length > 0) {
-      this.waiters.shift()?.({ done: true, value: undefined as never })
+      this.waiters.shift()?.resolve({ done: true, value: undefined as never })
     }
   }
 
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: async () => {
+        if (this.pendingError !== null) {
+          const err = this.pendingError
+          this.pendingError = null
+          throw err
+        }
         if (this.values.length > 0) {
           return { done: false, value: this.values.shift() as T }
         }
         if (this.closed) {
           return { done: true, value: undefined as never }
         }
-        return await new Promise<IteratorResult<T>>((resolve) => {
-          this.waiters.push(resolve)
+        return await new Promise<IteratorResult<T>>((resolve, reject) => {
+          this.waiters.push({ resolve, reject })
         })
       },
     }
@@ -1731,10 +1746,23 @@ function createFakeStore() {
     async recordTurnFinished() {
       this.turnFinishedCount += 1
     },
-    async recordTurnFailed() {
-      throw new Error("Did not expect turn failure")
+    turnFailedCount: 0,
+    turnFailures: [] as Array<{ chatId: string; reason: string }>,
+    async recordTurnFailed(chatId: string, reason: string) {
+      this.turnFailedCount += 1
+      this.turnFailures.push({ chatId, reason })
     },
     async recordTurnCancelled() {},
+    autoContinueEvents: [] as AutoContinueEvent[],
+    async appendAutoContinueEvent(event: AutoContinueEvent) {
+      this.autoContinueEvents.push(event)
+    },
+    getAutoContinueEvents(chatId: string) {
+      return this.autoContinueEvents.filter((e) => e.chatId === chatId)
+    },
+    listAutoContinueChats() {
+      return [...new Set(this.autoContinueEvents.map((e) => e.chatId))]
+    },
     async setSessionToken(_chatId: string, sessionToken: string | null) {
       chat.sessionToken = sessionToken
     },
@@ -1766,3 +1794,109 @@ function createFakeStore() {
     },
   }
 }
+
+function makeLimitError() {
+  const err = new Error(
+    JSON.stringify({
+      type: "error",
+      error: { type: "rate_limit_error" },
+    })
+  ) as Error & { status?: number; headers?: Record<string, string> }
+  err.status = 429
+  err.headers = {
+    "anthropic-ratelimit-unified-reset": new Date(5_000).toISOString(),
+    "x-anthropic-timezone": "Asia/Saigon",
+  }
+  return err
+}
+
+describe("AgentCoordinator rate-limit detection (manual mode)", () => {
+  test("emits auto_continue_proposed when Claude throws a rate-limit error and autoResumeOnRateLimit is false", async () => {
+    const store = createFakeStore()
+    const limitErr = makeLimitError()
+    const events = new AsyncEventQueue<any>()
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      getAutoResumePreference: () => false,
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        getSupportedCommands: async () => [],
+        sendPrompt: async () => {
+          // Throw after sendPrompt is called — activeTurns is already set by this point
+          events.throw(limitErr)
+        },
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "hello",
+      model: "claude-opus-4-5",
+      autoResumeOnRateLimit: false,
+    })
+
+    await waitFor(() => store.getAutoContinueEvents("chat-1").length >= 1 && store.turnFailedCount >= 1)
+
+    const acEvents = store.getAutoContinueEvents("chat-1")
+    expect(acEvents).toHaveLength(1)
+    expect(acEvents[0].kind).toBe("auto_continue_proposed")
+    if (acEvents[0].kind === "auto_continue_proposed") {
+      expect(acEvents[0].tz).toBe("Asia/Saigon")
+    }
+    expect(store.turnFailures.some((f) => f.reason === "rate_limit")).toBe(true)
+  })
+
+  test("auto-resume on: emits auto_continue_accepted directly with source=auto_setting", async () => {
+    const store = createFakeStore()
+    const limitErr = makeLimitError()
+    const events = new AsyncEventQueue<any>()
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      getAutoResumePreference: () => true,
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        getSupportedCommands: async () => [],
+        sendPrompt: async () => {
+          events.throw(limitErr)
+        },
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "hello",
+      model: "claude-opus-4-5",
+      autoResumeOnRateLimit: true,
+    })
+
+    await waitFor(() => store.getAutoContinueEvents("chat-1").length >= 1 && store.turnFailedCount >= 1)
+
+    const acEvents = store.getAutoContinueEvents("chat-1")
+    expect(acEvents).toHaveLength(1)
+    expect(acEvents[0].kind).toBe("auto_continue_accepted")
+    if (acEvents[0].kind === "auto_continue_accepted") {
+      expect(acEvents[0].source).toBe("auto_setting")
+    }
+    expect(store.turnFailures.some((f) => f.reason === "rate_limit")).toBe(true)
+  })
+})

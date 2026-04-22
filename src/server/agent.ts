@@ -811,6 +811,7 @@ export class AgentCoordinator {
       claudeSession.session.close()
       this.claudeSessions.delete(chatId)
     }
+    this.autoResumeByChat.delete(chatId)
     this.emitStateChange(chatId)
   }
 
@@ -1353,7 +1354,7 @@ export class AgentCoordinator {
     } catch (error) {
       const active = this.activeTurns.get(session.chatId)
       if (active && !active.cancelRequested) {
-        const handled = await this.handleLimitError(session.chatId, this.claudeLimitDetector, error, "")
+        const handled = await this.handleLimitError(session.chatId, this.claudeLimitDetector, error, active.clientTraceId ?? "")
         if (!handled) {
           const message = error instanceof Error ? error.message : String(error)
           await this.store.appendMessage(
@@ -1449,7 +1450,7 @@ export class AgentCoordinator {
       }
     } catch (error) {
       if (!active.cancelRequested) {
-        const handled = await this.handleLimitError(active.chatId, this.codexLimitDetector, error, "")
+        const handled = await this.handleLimitError(active.chatId, this.codexLimitDetector, error, active.clientTraceId ?? "")
         if (!handled) {
           const message = error instanceof Error ? error.message : String(error)
           await this.store.appendMessage(

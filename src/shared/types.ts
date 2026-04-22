@@ -28,6 +28,7 @@ export interface QueuedChatMessage {
   model?: string
   modelOptions?: ModelOptions
   planMode?: boolean
+  autoContinue?: { scheduleId: string }
 }
 
 export interface InternalUserAttachmentsData {

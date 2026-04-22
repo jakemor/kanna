@@ -1779,6 +1779,7 @@ function createFakeStore() {
         model: message.model,
         modelOptions: message.modelOptions,
         planMode: message.planMode,
+        autoContinue: message.autoContinue,
       }
       this.queuedMessages.push(queuedMessage)
       return queuedMessage
@@ -1898,5 +1899,113 @@ describe("AgentCoordinator rate-limit detection (manual mode)", () => {
       expect(acEvents[0].source).toBe("auto_setting")
     }
     expect(store.turnFailures.some((f) => f.reason === "rate_limit")).toBe(true)
+  })
+})
+
+describe("AgentCoordinator auto-continue firing", () => {
+  test("firing enqueues a 'continue' user message carrying autoContinue metadata", async () => {
+    const store = createFakeStore()
+    const limitErr = makeLimitError()
+    const events = new AsyncEventQueue<any>()
+
+    // FakeClock lets us manually advance time to trigger armed schedules.
+    class FakeClock {
+      private currentTime = 0
+      private readonly timers = new Map<number, { fn: () => void; fireAt: number }>()
+      private nextId = 1
+
+      now() { return this.currentTime }
+
+      setTimeout(fn: () => void, delayMs: number): number {
+        const id = this.nextId++
+        this.timers.set(id, { fn, fireAt: this.currentTime + delayMs })
+        return id
+      }
+
+      clearTimeout(id: number) { this.timers.delete(id) }
+
+      advance(ms: number) {
+        this.currentTime += ms
+        for (const [id, timer] of [...this.timers.entries()]) {
+          if (timer.fireAt <= this.currentTime) {
+            this.timers.delete(id)
+            timer.fn()
+          }
+        }
+      }
+    }
+
+    const clock = new FakeClock()
+
+    let coordinator!: AgentCoordinator
+    const { ScheduleManager: SM } = await import("./auto-continue/schedule-manager")
+    const scheduleManager = new SM({
+      clock,
+      fire: async (chatId, scheduleId) => {
+        await coordinator.fireAutoContinue(chatId, scheduleId)
+      },
+    })
+
+    coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      getAutoResumePreference: () => true,
+      scheduleManager,
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        getSupportedCommands: async () => [],
+        sendPrompt: async () => {
+          events.throw(limitErr)
+        },
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "hello",
+      model: "claude-opus-4-5",
+      autoResumeOnRateLimit: true,
+    })
+
+    // Wait for auto_continue_accepted to be stored (Task 12 already handles this).
+    await waitFor(() => store.getAutoContinueEvents("chat-1").length >= 1 && store.turnFailedCount >= 1)
+
+    const acceptedEvent = store.getAutoContinueEvents("chat-1")[0]
+    expect(acceptedEvent.kind).toBe("auto_continue_accepted")
+
+    // The limit error header sets resetAt = new Date(5_000).toISOString() → 5000 ms from epoch.
+    // Advancing the clock past that fires the schedule.
+    clock.advance(10_000)
+
+    // Wait for the fired event AND the "continue" user_prompt to both appear.
+    await waitFor(
+      () =>
+        store.getAutoContinueEvents("chat-1").some((e) => e.kind === "auto_continue_fired") &&
+        store.messages.some((m) => m.kind === "user_prompt" && m.content === "continue")
+    )
+
+    const acEvents = store.getAutoContinueEvents("chat-1")
+    const firedEvent = acEvents.find((e) => e.kind === "auto_continue_fired")
+    expect(firedEvent).toBeDefined()
+    if (firedEvent?.kind === "auto_continue_fired") {
+      expect(firedEvent.scheduleId).toBe(acceptedEvent.scheduleId)
+    }
+
+    // Exactly one "continue" user_prompt with autoContinue metadata.
+    const userPrompts = store.messages.filter(
+      (m) => m.kind === "user_prompt" && m.content === "continue"
+    )
+    expect(userPrompts).toHaveLength(1)
+    if (userPrompts[0].kind === "user_prompt") {
+      expect(userPrompts[0].autoContinue?.scheduleId).toBe(acceptedEvent.scheduleId)
+    }
   })
 })

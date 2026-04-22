@@ -147,6 +147,7 @@ interface SendMessageOptions {
   modelOptions?: ModelOptions
   effort?: string
   planMode?: boolean
+  autoContinue?: { scheduleId: string }
 }
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
@@ -850,6 +851,7 @@ export class AgentCoordinator {
       model: options?.model,
       modelOptions: options?.modelOptions,
       planMode: options?.planMode,
+      autoContinue: options?.autoContinue,
     })
     this.emitStateChange(chatId)
     return queued
@@ -871,6 +873,7 @@ export class AgentCoordinator {
       planMode: settings.planMode,
       appendUserPrompt: true,
       steered: options?.steered,
+      autoContinue: queuedMessage.autoContinue,
     })
   }
 
@@ -895,6 +898,7 @@ export class AgentCoordinator {
     planMode: boolean
     appendUserPrompt: boolean
     steered?: boolean
+    autoContinue?: { scheduleId: string }
     profile?: SendToStartingProfile | null
   }) {
     logSendToStartingProfile(args.profile, "start_turn.begin", {
@@ -948,7 +952,7 @@ export class AgentCoordinator {
 
     if (args.appendUserPrompt) {
       const userPromptEntry = timestamped(
-        { kind: "user_prompt", content: args.content, attachments: args.attachments, steered: args.steered },
+        { kind: "user_prompt", content: args.content, attachments: args.attachments, steered: args.steered, autoContinue: args.autoContinue },
         Date.now()
       )
       await this.store.appendMessage(args.chatId, userPromptEntry)
@@ -1588,6 +1592,38 @@ export class AgentCoordinator {
     } as Omit<TranscriptEntry, "_id" | "createdAt">))
 
     return true
+  }
+
+  async fireAutoContinue(chatId: string, scheduleId: string) {
+    const now = Date.now()
+    const fired: AutoContinueEvent = {
+      v: 3,
+      kind: "auto_continue_fired",
+      timestamp: now,
+      chatId,
+      scheduleId,
+      firedAt: now,
+    }
+    await this.store.appendAutoContinueEvent(fired)
+
+    try {
+      await this.enqueueMessage(chatId, "continue", [], { autoContinue: { scheduleId } })
+      await this.maybeStartNextQueuedMessage(chatId)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await this.store.appendMessage(
+        chatId,
+        timestamped({
+          kind: "result",
+          subtype: "error",
+          isError: true,
+          durationMs: 0,
+          result: `Auto-continue failed: ${message}`,
+        })
+      )
+    }
+
+    this.emitStateChange(chatId)
   }
 
   async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {

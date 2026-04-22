@@ -18,6 +18,7 @@ import { createWsRouter, type ClientState } from "./ws-router"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
 import { listProjectPaths } from "./project-paths"
+import { ScheduleManager } from "./auto-continue/schedule-manager"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -123,8 +124,15 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     })
     return manager
   })()
-  const agent = new AgentCoordinator({
+  let agent!: AgentCoordinator
+  const scheduleManager = new ScheduleManager({
+    fire: async (chatId, scheduleId) => {
+      await agent.fireAutoContinue(chatId, scheduleId)
+    },
+  })
+  agent = new AgentCoordinator({
     store,
+    scheduleManager,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {
@@ -137,6 +145,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       router.scheduleBroadcast()
     },
   })
+  scheduleManager.rehydrate(
+    store.listAutoContinueChats().flatMap((chatId) => store.getAutoContinueEvents(chatId))
+  )
   router = createWsRouter({
     store,
     diffStore,

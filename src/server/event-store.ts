@@ -336,7 +336,7 @@ export class EventStore {
   }
 
   private applyEvent(event: StoreEvent) {
-    if ("kind" in event && event.kind.startsWith("auto_continue_")) {
+    if ("kind" in event) {
       this.applyAutoContinueEvent(event)
       return
     }
@@ -1129,12 +1129,7 @@ export class EventStore {
   }
 
   async appendAutoContinueEvent(event: AutoContinueEvent) {
-    const payload = `${JSON.stringify(event)}\n`
-    this.writeChain = this.writeChain.then(async () => {
-      await appendFile(this.schedulesLogPath, payload, "utf8")
-      this.applyAutoContinueEvent(event)
-    })
-    return this.writeChain
+    return this.append(this.schedulesLogPath, event)
   }
 
   getAutoContinueEvents(chatId: string): AutoContinueEvent[] {

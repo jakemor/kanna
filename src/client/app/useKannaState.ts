@@ -9,6 +9,7 @@ import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import { useChatInputStore } from "../stores/chatInputStore"
 import { useSlashCommandsStore } from "../stores/slashCommandsStore"
+import { usePreferencesStore } from "../stores/preferences"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -1269,6 +1270,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     const attachments = options?.attachments ?? []
     if (activeChatId && isProcessing) {
       try {
+        const autoResumeOnRateLimit = usePreferencesStore.getState().autoResumeOnRateLimit
         await socket.command<{ queuedMessageId: string }>({
           type: "message.enqueue",
           chatId: activeChatId,
@@ -1278,6 +1280,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
           model: options?.model,
           modelOptions: options?.modelOptions,
           planMode: options?.planMode,
+          autoResumeOnRateLimit,
         })
         setCommandError(null)
         return
@@ -1347,6 +1350,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
         throw new Error("Open a project first")
       }
 
+      const autoResumeOnRateLimit = usePreferencesStore.getState().autoResumeOnRateLimit
       const result = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? undefined,
@@ -1358,6 +1362,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
         model: options?.model,
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,
+        autoResumeOnRateLimit,
       })
       sendTrace.ackAt = performance.now()
       sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId

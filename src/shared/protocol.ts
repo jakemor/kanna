@@ -100,6 +100,7 @@ export type ClientCommand =
       modelOptions?: ModelOptions
       effort?: string
       planMode?: boolean
+      autoResumeOnRateLimit?: boolean
     }
   | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.initGit"; chatId: string }
@@ -182,6 +183,7 @@ export type ClientCommand =
       model?: string
       modelOptions?: ModelOptions
       planMode?: boolean
+      autoResumeOnRateLimit?: boolean
     }
   | {
       type: "message.steer"

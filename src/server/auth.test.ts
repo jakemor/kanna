@@ -174,7 +174,7 @@ describe("password auth", () => {
     }
   })
 
-  test("ignores forwarded headers when trustProxy is off", async () => {
+  test("ignores forwarded proto when trustProxy is off", async () => {
     const { server } = await startPasswordServer({ port: 54321 })
 
     try {
@@ -182,7 +182,6 @@ describe("password auth", () => {
         redirect: "manual",
         headers: {
           Accept: "text/html",
-          "X-Forwarded-Host": "evil.test",
           "X-Forwarded-Proto": "https",
         },
       })
@@ -195,7 +194,6 @@ describe("password auth", () => {
         headers: {
           "Content-Type": "application/json",
           Origin: "https://evil.test",
-          "X-Forwarded-Host": "evil.test",
           "X-Forwarded-Proto": "https",
         },
       })
@@ -218,7 +216,7 @@ describe("password auth", () => {
     }
   })
 
-  test("honors forwarded headers when trustProxy is on", async () => {
+  test("honors forwarded proto when trustProxy is on", async () => {
     const { server } = await startPasswordServer({ port: 54322, trustProxy: true })
 
     try {
@@ -226,7 +224,6 @@ describe("password auth", () => {
         redirect: "manual",
         headers: {
           Accept: "text/html",
-          "X-Forwarded-Host": `localhost:${server.port}`,
           "X-Forwarded-Proto": "https",
         },
       })
@@ -239,7 +236,6 @@ describe("password auth", () => {
         headers: {
           "Content-Type": "application/json",
           Origin: `https://localhost:${server.port}`,
-          "X-Forwarded-Host": `localhost:${server.port}`,
           "X-Forwarded-Proto": "https",
         },
       })
@@ -255,6 +251,36 @@ describe("password auth", () => {
         },
       })
       expect(evilResponse.status).toBe(200)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  test("ignores invalid forwarded proto values", async () => {
+    const { server } = await startPasswordServer({ port: 54323, trustProxy: true })
+
+    try {
+      const redirect = await fetch(`http://localhost:${server.port}/`, {
+        redirect: "manual",
+        headers: {
+          Accept: "text/html",
+          "X-Forwarded-Proto": "ftp",
+        },
+      })
+      expect(redirect.status).toBe(302)
+      expect(redirect.headers.get("location")).toBe(`http://localhost:${server.port}/auth/login?next=%2F`)
+
+      const loginResponse = await fetch(`http://localhost:${server.port}/auth/login`, {
+        method: "POST",
+        body: JSON.stringify({ password: "secret", next: "/" }),
+        headers: {
+          "Content-Type": "application/json",
+          Origin: `http://localhost:${server.port}`,
+          "X-Forwarded-Proto": "ftp",
+        },
+      })
+      expect(loginResponse.status).toBe(200)
+      expect(loginResponse.headers.get("set-cookie") ?? "").not.toContain("Secure")
     } finally {
       await server.stop()
     }

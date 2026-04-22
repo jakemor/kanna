@@ -61,11 +61,10 @@ export interface StartKannaServerOptions {
   password?: string | null
   strictPort?: boolean
   /**
-   * When true, the auth layer trusts X-Forwarded-Proto / X-Forwarded-Host
-   * headers for CSRF origin checks, redirect URLs, and the Secure cookie flag.
-   * Only enable when the server is reachable solely through a trusted reverse
-   * proxy such as cloudflared — otherwise these headers are client-controlled
-   * and allow CSRF bypass / open redirects.
+   * When true, the auth layer trusts X-Forwarded-Proto for CSRF origin
+   * checks, redirect URLs, and the Secure cookie flag. The hostname still
+   * comes from the request URL / Host header. Only enable when the server is
+   * reachable solely through a trusted reverse proxy such as cloudflared.
    */
   trustProxy?: boolean
   onMigrationProgress?: (message: string) => void

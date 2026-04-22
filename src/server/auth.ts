@@ -47,10 +47,11 @@ function sanitizeNextPath(nextPath: string | null | undefined) {
   return nextPath
 }
 
-function forwardedProto(req: Request): string | null {
+function forwardedProto(req: Request): "http" | "https" | null {
   const xfp = req.headers.get("x-forwarded-proto")
-  if (xfp) return xfp.split(",")[0].trim().toLowerCase()
-  return null
+  if (!xfp) return null
+  const value = xfp.split(",")[0]?.trim().toLowerCase()
+  return value === "http" || value === "https" ? value : null
 }
 
 function effectiveOrigin(req: Request, trustProxy: boolean): string {
@@ -122,9 +123,10 @@ function escapeHtml(value: string) {
 export interface AuthManagerOptions {
   /**
    * When true, the auth layer trusts X-Forwarded-Proto to decide whether the
-   * public origin is https. The hostname always comes from the Host header
-   * (never X-Forwarded-Host) because X-Forwarded-Host is passed through by
-   * some tunnels unmodified and would otherwise allow open redirects.
+   * public origin is http or https. The hostname always comes from the Host
+   * header (never X-Forwarded-Host) because X-Forwarded-Host is passed
+   * through by some tunnels unmodified and would otherwise allow open
+   * redirects.
    * Enable only when the server is reachable solely through a trusted reverse
    * proxy such as cloudflared.
    */

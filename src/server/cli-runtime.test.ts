@@ -27,6 +27,7 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
       share: false | "quick" | { kind: "token"; token: string }
       password: string | null
       strictPort: boolean
+      trustProxy?: boolean
       update: {
         version: string
         argv: string[]
@@ -290,6 +291,7 @@ describe("runCli", () => {
       share: false,
       password: null,
       strictPort: false,
+      trustProxy: false,
       update: {
         version: "0.3.0",
         argv: ["--port", "4000", "--no-open"],
@@ -356,6 +358,7 @@ describe("runCli", () => {
 
     expect(result.kind).toBe("started")
     expect(calls.openUrl).toEqual([])
+    expect(calls.startServer[0]?.trustProxy).toBe(true)
     expect(calls.shareTunnel).toEqual([{ localUrl: "http://localhost:4000", shareMode: "quick" }])
     expect(calls.renderShareQr).toEqual(["https://kanna.trycloudflare.com"])
     expect(calls.log).toContain("QR Code:")
@@ -452,6 +455,7 @@ describe("runCli", () => {
     const result = await runCli(["--cloudflared", "secret-token"], deps)
 
     expect(result.kind).toBe("started")
+    expect(calls.startServer[0]?.trustProxy).toBe(true)
     expect(calls.shareTunnel).toEqual([{
       localUrl: "http://localhost:3210",
       shareMode: { kind: "token", token: "secret-token" },

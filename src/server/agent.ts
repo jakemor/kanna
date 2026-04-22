@@ -1595,6 +1595,9 @@ export class AgentCoordinator {
   }
 
   async fireAutoContinue(chatId: string, scheduleId: string) {
+    // Chat may have been deleted between accept and fire — skip silently.
+    if (!this.store.getChat(chatId)) return
+
     const now = Date.now()
     const fired: AutoContinueEvent = {
       v: 3,

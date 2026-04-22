@@ -61,7 +61,7 @@ function PasswordScreen({
             </div>
           </div>
           <CardDescription className="leading-6">
-            Enter your password to continue. Your session will be authenticated via a secure session cookie until the CLI process restarts.
+            Enter your password to continue.
           </CardDescription>
         </CardHeader>
         <CardContent className="px-6 pb-6">

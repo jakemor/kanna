@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { shouldRedirectToChangelog } from "./App"
+import { getAppAuthStateFromStatus, shouldRedirectToChangelog, shouldRetryAuthStatusRequest } from "./App"
 import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
 import type { SidebarChatRow } from "../../shared/types"
@@ -22,6 +22,23 @@ describe("shouldRedirectToChangelog", () => {
     expect(shouldRedirectToChangelog("/settings/general", "0.12.0", "0.11.0")).toBe(false)
     expect(shouldRedirectToChangelog("/chat/1", "0.12.0", "0.11.0")).toBe(false)
     expect(shouldRedirectToChangelog("/", "0.12.0", "0.12.0")).toBe(false)
+  })
+})
+
+describe("auth boot helpers", () => {
+  test("maps disabled or authenticated auth status to ready", () => {
+    expect(getAppAuthStateFromStatus({ enabled: false, authenticated: true })).toEqual({ status: "ready" })
+    expect(getAppAuthStateFromStatus({ enabled: true, authenticated: true })).toEqual({ status: "ready" })
+  })
+
+  test("maps enabled but unauthenticated auth status to locked", () => {
+    expect(getAppAuthStateFromStatus({ enabled: true, authenticated: false })).toEqual({ status: "locked", error: null })
+  })
+
+  test("retries auth status requests unless the endpoint returned ok", () => {
+    expect(shouldRetryAuthStatusRequest(null)).toBe(true)
+    expect(shouldRetryAuthStatusRequest(false)).toBe(true)
+    expect(shouldRetryAuthStatusRequest(true)).toBe(false)
   })
 })
 

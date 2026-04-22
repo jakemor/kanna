@@ -466,9 +466,11 @@ async function isServerReady(fetchImpl: typeof fetch = fetch) {
 }
 
 export interface ProjectRequest {
-  mode: "new" | "existing"
+  mode: "new" | "existing" | "clone"
   localPath: string
+  fallbackPath?: string
   title: string
+  cloneUrl?: string
 }
 
 export type StartChatIntent =
@@ -1188,12 +1190,16 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return { projectId: result.projectId, localPath: intent.localPath }
     }
 
-    const result = await socket.command<{ projectId: string }>(
-      intent.project.mode === "new"
-        ? { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
-        : { type: "project.open", localPath: intent.project.localPath }
-    )
-    return { projectId: result.projectId, localPath: intent.project.localPath }
+    let command: Parameters<typeof socket.command>[0]
+    if (intent.project.mode === "clone" && intent.project.cloneUrl) {
+      command = { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
+    } else if (intent.project.mode === "new") {
+      command = { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
+    } else {
+      command = { type: "project.open", localPath: intent.project.localPath }
+    }
+    const result = await socket.command<{ projectId: string; localPath?: string }>(command)
+    return { projectId: result.projectId, localPath: result.localPath ?? intent.project.localPath }
   }, [socket])
 
   const startChatFromIntent = useCallback(async (intent: StartChatIntent) => {
@@ -1211,6 +1217,10 @@ export function useKannaState(activeChatId: string | null): KannaState {
       await createChatForProject(projectId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
+      // Re-throw for clone operations so the modal can show the error inline
+      if (intent.kind === "project_request" && intent.project.mode === "clone") {
+        throw error
+      }
     } finally {
       setStartingLocalPath(null)
     }

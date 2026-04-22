@@ -145,9 +145,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       router.scheduleBroadcast()
     },
   })
-  scheduleManager.rehydrate(
-    store.listAutoContinueChats().flatMap((chatId) => store.getAutoContinueEvents(chatId))
-  )
   router = createWsRouter({
     store,
     diffStore,
@@ -164,6 +161,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     machineDisplayName,
     updateManager,
   })
+  scheduleManager.rehydrate(
+    store.listAutoContinueChats().flatMap((chatId) => store.getAutoContinueEvents(chatId))
+  )
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()
       .then(() => router.broadcastSnapshots())

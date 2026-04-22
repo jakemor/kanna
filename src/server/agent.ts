@@ -1604,9 +1604,8 @@ export class AgentCoordinator {
       scheduleId,
       firedAt: now,
     }
-    await this.store.appendAutoContinueEvent(fired)
-
     try {
+      await this.store.appendAutoContinueEvent(fired)
       await this.enqueueMessage(chatId, "continue", [], { autoContinue: { scheduleId } })
       await this.maybeStartNextQueuedMessage(chatId)
     } catch (error) {

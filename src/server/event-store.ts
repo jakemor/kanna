@@ -783,6 +783,7 @@ export class EventStore {
       model: message.model,
       modelOptions: message.modelOptions,
       planMode: message.planMode,
+      autoContinue: message.autoContinue,
     }
     const event: QueuedMessageEvent = {
       v: STORE_VERSION,

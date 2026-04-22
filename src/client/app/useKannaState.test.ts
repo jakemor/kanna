@@ -258,6 +258,8 @@ describe("getActiveChatSnapshot", () => {
       availableProviders: [],
       slashCommands: [],
       slashCommandsLoading: false,
+      schedules: {},
+      liveScheduleId: null,
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-1")).toEqual(snapshot)
@@ -286,6 +288,8 @@ describe("getActiveChatSnapshot", () => {
       availableProviders: [],
       slashCommands: [],
       slashCommandsLoading: false,
+      schedules: {},
+      liveScheduleId: null,
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-new")).toBeNull()

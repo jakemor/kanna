@@ -305,3 +305,53 @@ describe("read models", () => {
     expect(snapshot?.slashCommands).toEqual(slashCommands)
   })
 })
+
+describe("deriveChatSnapshot schedules", () => {
+  test("empty schedules produces empty map and null live id", () => {
+    const state = createEmptyState()
+    state.projectsById.set("p1", {
+      id: "p1", localPath: "/tmp/p", title: "P", createdAt: 0, updatedAt: 0,
+    })
+    state.chatsById.set("c1", {
+      id: "c1", projectId: "p1", title: "Chat", createdAt: 0, updatedAt: 0,
+      unread: false, provider: null, planMode: false, sessionToken: null, sourceHash: null, lastTurnOutcome: null,
+    })
+
+    const snapshot = deriveChatSnapshot(
+      state,
+      new Map(),
+      new Set(),
+      new Set(),
+      "c1",
+      () => ({ messages: [], history: { hasOlder: false, olderCursor: null, recentLimit: 0 } }),
+    )
+    expect(snapshot!.schedules).toEqual({})
+    expect(snapshot!.liveScheduleId).toBeNull()
+  })
+
+  test("proposed event projects to schedules + liveScheduleId", () => {
+    const state = createEmptyState()
+    state.projectsById.set("p1", {
+      id: "p1", localPath: "/tmp/p", title: "P", createdAt: 0, updatedAt: 0,
+    })
+    state.chatsById.set("c1", {
+      id: "c1", projectId: "p1", title: "Chat", createdAt: 0, updatedAt: 0,
+      unread: false, provider: null, planMode: false, sessionToken: null, sourceHash: null, lastTurnOutcome: null,
+    })
+    state.autoContinueEventsByChatId.set("c1", [{
+      v: 3, kind: "auto_continue_proposed", timestamp: 1, chatId: "c1", scheduleId: "s1",
+      detectedAt: 1, resetAt: 2_000, tz: "Asia/Saigon", turnId: "t1",
+    }])
+
+    const snapshot = deriveChatSnapshot(
+      state,
+      new Map(),
+      new Set(),
+      new Set(),
+      "c1",
+      () => ({ messages: [], history: { hasOlder: false, olderCursor: null, recentLimit: 0 } }),
+    )
+    expect(snapshot!.schedules["s1"].state).toBe("proposed")
+    expect(snapshot!.liveScheduleId).toBe("s1")
+  })
+})

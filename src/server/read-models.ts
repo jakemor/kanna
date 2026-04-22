@@ -10,6 +10,7 @@ import type {
 import type { ChatRecord, StoreState } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
+import { deriveChatSchedules } from "./auto-continue/read-model"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_RECENT_PREVIEW_LIMIT = 10
@@ -175,6 +176,8 @@ export function deriveChatSnapshot(
   }
 
   const transcript = getMessages(chat.id)
+  const autoContinueEvents = state.autoContinueEventsByChatId.get(chat.id) ?? []
+  const { schedules, liveScheduleId } = deriveChatSchedules(autoContinueEvents, chat.id)
 
   return {
     runtime,
@@ -187,5 +190,7 @@ export function deriveChatSnapshot(
     availableProviders: [...SERVER_PROVIDERS],
     slashCommands: (chat.slashCommands ?? []).map((c) => ({ ...c })),
     slashCommandsLoading: slashCommandsLoadingChatIds.has(chat.id),
+    schedules,
+    liveScheduleId,
   }
 }

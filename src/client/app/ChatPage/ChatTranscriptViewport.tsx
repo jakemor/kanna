@@ -14,6 +14,7 @@ import {
   useStableResolvedRows,
 } from "../KannaTranscript"
 import type { KannaState } from "../useKannaState"
+import type { AutoContinueSchedule } from "../../../shared/types"
 import {
   CHAT_NAVBAR_OFFSET_PX,
   EMPTY_STATE_TEXT,
@@ -40,6 +41,10 @@ interface ChatTranscriptViewportProps {
   onOpenLocalLink: KannaState["handleOpenLocalLink"]
   onAskUserQuestionSubmit: KannaState["handleAskUserQuestion"]
   onExitPlanModeConfirm: KannaState["handleExitPlanMode"]
+  schedules: Record<string, AutoContinueSchedule>
+  onAutoContinueAccept: (scheduleId: string, scheduledAt: number) => void
+  onAutoContinueReschedule: (scheduleId: string, scheduledAt: number) => void
+  onAutoContinueCancel: (scheduleId: string) => void
   showScrollButton: boolean
   onIsAtEndChange: (isAtEnd: boolean) => void
   scrollToBottom: () => void
@@ -70,6 +75,10 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   onOpenLocalLink,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
+  schedules,
+  onAutoContinueAccept,
+  onAutoContinueReschedule,
+  onAutoContinueCancel,
   showScrollButton,
   onIsAtEndChange,
   scrollToBottom,
@@ -180,9 +189,13 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         onToolGroupExpandedChange={handleToolGroupExpandedChange}
         onAskUserQuestionSubmit={onAskUserQuestionSubmit}
         onExitPlanModeConfirm={onExitPlanModeConfirm}
+        schedules={schedules}
+        onAutoContinueAccept={onAutoContinueAccept}
+        onAutoContinueReschedule={onAutoContinueReschedule}
+        onAutoContinueCancel={onAutoContinueCancel}
       />
     </div>
-  ), [handleToolGroupExpandedChange, onAskUserQuestionSubmit, onExitPlanModeConfirm, toolGroupExpanded])
+  ), [handleToolGroupExpandedChange, onAskUserQuestionSubmit, onExitPlanModeConfirm, schedules, onAutoContinueAccept, onAutoContinueReschedule, onAutoContinueCancel, toolGroupExpanded])
 
   const listHeader = (
     <div className="mx-auto w-full max-w-[800px] pt-[72px]">

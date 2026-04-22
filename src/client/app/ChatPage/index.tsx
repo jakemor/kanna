@@ -27,6 +27,7 @@ import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
+import type { AutoContinueSchedule } from "../../../shared/types"
 import { ChatInputDock } from "./ChatInputDock"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -47,6 +48,8 @@ export {
 const TERMINAL_TOGGLE_DURATION_STYLE: CSSProperties = {
   "--terminal-toggle-duration": `${TERMINAL_TOGGLE_ANIMATION_DURATION_MS}ms`,
 } as CSSProperties
+
+const EMPTY_SCHEDULES: Record<string, AutoContinueSchedule> = {}
 
 function useEmptyStateTyping(showEmptyState: boolean, activeChatId: string | null) {
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
@@ -706,6 +709,24 @@ export function ChatPage() {
     await state.handleSend(content, options)
   }, [scrollToTranscriptEnd, state])
 
+  const handleAutoContinueAccept = useCallback((scheduleId: string, scheduledAt: number) => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    void state.socket.command({ type: "autoContinue.accept", chatId, scheduleId, scheduledAt }).catch(() => {})
+  }, [state.activeChatId, state.socket])
+
+  const handleAutoContinueReschedule = useCallback((scheduleId: string, scheduledAt: number) => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    void state.socket.command({ type: "autoContinue.reschedule", chatId, scheduleId, scheduledAt }).catch(() => {})
+  }, [state.activeChatId, state.socket])
+
+  const handleAutoContinueCancel = useCallback((scheduleId: string) => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    void state.socket.command({ type: "autoContinue.cancel", chatId, scheduleId }).catch(() => {})
+  }, [state.activeChatId, state.socket])
+
   useEffect(() => {
     return () => clearShowScrollTimeout()
   }, [clearShowScrollTimeout])
@@ -904,6 +925,10 @@ export function ChatPage() {
           onOpenLocalLink={state.handleOpenLocalLink}
           onAskUserQuestionSubmit={state.handleAskUserQuestion}
           onExitPlanModeConfirm={state.handleExitPlanMode}
+          schedules={state.chatSnapshot?.schedules ?? EMPTY_SCHEDULES}
+          onAutoContinueAccept={handleAutoContinueAccept}
+          onAutoContinueReschedule={handleAutoContinueReschedule}
+          onAutoContinueCancel={handleAutoContinueCancel}
           showScrollButton={showScrollToBottom && state.messages.length > 0}
           onIsAtEndChange={onIsAtEndChange}
           scrollToBottom={() => scrollToTranscriptEnd(true)}

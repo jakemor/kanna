@@ -113,6 +113,29 @@ describe("processTranscriptMessages", () => {
     expect(messages[0].attachments?.[0]?.relativePath).toBe("./.kanna/uploads/spec.pdf")
   })
 
+  test("auto_continue_prompt entries hydrate with scheduleId", () => {
+    const output = processTranscriptMessages([{
+      _id: "m1",
+      createdAt: 1,
+      kind: "auto_continue_prompt",
+      scheduleId: "s1",
+    }])
+    expect(output[0]?.kind).toBe("auto_continue_prompt")
+    expect((output[0] as { scheduleId: string }).scheduleId).toBe("s1")
+  })
+
+  test("user_prompt carries autoContinue metadata", () => {
+    const output = processTranscriptMessages([{
+      _id: "m1",
+      createdAt: 1,
+      kind: "user_prompt",
+      content: "continue",
+      autoContinue: { scheduleId: "s1" },
+    }])
+    expect(output[0]?.kind).toBe("user_prompt")
+    expect((output[0] as { autoContinue?: { scheduleId: string } }).autoContinue?.scheduleId).toBe("s1")
+  })
+
   test("preserves context window update entries", () => {
     const messages = processTranscriptMessages([
       entry({

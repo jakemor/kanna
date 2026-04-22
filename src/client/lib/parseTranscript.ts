@@ -52,6 +52,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           content: entry.content,
           attachments: entry.attachments ?? [],
           steered: entry.steered,
+          autoContinue: entry.autoContinue,
         })
         break
       case "system_init":
@@ -151,6 +152,13 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         messages.push({
           ...createBaseMessage(entry),
           kind: "interrupted",
+        })
+        break
+      case "auto_continue_prompt":
+        messages.push({
+          ...createBaseMessage(entry),
+          kind: "auto_continue_prompt",
+          scheduleId: entry.scheduleId,
         })
         break
       default:

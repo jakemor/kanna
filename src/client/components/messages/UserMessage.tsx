@@ -12,6 +12,7 @@ interface Props {
   content: string
   attachments?: ChatAttachment[]
   steered?: boolean
+  autoContinue?: { scheduleId: string }
 }
 
 function parseSystemMessage(content: string) {
@@ -26,7 +27,7 @@ function parseSystemMessage(content: string) {
   }
 }
 
-export function UserMessage({ content, attachments = [], steered = false }: Props) {
+export function UserMessage({ content, attachments = [], steered = false, autoContinue }: Props) {
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const parsedContent = useMemo(() => parseSystemMessage(content), [content])
   const imageAttachments = useMemo(
@@ -88,6 +89,9 @@ export function UserMessage({ content, attachments = [], steered = false }: Prop
               <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>{parsedContent.body}</Markdown>
             </div>
           </div>
+        ) : null}
+        {autoContinue ? (
+          <span className="text-xs text-muted-foreground opacity-70">auto-sent</span>
         ) : null}
       </div>
       <AttachmentPreviewModal attachment={selectedAttachment} onOpenChange={(open) => !open && setSelectedAttachmentId(null)} />

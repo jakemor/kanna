@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ClaudeLimitDetector } from "./limit-detector"
+import { ClaudeLimitDetector, CodexLimitDetector } from "./limit-detector"
 
 const detector = new ClaudeLimitDetector()
 
@@ -62,5 +62,42 @@ describe("ClaudeLimitDetector", () => {
   test("does not match on status-only errors (400, 500, etc.)", () => {
     const err = anthropicError({ type: "error", error: { type: "overloaded_error" } })
     expect(detector.detect("c1", err)).toBeNull()
+  })
+})
+
+const codex = new CodexLimitDetector()
+
+describe("CodexLimitDetector", () => {
+  test("returns null for non-rate-limit JSON-RPC errors", () => {
+    const err = { code: -32601, message: "Method not found" }
+    expect(codex.detect("c1", err)).toBeNull()
+  })
+
+  test("detects rate limit from error.data.code with epoch-ms reset", () => {
+    const err = {
+      code: -32001,
+      message: "Rate limited",
+      data: { code: "rate_limit", resets_at_ms: 2_000_000, timezone: "Asia/Saigon" },
+    }
+    const detection = codex.detect("c1", err)
+    expect(detection!.resetAt).toBe(2_000_000)
+    expect(detection!.tz).toBe("Asia/Saigon")
+  })
+
+  test("detects rate limit with ISO resets_at", () => {
+    const resetIso = "2026-04-23T00:00:00+07:00"
+    const err = {
+      code: -32001,
+      message: "Rate limited",
+      data: { code: "rate_limit", resets_at: resetIso },
+    }
+    const detection = codex.detect("c1", err)
+    expect(detection!.resetAt).toBe(new Date(resetIso).getTime())
+    expect(detection!.tz).toBe("system")
+  })
+
+  test("returns null when no reset timestamp can be parsed", () => {
+    const err = { code: -32001, data: { code: "rate_limit" } }
+    expect(codex.detect("c1", err)).toBeNull()
   })
 })

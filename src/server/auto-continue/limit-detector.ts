@@ -64,3 +64,30 @@ export class ClaudeLimitDetector implements LimitDetector {
     return { chatId, resetAt, tz, raw: error }
   }
 }
+
+interface JsonRpcErrorLike {
+  code?: number
+  message?: string
+  data?: Record<string, unknown>
+}
+
+export class CodexLimitDetector implements LimitDetector {
+  detect(chatId: string, error: unknown): LimitDetection | null {
+    if (!error || typeof error !== "object") return null
+    const rpc = error as JsonRpcErrorLike
+    const data = rpc.data && typeof rpc.data === "object" ? rpc.data : null
+    const isRateLimit = data?.code === "rate_limit" || rpc.code === -32001
+    if (!isRateLimit) return null
+
+    let resetAt: number | null = null
+    if (typeof data?.resets_at_ms === "number" && Number.isFinite(data.resets_at_ms)) {
+      resetAt = data.resets_at_ms
+    } else {
+      resetAt = parseIsoMillis(data?.resets_at)
+    }
+    if (resetAt === null) return null
+
+    const tz = typeof data?.timezone === "string" ? (data.timezone as string) : "system"
+    return { chatId, resetAt, tz, raw: error }
+  }
+}

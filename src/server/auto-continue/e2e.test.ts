@@ -4,6 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentCoordinator } from "../agent"
 import { EventStore } from "../event-store"
+import { AsyncEventQueue } from "../test-helpers/async-event-queue"
+import { waitFor } from "../test-helpers/wait-for"
 import type { AutoContinueEvent } from "./events"
 import { ClaudeLimitDetector, CodexLimitDetector } from "./limit-detector"
 import { ScheduleManager, type Clock } from "./schedule-manager"
@@ -47,78 +49,8 @@ class FakeClock implements Clock {
 }
 
 // ---------------------------------------------------------------------------
-// AsyncEventQueue — replicates the queue helper from agent.test.ts
-// ---------------------------------------------------------------------------
-
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private readonly values: T[] = []
-  private readonly waiters: Array<{
-    resolve: (result: IteratorResult<T>) => void
-    reject: (error: unknown) => void
-  }> = []
-  private closed = false
-  private pendingError: unknown = null
-
-  push(value: T): void {
-    const waiter = this.waiters.shift()
-    if (waiter) {
-      waiter.resolve({ done: false, value })
-      return
-    }
-    this.values.push(value)
-  }
-
-  throw(error: unknown): void {
-    this.pendingError = error
-    const waiter = this.waiters.shift()
-    if (waiter) {
-      waiter.reject(error)
-    }
-  }
-
-  close(): void {
-    this.closed = true
-    while (this.waiters.length > 0) {
-      this.waiters.shift()?.resolve({ done: true, value: undefined as never })
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: async () => {
-        if (this.pendingError !== null) {
-          const err = this.pendingError
-          this.pendingError = null
-          throw err
-        }
-        if (this.values.length > 0) {
-          return { done: false, value: this.values.shift() as T }
-        }
-        if (this.closed) {
-          return { done: true, value: undefined as never }
-        }
-        return await new Promise<IteratorResult<T>>((resolve, reject) => {
-          this.waiters.push({ resolve, reject })
-        })
-      },
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Polls until `condition()` returns true or `timeoutMs` elapses. */
-async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
-  const start = Date.now()
-  while (!condition()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error("Timed out waiting for condition")
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-}
 
 /** Build a rate-limit error that ClaudeLimitDetector recognises.
  *
@@ -145,6 +77,7 @@ function makeRateLimitError(resetAt: number): Error & { status: number; headers:
 describe("auto-continue end-to-end", () => {
   test("rate limit → proposed → accept → timer fires → auto_continue_fired + 'continue' user_prompt", async () => {
     const dir = await mkdtemp(join(tmpdir(), "kanna-ac-e2e-"))
+    let scheduleManager: ScheduleManager | undefined
     try {
       // --- Set up real EventStore ---
       const store = new EventStore(dir)
@@ -157,14 +90,14 @@ describe("auto-continue end-to-end", () => {
       // acceptAutoContinue checks `scheduledAt > Date.now()` using real Date.now().
       // ScheduleManager.arm computes `delay = scheduledAt - clock.now()`.
       // By starting the fake clock at Date.now(), both quantities agree and
-      // a small delta (e.g. 200ms) works for both the guard and the advance.
+      // a 10s delta is large enough to survive slow CI runners.
       const clockStart = Date.now()
       const clock = new FakeClock(clockStart)
-      const resetAtMs = clockStart + 200 // rate-limit resets 200ms "from now"
+      const resetAtMs = clockStart + 10_000 // rate-limit resets 10s "from now"
 
       // --- ScheduleManager + coordinator (forward-reference pattern) ---
       let coordinator!: AgentCoordinator
-      const scheduleManager = new ScheduleManager({
+      scheduleManager = new ScheduleManager({
         clock,
         fire: async (cid, sid) => {
           await coordinator.fireAutoContinue(cid, sid)
@@ -224,7 +157,7 @@ describe("auto-continue end-to-end", () => {
       // ----------------------------------------------------------------
       // Step 2: Client accepts — scheduleManager arms the timer.
       // ----------------------------------------------------------------
-      const scheduledAt = clock.now() + 200 // in the future per both real and fake clock
+      const scheduledAt = clock.now() + 10_000 // in the future per both real and fake clock
       await coordinator.acceptAutoContinue(chatId, scheduleId, scheduledAt)
 
       const acEventsAfterAccept = store.getAutoContinueEvents(chatId)
@@ -240,10 +173,7 @@ describe("auto-continue end-to-end", () => {
       // The ScheduleManager callback calls coordinator.fireAutoContinue
       // which is async; we need to drain the microtask queue after advance.
       // ----------------------------------------------------------------
-      clock.advance(300)
-      // Drain the microtask/promise chain kicked off by the async fire callback.
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      await new Promise((resolve) => setTimeout(resolve, 0))
+      clock.advance(10_100)
 
       // ----------------------------------------------------------------
       // Step 4: Assert auto_continue_fired event.
@@ -278,6 +208,7 @@ describe("auto-continue end-to-end", () => {
         throw new Error("Expected user_prompt entry")
       }
     } finally {
+      scheduleManager?.shutdown()
       await rm(dir, { recursive: true, force: true })
     }
   })

@@ -10,6 +10,8 @@ import {
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, SlashCommand, TranscriptEntry } from "../shared/types"
 import type { AutoContinueEvent } from "./auto-continue/events"
+import { AsyncEventQueue } from "./test-helpers/async-event-queue"
+import { waitFor } from "./test-helpers/wait-for"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
@@ -17,68 +19,6 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry
     createdAt: Date.now(),
     ...entry,
   } as TranscriptEntry
-}
-
-async function waitFor(condition: () => boolean, timeoutMs = 2000) {
-  const start = Date.now()
-  while (!condition()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error("Timed out waiting for condition")
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-}
-
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private readonly values: T[] = []
-  private readonly waiters: Array<{ resolve: (result: IteratorResult<T>) => void; reject: (error: unknown) => void }> = []
-  private closed = false
-  private pendingError: unknown = null
-
-  push(value: T) {
-    const waiter = this.waiters.shift()
-    if (waiter) {
-      waiter.resolve({ done: false, value })
-      return
-    }
-    this.values.push(value)
-  }
-
-  throw(error: unknown) {
-    this.pendingError = error
-    const waiter = this.waiters.shift()
-    if (waiter) {
-      waiter.reject(error)
-    }
-  }
-
-  close() {
-    this.closed = true
-    while (this.waiters.length > 0) {
-      this.waiters.shift()?.resolve({ done: true, value: undefined as never })
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: async () => {
-        if (this.pendingError !== null) {
-          const err = this.pendingError
-          this.pendingError = null
-          throw err
-        }
-        if (this.values.length > 0) {
-          return { done: false, value: this.values.shift() as T }
-        }
-        if (this.closed) {
-          return { done: true, value: undefined as never }
-        }
-        return await new Promise<IteratorResult<T>>((resolve, reject) => {
-          this.waiters.push({ resolve, reject })
-        })
-      },
-    }
-  }
 }
 
 describe("normalizeClaudeStreamMessage", () => {

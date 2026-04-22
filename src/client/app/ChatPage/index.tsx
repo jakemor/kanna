@@ -27,7 +27,7 @@ import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
-import type { AutoContinueSchedule } from "../../../shared/types"
+import { EMPTY_SCHEDULES } from "../KannaTranscript"
 import { ChatInputDock } from "./ChatInputDock"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -48,8 +48,6 @@ export {
 const TERMINAL_TOGGLE_DURATION_STYLE: CSSProperties = {
   "--terminal-toggle-duration": `${TERMINAL_TOGGLE_ANIMATION_DURATION_MS}ms`,
 } as CSSProperties
-
-const EMPTY_SCHEDULES: Record<string, AutoContinueSchedule> = {}
 
 function useEmptyStateTyping(showEmptyState: boolean, activeChatId: string | null) {
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")

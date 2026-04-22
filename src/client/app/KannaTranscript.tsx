@@ -269,6 +269,7 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
       return true
     case "unknown":
       return right.kind === "unknown" && left.json === right.json
+    // schedule state changes propagate via outer comparator's prev.schedules !== next.schedules check (line 681)
     case "auto_continue_prompt":
       return right.kind === "auto_continue_prompt" && left.scheduleId === right.scheduleId
   }
@@ -712,8 +713,10 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
   return false
 })
 
-const EMPTY_SCHEDULES: Record<string, AutoContinueSchedule> = {}
-const NOOP = () => undefined
+export const EMPTY_SCHEDULES: Record<string, AutoContinueSchedule> = {}
+const NOOP_ACCEPT = (_scheduleId: string, _scheduledAt: number): void => {}
+const NOOP_RESCHEDULE = (_scheduleId: string, _scheduledAt: number): void => {}
+const NOOP_CANCEL = (_scheduleId: string): void => {}
 
 function KannaTranscriptImpl({
   messages,
@@ -724,9 +727,9 @@ function KannaTranscriptImpl({
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
   schedules = EMPTY_SCHEDULES,
-  onAutoContinueAccept = NOOP,
-  onAutoContinueReschedule = NOOP,
-  onAutoContinueCancel = NOOP,
+  onAutoContinueAccept = NOOP_ACCEPT,
+  onAutoContinueReschedule = NOOP_RESCHEDULE,
+  onAutoContinueCancel = NOOP_CANCEL,
 }: KannaTranscriptProps) {
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
   const rows = useMemo(() => buildResolvedTranscriptRows(messages, {

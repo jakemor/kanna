@@ -47,7 +47,7 @@ function ChatRowImpl({
       onClick={() => onSelectChat(chat.chatId)}
     >
       {loadingStatuses.has(chat.status) ? (
-        <Loader2 className="size-3.5 flex-shrink-0 animate-spin text-muted-foreground" />
+        <Loader2 className="size-3.5 flex-shrink-0 animate-spin text-logo" />
       ) : chat.status === "waiting_for_user" ? (
         <div className="relative ">
           <div className=" rounded-full z-0 size-3.5 flex items-center justify-center ">

@@ -12,7 +12,7 @@ import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
-const SIDEBAR_RECENT_PREVIEW_LIMIT = 10
+const SIDEBAR_RECENT_PREVIEW_LIMIT = 5
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
 
 export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): KannaStatus {

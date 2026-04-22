@@ -27,18 +27,30 @@ function createChat(chatId: string, lastMessageAt: number): SidebarChatRow {
   }
 }
 
-function renderSection(projectGroups: SidebarProjectGroup[], expandedGroups = new Set<string>()) {
+function renderSection(
+  projectGroups: SidebarProjectGroup[],
+  {
+    expandedGroups = new Set<string>(),
+    collapsedSections = new Set<string>(),
+    onNewLocalChat,
+  }: {
+    expandedGroups?: Set<string>
+    collapsedSections?: Set<string>
+    onNewLocalChat?: (localPath: string) => void
+  } = {}
+) {
   return renderToStaticMarkup(createElement(
     TooltipProvider,
     null,
     createElement(LocalProjectsSection, {
       projectGroups,
       editorLabel: "Cursor",
-      collapsedSections: new Set<string>(),
+      collapsedSections,
       expandedGroups,
       onToggleSection: () => undefined,
       onToggleExpandedGroup: () => undefined,
       renderChatRow: (chat: SidebarChatRow) => createElement("div", { key: chat.chatId }, chat.title),
+      onNewLocalChat,
       isConnected: true,
     })
   ))
@@ -73,7 +85,7 @@ describe("LocalProjectsSection", () => {
       defaultCollapsed: false,
     }]
 
-    const html = renderSection(projectGroups, new Set(["project-a"]))
+    const html = renderSection(projectGroups, { expandedGroups: new Set(["project-a"]) })
 
     expect(html).toContain("Hide older")
     expect(html.indexOf("chat-1")).toBeLessThan(html.indexOf("Hide older"))
@@ -103,6 +115,42 @@ describe("LocalProjectsSection", () => {
     expect(html).toContain("chat-5")
     expect(html).not.toContain("chat-6")
     expect(html).not.toContain("chat-7")
+  })
+
+  test("shows a faux new chat row when an empty project is expanded", () => {
+    const projectGroups: SidebarProjectGroup[] = [{
+      groupKey: "project-a",
+      localPath: "/tmp/project-a",
+      chats: [],
+      previewChats: [],
+      olderChats: [],
+      defaultCollapsed: false,
+    }]
+
+    const html = renderSection(projectGroups, {
+      onNewLocalChat: () => undefined,
+    })
+
+    expect(html).toContain("New Chat")
+    expect(html).not.toContain("Show older")
+  })
+
+  test("hides the faux new chat row when the empty project is collapsed", () => {
+    const projectGroups: SidebarProjectGroup[] = [{
+      groupKey: "project-a",
+      localPath: "/tmp/project-a",
+      chats: [],
+      previewChats: [],
+      olderChats: [],
+      defaultCollapsed: false,
+    }]
+
+    const html = renderSection(projectGroups, {
+      collapsedSections: new Set(["project-a"]),
+      onNewLocalChat: () => undefined,
+    })
+
+    expect(html).not.toContain("New Chat")
   })
 
   test("starts the downward reorder preview when dragged top plus 20px crosses the target center", () => {

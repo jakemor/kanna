@@ -1,5 +1,5 @@
 import { memo, type ReactNode, useMemo } from "react"
-import { ChevronRight, FolderOpen, Loader2, SquarePen } from "lucide-react"
+import { ChevronRight, Loader2, SquarePen } from "lucide-react"
 import {
   DndContext,
   PointerSensor,
@@ -70,6 +70,39 @@ function getRectCenterY(rect: Pick<ClientRect, "top" | "height">) {
   return rect.top + rect.height / 2
 }
 
+function EmptyProjectChatButton({
+  localPath,
+  onNewLocalChat,
+  isConnected,
+  startingLocalPath,
+}: {
+  localPath: string
+  onNewLocalChat: (localPath: string) => void
+  isConnected?: boolean
+  startingLocalPath?: string | null
+}) {
+  const disabled = !isConnected || startingLocalPath === localPath
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
+      className={cn(
+        "group flex w-full items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg text-left cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
+        "border-border/0 dark:hover:border-slate-400/10",
+        disabled && "cursor-not-allowed opacity-50 active:scale-100"
+      )}
+      onClick={() => onNewLocalChat(localPath)}
+    >
+      <span className="text-sm truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-slate-400">
+        New Chat
+      </span>
+      <div className="h-7 w-6 mr-[2px] shrink-0" aria-hidden />
+    </button>
+  )
+}
+
 export function getProjectGroupReorderPreviewTargetId({
   activeId,
   groupIds,
@@ -133,6 +166,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
 }: SortableProjectGroupProps) {
   const { groupKey, localPath } = group
   const isExpanded = expandedGroups.has(groupKey)
+  const isEmptyProject = group.chats.length === 0
   const hasMore = group.olderChats.length > 0
 
   const {
@@ -163,14 +197,16 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
     >
       <div className="flex items-center gap-2">
         <span className="relative size-3.5 shrink-0 cursor-pointer">
-          {collapsedSections.has(groupKey) ? (
+          <ChevronRight className={`translate-y-[1px] size-3.5 shrink-0 text-slate-400 transition-all duration-200 ${!collapsedSections.has(groupKey) && 'rotate-90'}`} />
+          
+          {/* {collapsedSections.has(groupKey) ? (
             <ChevronRight className="translate-y-[1px] size-3.5 shrink-0 text-slate-400 transition-all duration-200" />
           ) : (
             <>
               <FolderOpen className="absolute inset-0 translate-y-[1px] size-3.5 shrink-0 text-slate-400 dark:text-slate-500 transition-all duration-200 group-hover/section:opacity-0" />
               <ChevronRight className="absolute inset-0 translate-y-[1px] size-3.5 shrink-0 rotate-90 text-slate-400 opacity-0 transition-all duration-200 group-hover/section:opacity-100" />
             </>
-          )}
+          )} */}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -207,7 +243,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
             </Button>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={4}>
-            {!isConnected ? `Start ${APP_NAME} to connect` : "New chat"}
+            {!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
           </TooltipContent>
         </Tooltip>
       )}
@@ -236,26 +272,37 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
         </ProjectSectionMenu>
       ) : header}
 
-      {!collapsedSections.has(groupKey) && (group.previewChats.length > 0 || hasMore) && (
+      {!collapsedSections.has(groupKey) && (isEmptyProject ? Boolean(onNewLocalChat) : group.previewChats.length > 0 || hasMore) && (
         <div className="space-y-[2px] mb-2 ">
-          {group.previewChats.map(renderChatRow)}
-          {hasMore && isExpanded ? (
-            <button
-              onClick={() => onToggleExpandedGroup(groupKey)}
-              className="pl-2.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Hide older
-            </button>
-          ) : null}
-          {isExpanded ? group.olderChats.map(renderChatRow) : null}
-          {hasMore && !isExpanded ? (
-            <button
-              onClick={() => onToggleExpandedGroup(groupKey)}
-              className="pl-2.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Show older
-            </button>
-          ) : null}
+          {isEmptyProject && onNewLocalChat ? (
+            <EmptyProjectChatButton
+              localPath={localPath}
+              onNewLocalChat={onNewLocalChat}
+              isConnected={isConnected}
+              startingLocalPath={startingLocalPath}
+            />
+          ) : (
+            <>
+              {group.previewChats.map(renderChatRow)}
+              {hasMore && isExpanded ? (
+                <button
+                  onClick={() => onToggleExpandedGroup(groupKey)}
+                  className="pl-2.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Hide older
+                </button>
+              ) : null}
+              {isExpanded ? group.olderChats.map(renderChatRow) : null}
+              {hasMore && !isExpanded ? (
+                <button
+                  onClick={() => onToggleExpandedGroup(groupKey)}
+                  className="pl-2.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Show older
+                </button>
+              ) : null}
+            </>
+          )}
         </div>
       )}
     </div>

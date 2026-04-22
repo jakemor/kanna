@@ -248,6 +248,46 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.defaultCollapsed).toBe(false)
   })
 
+  test("limits recent chat previews to five before folding into older chats", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+
+    for (let index = 0; index < 6; index++) {
+      const chatNumber = index + 1
+      state.chatsById.set(`chat-${chatNumber}`, {
+        id: `chat-${chatNumber}`,
+        projectId: "project-1",
+        title: `Chat ${chatNumber}`,
+        createdAt: chatNumber,
+        updatedAt: chatNumber,
+        unread: false,
+        provider: "claude",
+        planMode: false,
+        sessionToken: null,
+        lastMessageAt: 1_000_000 - chatNumber * 60 * 1_000,
+        lastTurnOutcome: null,
+      })
+    }
+
+    const sidebar = deriveSidebarData(state, new Map(), { nowMs: 1_000_000 })
+
+    expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual([
+      "chat-1",
+      "chat-2",
+      "chat-3",
+      "chat-4",
+      "chat-5",
+    ])
+    expect(sidebar.projectGroups[0]?.olderChats.map((chat) => chat.chatId)).toEqual(["chat-6"])
+  })
+
   test("disables forking for active and draining chats, but allows pending fork chats", () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {

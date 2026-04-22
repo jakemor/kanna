@@ -63,6 +63,11 @@ export class ScheduleManager {
       case "auto_continue_fired":
         this.clear(event.scheduleId)
         return
+      default: {
+        const _exhaustive: never = event
+        void _exhaustive
+        return
+      }
     }
   }
 
@@ -81,6 +86,8 @@ export class ScheduleManager {
       }
     }
 
+    // Past-due schedules fire out-of-band via microtask rather than clock.setTimeout.
+    // This keeps clock.pending() reflecting only genuinely future timers.
     if (delay <= 0) {
       void Promise.resolve().then(run)
       return

@@ -462,21 +462,14 @@ export function AutoResumeToggleSection({
   onChange: (value: boolean) => void
 }) {
   return (
-    <section>
-      <h3 className="text-sm font-medium">Auto-resume on rate limit</h3>
-      <p className="text-xs text-muted-foreground">
-        When you hit a rate limit, automatically schedule &quot;continue&quot; at the reset time instead of asking.
-        You can still cancel each one from the chat.
-      </p>
-      <label className="mt-2 inline-flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-        Enabled
-      </label>
-    </section>
+    <label className="inline-flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      Enabled
+    </label>
   )
 }
 
@@ -1161,7 +1154,7 @@ export function SettingsPage() {
 
                       <SettingsRow
                         title="Auto-resume on rate limit"
-                        description="When you hit a rate limit, automatically schedule &quot;continue&quot; at the reset time instead of asking. You can still cancel each one from the chat."
+                        description={'When you hit a rate limit, automatically schedule "continue" at the reset time instead of asking. You can still cancel each one from the chat.'}
                       >
                         <AutoResumeToggleSection
                           checked={autoResumeOnRateLimit}

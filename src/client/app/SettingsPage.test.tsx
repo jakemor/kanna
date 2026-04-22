@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { RefreshCw } from "lucide-react"
 import {
+  AutoResumeToggleSection,
   ChangelogSection,
   fetchGithubReleases,
   formatPublishedDate,
@@ -14,6 +15,7 @@ import {
   shouldPreviewChatSoundChange,
 } from "./SettingsPage"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
+import { usePreferencesStore } from "../stores/preferences"
 import type { UpdateSnapshot } from "../../shared/types"
 
 const SAMPLE_RELEASES = [
@@ -279,10 +281,7 @@ describe("ChangelogSection", () => {
   })
 })
 
-import { usePreferencesStore } from "../stores/preferences"
-import { AutoResumeToggleSection } from "./SettingsPage"
-
-test("renders the Auto-resume on rate limit toggle bound to preferences store", () => {
+test("AutoResumeToggleSection renders checked and unchecked based on props", () => {
   // AutoResumeToggleSection is a pure prop-driven component exported from SettingsPage.
   // SettingsPage wires it to usePreferencesStore; here we test the component directly.
   usePreferencesStore.setState({ autoResumeOnRateLimit: false })
@@ -293,7 +292,7 @@ test("renders the Auto-resume on rate limit toggle bound to preferences store", 
       onChange={() => {}}
     />
   )
-  expect(htmlUnchecked).toContain("Auto-resume on rate limit")
+  expect(htmlUnchecked).toContain("Enabled")
   expect(htmlUnchecked).toContain('type="checkbox"')
   expect(htmlUnchecked).not.toContain("checked")
 
@@ -305,7 +304,7 @@ test("renders the Auto-resume on rate limit toggle bound to preferences store", 
       onChange={() => {}}
     />
   )
-  expect(htmlChecked).toContain("Auto-resume on rate limit")
+  expect(htmlChecked).toContain("Enabled")
   expect(htmlChecked).toContain('type="checkbox"')
   expect(htmlChecked).toContain("checked")
 })

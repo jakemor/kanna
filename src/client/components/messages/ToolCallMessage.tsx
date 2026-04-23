@@ -1,16 +1,20 @@
 import { UserRound, X } from "lucide-react"
 import type { ProcessedToolCall } from "./types"
-import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon } from "./shared"
-import { useMemo } from "react"
+import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon, RowTrailingLabel, joinRowTrailingParts } from "./shared"
+import { useMemo, useEffect, useRef, useState } from "react"
 import { stripWorkspacePath } from "../../lib/pathUtils"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
-import { formatBashCommandTitle, toTitleCase } from "../../lib/formatters"
+import { formatBashCommandTitle, toTitleCase, formatDuration } from "../../lib/formatters"
+import { formatContextWindowTokens } from "../../lib/contextWindow"
+import { useChatDisplayPreferencesStore } from "../../stores/chatDisplayPreferencesStore"
 import { FileContentView } from "./FileContentView"
 
 interface Props {
   message: ProcessedToolCall
   isLoading?: boolean
   localPath?: string | null
+  elapsedMs?: number
+  tokensUsed?: number
 }
 
 type ReadImageBlock = {
@@ -83,9 +87,52 @@ export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBl
   )
 }
 
-export function ToolCallMessage({ message, isLoading = false, localPath }: Props) {
+function useElapsedTime(startTimestamp: string, isRunning: boolean): number {
+  const [elapsed, setElapsed] = useState(() =>
+    isRunning ? Math.max(0, Date.now() - Date.parse(startTimestamp)) : 0
+  )
+  const startMsRef = useRef(Date.parse(startTimestamp))
+
+  useEffect(() => {
+    startMsRef.current = Date.parse(startTimestamp)
+  }, [startTimestamp])
+
+  useEffect(() => {
+    if (!isRunning) {
+      setElapsed(0)
+      return
+    }
+
+    setElapsed(Math.max(0, Date.now() - startMsRef.current))
+
+    const id = setInterval(() => {
+      setElapsed(Math.max(0, Date.now() - startMsRef.current))
+    }, 1000)
+
+    return () => clearInterval(id)
+  }, [isRunning])
+
+  return elapsed
+}
+
+export function ToolCallMessage({ message, isLoading = false, localPath, elapsedMs, tokensUsed }: Props) {
+  const showTokenCount = useChatDisplayPreferencesStore((s) => s.showTokenCount)
+  const showElapsedTime = useChatDisplayPreferencesStore((s) => s.showElapsedTime)
+
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
+
+  const liveElapsed = useElapsedTime(message.timestamp, showLoadingState)
+  const displayedMs = showLoadingState ? liveElapsed : elapsedMs
+  // Per-tool rows ignore minElapsedTimeMs — that threshold is for the turn-level
+  // "Worked for X" footer. For tool calls, every ms is informative cost data.
+  const timeLabel = showElapsedTime && displayedMs !== undefined && displayedMs > 0
+    ? formatDuration(displayedMs)
+    : null
+  const tokenLabel = showTokenCount && tokensUsed !== undefined && tokensUsed > 0
+    ? `${formatContextWindowTokens(tokensUsed)} tokens`
+    : null
+  const trailingLabel = joinRowTrailingParts([tokenLabel, timeLabel])
 
   const name = useMemo(() => {
     if (message.toolKind === "skill") {
@@ -188,6 +235,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   return (
     <MetaRow className="w-full">
       <ExpandableRow
+        trailingContent={trailingLabel ? <RowTrailingLabel>{trailingLabel}</RowTrailingLabel> : undefined}
         expandedContent={
           <VerticalLineContainer className="my-4 text-sm">
             <div className="flex flex-col gap-2">

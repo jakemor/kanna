@@ -28,3 +28,4 @@ Thumbs.db
 # vite
 vite.config.ts.timestamp-*
 /.kanna
+.codanna/

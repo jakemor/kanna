@@ -209,7 +209,7 @@ Please check the latest error first.`,
     expect(html).not.toContain("Completed")
   })
 
-  test("does not render wrappers for short successful result rows", () => {
+  test("renders result row as hidden when duration is below minimum elapsed time", () => {
     const html = renderTranscript([
       {
         id: "result-short-1",
@@ -217,15 +217,16 @@ Please check the latest error first.`,
         success: true,
         cancelled: false,
         result: "Hey! 👋",
-        durationMs: 2562,
+        durationMs: 500,
         timestamp: new Date().toISOString(),
       },
     ])
 
-    expect(countRowWrappers(html)).toBe(0)
+    expect(countRowWrappers(html)).toBe(1)
+    expect(html).toContain("hidden")
   })
 
-  test("renders wrappers for long successful result rows", () => {
+  test("renders result row as visible when duration meets minimum elapsed time", () => {
     const html = renderTranscript([
       {
         id: "result-long-1",
@@ -239,6 +240,7 @@ Please check the latest error first.`,
     ])
 
     expect(countRowWrappers(html)).toBe(1)
+    expect(html).toContain("Worked for")
   })
 
   test("does not render wrappers for duplicate system and account rows", () => {
@@ -320,6 +322,76 @@ Please check the latest error first.`,
     expect(updatedRows[0]?.kind).toBe("tool-group")
     expect(initialRows[0]?.id).toBe("tool-group:tool-1")
     expect(updatedRows[0]?.id).toBe("tool-group:tool-1")
+  })
+
+  function createToolMessageWithTimestamp(
+    id: string,
+    timestamp: string,
+    toolId = id,
+  ): HydratedTranscriptMessage {
+    return {
+      id,
+      kind: "tool",
+      toolKind: "bash",
+      toolName: "Bash",
+      toolId,
+      input: {
+        command: `echo ${id}`,
+        description: `Run ${id}`,
+      },
+      result: "ok",
+      timestamp,
+    }
+  }
+
+  test("computes elapsedMs for single tool calls from consecutive timestamps", () => {
+    const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+    const rows = buildResolvedTranscriptRows([
+      createToolMessageWithTimestamp("tool-1", "2026-04-11T10:00:00.000Z"),
+      createToolMessageWithTimestamp("tool-2", "2026-04-11T10:00:03.000Z"),
+      createToolMessageWithTimestamp("tool-3", "2026-04-11T10:00:05.000Z"),
+    ], {
+      isLoading: false,
+      latestToolIds,
+    })
+
+    // 3 tools get grouped into a tool-group
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.kind).toBe("tool-group")
+    if (rows[0]?.kind !== "tool-group") throw new Error("unexpected")
+
+    // Each tool in the group should have elapsedMs computed
+    expect(rows[0].toolElapsedMs?.["tool-1"]).toBe(3000)
+    expect(rows[0].toolElapsedMs?.["tool-2"]).toBe(2000)
+    // Last tool has no next entry -> undefined
+    expect(rows[0].toolElapsedMs?.["tool-3"]).toBeUndefined()
+  })
+
+  test("computes elapsedMs for a single (ungrouped) tool call", () => {
+    const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+    const rows = buildResolvedTranscriptRows([
+      {
+        id: "text-1",
+        kind: "assistant_text",
+        text: "Hello",
+        timestamp: "2026-04-11T10:00:00.000Z",
+      },
+      createToolMessageWithTimestamp("tool-1", "2026-04-11T10:00:01.000Z"),
+      {
+        id: "text-2",
+        kind: "assistant_text",
+        text: "Done",
+        timestamp: "2026-04-11T10:00:04.000Z",
+      },
+    ], {
+      isLoading: false,
+      latestToolIds,
+    })
+
+    const toolRow = rows.find(r => r.kind === "single" && r.message.kind === "tool")
+    expect(toolRow?.kind).toBe("single")
+    if (toolRow?.kind !== "single") throw new Error("unexpected")
+    expect(toolRow.elapsedMs).toBe(3000)
   })
 
   test("groups collapsible tools across hidden context window updates", () => {

@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useMemo, useRef, useState } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
-import type { AskUserQuestionAnswerMap, ChatAttachment, HydratedTranscriptMessage } from "../../shared/types"
+import type { AskUserQuestionAnswerMap, ChatAttachment, ContextWindowUsageSnapshot, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage } from "../components/messages/SystemMessage"
@@ -18,8 +18,13 @@ import { StatusMessage } from "../components/messages/StatusMessage"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { OpenLocalLinkProvider } from "../components/messages/shared"
 import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
+import { useChatDisplayPreferencesStore, DEFAULT_MIN_TURN_DISPLAY_MS } from "../stores/chatDisplayPreferencesStore"
 
 const SPECIAL_TOOL_NAMES = new Set(["AskUserQuestion", "ExitPlanMode", "TodoWrite"])
+
+// Result messages manage their own visibility via the chat display preferences store.
+// The render filter below only needs to exclude results that are hidden because they
+// immediately follow an assistant turn (hideResult), or represent errors.
 
 export type TranscriptRenderItem =
   | { type: "single"; message: HydratedTranscriptMessage; index: number }
@@ -39,6 +44,8 @@ export interface ResolvedSingleTranscriptRow {
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  elapsedMs?: number
+  tokensUsed?: number
 }
 
 export interface ResolvedToolGroupTranscriptRow {
@@ -48,6 +55,8 @@ export interface ResolvedToolGroupTranscriptRow {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string
+  tokensUsed?: number
+  toolElapsedMs?: Record<string, number>
 }
 
 export type ResolvedTranscriptRow = ResolvedSingleTranscriptRow | ResolvedToolGroupTranscriptRow
@@ -80,7 +89,8 @@ function getTranscriptMessageRenderState(
     isLatestTodoWrite,
     hideResult,
     isFinalStatus,
-  }: Omit<TranscriptMessageRenderState, "shouldRender">
+    minTurnDisplayMs,
+  }: Omit<TranscriptMessageRenderState, "shouldRender"> & { minTurnDisplayMs: number }
 ): TranscriptMessageRenderState {
   let shouldRender = !message.hidden
 
@@ -96,7 +106,7 @@ function getTranscriptMessageRenderState(
         shouldRender = message.toolKind !== "todo_write" || isLatestTodoWrite
         break
       case "result":
-        shouldRender = !hideResult && (!message.success || message.durationMs > 60000)
+        shouldRender = !hideResult && (!message.success || message.durationMs > minTurnDisplayMs)
         break
       case "context_window_updated":
         shouldRender = false
@@ -122,7 +132,8 @@ function getTranscriptMessageRenderState(
 
 function buildTranscriptMessageRenderStates(
   messages: HydratedTranscriptMessage[],
-  latestToolIds: Record<string, string | null>
+  latestToolIds: Record<string, string | null>,
+  minTurnDisplayMs: number,
 ) {
   const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
   const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
@@ -136,6 +147,7 @@ function buildTranscriptMessageRenderStates(
       isLatestTodoWrite: message.id === latestToolIds.TodoWrite,
       hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
       isFinalStatus: index === messages.length - 1,
+      minTurnDisplayMs,
     })
   })
 }
@@ -196,6 +208,14 @@ function sameStringArray(left: string[] | undefined, right: string[] | undefined
   if (!left || !right) return false
   if (left.length !== right.length) return false
   return left.every((value, index) => value === right[index])
+}
+
+function sameRecord(a: Record<string, number> | undefined, b: Record<string, number> | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  const keysA = Object.keys(a)
+  if (keysA.length !== Object.keys(b).length) return false
+  return keysA.every((k) => a[k] === b[k])
 }
 
 function sameAttachment(left: ChatAttachment, right: ChatAttachment) {
@@ -342,6 +362,8 @@ interface TranscriptSingleRowProps {
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  elapsedMs?: number
+  tokensUsed?: number
   onAskUserQuestionSubmit: (
     toolUseId: string,
     questions: AskUserQuestionItem[],
@@ -362,6 +384,8 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   isLatestTodoWrite,
   hideResult,
   isFinalStatus,
+  elapsedMs,
+  tokensUsed,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: TranscriptSingleRowProps) {
@@ -410,10 +434,10 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
           rendered = isLatestTodoWrite ? <TodoWriteMessage key={message.id} message={message} /> : null
           break
         }
-        rendered = <ToolCallMessage key={message.id} message={message} isLoading={isLoading} localPath={localPath} />
+        rendered = <ToolCallMessage key={message.id} message={message} isLoading={isLoading} localPath={localPath} elapsedMs={elapsedMs} tokensUsed={tokensUsed} />
         break
       case "result":
-        rendered = hideResult ? null : <ResultMessage key={message.id} message={message} />
+        rendered = hideResult ? null : <ResultMessage key={message.id} message={message} tokensUsed={tokensUsed} />
         break
       case "context_window_updated":
         rendered = null
@@ -458,6 +482,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   && prev.isLatestTodoWrite === next.isLatestTodoWrite
   && prev.hideResult === next.hideResult
   && prev.isFinalStatus === next.isFinalStatus
+  && prev.elapsedMs === next.elapsedMs
   && prev.onAskUserQuestionSubmit === next.onAskUserQuestionSubmit
   && prev.onExitPlanModeConfirm === next.onExitPlanModeConfirm
   && sameMessage(prev.message, next.message)
@@ -469,16 +494,19 @@ interface TranscriptToolGroupProps {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string
+  tokensUsed?: number
+  toolElapsedMs?: Record<string, number>
   expanded: boolean
   onExpandedChange: (groupId: string, next: boolean) => void
 }
 
 const TranscriptToolGroup = memo(function TranscriptToolGroup({
   id,
-  startIndex,
   messages,
   isLoading,
   localPath,
+  tokensUsed,
+  toolElapsedMs,
   expanded,
   onExpandedChange,
 }: TranscriptToolGroupProps) {
@@ -491,6 +519,8 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
         messages={messages}
         isLoading={isLoading}
         localPath={localPath}
+        tokensUsed={tokensUsed}
+        toolElapsedMs={toolElapsedMs}
         expanded={expanded}
         onExpandedChange={(next) => onExpandedChange(id, next)}
       />
@@ -501,11 +531,137 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
   && prev.startIndex === next.startIndex
   && prev.isLoading === next.isLoading
   && prev.localPath === next.localPath
+  && prev.tokensUsed === next.tokensUsed
+  && sameRecord(prev.toolElapsedMs, next.toolElapsedMs)
   && prev.expanded === next.expanded
   && prev.onExpandedChange === next.onExpandedChange
   && prev.messages.length === next.messages.length
   && prev.messages.every((message, index) => sameMessage(message, next.messages[index]!))
 ))
+
+function getToolGroupTokensUsed(
+  messages: HydratedTranscriptMessage[],
+  startIndex: number,
+  groupLength: number,
+): number | undefined {
+  // Find context_window_updated entries that bracket this tool group.
+  // The entry just before the group has the cumulative usedTokens at the start;
+  // the entry just after has the cumulative usedTokens at the end.
+  const endIndex = startIndex + groupLength - 1
+
+  let beforeSnapshot: ContextWindowUsageSnapshot | undefined
+  for (let i = startIndex - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.kind === "context_window_updated") {
+      beforeSnapshot = msg.usage
+      break
+    }
+  }
+
+  let afterSnapshot: ContextWindowUsageSnapshot | undefined
+  for (let i = endIndex + 1; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.kind === "context_window_updated") {
+      afterSnapshot = msg.usage
+      break
+    }
+    // Don't cross a turn boundary (next user message belongs to a new turn).
+    // Tool boundaries are NOT guards here: Codex emits one context_window_updated
+    // per sampling round, which can cover multiple tool calls. Claude also emits
+    // snapshots adjacent to each tool, so the nearest snapshot is still correct.
+    if (msg.kind === "user_prompt") break
+  }
+
+  if (!afterSnapshot) return undefined
+
+  // When both snapshots exist, the delta is the exact cost for this group.
+  // When only the "after" snapshot exists (e.g. first Codex turn, or first turn
+  // after a compaction), fall back to lastUsedTokens — the per-step total the
+  // provider reported in that snapshot. Claude populates this per-assistant-
+  // message; Codex populates it per-turn. Both represent "this step's cost".
+  if (!beforeSnapshot) {
+    const fallback = afterSnapshot.lastUsedTokens ?? afterSnapshot.usedTokens
+    return fallback > 0 ? fallback : undefined
+  }
+
+  const diff = afterSnapshot.usedTokens - beforeSnapshot.usedTokens
+  return diff > 0 ? diff : undefined
+}
+
+// Cumulative tokens used for the turn ending at or before `endIndex`. Walks
+// back to the last user_prompt (turn boundary) and diffs the enclosing
+// context_window_updated snapshots. Used for both the result-row footer and the
+// live Processing indicator during a running turn.
+export function getTurnTokensUsed(
+  messages: HydratedTranscriptMessage[],
+  endIndex: number,
+): number | undefined {
+  let userPromptIndex = -1
+  for (let i = endIndex; i >= 0; i--) {
+    if (messages[i]?.kind === "user_prompt") {
+      userPromptIndex = i
+      break
+    }
+  }
+  if (userPromptIndex < 0) return undefined
+
+  let latestSnapshot: ContextWindowUsageSnapshot | undefined
+  for (let i = endIndex; i > userPromptIndex; i--) {
+    const msg = messages[i]
+    if (msg?.kind === "context_window_updated") {
+      latestSnapshot = msg.usage
+      break
+    }
+  }
+  if (!latestSnapshot) return undefined
+
+  let priorSnapshot: ContextWindowUsageSnapshot | undefined
+  for (let i = userPromptIndex - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg?.kind === "context_window_updated") {
+      priorSnapshot = msg.usage
+      break
+    }
+  }
+
+  if (!priorSnapshot) {
+    const fallback = latestSnapshot.usedTokens
+    return fallback > 0 ? fallback : undefined
+  }
+
+  const diff = latestSnapshot.usedTokens - priorSnapshot.usedTokens
+  return diff > 0 ? diff : undefined
+}
+
+function getToolElapsedMs(
+  messages: HydratedTranscriptMessage[],
+  toolIndex: number,
+): number | undefined {
+  const tool = messages[toolIndex]
+  if (!tool) return undefined
+
+  // Prefer a provider-reported duration (Codex item.durationMs). Falls back to
+  // wall-clock delta from timestamps when the provider doesn't report one —
+  // works for Claude where tool_call/tool_result timestamps are genuinely
+  // distinct.
+  if (tool.kind === "tool") {
+    const reported = (tool as ProcessedToolCall).durationMs
+    if (typeof reported === "number" && reported > 0) return reported
+  }
+
+  const startMs = Date.parse(tool.timestamp)
+  if (!Number.isFinite(startMs)) return undefined
+
+  const resultTs = tool.kind === "tool" ? (tool as ProcessedToolCall).resultTimestamp : undefined
+  const endSource = resultTs ?? messages[toolIndex + 1]?.timestamp
+  if (!endSource) return undefined
+
+  const endMs = Date.parse(endSource)
+  if (!Number.isFinite(endMs)) return undefined
+
+  const delta = endMs - startMs
+  return delta > 0 ? delta : undefined
+}
 
 export function buildResolvedTranscriptRows(
   messages: HydratedTranscriptMessage[],
@@ -513,18 +669,29 @@ export function buildResolvedTranscriptRows(
     isLoading,
     localPath,
     latestToolIds,
+    minTurnDisplayMs = DEFAULT_MIN_TURN_DISPLAY_MS,
   }: {
     isLoading: boolean
     localPath?: string
     latestToolIds: Record<string, string | null>
+    minTurnDisplayMs?: number
   }
 ): ResolvedTranscriptRow[] {
-  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds)
+  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds, minTurnDisplayMs)
   const renderItems = buildTranscriptRenderItems(messages, renderStates)
   const rows: ResolvedTranscriptRow[] = []
 
   for (const item of renderItems) {
     if (item.type === "tool-group") {
+      const toolElapsedMs: Record<string, number> = {}
+      for (let i = 0; i < item.messages.length; i++) {
+        const msg = item.messages[i] as ProcessedToolCall
+        const elapsed = getToolElapsedMs(messages, item.startIndex + i)
+        if (elapsed !== undefined) {
+          toolElapsedMs[msg.toolId] = elapsed
+        }
+      }
+
       rows.push({
         kind: "tool-group",
         id: getTranscriptRenderItemId(item),
@@ -532,6 +699,8 @@ export function buildResolvedTranscriptRows(
         messages: item.messages,
         isLoading: isLoading && item.messages.some((message) => message.kind === "tool" && message.result === undefined),
         localPath,
+        tokensUsed: getToolGroupTokensUsed(messages, item.startIndex, item.messages.length),
+        toolElapsedMs: Object.keys(toolElapsedMs).length > 0 ? toolElapsedMs : undefined,
       })
       continue
     }
@@ -552,6 +721,14 @@ export function buildResolvedTranscriptRows(
       isLatestTodoWrite: renderState.isLatestTodoWrite,
       hideResult: renderState.hideResult,
       isFinalStatus: renderState.isFinalStatus,
+      elapsedMs: item.message.kind === "tool"
+          ? getToolElapsedMs(messages, item.index)
+          : undefined,
+      tokensUsed: item.message.kind === "tool"
+          ? getToolGroupTokensUsed(messages, item.index, 1)
+          : item.message.kind === "result"
+            ? getTurnTokensUsed(messages, item.index)
+            : undefined,
     }
 
     if (renderState.shouldRender) {
@@ -604,6 +781,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
         isLoading={row.isLoading}
         localPath={row.localPath}
         expanded={toolGroupExpanded ?? false}
+        tokensUsed={row.tokensUsed}
+        toolElapsedMs={row.toolElapsedMs}
         onExpandedChange={onToolGroupExpandedChange}
       />
     )
@@ -622,6 +801,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       isLatestTodoWrite={row.isLatestTodoWrite}
       hideResult={row.hideResult}
       isFinalStatus={row.isFinalStatus}
+      elapsedMs={row.elapsedMs}
+      tokensUsed={row.tokensUsed}
       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
       onExitPlanModeConfirm={onExitPlanModeConfirm}
     />
@@ -640,6 +821,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
     return previousRow.startIndex === nextRow.startIndex
       && previousRow.isLoading === nextRow.isLoading
       && previousRow.localPath === nextRow.localPath
+      && previousRow.tokensUsed === nextRow.tokensUsed
+      && sameRecord(previousRow.toolElapsedMs, nextRow.toolElapsedMs)
       && previousRow.messages.length === nextRow.messages.length
       && previousRow.messages.every((message, index) => sameMessage(message, nextRow.messages[index]!))
   }
@@ -655,6 +838,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       && prev.row.isLatestTodoWrite === next.row.isLatestTodoWrite
       && prev.row.hideResult === next.row.hideResult
       && prev.row.isFinalStatus === next.row.isFinalStatus
+      && prev.row.elapsedMs === next.row.elapsedMs
+      && prev.row.tokensUsed === next.row.tokensUsed
       && sameMessage(prev.row.message, next.row.message)
   }
 
@@ -671,11 +856,13 @@ function KannaTranscriptImpl({
   onExitPlanModeConfirm,
 }: KannaTranscriptProps) {
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
+  const minTurnDisplayMs = useChatDisplayPreferencesStore((s) => s.minTurnDisplayMs)
   const rows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading,
     localPath,
     latestToolIds,
-  }), [isLoading, latestToolIds, localPath, messages])
+    minTurnDisplayMs,
+  }), [isLoading, latestToolIds, localPath, messages, minTurnDisplayMs])
   const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
     setToolGroupExpanded((current) => (
       current[groupId] === next
@@ -692,7 +879,7 @@ function KannaTranscriptImpl({
       {rows.map((row) => (
         <div
           key={row.id}
-          className="mx-auto max-w-[800px] pb-5"
+          className="mx-auto max-w-200 pb-5"
         >
           <KannaTranscriptRow
             row={row}

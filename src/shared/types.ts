@@ -516,6 +516,7 @@ export interface ToolResultEntry extends TranscriptEntryBase {
   toolId: string
   content: unknown
   isError?: boolean
+  durationMs?: number
 }
 
 export interface UserPromptEntry extends TranscriptEntryBase {
@@ -786,6 +787,8 @@ export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   rawResult?: unknown
   isError?: boolean
   timestamp: string
+  resultTimestamp?: string
+  durationMs?: number
 }
 
 export interface AskUserQuestionToolResult {

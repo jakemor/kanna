@@ -100,6 +100,10 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           pendingCall.hydrated.result = hydrateToolResult(pendingCall.normalized, rawResult) as never
           pendingCall.hydrated.rawResult = rawResult
           pendingCall.hydrated.isError = entry.isError
+          pendingCall.hydrated.resultTimestamp = createTimestamp(entry.createdAt)
+          if (typeof entry.durationMs === "number") {
+            pendingCall.hydrated.durationMs = entry.durationMs
+          }
         }
         break
       }

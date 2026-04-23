@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { formatBashCommandTitle, formatSidebarAgeLabel } from "./formatters"
+import { formatBashCommandTitle, formatDuration, formatSidebarAgeLabel } from "./formatters"
 
 describe("formatBashCommandTitle", () => {
   test("unwraps codex zsh -lc commands", () => {
@@ -28,6 +28,32 @@ describe("formatBashCommandTitle", () => {
 
   test("leaves plain commands alone", () => {
     expect(formatBashCommandTitle("bun test --help")).toBe("bun test --help")
+  })
+})
+
+describe("formatDuration", () => {
+  test("formats sub-second values", () => {
+    expect(formatDuration(0)).toBe("0ms")
+    expect(formatDuration(500)).toBe("500ms")
+    expect(formatDuration(999)).toBe("999ms")
+  })
+
+  test("formats seconds", () => {
+    expect(formatDuration(1000)).toBe("1s")
+    expect(formatDuration(1500)).toBe("1s")
+    expect(formatDuration(59_000)).toBe("59s")
+  })
+
+  test("formats minutes and seconds", () => {
+    expect(formatDuration(60_000)).toBe("1m")
+    expect(formatDuration(62_000)).toBe("1m 2s")
+    expect(formatDuration(3_599_000)).toBe("59m 59s")
+  })
+
+  test("formats hours and minutes", () => {
+    expect(formatDuration(3_600_000)).toBe("1h")
+    expect(formatDuration(3_660_000)).toBe("1h 1m")
+    expect(formatDuration(7_200_000)).toBe("2h")
   })
 })
 

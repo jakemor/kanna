@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { Flower } from "lucide-react"
+import type { GroupImperativeHandle } from "react-resizable-panels"
 import { AppDialogProvider } from "../components/ui/app-dialog"
 import { Button } from "../components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable"
 import { TooltipProvider } from "../components/ui/tooltip"
 import { APP_NAME, SDK_CLIENT_APP } from "../../shared/branding"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
+import {
+  LEFT_SIDEBAR_MAX_WIDTH_PX,
+  LEFT_SIDEBAR_MIN_SIZE_PERCENT,
+  LEFT_SIDEBAR_MIN_WIDTH_PX,
+  useLeftSidebarLayoutStore,
+} from "../stores/leftSidebarLayoutStore"
+import { useIsDesktop } from "../hooks/useIsDesktop"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
 import { getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { KannaSidebar } from "./KannaSidebar"
@@ -194,6 +203,23 @@ function KannaLayout() {
   const showMobileOpenButton = location.pathname === "/"
   const currentVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
   const previousSidebarDataRef = useRef<ReturnType<typeof useKannaState>["sidebarData"] | null>(null)
+  const layoutRootRef = useRef<HTMLDivElement>(null)
+  const sidebarPanelGroupRef = useRef<GroupImperativeHandle | null>(null)
+  const isDesktop = useIsDesktop()
+  const sidebarSize = useLeftSidebarLayoutStore((store) => store.layout.size)
+  const setSidebarSize = useLeftSidebarLayoutStore((store) => store.setSize)
+
+  const clampSidebarSize = useCallback((size: number, widthOverride?: number) => {
+    if (!Number.isFinite(size)) return sidebarSize
+    const containerWidth = widthOverride ?? layoutRootRef.current?.getBoundingClientRect().width ?? 0
+    if (containerWidth <= 0) return size
+    const minPercent = Math.max(LEFT_SIDEBAR_MIN_SIZE_PERCENT, (LEFT_SIDEBAR_MIN_WIDTH_PX / containerWidth) * 100)
+    const maxPercent = (LEFT_SIDEBAR_MAX_WIDTH_PX / containerWidth) * 100
+    return Math.max(minPercent, Math.min(maxPercent, size))
+  }, [sidebarSize])
+
+  const effectiveSidebarSize = clampSidebarSize(sidebarSize)
+  const showResizableLayout = isDesktop && !state.sidebarCollapsed
   const handleSidebarCreateChat = useCallback((projectId: string) => {
     void state.handleCreateChat(projectId)
   }, [state.handleCreateChat])
@@ -319,9 +345,51 @@ function KannaLayout() {
   }, [chatSoundId, chatSoundPreference, state.sidebarData])
 
   return (
-    <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
-      {sidebarElement}
-      <Outlet context={state} />
+    <div ref={layoutRootRef} className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
+      {showResizableLayout ? (
+        <ResizablePanelGroup
+          orientation="horizontal"
+          className="flex-1 min-h-0"
+          groupRef={sidebarPanelGroupRef}
+          onLayoutChange={(layout) => {
+            const sidebar = layout.sidebar
+            if (!Number.isFinite(sidebar)) return
+            const clamped = clampSidebarSize(sidebar)
+            if (Math.abs(clamped - sidebar) < 0.1) return
+            sidebarPanelGroupRef.current?.setLayout({
+              sidebar: clamped,
+              main: 100 - clamped,
+            })
+          }}
+          onLayoutChanged={(layout) => {
+            const sidebar = layout.sidebar
+            if (!Number.isFinite(sidebar)) return
+            setSidebarSize(clampSidebarSize(sidebar))
+          }}
+        >
+          <ResizablePanel
+            id="sidebar"
+            defaultSize={`${effectiveSidebarSize}%`}
+            minSize={`${LEFT_SIDEBAR_MIN_SIZE_PERCENT}%`}
+            className="min-h-0 md:pl-2 md:py-2"
+          >
+            {sidebarElement}
+          </ResizablePanel>
+          <ResizableHandle orientation="horizontal" />
+          <ResizablePanel
+            id="main"
+            defaultSize={`${100 - effectiveSidebarSize}%`}
+            className="min-h-0 min-w-0"
+          >
+            <Outlet context={state} />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <>
+          {sidebarElement}
+          <Outlet context={state} />
+        </>
+      )}
     </div>
   )
 }

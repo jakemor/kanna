@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ClaudeLimitDetector, CodexLimitDetector } from "./limit-detector"
+import { ClaudeLimitDetector, CodexLimitDetector, parseResetFromText } from "./limit-detector"
 
 const detector = new ClaudeLimitDetector()
 
@@ -99,5 +99,41 @@ describe("CodexLimitDetector", () => {
   test("returns null when no reset timestamp can be parsed", () => {
     const err = { code: -32001, data: { code: "rate_limit" } }
     expect(codex.detect("c1", err)).toBeNull()
+  })
+})
+
+describe("parseResetFromText", () => {
+  test("parses 'resets 2pm (Asia/Saigon)' for later-same-day", () => {
+    const now = Date.parse("2026-04-23T05:00:00Z") // 12:00 Saigon
+    const parsed = parseResetFromText("You've hit your limit · resets 2pm (Asia/Saigon)", now)
+    expect(parsed).not.toBeNull()
+    expect(parsed!.tz).toBe("Asia/Saigon")
+    expect(new Date(parsed!.resetAt).toISOString()).toBe("2026-04-23T07:00:00.000Z")
+  })
+
+  test("parses 'resets 2pm (Asia/Saigon)' wraps to next day if past", () => {
+    const now = Date.parse("2026-04-23T08:00:00Z") // 15:00 Saigon
+    const parsed = parseResetFromText("You've hit your limit · resets 2pm (Asia/Saigon)", now)
+    expect(new Date(parsed!.resetAt).toISOString()).toBe("2026-04-24T07:00:00.000Z")
+  })
+
+  test("parses '12am' as midnight", () => {
+    const now = Date.parse("2026-04-23T10:00:00Z")
+    const parsed = parseResetFromText("resets 12am (UTC)", now)
+    expect(new Date(parsed!.resetAt).toISOString()).toBe("2026-04-24T00:00:00.000Z")
+  })
+
+  test("returns null when no 'resets' token", () => {
+    expect(parseResetFromText("nothing interesting", Date.now())).toBeNull()
+  })
+})
+
+describe("ClaudeLimitDetector.detectFromResultText", () => {
+  test("detects from stream result text", () => {
+    const now = Date.parse("2026-04-23T05:00:00Z")
+    const detection = detector.detectFromResultText("c1", "You've hit your limit · resets 2pm (Asia/Saigon)", now)
+    expect(detection).not.toBeNull()
+    expect(detection!.tz).toBe("Asia/Saigon")
+    expect(new Date(detection!.resetAt).toISOString()).toBe("2026-04-23T07:00:00.000Z")
   })
 })

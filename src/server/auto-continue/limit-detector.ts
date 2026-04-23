@@ -7,6 +7,7 @@ export interface LimitDetection {
 
 export interface LimitDetector {
   detect(chatId: string, error: unknown): LimitDetection | null
+  detectFromResultText?(chatId: string, text: string, nowMs?: number): LimitDetection | null
 }
 
 interface ErrorLike {
@@ -41,6 +42,63 @@ function parseIsoMillis(value: unknown): number | null {
   return Number.isFinite(millis) ? millis : null
 }
 
+function zonedWallClockToUtcMs(
+  year: number, month: number, day: number, hour: number, minute: number, tz: string,
+): number {
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute)
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  })
+  const parts = Object.fromEntries(
+    dtf.formatToParts(new Date(utcGuess))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  )
+  const asLocal = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    parts.hour === "24" ? 0 : Number(parts.hour), Number(parts.minute),
+  )
+  return utcGuess - (asLocal - utcGuess)
+}
+
+export function parseResetFromText(text: string, nowMs: number = Date.now()): { resetAt: number; tz: string } | null {
+  if (typeof text !== "string") return null
+  const match = text.match(/resets\s+(\d{1,2})(am|pm)\s*\(([^)]+)\)/i)
+  if (!match) return null
+  const hour12 = Number(match[1])
+  const meridiem = match[2].toLowerCase()
+  const tz = match[3].trim()
+  if (!Number.isFinite(hour12) || hour12 < 1 || hour12 > 12) return null
+  const hour24 = meridiem === "pm"
+    ? (hour12 === 12 ? 12 : hour12 + 12)
+    : (hour12 === 12 ? 0 : hour12)
+  let tzYear: number, tzMonth: number, tzDay: number
+  try {
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    })
+    const parts = Object.fromEntries(
+      dtf.formatToParts(new Date(nowMs))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    )
+    tzYear = Number(parts.year)
+    tzMonth = Number(parts.month)
+    tzDay = Number(parts.day)
+  } catch {
+    return null
+  }
+  let resetAt = zonedWallClockToUtcMs(tzYear, tzMonth, tzDay, hour24, 0, tz)
+  if (resetAt <= nowMs) {
+    const next = new Date(Date.UTC(tzYear, tzMonth - 1, tzDay) + 24 * 3600_000)
+    resetAt = zonedWallClockToUtcMs(
+      next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), hour24, 0, tz,
+    )
+  }
+  return { resetAt, tz }
+}
+
 export class ClaudeLimitDetector implements LimitDetector {
   detect(chatId: string, error: unknown): LimitDetection | null {
     const body = parseBody(error)
@@ -62,6 +120,12 @@ export class ClaudeLimitDetector implements LimitDetector {
       ?? "system"
 
     return { chatId, resetAt, tz, raw: error }
+  }
+
+  detectFromResultText(chatId: string, text: string, nowMs: number = Date.now()): LimitDetection | null {
+    const parsed = parseResetFromText(text, nowMs)
+    if (!parsed) return null
+    return { chatId, resetAt: parsed.resetAt, tz: parsed.tz, raw: text }
   }
 }
 

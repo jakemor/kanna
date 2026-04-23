@@ -29,7 +29,7 @@ import {
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { AUTO_CONTINUE_EVENT_VERSION, type AutoContinueEvent } from "./auto-continue/events"
-import { ClaudeLimitDetector, CodexLimitDetector, type LimitDetector } from "./auto-continue/limit-detector"
+import { ClaudeLimitDetector, CodexLimitDetector, type LimitDetection, type LimitDetector } from "./auto-continue/limit-detector"
 import type { ScheduleManager } from "./auto-continue/schedule-manager"
 import { deriveChatSchedules } from "./auto-continue/read-model"
 
@@ -1396,7 +1396,17 @@ export class AgentCoordinator {
         if (event.entry.kind === "result" && active && completedClaudePromptSeq === (active.claudePromptSeq ?? null)) {
           active.hasFinalResult = true
           if (event.entry.isError) {
-            await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
+            const resultText = event.entry.result || "Turn failed"
+            const detection = this.claudeLimitDetector.detectFromResultText?.(session.chatId, resultText) ?? null
+            let handled = false
+            if (detection) {
+              handled = await this.handleLimitDetection(session.chatId, detection)
+            }
+            if (handled) {
+              await this.store.recordTurnFailed(session.chatId, "rate_limit")
+            } else {
+              await this.store.recordTurnFailed(session.chatId, resultText)
+            }
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(session.chatId)
           }
@@ -1621,7 +1631,10 @@ export class AgentCoordinator {
   private async handleLimitError(chatId: string, detector: LimitDetector, error: unknown): Promise<boolean> {
     const detection = detector.detect(chatId, error)
     if (!detection) return false
+    return this.handleLimitDetection(chatId, detection)
+  }
 
+  private async handleLimitDetection(chatId: string, detection: LimitDetection): Promise<boolean> {
     const live = deriveChatSchedules(this.store.getAutoContinueEvents(chatId), chatId).liveScheduleId
     if (live !== null) return true
 

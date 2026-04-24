@@ -306,7 +306,7 @@ function KannaSidebarImpl({
         data-sidebar="open"
         className={cn(
           "fixed inset-0 z-50 bg-background dark:bg-card flex flex-col h-[100dvh] select-none",
-          "md:relative md:inset-auto md:w-[275px] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
+          "md:relative md:inset-auto md:w-full md:h-full md:border md:border-border md:rounded-2xl",
           open ? "flex" : "hidden md:flex",
           collapsed && "md:hidden"
         )}
@@ -473,6 +473,7 @@ function KannaSidebarImpl({
             </div>
           </button>
         </div>
+
       </div>
 
       {open ? <div className="fixed inset-0 bg-black/40 z-40 md:hidden" onClick={onClose} /> : null}

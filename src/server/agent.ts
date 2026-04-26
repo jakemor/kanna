@@ -628,6 +628,7 @@ async function startClaudeSession(args: {
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
       settingSources: ["user", "project", "local"],
+      pathToClaudeCodeExecutable: process.env.CLAUDE_EXECUTABLE || undefined,
       env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
   })

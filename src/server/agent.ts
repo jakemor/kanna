@@ -1,4 +1,5 @@
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
+import { homedir } from "node:os"
 import type {
   AgentProvider,
   ChatAttachment,
@@ -628,6 +629,7 @@ async function startClaudeSession(args: {
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
       settingSources: ["user", "project", "local"],
+      pathToClaudeCodeExecutable: process.env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, homedir()) || undefined,
       env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
   })

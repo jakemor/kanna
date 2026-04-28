@@ -4,6 +4,7 @@ import { RefreshCw } from "lucide-react"
 import {
   AutoResumeToggleSection,
   ChangelogSection,
+  CloudflareTunnelSectionTitle,
   fetchGithubReleases,
   formatPublishedDate,
   getCachedChangelog,
@@ -311,4 +312,11 @@ test("AutoResumeToggleSection renders checked and unchecked based on props", () 
   expect(htmlChecked).toContain("Enabled")
   expect(htmlChecked).toContain('type="checkbox"')
   expect(htmlChecked).toContain("checked")
+})
+
+describe("CloudflareTunnelSectionTitle", () => {
+  test("renders Cloudflare Tunnel section title text", () => {
+    const html = renderToStaticMarkup(<CloudflareTunnelSectionTitle />)
+    expect(html).toContain("Cloudflare Tunnel")
+  })
 })

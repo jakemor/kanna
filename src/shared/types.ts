@@ -313,6 +313,7 @@ export interface AppSettingsSnapshot {
   analyticsEnabled: boolean
   warning: string | null
   filePathDisplay: string
+  cloudflareTunnel: CloudflareTunnelSettings
 }
 
 export interface LlmProviderFile {
@@ -931,6 +932,8 @@ export interface ChatSnapshot {
   slashCommandsLoading: boolean
   schedules: Record<string, AutoContinueSchedule>
   liveScheduleId: string | null
+  tunnels: Record<string, CloudflareTunnelRecord>
+  liveTunnelId: string | null
 }
 
 export interface ChatHistoryPage {
@@ -963,4 +966,32 @@ export interface AutoContinueSchedule {
 export interface AutoContinuePromptEntry extends TranscriptEntryBase {
   kind: "auto_continue_prompt"
   scheduleId: string
+}
+
+export type CloudflareTunnelMode = "always-ask" | "auto-expose"
+
+export interface CloudflareTunnelSettings {
+  enabled: boolean
+  cloudflaredPath: string
+  mode: CloudflareTunnelMode
+}
+
+export const CLOUDFLARE_TUNNEL_DEFAULTS: CloudflareTunnelSettings = {
+  enabled: false,
+  cloudflaredPath: "cloudflared",
+  mode: "always-ask",
+}
+
+export type CloudflareTunnelState = "proposed" | "active" | "stopped" | "failed"
+
+export interface CloudflareTunnelRecord {
+  tunnelId: string
+  chatId: string
+  port: number
+  state: CloudflareTunnelState
+  url: string | null
+  error: string | null
+  proposedAt: number
+  activatedAt: number | null
+  stoppedAt: number | null
 }

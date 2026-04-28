@@ -23,6 +23,9 @@ import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileConten
 import { getProjectUploadDir } from "./paths"
 import { listProjectPaths } from "./project-paths"
 import { ScheduleManager } from "./auto-continue/schedule-manager"
+import { TunnelGateway } from "./cloudflare-tunnel/gateway"
+import { TunnelManager } from "./cloudflare-tunnel/tunnel-manager"
+import { TunnelLifecycle } from "./cloudflare-tunnel/lifecycle"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -144,6 +147,27 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     })
     return manager
   })()
+  const broadcastTunnel = (chatId: string) => {
+    router.scheduleChatStateBroadcast(chatId)
+  }
+  const tunnelManager = new TunnelManager({
+    cloudflaredPath: appSettings.getSnapshot().cloudflareTunnel.cloudflaredPath,
+    onEvent: async (event) => {
+      await store.appendTunnelEvent(event)
+      broadcastTunnel(event.chatId)
+    },
+  })
+  const tunnelLifecycle = new TunnelLifecycle({
+    onSourceExit: (tunnelId) => { void tunnelManager.stop(tunnelId, "source_exited") },
+  })
+  const tunnelGateway = new TunnelGateway({
+    manager: tunnelManager,
+    lifecycle: tunnelLifecycle,
+    settings: appSettings,
+    store,
+    broadcast: broadcastTunnel,
+  })
+
   let agent!: AgentCoordinator
   const scheduleManager = new ScheduleManager({
     fire: async (chatId, scheduleId) => {
@@ -157,6 +181,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     codexLimitDetector: options.agentOverrides?.codexLimitDetector,
     throwOnClaudeSessionStart: options.agentOverrides?.throwOnClaudeSessionStart,
     analytics,
+    tunnelGateway,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {
@@ -177,6 +202,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     keybindings,
     appSettings,
     analytics,
+    tunnelGateway,
     llmProvider: {
       read: readLlmProviderSnapshot,
       write: writeLlmProviderSnapshot,
@@ -190,6 +216,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   scheduleManager.rehydrate(
     store.listAutoContinueChats().flatMap((chatId) => store.getAutoContinueEvents(chatId))
   )
+  await tunnelGateway.reapOrphanedTunnels()
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()
       .then(() => router.broadcastSnapshots())
@@ -323,6 +350,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   const shutdown = async () => {
     scheduleManager.shutdown()
+    tunnelGateway.shutdown()
     clearInterval(staleEmptyChatPruneInterval)
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)

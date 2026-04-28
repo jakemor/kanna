@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { CLOUDFLARE_TUNNEL_DEFAULTS } from "../shared/types"
 import { KannaAnalyticsReporter, getLaunchAnalyticsProperties } from "./analytics"
 
 const originalLogAnalytics = process.env.KANNA_LOG_ANALYTICS
@@ -48,6 +49,7 @@ describe("KannaAnalyticsReporter", () => {
           getState: () => ({
             analyticsEnabled: true,
             analyticsUserId: "anon_123",
+            cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
             warning: null,
             filePathDisplay: "~/.kanna/data/settings.json",
           }),
@@ -93,6 +95,7 @@ describe("KannaAnalyticsReporter", () => {
         getState: () => ({
           analyticsEnabled: true,
           analyticsUserId: "anon_123",
+          cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
           warning: null,
           filePathDisplay: "~/.kanna/data/settings.json",
         }),
@@ -143,6 +146,7 @@ describe("KannaAnalyticsReporter", () => {
         getState: () => ({
           analyticsEnabled: false,
           analyticsUserId: "anon_123",
+          cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
           warning: null,
           filePathDisplay: "~/.kanna/data/settings.json",
         }),
@@ -176,6 +180,7 @@ describe("KannaAnalyticsReporter", () => {
           getState: () => ({
             analyticsEnabled: true,
             analyticsUserId: "anon_123",
+            cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
             warning: null,
             filePathDisplay: "~/.kanna/data/settings.json",
           }),
@@ -210,6 +215,7 @@ describe("KannaAnalyticsReporter", () => {
           getState: () => ({
             analyticsEnabled: true,
             analyticsUserId: "anon_123",
+            cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
             warning: null,
             filePathDisplay: "~/.kanna/data/settings.json",
           }),
@@ -247,6 +253,7 @@ describe("KannaAnalyticsReporter", () => {
           getState: () => ({
             analyticsEnabled: true,
             analyticsUserId: "anon_123",
+            cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
             warning: null,
             filePathDisplay: "~/.kanna/data/settings.json",
           }),
@@ -286,6 +293,7 @@ describe("KannaAnalyticsReporter", () => {
           getState: () => ({
             analyticsEnabled: true,
             analyticsUserId: "anon_123",
+            cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
             warning: null,
             filePathDisplay: "~/.kanna/data/settings.json",
           }),

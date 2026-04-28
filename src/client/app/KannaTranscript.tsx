@@ -617,6 +617,9 @@ interface KannaTranscriptProps {
   onAutoContinueAccept?: (scheduleId: string, scheduledAt: number) => void
   onAutoContinueReschedule?: (scheduleId: string, scheduledAt: number) => void
   onAutoContinueCancel?: (scheduleId: string) => void
+  onTunnelAccept?: (tunnelId: string) => void | Promise<void>
+  onTunnelStop?: (tunnelId: string) => void | Promise<void>
+  onTunnelRetry?: (tunnelId: string) => void | Promise<void>
 }
 
 interface KannaTranscriptRowProps {
@@ -737,6 +740,9 @@ function KannaTranscriptImpl({
   onAutoContinueAccept = NOOP_ACCEPT,
   onAutoContinueReschedule = NOOP_RESCHEDULE,
   onAutoContinueCancel = NOOP_CANCEL,
+  onTunnelAccept: _onTunnelAccept,  // reserved for future per-message tunnel rendering
+  onTunnelStop: _onTunnelStop,
+  onTunnelRetry: _onTunnelRetry,
 }: KannaTranscriptProps) {
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
   const rows = useMemo(() => buildResolvedTranscriptRows(messages, {

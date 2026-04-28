@@ -140,6 +140,8 @@ c3-221:
 c3-222:
   - src/server/keybindings.ts
   - src/server/keybindings.test.ts
+c3-223:
+  - src/server/cloudflare-tunnel/**/*.ts
 
 # Shared
 c3-301:

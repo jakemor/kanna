@@ -10,7 +10,7 @@ import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/ter
 import { useChatInputStore } from "../stores/chatInputStore"
 import { useSlashCommandsStore } from "../stores/slashCommandsStore"
 import { usePreferencesStore } from "../stores/preferences"
-import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
+import type { ChatSnapshot, CloudflareTunnelRecord, CloudflareTunnelSettings, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { processTranscriptMessages } from "../lib/parseTranscript"
@@ -163,7 +163,26 @@ function sameSchedules(left: ChatSnapshot["schedules"] | null | undefined, right
   })
 }
 
-function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | null) {
+function sameTunnels(left: Record<string, CloudflareTunnelRecord> | null | undefined, right: Record<string, CloudflareTunnelRecord> | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  if (leftKeys.length !== rightKeys.length) return false
+  return leftKeys.every((key) => {
+    const l = left[key]
+    const r = right[key]
+    if (!l || !r) return false
+    return l.state === r.state
+      && l.url === r.url
+      && l.error === r.error
+      && l.port === r.port
+      && l.activatedAt === r.activatedAt
+      && l.stoppedAt === r.stoppedAt
+  })
+}
+
+export function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | null) {
   if (left === right) return true
   if (!left || !right) return false
   return sameRuntime(left.runtime, right.runtime)
@@ -173,6 +192,8 @@ function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | n
     && sameProviders(left.availableProviders, right.availableProviders)
     && sameSchedules(left.schedules, right.schedules)
     && left.liveScheduleId === right.liveScheduleId
+    && sameTunnels(left.tunnels, right.tunnels)
+    && left.liveTunnelId === right.liveTunnelId
 }
 
 function mergeTranscriptEntries(olderHistoryEntries: TranscriptEntry[], recentEntries: TranscriptEntry[]) {
@@ -580,6 +601,7 @@ export interface KannaState {
   handleForceReload: () => Promise<void>
   handleReadAppSettings: () => Promise<void>
   handleWriteAppSettings: (value: Pick<AppSettingsSnapshot, "analyticsEnabled">) => Promise<void>
+  handleWriteCloudflareTunnel: (patch: Partial<CloudflareTunnelSettings>) => Promise<void>
   handleReadLlmProvider: () => Promise<void>
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
@@ -814,6 +836,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
       const snapshot = await socket.command<AppSettingsSnapshot>({
         type: "settings.writeAppSettings",
         analyticsEnabled: value.analyticsEnabled,
+      })
+      setAppSettings(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
+  }, [socket])
+
+  const handleWriteCloudflareTunnel = useCallback(async (patch: Partial<CloudflareTunnelSettings>) => {
+    try {
+      const snapshot = await socket.command<AppSettingsSnapshot>({
+        type: "appSettings.setCloudflareTunnel",
+        patch,
       })
       setAppSettings(snapshot)
       setCommandError(null)
@@ -1825,6 +1861,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleForceReload,
     handleReadAppSettings,
     handleWriteAppSettings,
+    handleWriteCloudflareTunnel,
     handleReadLlmProvider,
     handleWriteLlmProvider,
     handleValidateLlmProvider,

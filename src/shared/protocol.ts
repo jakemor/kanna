@@ -5,6 +5,7 @@ import type {
   ChatDiffSnapshot,
   ChatHistoryPage,
   ChatSnapshot,
+  CloudflareTunnelSettings,
   DiffCommitMode,
   KeybindingsSnapshot,
   LlmProviderSnapshot,
@@ -63,6 +64,7 @@ export type ClientCommand =
   | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
   | { type: "settings.readAppSettings" }
   | { type: "settings.writeAppSettings"; analyticsEnabled: boolean }
+  | { type: "appSettings.setCloudflareTunnel"; patch: Partial<CloudflareTunnelSettings> }
   | { type: "settings.readLlmProvider" }
   | {
       type: "settings.writeLlmProvider"
@@ -202,6 +204,9 @@ export type ClientCommand =
   | { type: "autoContinue.accept"; chatId: string; scheduleId: string; scheduledAt: number }
   | { type: "autoContinue.reschedule"; chatId: string; scheduleId: string; scheduledAt: number }
   | { type: "autoContinue.cancel"; chatId: string; scheduleId: string }
+  | { type: "tunnel.accept"; chatId: string; tunnelId: string }
+  | { type: "tunnel.stop"; chatId: string; tunnelId: string }
+  | { type: "tunnel.retry"; chatId: string; tunnelId: string }
   | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }

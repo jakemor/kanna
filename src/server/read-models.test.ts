@@ -83,7 +83,8 @@ describe("read models", () => {
           olderCursor: null,
           recentLimit: 200,
         },
-      })
+      }),
+      () => []
     )
     expect(chat?.runtime.provider).toBe("claude")
     expect(chat?.queuedMessages.map((message) => message.content)).toEqual(["follow up"])
@@ -401,7 +402,8 @@ describe("read models", () => {
           olderCursor: null,
           recentLimit: 200,
         },
-      })
+      }),
+      () => []
     )
 
     expect(snapshot?.slashCommands).toEqual(slashCommands)
@@ -426,6 +428,7 @@ describe("deriveChatSnapshot schedules", () => {
       new Set(),
       "c1",
       () => ({ messages: [], history: { hasOlder: false, olderCursor: null, recentLimit: 0 } }),
+      () => []
     )
     expect(snapshot!.schedules).toEqual({})
     expect(snapshot!.liveScheduleId).toBeNull()
@@ -452,6 +455,7 @@ describe("deriveChatSnapshot schedules", () => {
       new Set(),
       "c1",
       () => ({ messages: [], history: { hasOlder: false, olderCursor: null, recentLimit: 0 } }),
+      () => []
     )
     expect(snapshot!.schedules["s1"].state).toBe("proposed")
     expect(snapshot!.liveScheduleId).toBe("s1")

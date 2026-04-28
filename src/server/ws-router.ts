@@ -15,8 +15,10 @@ import { ensureProjectDirectory, resolveLocalPath } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import { CLOUDFLARE_TUNNEL_DEFAULTS } from "../shared/types"
 import type { AppSettingsSnapshot, LlmProviderSnapshot, LlmProviderValidationResult } from "../shared/types"
 import { importClaudeSessions } from "./claude-session-importer"
+import type { TunnelGateway } from "./cloudflare-tunnel/gateway"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 
@@ -101,8 +103,9 @@ interface CreateWsRouterArgs {
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
-  appSettings?: Pick<AppSettingsManager, "getSnapshot" | "write">
+  appSettings?: Pick<AppSettingsManager, "getSnapshot" | "write" | "setCloudflareTunnel">
   analytics?: AnalyticsReporter
+  tunnelGateway?: TunnelGateway
   llmProvider?: {
     read: () => Promise<LlmProviderSnapshot>
     write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
@@ -159,6 +162,7 @@ export function createWsRouter({
   keybindings,
   appSettings,
   analytics,
+  tunnelGateway,
   llmProvider,
   refreshDiscovery,
   getDiscoveredProjects,
@@ -229,14 +233,22 @@ export function createWsRouter({
   const resolvedAppSettings = appSettings ?? {
     getSnapshot: () => ({
       analyticsEnabled: true,
+      cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
       warning: null,
       filePathDisplay: "~/.kanna/data/settings.json",
     } satisfies AppSettingsSnapshot),
     write: async ({ analyticsEnabled }: { analyticsEnabled: boolean }) => ({
       analyticsEnabled,
+      cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
       warning: null,
       filePathDisplay: "~/.kanna/data/settings.json",
     } satisfies AppSettingsSnapshot),
+    setCloudflareTunnel: async (_patch: Partial<AppSettingsSnapshot["cloudflareTunnel"]>): Promise<AppSettingsSnapshot> => ({
+      analyticsEnabled: true,
+      cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
+      warning: null,
+      filePathDisplay: "~/.kanna/data/settings.json",
+    }),
   }
   const resolvedAnalytics = analytics ?? NoopAnalyticsReporter
 
@@ -457,7 +469,8 @@ export function createWsRouter({
           agent.getDrainingChatIds(),
           agent.getSlashCommandsLoadingChatIds(),
           topic.chatId,
-          (chatId) => store.getRecentChatHistory(chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT)
+          (chatId) => store.getRecentChatHistory(chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT),
+          (chatId) => store.getTunnelEvents(chatId)
         ),
       },
     }
@@ -784,6 +797,12 @@ export function createWsRouter({
           }
           return
         }
+        case "appSettings.setCloudflareTunnel": {
+          await resolvedAppSettings.setCloudflareTunnel(command.patch)
+          const snapshot = resolvedAppSettings.getSnapshot()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
         case "settings.readLlmProvider": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await resolvedLlmProvider.read() })
           return
@@ -928,6 +947,30 @@ export function createWsRouter({
         }
         case "autoContinue.cancel": {
           await agent.cancelAutoContinue(command.chatId, command.scheduleId, "user")
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "tunnel.accept": {
+          if (tunnelGateway) {
+            await tunnelGateway.accept(command.chatId, command.tunnelId)
+          }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "tunnel.stop": {
+          if (tunnelGateway) {
+            await tunnelGateway.stop(command.chatId, command.tunnelId)
+          }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "tunnel.retry": {
+          if (tunnelGateway) {
+            await tunnelGateway.retry(command.chatId, command.tunnelId)
+          }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
           return

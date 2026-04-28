@@ -725,6 +725,24 @@ export function ChatPage() {
     void state.socket.command({ type: "autoContinue.cancel", chatId, scheduleId }).catch(() => {})
   }, [state.activeChatId, state.socket])
 
+  const sendTunnelAccept = useCallback(async (tunnelId: string): Promise<void> => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    await state.socket.command({ type: "tunnel.accept", chatId, tunnelId })
+  }, [state.activeChatId, state.socket])
+
+  const sendTunnelStop = useCallback(async (tunnelId: string): Promise<void> => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    await state.socket.command({ type: "tunnel.stop", chatId, tunnelId })
+  }, [state.activeChatId, state.socket])
+
+  const sendTunnelRetry = useCallback(async (tunnelId: string): Promise<void> => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    await state.socket.command({ type: "tunnel.retry", chatId, tunnelId })
+  }, [state.activeChatId, state.socket])
+
   useEffect(() => {
     return () => clearShowScrollTimeout()
   }, [clearShowScrollTimeout])
@@ -927,6 +945,11 @@ export function ChatPage() {
           onAutoContinueAccept={handleAutoContinueAccept}
           onAutoContinueReschedule={handleAutoContinueReschedule}
           onAutoContinueCancel={handleAutoContinueCancel}
+          tunnels={state.chatSnapshot?.tunnels}
+          liveTunnelId={state.chatSnapshot?.liveTunnelId}
+          onTunnelAccept={sendTunnelAccept}
+          onTunnelStop={sendTunnelStop}
+          onTunnelRetry={sendTunnelRetry}
           showScrollButton={showScrollToBottom && state.messages.length > 0}
           onIsAtEndChange={onIsAtEndChange}
           scrollToBottom={() => scrollToTranscriptEnd(true)}

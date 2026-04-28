@@ -11,6 +11,8 @@ import type { ChatRecord, StoreState } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 import { deriveChatSchedules } from "./auto-continue/read-model"
+import { deriveChatTunnels } from "./cloudflare-tunnel/read-model"
+import type { CloudflareTunnelEvent } from "./cloudflare-tunnel/events"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_RECENT_PREVIEW_LIMIT = 5
@@ -175,7 +177,8 @@ export function deriveChatSnapshot(
   drainingChatIds: Set<string>,
   slashCommandsLoadingChatIds: Set<string>,
   chatId: string,
-  getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history">
+  getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history">,
+  getTunnelEvents: (chatId: string) => readonly CloudflareTunnelEvent[]
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
   if (!chat || chat.deletedAt) return null
@@ -197,6 +200,7 @@ export function deriveChatSnapshot(
   const transcript = getMessages(chat.id)
   const autoContinueEvents = state.autoContinueEventsByChatId.get(chat.id) ?? []
   const { schedules, liveScheduleId } = deriveChatSchedules(autoContinueEvents, chat.id)
+  const { tunnels, liveTunnelId } = deriveChatTunnels(getTunnelEvents(chat.id), chat.id)
 
   return {
     runtime,
@@ -211,5 +215,7 @@ export function deriveChatSnapshot(
     slashCommandsLoading: slashCommandsLoadingChatIds.has(chat.id),
     schedules,
     liveScheduleId,
+    tunnels,
+    liveTunnelId,
   }
 }

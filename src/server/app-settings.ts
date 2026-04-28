@@ -4,11 +4,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getSettingsFilePath, LOG_PREFIX } from "../shared/branding"
-import type { AppSettingsSnapshot } from "../shared/types"
+import { CLOUDFLARE_TUNNEL_DEFAULTS, type AppSettingsSnapshot, type CloudflareTunnelSettings } from "../shared/types"
 
 interface AppSettingsFile {
   analyticsEnabled?: unknown
   analyticsUserId?: unknown
+  cloudflareTunnel?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -19,6 +20,7 @@ interface NormalizedAppSettings {
   payload: {
     analyticsEnabled: boolean
     analyticsUserId: string
+    cloudflareTunnel: CloudflareTunnelSettings
   }
   warning: string | null
   shouldWrite: boolean
@@ -69,14 +71,50 @@ function normalizeAppSettings(
     warnings.push("analyticsUserId must be a non-empty string")
   }
 
+  const rawTunnel = source?.cloudflareTunnel
+  const tunnelSource = rawTunnel && typeof rawTunnel === "object" && !Array.isArray(rawTunnel)
+    ? rawTunnel as Record<string, unknown>
+    : null
+
+  if (rawTunnel !== undefined && !tunnelSource) {
+    warnings.push("cloudflareTunnel must be an object")
+  }
+
+  const enabled = typeof tunnelSource?.enabled === "boolean"
+    ? tunnelSource.enabled
+    : CLOUDFLARE_TUNNEL_DEFAULTS.enabled
+  if (tunnelSource?.enabled !== undefined && typeof tunnelSource.enabled !== "boolean") {
+    warnings.push("cloudflareTunnel.enabled must be a boolean")
+  }
+
+  const cloudflaredPath = typeof tunnelSource?.cloudflaredPath === "string" && tunnelSource.cloudflaredPath.trim()
+    ? tunnelSource.cloudflaredPath.trim()
+    : CLOUDFLARE_TUNNEL_DEFAULTS.cloudflaredPath
+  if (tunnelSource?.cloudflaredPath !== undefined && typeof tunnelSource.cloudflaredPath !== "string") {
+    warnings.push("cloudflareTunnel.cloudflaredPath must be a string")
+  }
+
+  const rawMode = tunnelSource?.mode
+  const mode: CloudflareTunnelSettings["mode"] =
+    rawMode === "always-ask" || rawMode === "auto-expose"
+      ? rawMode
+      : CLOUDFLARE_TUNNEL_DEFAULTS.mode
+  if (tunnelSource?.mode !== undefined && rawMode !== "always-ask" && rawMode !== "auto-expose") {
+    warnings.push(`cloudflareTunnel.mode must be "always-ask" or "auto-expose"`)
+  }
+
+  const cloudflareTunnel: CloudflareTunnelSettings = { enabled, cloudflaredPath, mode }
+
   const shouldWrite = !source
     || source.analyticsEnabled !== analyticsEnabled
     || rawAnalyticsUserId !== analyticsUserId
+    || JSON.stringify(rawTunnel) !== JSON.stringify(cloudflareTunnel)
 
   return {
     payload: {
       analyticsEnabled,
       analyticsUserId,
+      cloudflareTunnel,
     },
     warning: warnings.length > 0
       ? `Some settings were reset to defaults: ${warnings.join("; ")}`
@@ -90,6 +128,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     analyticsEnabled: state.analyticsEnabled,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
+    cloudflareTunnel: state.cloudflareTunnel,
   }
 }
 
@@ -100,6 +139,7 @@ export async function readAppSettingsSnapshot(filePath = getSettingsFilePath(hom
       const normalized = normalizeAppSettings(undefined, filePath)
       return {
         analyticsEnabled: normalized.payload.analyticsEnabled,
+        cloudflareTunnel: normalized.payload.cloudflareTunnel,
         warning: "Settings file was empty. Using defaults.",
         filePathDisplay: formatDisplayPath(filePath),
       } satisfies AppSettingsSnapshot
@@ -108,6 +148,7 @@ export async function readAppSettingsSnapshot(filePath = getSettingsFilePath(hom
     const normalized = normalizeAppSettings(JSON.parse(text), filePath)
     return {
       analyticsEnabled: normalized.payload.analyticsEnabled,
+      cloudflareTunnel: normalized.payload.cloudflareTunnel,
       warning: normalized.warning,
       filePathDisplay: formatDisplayPath(filePath),
     } satisfies AppSettingsSnapshot
@@ -115,6 +156,7 @@ export async function readAppSettingsSnapshot(filePath = getSettingsFilePath(hom
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
       return {
         analyticsEnabled: true,
+        cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
         warning: null,
         filePathDisplay: formatDisplayPath(filePath),
       } satisfies AppSettingsSnapshot
@@ -122,6 +164,7 @@ export async function readAppSettingsSnapshot(filePath = getSettingsFilePath(hom
     if (error instanceof SyntaxError) {
       return {
         analyticsEnabled: true,
+        cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
         warning: "Settings file is invalid JSON. Using defaults.",
         filePathDisplay: formatDisplayPath(filePath),
       } satisfies AppSettingsSnapshot
@@ -142,6 +185,7 @@ export class AppSettingsManager {
     this.state = {
       analyticsEnabled: true,
       analyticsUserId: createAnalyticsUserId(),
+      cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
       warning: null,
       filePathDisplay: displayPath,
     }
@@ -183,12 +227,37 @@ export class AppSettingsManager {
     const payload = {
       analyticsEnabled: value.analyticsEnabled,
       analyticsUserId: this.state.analyticsUserId || createAnalyticsUserId(),
+      cloudflareTunnel: this.state.cloudflareTunnel,
     }
     await mkdir(path.dirname(this.filePath), { recursive: true })
     await writeFile(this.filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
     const nextState: AppSettingsState = {
       analyticsEnabled: payload.analyticsEnabled,
       analyticsUserId: payload.analyticsUserId,
+      cloudflareTunnel: this.state.cloudflareTunnel,
+      warning: null,
+      filePathDisplay: formatDisplayPath(this.filePath),
+    }
+    this.setState(nextState)
+    return toSnapshot(nextState)
+  }
+
+  async setCloudflareTunnel(patch: Partial<CloudflareTunnelSettings>) {
+    const next: CloudflareTunnelSettings = { ...this.state.cloudflareTunnel, ...patch }
+    if (next.mode !== "always-ask" && next.mode !== "auto-expose") {
+      throw new Error("Invalid cloudflareTunnel.mode")
+    }
+    const payload = {
+      analyticsEnabled: this.state.analyticsEnabled,
+      analyticsUserId: this.state.analyticsUserId || createAnalyticsUserId(),
+      cloudflareTunnel: next,
+    }
+    await mkdir(path.dirname(this.filePath), { recursive: true })
+    await writeFile(this.filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
+    const nextState: AppSettingsState = {
+      analyticsEnabled: this.state.analyticsEnabled,
+      analyticsUserId: payload.analyticsUserId,
+      cloudflareTunnel: next,
       warning: null,
       filePathDisplay: formatDisplayPath(this.filePath),
     }
@@ -210,6 +279,7 @@ export class AppSettingsManager {
       return {
         analyticsEnabled: normalized.payload.analyticsEnabled,
         analyticsUserId: normalized.payload.analyticsUserId,
+        cloudflareTunnel: normalized.payload.cloudflareTunnel,
         warning: !hasText
           ? "Settings file was empty. Using defaults."
           : normalized.warning,
@@ -230,6 +300,7 @@ export class AppSettingsManager {
       return {
         analyticsEnabled: normalized.payload.analyticsEnabled,
         analyticsUserId: normalized.payload.analyticsUserId,
+        cloudflareTunnel: normalized.payload.cloudflareTunnel,
         warning,
         filePathDisplay: displayPath,
       } satisfies AppSettingsState

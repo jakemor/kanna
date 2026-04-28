@@ -20,11 +20,14 @@ import { useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/branding"
 import { ANALYTICS_STATIC_EVENT_NAMES, ANALYTICS_STATIC_PROPERTY_NAMES } from "../../shared/analytics"
 import {
+  CLOUDFLARE_TUNNEL_DEFAULTS,
   DEFAULT_KEYBINDINGS,
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
   PROVIDERS,
   type AgentProvider,
+  type CloudflareTunnelMode,
+  type CloudflareTunnelSettings,
   type KeybindingAction,
   type LlmProviderKind,
   type UpdateSnapshot,
@@ -120,6 +123,16 @@ const chatSoundPreferenceOptions: { value: ChatSoundPreference; label: string }[
 const analyticsOptions = [
   { value: "disabled" as const, label: "Off" },
   { value: "enabled" as const, label: "On" },
+]
+
+const cloudflareTunnelEnabledOptions = [
+  { value: "disabled" as const, label: "Off" },
+  { value: "enabled" as const, label: "On" },
+]
+
+const cloudflareTunnelModeOptions: { value: CloudflareTunnelMode; label: string }[] = [
+  { value: "always-ask", label: "Always ask" },
+  { value: "auto-expose", label: "Auto-expose detected ports" },
 ]
 
 const QUICK_RESPONSE_PROVIDER_OPTIONS: Array<{ value: LlmProviderKind; label: string }> = [
@@ -479,6 +492,10 @@ export function AutoResumeToggleSection({
   )
 }
 
+export function CloudflareTunnelSectionTitle() {
+  return <span>Cloudflare Tunnel</span>
+}
+
 export function SettingsPage() {
   const navigate = useNavigate()
   const { sectionId } = useParams<{ sectionId: string }>()
@@ -526,6 +543,10 @@ export function SettingsPage() {
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
   const [appSettingsError, setAppSettingsError] = useState<string | null>(null)
   const [analyticsDialogOpen, setAnalyticsDialogOpen] = useState(false)
+  const [tunnelError, setTunnelError] = useState<string | null>(null)
+  const [cloudflaredPathDraft, setCloudflaredPathDraft] = useState(
+    appSettings?.cloudflareTunnel.cloudflaredPath ?? CLOUDFLARE_TUNNEL_DEFAULTS.cloudflaredPath
+  )
   const [llmProviderDraft, setLlmProviderDraft] = useState({
     provider: "openai" as LlmProviderKind,
     apiKey: "",
@@ -538,6 +559,7 @@ export function SettingsPage() {
   const [llmValidationDialogOpen, setLlmValidationDialogOpen] = useState(false)
   const updateSnapshot = state.updateSnapshot
   const handleWriteAppSettings = state.handleWriteAppSettings
+  const handleWriteCloudflareTunnel = state.handleWriteCloudflareTunnel
   const handleReadLlmProvider = state.handleReadLlmProvider
   const handleWriteLlmProvider = state.handleWriteLlmProvider
   const handleValidateLlmProvider = state.handleValidateLlmProvider
@@ -596,6 +618,11 @@ export function SettingsPage() {
     if (resolveSettingsSectionId(sectionId)) return
     navigate("/settings/general", { replace: true })
   }, [navigate, sectionId])
+
+  useEffect(() => {
+    if (!appSettings) return
+    setCloudflaredPathDraft(appSettings.cloudflareTunnel.cloudflaredPath)
+  }, [appSettings])
 
   useEffect(() => {
     let cancelled = false
@@ -715,6 +742,15 @@ export function SettingsPage() {
     }
   }
 
+  async function handleTunnelPatch(patch: Partial<CloudflareTunnelSettings>) {
+    try {
+      setTunnelError(null)
+      await handleWriteCloudflareTunnel(patch)
+    } catch (error) {
+      setTunnelError(error instanceof Error ? error.message : "Unable to save Cloudflare Tunnel settings.")
+    }
+  }
+
   async function commitKeybindings() {
     try {
       setKeybindingsError(null)
@@ -799,6 +835,8 @@ export function SettingsPage() {
     .replaceAll("{column}", "1")
   const analyticsDisclosureEvents = ANALYTICS_STATIC_EVENT_NAMES
   const analyticsSettingValue = appSettings?.analyticsEnabled === false ? "disabled" : "enabled"
+  const tunnelSettings: CloudflareTunnelSettings = appSettings?.cloudflareTunnel ?? CLOUDFLARE_TUNNEL_DEFAULTS
+  const tunnelEnabledValue = tunnelSettings.enabled ? "enabled" : "disabled"
   const selectedSection = sidebarItems.find((item) => item.id === selectedPage) ?? sidebarItems[0]
   const selectedSectionSubtitle =
     selectedPage === "keybindings"
@@ -1229,6 +1267,69 @@ export function SettingsPage() {
                           size="sm"
                         />
                       </SettingsRow>
+                    </div>
+                    <div className="border-b border-border">
+                      {tunnelError ? (
+                        <div className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                          {tunnelError}
+                        </div>
+                      ) : null}
+                      <SettingsRow
+                        title="Cloudflare Tunnel"
+                        description={(
+                          <>
+                            <span>
+                              Automatically expose local ports via Cloudflare Tunnel when ports are detected in Claude&apos;s output. Requires{" "}
+                              <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">cloudflared</code>{" "}
+                              to be installed.
+                            </span>
+                            <span className="mt-1 block">
+                              Stored in {appSettings?.filePathDisplay ?? "~/.kanna/data/settings.json"}.
+                            </span>
+                          </>
+                        )}
+                        bordered={false}
+                      >
+                        <SegmentedControl
+                          value={tunnelEnabledValue}
+                          onValueChange={(value) => {
+                            void handleTunnelPatch({ enabled: value === "enabled" })
+                          }}
+                          options={cloudflareTunnelEnabledOptions}
+                          size="sm"
+                        />
+                      </SettingsRow>
+                      {tunnelSettings.enabled && (
+                        <>
+                          <SettingsRow
+                            title="Detection mode"
+                            description="Choose how Kanna responds when a port is detected in Claude's output."
+                          >
+                            <SegmentedControl
+                              value={tunnelSettings.mode}
+                              onValueChange={(value) => {
+                                void handleTunnelPatch({ mode: value as CloudflareTunnelMode })
+                              }}
+                              options={cloudflareTunnelModeOptions}
+                              size="sm"
+                            />
+                          </SettingsRow>
+                          <SettingsRow
+                            title="cloudflared path"
+                            description="Path to the cloudflared binary. Defaults to the one found on $PATH."
+                          >
+                            <Input
+                              value={cloudflaredPathDraft}
+                              onChange={(event) => setCloudflaredPathDraft(event.target.value)}
+                              onBlur={() => {
+                                void handleTunnelPatch({ cloudflaredPath: cloudflaredPathDraft })
+                              }}
+                              placeholder="cloudflared"
+                              className="w-full font-mono md:w-64"
+                            />
+                          </SettingsRow>
+                        </>
+                      )}
                     </div>
                   </>
                 ) : selectedPage === "providers" ? (

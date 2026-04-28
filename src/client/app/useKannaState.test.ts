@@ -12,6 +12,7 @@ import {
   getUiUpdateRestartReconnectAction,
   reconcileOptimisticUserPrompts,
   resolveComposeIntent,
+  sameChatSnapshotCore,
   shouldHandleUiUpdateReloadRequest,
   shouldMarkActiveChatRead,
   shouldAutoFollowTranscript,
@@ -292,6 +293,8 @@ describe("getActiveChatSnapshot", () => {
       slashCommandsLoading: false,
       schedules: {},
       liveScheduleId: null,
+      tunnels: {},
+      liveTunnelId: null,
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-1")).toEqual(snapshot)
@@ -322,6 +325,8 @@ describe("getActiveChatSnapshot", () => {
       slashCommandsLoading: false,
       schedules: {},
       liveScheduleId: null,
+      tunnels: {},
+      liveTunnelId: null,
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-new")).toBeNull()
@@ -432,5 +437,116 @@ describe("optimistic user prompts", () => {
       "chat-1",
       [createUserPrompt("server-1", "same")],
     )).toEqual([optimisticPrompt])
+  })
+})
+
+function createMinimalChatSnapshot(overrides: Partial<ChatSnapshot> = {}): ChatSnapshot {
+  return {
+    runtime: {
+      chatId: "chat-1",
+      projectId: "project-1",
+      localPath: "/tmp/project-1",
+      title: "Chat",
+      status: "idle",
+      isDraining: false,
+      provider: "claude",
+      planMode: false,
+      sessionToken: null,
+    },
+    queuedMessages: [],
+    messages: [],
+    history: { hasOlder: false, olderCursor: null, recentLimit: 200 },
+    availableProviders: [],
+    slashCommands: [],
+    slashCommandsLoading: false,
+    schedules: {},
+    liveScheduleId: null,
+    tunnels: {},
+    liveTunnelId: null,
+    ...overrides,
+  }
+}
+
+describe("sameChatSnapshotCore tunnel fields", () => {
+  test("returns true when both snapshots have no tunnels", () => {
+    const a = createMinimalChatSnapshot()
+    const b = createMinimalChatSnapshot()
+    expect(sameChatSnapshotCore(a, b)).toBe(true)
+  })
+
+  test("returns false when tunnel state differs", () => {
+    const a = createMinimalChatSnapshot({
+      tunnels: {
+        t1: {
+          tunnelId: "t1",
+          chatId: "chat-1",
+          port: 3000,
+          state: "proposed",
+          url: null,
+          error: null,
+          proposedAt: 1000,
+          activatedAt: null,
+          stoppedAt: null,
+        },
+      },
+      liveTunnelId: "t1",
+    })
+    const b = createMinimalChatSnapshot({
+      tunnels: {
+        t1: {
+          tunnelId: "t1",
+          chatId: "chat-1",
+          port: 3000,
+          state: "active",
+          url: "https://example.trycloudflare.com",
+          error: null,
+          proposedAt: 1000,
+          activatedAt: 2000,
+          stoppedAt: null,
+        },
+      },
+      liveTunnelId: "t1",
+    })
+    expect(sameChatSnapshotCore(a, b)).toBe(false)
+  })
+
+  test("returns true when tunnel state and all fields match", () => {
+    const tunnel = {
+      tunnelId: "t1",
+      chatId: "chat-1",
+      port: 3000,
+      state: "active" as const,
+      url: "https://example.trycloudflare.com",
+      error: null,
+      proposedAt: 1000,
+      activatedAt: 2000,
+      stoppedAt: null,
+    }
+    const a = createMinimalChatSnapshot({ tunnels: { t1: tunnel }, liveTunnelId: "t1" })
+    const b = createMinimalChatSnapshot({ tunnels: { t1: { ...tunnel } }, liveTunnelId: "t1" })
+    expect(sameChatSnapshotCore(a, b)).toBe(true)
+  })
+
+  test("returns false when liveTunnelId differs", () => {
+    const a = createMinimalChatSnapshot({ tunnels: {}, liveTunnelId: "t1" })
+    const b = createMinimalChatSnapshot({ tunnels: {}, liveTunnelId: null })
+    expect(sameChatSnapshotCore(a, b)).toBe(false)
+  })
+
+  test("returns false when tunnel count differs", () => {
+    const tunnel = {
+      tunnelId: "t1",
+      chatId: "chat-1",
+      port: 3000,
+      state: "stopped" as const,
+      url: null,
+      error: null,
+      proposedAt: 1000,
+      activatedAt: null,
+      stoppedAt: 3000,
+    }
+    const a = createMinimalChatSnapshot({ tunnels: { t1: tunnel } })
+    const b = createMinimalChatSnapshot({ tunnels: {} })
+    expect(sameChatSnapshotCore(a, b)).toBe(false)
   })
 })

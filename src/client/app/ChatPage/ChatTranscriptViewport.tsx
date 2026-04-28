@@ -14,7 +14,8 @@ import {
   useStableResolvedRows,
 } from "../KannaTranscript"
 import type { KannaState } from "../useKannaState"
-import type { AutoContinueSchedule } from "../../../shared/types"
+import type { AutoContinueSchedule, CloudflareTunnelRecord } from "../../../shared/types"
+import { CloudflareTunnelCard } from "../../components/chat-ui/CloudflareTunnelCard"
 import {
   CHAT_NAVBAR_OFFSET_PX,
   EMPTY_STATE_TEXT,
@@ -45,6 +46,11 @@ interface ChatTranscriptViewportProps {
   onAutoContinueAccept: (scheduleId: string, scheduledAt: number) => void
   onAutoContinueReschedule: (scheduleId: string, scheduledAt: number) => void
   onAutoContinueCancel: (scheduleId: string) => void
+  tunnels?: Record<string, CloudflareTunnelRecord>
+  liveTunnelId?: string | null
+  onTunnelAccept?: (tunnelId: string) => void | Promise<void>
+  onTunnelStop?: (tunnelId: string) => void | Promise<void>
+  onTunnelRetry?: (tunnelId: string) => void | Promise<void>
   showScrollButton: boolean
   onIsAtEndChange: (isAtEnd: boolean) => void
   scrollToBottom: () => void
@@ -79,6 +85,11 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   onAutoContinueAccept,
   onAutoContinueReschedule,
   onAutoContinueCancel,
+  tunnels,
+  liveTunnelId,
+  onTunnelAccept,
+  onTunnelStop,
+  onTunnelRetry,
   showScrollButton,
   onIsAtEndChange,
   scrollToBottom,
@@ -214,8 +225,21 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     </div>
   )
 
+  const liveTunnelRecord = liveTunnelId && tunnels ? tunnels[liveTunnelId] : undefined
+
   const listFooter = (
     <div className="mx-auto w-full max-w-[800px]">
+      {liveTunnelRecord && onTunnelAccept && onTunnelStop && onTunnelRetry && (
+        <div className="pb-5">
+          <CloudflareTunnelCard
+            record={liveTunnelRecord}
+            onAccept={onTunnelAccept}
+            onStop={onTunnelStop}
+            onRetry={onTunnelRetry}
+            onDismiss={onTunnelStop}
+          />
+        </div>
+      )}
       {isProcessing ? <ProcessingMessage status={runtimeStatus ?? undefined} /> : null}
       {queuedMessages.map((message) => (
         <QueuedUserMessage
@@ -242,7 +266,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         <LegendList<ResolvedTranscriptRow>
           ref={listRef}
           data={resolvedRows}
-          extraData={{ toolGroupExpanded, schedules }}
+          extraData={{ toolGroupExpanded, schedules, tunnels, liveTunnelId }}
           keyExtractor={keyExtractor}
           renderItem={renderItem}
           estimatedItemSize={96}

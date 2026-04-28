@@ -685,3 +685,75 @@ describe("EventStore auto-continue schedules", () => {
     expect(rehydrated.getAutoContinueEvents(chat.id)).toHaveLength(1)
   })
 })
+
+describe("EventStore tunnel events", () => {
+  test("appends two tunnel events and retrieves them in order by chatId", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/p-tunnel")
+    const chat = await store.createChat(project.id)
+
+    const proposed = {
+      v: 1 as const,
+      kind: "tunnel_proposed" as const,
+      timestamp: 1_000,
+      chatId: chat.id,
+      tunnelId: "t1",
+      port: 5173,
+      sourcePid: null,
+    }
+    const accepted = {
+      v: 1 as const,
+      kind: "tunnel_accepted" as const,
+      timestamp: 2_000,
+      chatId: chat.id,
+      tunnelId: "t1",
+      source: "user" as const,
+    }
+
+    await store.appendTunnelEvent(proposed)
+    await store.appendTunnelEvent(accepted)
+
+    const events = store.getTunnelEvents(chat.id)
+    expect(events).toHaveLength(2)
+    expect(events[0].kind).toBe("tunnel_proposed")
+    expect(events[1].kind).toBe("tunnel_accepted")
+  })
+
+  test("persists tunnel events across store restart", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/p-tunnel2")
+    const chat = await store.createChat(project.id)
+
+    await store.appendTunnelEvent({
+      v: 1 as const,
+      kind: "tunnel_proposed" as const,
+      timestamp: 1_000,
+      chatId: chat.id,
+      tunnelId: "t2",
+      port: 3000,
+      sourcePid: 42,
+    })
+
+    const rehydrated = new EventStore(dataDir)
+    await rehydrated.initialize()
+    const events = rehydrated.getTunnelEvents(chat.id)
+    expect(events).toHaveLength(1)
+    if (events[0].kind === "tunnel_proposed") {
+      expect(events[0].port).toBe(3000)
+      expect(events[0].sourcePid).toBe(42)
+    } else {
+      throw new Error("expected tunnel_proposed")
+    }
+  })
+
+  test("returns empty array for unknown chatId", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    expect(store.getTunnelEvents("nonexistent")).toEqual([])
+  })
+})

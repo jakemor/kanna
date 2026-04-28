@@ -32,6 +32,7 @@ import { AUTO_CONTINUE_EVENT_VERSION, type AutoContinueEvent } from "./auto-cont
 import { ClaudeLimitDetector, CodexLimitDetector, type LimitDetection, type LimitDetector } from "./auto-continue/limit-detector"
 import type { ScheduleManager } from "./auto-continue/schedule-manager"
 import { deriveChatSchedules } from "./auto-continue/read-model"
+import type { TunnelGateway } from "./cloudflare-tunnel/gateway"
 
 const CLAUDE_TOOLSET = [
   "Skill",
@@ -109,6 +110,7 @@ interface AgentCoordinatorArgs {
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
+  tunnelGateway?: TunnelGateway
   startClaudeSession?: (args: {
     localPath: string
     model: string
@@ -183,6 +185,22 @@ function buildSteeredMessageContent(content: string) {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function stringifyToolResultContent(content: unknown): string {
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (item && typeof item === "object") {
+          const r = item as Record<string, unknown>
+          return typeof r.text === "string" ? r.text : ""
+        }
+        return ""
+      })
+      .join("")
+  }
+  return ""
 }
 
 function asNumber(value: unknown): number | undefined {
@@ -707,6 +725,8 @@ export class AgentCoordinator {
   private readonly getAutoResumePreference: () => boolean
   private readonly throwOnClaudeSessionStart: boolean
   private readonly autoResumeByChat = new Map<string, boolean>()
+  private readonly tunnelGateway: TunnelGateway | null
+  private readonly pendingBashCalls = new Map<string, { command: string; chatId: string }>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
@@ -720,6 +740,7 @@ export class AgentCoordinator {
     this.scheduleManager = args.scheduleManager ?? null
     this.getAutoResumePreference = args.getAutoResumePreference ?? (() => false)
     this.throwOnClaudeSessionStart = args.throwOnClaudeSessionStart ?? false
+    this.tunnelGateway = args.tunnelGateway ?? null
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -750,6 +771,29 @@ export class AgentCoordinator {
 
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
     this.onStateChange(chatId, options)
+  }
+
+  private trackBashToolEntry(chatId: string, entry: TranscriptEntry): void {
+    if (!this.tunnelGateway) return
+
+    if (entry.kind === "tool_call" && entry.tool.toolKind === "bash") {
+      const command = entry.tool.input.command ?? ""
+      this.pendingBashCalls.set(entry.tool.toolId, { command, chatId })
+      return
+    }
+
+    if (entry.kind === "tool_result") {
+      const pending = this.pendingBashCalls.get(entry.toolId)
+      if (!pending) return
+      this.pendingBashCalls.delete(entry.toolId)
+      const stdout = stringifyToolResultContent(entry.content)
+      void this.tunnelGateway.handleBashResult({
+        command: pending.command,
+        stdout,
+        chatId: pending.chatId,
+        sourcePid: null,
+      })
+    }
   }
 
   getActiveTurnProfile(chatId: string): SendToStartingProfile | null {
@@ -1360,6 +1404,7 @@ export class AgentCoordinator {
 
         if (!event.entry) continue
         await this.store.appendMessage(session.chatId, event.entry)
+        this.trackBashToolEntry(session.chatId, event.entry)
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
@@ -1498,6 +1543,7 @@ export class AgentCoordinator {
 
         if (!event.entry) continue
         await this.store.appendMessage(active.chatId, event.entry)
+        this.trackBashToolEntry(active.chatId, event.entry)
 
         if (event.entry.kind === "system_init") {
           active.status = "running"

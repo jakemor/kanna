@@ -18,6 +18,7 @@ import {
   createEmptyState,
 } from "./events"
 import { resolveLocalPath } from "./paths"
+import type { CloudflareTunnelEvent } from "./cloudflare-tunnel/events"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
 const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
@@ -173,6 +174,7 @@ export class EventStore {
   private readonly queuedMessagesLogPath: string
   private readonly turnsLogPath: string
   private readonly schedulesLogPath: string
+  private readonly tunnelLogPath: string
   private readonly transcriptsDir: string
   private readonly sidebarProjectOrderPath: string
   private legacyMessagesByChatId = new Map<string, TranscriptEntry[]>()
@@ -180,6 +182,7 @@ export class EventStore {
   private sidebarProjectOrder: string[] = []
   private snapshotHasLegacyMessages = false
   private cachedTranscript: { chatId: string; entries: TranscriptEntry[] } | null = null
+  private readonly tunnelEventsByChatId = new Map<string, CloudflareTunnelEvent[]>()
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -190,6 +193,7 @@ export class EventStore {
     this.queuedMessagesLogPath = path.join(this.dataDir, "queued-messages.jsonl")
     this.turnsLogPath = path.join(this.dataDir, "turns.jsonl")
     this.schedulesLogPath = path.join(this.dataDir, "schedules.jsonl")
+    this.tunnelLogPath = path.join(this.dataDir, "tunnels.jsonl")
     this.transcriptsDir = path.join(this.dataDir, "transcripts")
     this.sidebarProjectOrderPath = path.join(this.dataDir, SIDEBAR_PROJECT_ORDER_FILE)
   }
@@ -203,8 +207,10 @@ export class EventStore {
     await this.ensureFile(this.queuedMessagesLogPath)
     await this.ensureFile(this.turnsLogPath)
     await this.ensureFile(this.schedulesLogPath)
+    await this.ensureFile(this.tunnelLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
+    await this.loadTunnelEvents()
     await this.loadSidebarProjectOrder()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
       await this.compact()
@@ -231,6 +237,7 @@ export class EventStore {
       Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
       Bun.write(this.schedulesLogPath, ""),
+      Bun.write(this.tunnelLogPath, ""),
     ])
   }
 
@@ -291,6 +298,7 @@ export class EventStore {
     this.state.queuedMessagesByChatId.clear()
     this.state.sidebarProjectOrder = []
     this.state.autoContinueEventsByChatId.clear()
+    this.tunnelEventsByChatId.clear()
     this.sidebarProjectOrder = []
     this.legacySidebarProjectOrder = []
     this.cachedTranscript = null
@@ -1268,6 +1276,8 @@ export class EventStore {
       Bun.write(this.queuedMessagesLogPath, ""),
       Bun.write(this.turnsLogPath, ""),
       Bun.write(this.schedulesLogPath, ""),
+      // tunnels.jsonl is NOT compacted into the snapshot — it's left as-is
+      // so that active tunnel state survives server restarts.
     ])
   }
 
@@ -1325,5 +1335,47 @@ export class EventStore {
 
   listAutoContinueChats(): string[] {
     return [...this.state.autoContinueEventsByChatId.keys()]
+  }
+
+  async appendTunnelEvent(event: CloudflareTunnelEvent): Promise<void> {
+    const payload = `${JSON.stringify(event)}\n`
+    this.writeChain = this.writeChain.then(async () => {
+      await appendFile(this.tunnelLogPath, payload, "utf8")
+      this.applyTunnelEvent(event)
+    })
+    await this.writeChain
+  }
+
+  getTunnelEvents(chatId: string): CloudflareTunnelEvent[] {
+    const list = this.tunnelEventsByChatId.get(chatId)
+    return list ? [...list] : []
+  }
+
+  listTunnelChats(): string[] {
+    return [...this.tunnelEventsByChatId.keys()]
+  }
+
+  private applyTunnelEvent(event: CloudflareTunnelEvent): void {
+    const existing = this.tunnelEventsByChatId.get(event.chatId) ?? []
+    existing.push(event)
+    this.tunnelEventsByChatId.set(event.chatId, existing)
+  }
+
+  private async loadTunnelEvents(): Promise<void> {
+    const file = Bun.file(this.tunnelLogPath)
+    if (!(await file.exists())) return
+    const text = await file.text()
+    if (!text.trim()) return
+
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim()
+      if (!line) continue
+      try {
+        const event = JSON.parse(line) as CloudflareTunnelEvent
+        this.applyTunnelEvent(event)
+      } catch {
+        console.warn(`${LOG_PREFIX} Ignoring malformed line in tunnels.jsonl`)
+      }
+    }
   }
 }

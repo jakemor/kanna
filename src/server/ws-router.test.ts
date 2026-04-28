@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { CLOUDFLARE_TUNNEL_DEFAULTS, PROTOCOL_VERSION } from "../shared/types"
 import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, UpdateSnapshot } from "../shared/types"
-import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import { createWsRouter } from "./ws-router"
 
@@ -61,6 +61,7 @@ const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
 
 const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   analyticsEnabled: true,
+  cloudflareTunnel: CLOUDFLARE_TUNNEL_DEFAULTS,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }
@@ -247,6 +248,7 @@ describe("ws-router", () => {
             analyticsEnabled: value.analyticsEnabled,
           }
         },
+        setCloudflareTunnel: async (_patch) => ({ ...DEFAULT_APP_SETTINGS_SNAPSHOT }),
       },
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],
@@ -324,6 +326,7 @@ describe("ws-router", () => {
             analyticsEnabled: value.analyticsEnabled,
           }
         },
+        setCloudflareTunnel: async (_patch) => ({ ...DEFAULT_APP_SETTINGS_SNAPSHOT }),
       },
       analytics: {
         track: (eventName: string) => {
@@ -997,6 +1000,7 @@ describe("ws-router", () => {
 
     const store = {
       state,
+      getTunnelEvents: (_chatId: string) => [] as never[],
       async setChatReadState(chatId: string, unread: boolean) {
         const chat = state.chatsById.get(chatId)
         if (!chat) throw new Error("Chat not found")
@@ -1803,6 +1807,7 @@ describe("ws-router", () => {
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
         getRecentChatHistory: () => ({ entries: [], hasOlder: false, olderCursor: null }),
+        getTunnelEvents: (_chatId: string) => [] as never[],
       } as never,
       diffStore: diffStore as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getSlashCommandsLoadingChatIds: () => new Set(), ensureSlashCommandsLoaded: async () => {} } as never,

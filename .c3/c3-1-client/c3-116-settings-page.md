@@ -25,6 +25,7 @@ One place to configure how the client and the local server behave; without it us
 | IN (uses) | Preference stores | c3-102 |
 | IN (uses) | Primitives | c3-103 |
 | IN (uses) | Server keybinding projection | c3-222 |
+| IN (uses) | Cloudflare tunnel settings + setter | c3-223 |
 ## Code References
 
 <!-- List concrete code files that implement this component -->

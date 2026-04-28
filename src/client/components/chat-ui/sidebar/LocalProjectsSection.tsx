@@ -2,7 +2,8 @@ import { memo, type ReactNode, useMemo } from "react"
 import { ChevronRight, Loader2, SquarePen } from "lucide-react"
 import {
   DndContext,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   KeyboardSensor,
   useSensor,
   useSensors,
@@ -189,7 +190,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
       ref={setActivatorNodeRef}
       className={cn(
         "sticky top-0 bg-background dark:bg-card z-10 relative p-[10px] flex items-center justify-between",
-        "cursor-grab active:cursor-grabbing select-none touch-none",
+        "cursor-grab active:cursor-grabbing select-none touch-pan-y",
         isDragging && "cursor-grabbing"
       )}
       onClick={() => onToggleSection(groupKey)}
@@ -326,7 +327,8 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   startingLocalPath,
 }: Props) {
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 2 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 2 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
     useSensor(KeyboardSensor)
   )
 

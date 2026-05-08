@@ -26,13 +26,12 @@ interface RightSidebarState {
   clearProject: (projectId: string) => void
 }
 
-export const RIGHT_SIDEBAR_MIN_SIZE_PERCENT = 20
-export const DEFAULT_RIGHT_SIDEBAR_SIZE = 33
+export const DEFAULT_RIGHT_SIDEBAR_SIZE = 420
 export const RIGHT_SIDEBAR_MIN_WIDTH_PX = 370
 
 function clampSize(size: number) {
   if (!Number.isFinite(size)) return DEFAULT_RIGHT_SIDEBAR_SIZE
-  return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size)
+  return Math.max(RIGHT_SIDEBAR_MIN_WIDTH_PX, size)
 }
 
 function createDefaultProjectVisibilityState(): ProjectRightSidebarVisibilityState {
@@ -67,12 +66,6 @@ export function migrateRightSidebarStore(persistedState: unknown) {
     projects?: Record<string, Partial<{ isVisible: boolean, size: number }>>
     projectUi?: Record<string, ProjectRightSidebarUiState>
   }
-  const globalSize = Number.isFinite(state.size)
-    ? clampSize(state.size ?? DEFAULT_RIGHT_SIDEBAR_SIZE)
-    : clampSize(
-        Object.values(state.projects ?? {}).find((layout) => Number.isFinite(layout.size))?.size
-        ?? DEFAULT_RIGHT_SIDEBAR_SIZE
-      )
   const projects = Object.fromEntries(
     Object.entries(state.projects ?? {}).map(([projectId, layout]) => [
       projectId,
@@ -82,7 +75,7 @@ export function migrateRightSidebarStore(persistedState: unknown) {
     ])
   )
 
-  return { size: globalSize, projects, projectUi: state.projectUi ?? {} }
+  return { size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects, projectUi: state.projectUi ?? {} }
 }
 
 export const useRightSidebarStore = create<RightSidebarState>()(
@@ -186,7 +179,7 @@ export const useRightSidebarStore = create<RightSidebarState>()(
     }),
     {
       name: "right-sidebar-layouts",
-      version: 4,
+      version: 5,
       migrate: migrateRightSidebarStore,
     }
   )

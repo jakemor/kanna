@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
   getTerminalPanelDefaultSizes,
+  getRightSidebarSizePercent,
+  getRightSidebarSizePx,
   getIgnoreFolderEntryFromDiffPath,
   hasFileDragTypes,
   shouldUseMobileRightSidebarOverlay,
@@ -63,5 +65,23 @@ describe("getTerminalPanelDefaultSizes", () => {
 
   test("collapses the terminal panel defaults while the terminal is hidden", () => {
     expect(getTerminalPanelDefaultSizes(false, [68, 32])).toEqual([100, 0])
+  })
+})
+
+describe("right sidebar pixel sizing", () => {
+  test("converts the saved pixel width to a panel percentage", () => {
+    expect(getRightSidebarSizePercent(420, 1_200)).toBe(35)
+  })
+
+  test("keeps the panel at the minimum pixel width", () => {
+    expect(getRightSidebarSizePercent(100, 1_000)).toBe(37)
+  })
+
+  test("caps the panel so the workspace keeps its minimum share", () => {
+    expect(getRightSidebarSizePercent(1_200, 1_000)).toBe(80)
+  })
+
+  test("converts the panel percentage back to pixels", () => {
+    expect(getRightSidebarSizePx(35, 1_200)).toBe(420)
   })
 })

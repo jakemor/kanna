@@ -6,7 +6,7 @@ type UseRightSidebarToggleAnimationParams = {
   projectId: string | null
   shouldRenderRightSidebarLayout: boolean
   showRightSidebar: boolean
-  rightSidebarSize: number
+  rightSidebarSizePercent: number
 }
 
 type UseRightSidebarToggleAnimationResult = {
@@ -20,7 +20,7 @@ export function useRightSidebarToggleAnimation({
   projectId,
   shouldRenderRightSidebarLayout,
   showRightSidebar,
-  rightSidebarSize,
+  rightSidebarSizePercent,
 }: UseRightSidebarToggleAnimationParams): UseRightSidebarToggleAnimationResult {
   const panelGroupRef = useRef<GroupImperativeHandle | null>(null)
   const sidebarPanelRef = useRef<HTMLDivElement | null>(null)
@@ -73,7 +73,7 @@ export function useRightSidebarToggleAnimation({
     const didProjectChange = previousProjectId !== null && previousProjectId !== projectId
     const isInitialOpen = showRightSidebar && !previousShowRightSidebarRef.current
     const isInitialRender = !previousShouldRenderRightSidebarLayoutRef.current
-    const targetLayout: [number, number] = showRightSidebar ? [100 - rightSidebarSize, rightSidebarSize] : [100, 0]
+    const targetLayout: [number, number] = showRightSidebar ? [100 - rightSidebarSizePercent, rightSidebarSizePercent] : [100, 0]
     const shouldSkipAnimation = didProjectChange || (isInitialRender && showRightSidebar)
     const currentLayout: [number, number] = isInitialOpen || isInitialRender
       ? [100, 0]
@@ -124,7 +124,7 @@ export function useRightSidebarToggleAnimation({
     }
 
     animationFrameRef.current = window.requestAnimationFrame(step)
-  }, [projectId, rightSidebarSize, shouldRenderRightSidebarLayout, showRightSidebar])
+  }, [projectId, rightSidebarSizePercent, shouldRenderRightSidebarLayout, showRightSidebar])
 
   useEffect(() => {
     if (shouldRenderRightSidebarLayout) return

@@ -14,7 +14,6 @@ import { cn } from "../../lib/utils"
 import {
   DEFAULT_RIGHT_SIDEBAR_SIZE,
   DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE,
-  RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   RIGHT_SIDEBAR_MIN_WIDTH_PX,
   useRightSidebarStore,
 } from "../../stores/rightSidebarStore"
@@ -175,9 +174,29 @@ function useTranscriptPaddingBottom() {
 }
 
 const MOBILE_RIGHT_SIDEBAR_BREAKPOINT_PX = 768
+const RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT = 20
+const RIGHT_SIDEBAR_MAX_SIZE_PERCENT = 100 - RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT
 
 export function shouldUseMobileRightSidebarOverlay(viewportWidth: number) {
   return viewportWidth > 0 && viewportWidth < MOBILE_RIGHT_SIDEBAR_BREAKPOINT_PX
+}
+
+export function getRightSidebarSizePercent(sizePx: number, layoutWidth: number) {
+  if (!Number.isFinite(sizePx) || !Number.isFinite(layoutWidth) || layoutWidth <= 0) {
+    return 0
+  }
+
+  const minSizePercent = (RIGHT_SIDEBAR_MIN_WIDTH_PX / layoutWidth) * 100
+  const requestedSizePercent = (Math.max(RIGHT_SIDEBAR_MIN_WIDTH_PX, sizePx) / layoutWidth) * 100
+  return Math.min(RIGHT_SIDEBAR_MAX_SIZE_PERCENT, Math.max(minSizePercent, requestedSizePercent))
+}
+
+export function getRightSidebarSizePx(sizePercent: number, layoutWidth: number) {
+  if (!Number.isFinite(sizePercent) || !Number.isFinite(layoutWidth) || layoutWidth <= 0) {
+    return DEFAULT_RIGHT_SIDEBAR_SIZE
+  }
+
+  return Math.max(RIGHT_SIDEBAR_MIN_WIDTH_PX, layoutWidth * (sizePercent / 100))
 }
 
 function useMobileRightSidebarOverlayEnabled() {
@@ -288,6 +307,7 @@ const DesktopSidebarPane = memo(function DesktopSidebarPane({
       defaultSize={`${sizePercent}%`}
       className="min-h-0 min-w-0"
       elementRef={sidebarPanelRef}
+      groupResizeBehavior="preserve-pixel-size"
     >
       <div
         ref={sidebarVisualRef}
@@ -490,17 +510,10 @@ export function ChatPage() {
   const isMobileRightSidebarOverlay = useMobileRightSidebarOverlayEnabled()
   const shouldRenderDesktopRightSidebarLayout = shouldRenderRightSidebarLayout && !isMobileRightSidebarOverlay
   const layoutWidth = useLayoutWidth(layoutRootRef)
-  const clampRightSidebarSize = useCallback((size: number, widthOverride?: number) => {
-    if (!Number.isFinite(size)) {
-      return globalRightSidebarSize
-    }
-    const nextLayoutWidth = widthOverride ?? layoutWidth
-    const minPercentFromWidth = nextLayoutWidth > 0
-      ? (RIGHT_SIDEBAR_MIN_WIDTH_PX / nextLayoutWidth) * 100
-      : RIGHT_SIDEBAR_MIN_SIZE_PERCENT
-    return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, minPercentFromWidth, size)
-  }, [globalRightSidebarSize, layoutWidth])
-  const effectiveRightSidebarSize = clampRightSidebarSize(globalRightSidebarSize ?? DEFAULT_RIGHT_SIDEBAR_SIZE)
+  const effectiveRightSidebarSize = getRightSidebarSizePercent(
+    globalRightSidebarSize ?? DEFAULT_RIGHT_SIDEBAR_SIZE,
+    layoutWidth,
+  )
   const fixedTerminalHeight = useFixedTerminalHeight({
     layoutRootRef,
     shouldRenderTerminalLayout,
@@ -529,7 +542,7 @@ export function ChatPage() {
     projectId,
     shouldRenderRightSidebarLayout: shouldRenderDesktopRightSidebarLayout,
     showRightSidebar,
-    rightSidebarSize: effectiveRightSidebarSize,
+    rightSidebarSizePercent: effectiveRightSidebarSize,
   })
 
   const {
@@ -840,7 +853,7 @@ export function ChatPage() {
       return
     }
 
-    const clampedRightSidebarSize = clampRightSidebarSize(globalRightSidebarSize, layoutWidth)
+    const clampedRightSidebarSize = getRightSidebarSizePercent(globalRightSidebarSize, layoutWidth)
     const currentLayout = rightSidebarPanelGroupRef.current?.getLayout()
     if (!currentLayout) return
     if (Math.abs((currentLayout.rightSidebar ?? 0) - clampedRightSidebarSize) < 0.1) {
@@ -852,7 +865,6 @@ export function ChatPage() {
       rightSidebar: clampedRightSidebarSize,
     })
   }, [
-    clampRightSidebarSize,
     globalRightSidebarSize,
     isRightSidebarAnimating,
     layoutWidth,
@@ -1057,7 +1069,10 @@ export function ChatPage() {
               return
             }
 
-            const clampedRightSidebarSize = clampRightSidebarSize(layout.rightSidebar)
+            const clampedRightSidebarSize = getRightSidebarSizePercent(
+              getRightSidebarSizePx(layout.rightSidebar, layoutWidth),
+              layoutWidth,
+            )
             if (Math.abs(clampedRightSidebarSize - layout.rightSidebar) < 0.1) {
               return
             }
@@ -1072,7 +1087,7 @@ export function ChatPage() {
               return
             }
 
-            setRightSidebarSize(clampRightSidebarSize(layout.rightSidebar))
+            setRightSidebarSize(getRightSidebarSizePx(layout.rightSidebar, layoutWidth))
           }}
         >
           <ResizablePanel
@@ -1080,6 +1095,7 @@ export function ChatPage() {
             defaultSize={`${100 - effectiveRightSidebarSize}%`}
             minSize="20%"
             className="min-h-0 min-w-0"
+            groupResizeBehavior="preserve-relative-size"
           >
             {workspace}
           </ResizablePanel>

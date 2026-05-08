@@ -26,7 +26,7 @@ describe("rightSidebarStore", () => {
 
   test("keeps visibility isolated per project while sharing width", () => {
     useRightSidebarStore.getState().toggleVisibility(PROJECT_ID)
-    useRightSidebarStore.getState().setSize(34)
+    useRightSidebarStore.getState().setSize(430)
     useRightSidebarStore.getState().toggleVisibility("project-2")
 
     expect(useRightSidebarStore.getState().projects[PROJECT_ID]).toEqual({
@@ -35,30 +35,30 @@ describe("rightSidebarStore", () => {
     expect(useRightSidebarStore.getState().projects["project-2"]).toEqual({
       isVisible: true,
     })
-    expect(useRightSidebarStore.getState().size).toBe(34)
+    expect(useRightSidebarStore.getState().size).toBe(430)
   })
 
   test("clamps resized widths", () => {
-    useRightSidebarStore.getState().setSize(4)
-    expect(useRightSidebarStore.getState().size).toBe(20)
+    useRightSidebarStore.getState().setSize(100)
+    expect(useRightSidebarStore.getState().size).toBe(RIGHT_SIDEBAR_MIN_WIDTH_PX)
 
-    useRightSidebarStore.getState().setSize(80)
-    expect(useRightSidebarStore.getState().size).toBe(80)
+    useRightSidebarStore.getState().setSize(560)
+    expect(useRightSidebarStore.getState().size).toBe(560)
   })
 
   test("clearing a project removes its saved drawer state without resetting global width", () => {
     useRightSidebarStore.getState().toggleVisibility(PROJECT_ID)
-    useRightSidebarStore.getState().setSize(42)
+    useRightSidebarStore.getState().setSize(440)
     useRightSidebarStore.getState().setViewMode(PROJECT_ID, "changes")
     useRightSidebarStore.getState().clearProject(PROJECT_ID)
 
     const visibility = useRightSidebarStore.getState().projects[PROJECT_ID] ?? getDefaultRightSidebarVisibilityState()
     expect(visibility.isVisible).toBe(false)
-    expect(useRightSidebarStore.getState().size).toBe(42)
+    expect(useRightSidebarStore.getState().size).toBe(440)
     expect(useRightSidebarStore.getState().projectUi[PROJECT_ID]).toBeUndefined()
   })
 
-  test("migration preserves per-project visibility and promotes the first valid project size to global width", async () => {
+  test("migration preserves per-project visibility and resets width to the pixel default", async () => {
     const migrated = await migrateRightSidebarStore({
         projects: {
           [PROJECT_ID]: {
@@ -73,7 +73,7 @@ describe("rightSidebarStore", () => {
       })
 
     expect(migrated).toEqual({
-      size: 34,
+      size: DEFAULT_RIGHT_SIDEBAR_SIZE,
       projects: {
         [PROJECT_ID]: {
           isVisible: true,
@@ -109,7 +109,7 @@ describe("rightSidebarStore", () => {
     })
   })
 
-  test("migration preserves persisted global size and project ui when already present", async () => {
+  test("migration resets persisted global size and preserves project ui", async () => {
     const migrated = await migrateRightSidebarStore({
       size: 44,
       projects: {
@@ -129,7 +129,7 @@ describe("rightSidebarStore", () => {
     })
 
     expect(migrated).toEqual({
-      size: 44,
+      size: DEFAULT_RIGHT_SIDEBAR_SIZE,
       projects: {
         [PROJECT_ID]: {
           isVisible: true,

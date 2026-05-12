@@ -27,6 +27,7 @@ import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
+import { TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
 import { ChatInputDock } from "./ChatInputDock"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -943,6 +944,7 @@ export function ChatPage() {
           hasGitRepo={state.chatDiffSnapshot?.status !== "no_repo"}
           gitStatus={state.chatDiffSnapshot?.status}
         />
+        <TranscriptRenderOptionsProvider value={{ projectId }}>
         <ChatTranscriptViewport
           activeChatId={state.activeChatId}
           listRef={transcriptListRef}
@@ -975,6 +977,7 @@ export function ChatPage() {
           isPageFileDragActive={isPageFileDragActive}
           showEmptyState={showEmptyState}
         />
+        </TranscriptRenderOptionsProvider>
       </CardContent>
 
       <ChatInputDock

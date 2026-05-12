@@ -59,7 +59,12 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
       return
     }
 
-    if (previewTarget.kind === "image" || previewTarget.kind === "pdf" || previewTarget.kind === "external") {
+    if (
+      previewTarget.kind === "image"
+      || previewTarget.kind === "pdf"
+      || previewTarget.kind === "html"
+      || previewTarget.kind === "external"
+    ) {
       return
     }
 
@@ -140,7 +145,7 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
 
   return (
     <Dialog open={attachment !== null && !previewTarget?.openInNewTab} onOpenChange={onOpenChange}>
-      <DialogContent size="lg" className="max-w-[min(92vw,960px)] overflow-hidden p-0">
+      <DialogContent size="lg" className="max-w-[min(96vw,960px)] overflow-hidden p-0">
         {attachment && previewTarget && !previewTarget.openInNewTab ? (
           <>
             <DialogHeader className="pr-12">
@@ -149,11 +154,11 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
             <DialogBody className="bg-muted/20 p-4">
               {renderAttachmentPreviewBody(attachment, previewTarget.kind, previewState)}
             </DialogBody>
-            <DialogFooter className="items-center justify-between gap-3 px-4 py-3">
-              <DialogDescription className="truncate">
+            <DialogFooter className="flex-col items-stretch gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <DialogDescription className="truncate text-center sm:text-left">
                 {attachment.mimeType} · {formatAttachmentSize(attachment.size)}
               </DialogDescription>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-center gap-2 sm:flex-nowrap sm:justify-end">
                 <DialogGhostButton type="button" onClick={handleCopyLink}>
                   <Link2 className="mr-2 h-4 w-4" />
                   Copy Link
@@ -194,6 +199,20 @@ function renderAttachmentPreviewBody(
         src={attachment.contentUrl}
         title={attachment.displayName}
         className="h-[70vh] w-full rounded-xl border border-border bg-background"
+      />
+    )
+  }
+
+  if (kind === "html") {
+    // Sandbox intentionally omits allow-same-origin so the embedded HTML runs in
+    // a null origin: scripts cannot read parent cookies, DOM, or fetch same-origin.
+    return (
+      <iframe
+        src={attachment.contentUrl}
+        title={attachment.displayName}
+        sandbox="allow-scripts allow-popups allow-forms allow-modals"
+        referrerPolicy="no-referrer"
+        className="h-[70vh] min-h-[320px] w-full rounded-xl border border-border bg-background"
       />
     )
   }

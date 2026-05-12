@@ -133,25 +133,36 @@ interface ExpandableRowProps {
   children: ReactNode
   expandedContent: ReactNode
   defaultExpanded?: boolean
+  trailingAction?: ReactNode
 }
 
-export function ExpandableRow({ children, expandedContent, defaultExpanded = false }: ExpandableRowProps) {
+export function ExpandableRow({ children, expandedContent, defaultExpanded = false, trailingAction }: ExpandableRowProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
 
-  return (
-    <div className="flex flex-col w-full">
+  const toggleButton = (
+    <button
+      onClick={() => setExpanded(!expanded)}
+      className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm min-w-0 ${!expanded ? "hover:opacity-60 transition-opacity" : ""} ${trailingAction ? "flex-1" : "w-full"}`}
+    >
+      <div className="grid grid-cols-[auto_1fr] items-center gap-1.5 min-w-0">
+        {children}
+      </div>
+      <ChevronRight
+        className={`h-4.5 w-4.5 text-muted-icon translate-y-[0.5px] transition-all duration-200 opacity-0 group-hover/expandable-row:opacity-100 ${expanded ? "rotate-90 opacity-100" : ""}`}
+      />
+    </button>
+  )
 
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
-      >
-        <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
-          {children}
+  return (
+    <div className="flex flex-col w-full min-w-0">
+      {trailingAction ? (
+        <div className="flex items-center gap-2 min-w-0">
+          {toggleButton}
+          <div className="shrink-0">{trailingAction}</div>
         </div>
-        <ChevronRight
-          className={`h-4.5 w-4.5 text-muted-icon translate-y-[0.5px] transition-all duration-200 opacity-0 group-hover/expandable-row:opacity-100 ${expanded ? "rotate-90 opacity-100" : ""}`}
-        />
-      </button>
+      ) : (
+        toggleButton
+      )}
       {expanded && expandedContent}
     </div>
   )

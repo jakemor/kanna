@@ -289,4 +289,9 @@ describe("uploads", () => {
     expect(inferAttachmentContentType("main.ts", "video/mp2t")).toBe("text/plain; charset=utf-8")
     expect(inferAttachmentContentType("archive.zip", "application/zip")).toBe("application/zip")
   })
+
+  test("serves html files with text/html so iframes render them as documents", () => {
+    expect(inferAttachmentContentType("page.html")).toBe("text/html; charset=utf-8")
+    expect(inferAttachmentContentType("legacy.htm")).toBe("text/html; charset=utf-8")
+  })
 })

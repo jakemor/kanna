@@ -1,11 +1,14 @@
-import { UserRound, X } from "lucide-react"
+import { Eye, UserRound, X } from "lucide-react"
 import type { ProcessedToolCall } from "./types"
 import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon } from "./shared"
-import { useMemo } from "react"
+import { useMemo, useState, type MouseEvent } from "react"
 import { stripWorkspacePath } from "../../lib/pathUtils"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { formatBashCommandTitle, toTitleCase } from "../../lib/formatters"
 import { FileContentView } from "./FileContentView"
+import { AttachmentPreviewModal } from "./AttachmentPreviewModal"
+import { useTranscriptRenderOptions } from "./render-context"
+import type { ChatAttachment } from "../../../shared/types"
 
 interface Props {
   message: ProcessedToolCall
@@ -83,9 +86,42 @@ export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBl
   )
 }
 
+function isHtmlFilePath(filePath: string | undefined): filePath is string {
+  if (!filePath) return false
+  const lower = filePath.toLowerCase()
+  return lower.endsWith(".html") || lower.endsWith(".htm")
+}
+
+function buildHtmlPreviewAttachment(args: {
+  toolCallId: string
+  projectId: string
+  absolutePath: string
+  workspacePath: string | null | undefined
+}): ChatAttachment | null {
+  if (!args.projectId) return null
+  const relativePath = stripWorkspacePath(args.absolutePath, args.workspacePath ?? null)
+  if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith("/")) {
+    return null
+  }
+  const displayName = args.absolutePath.split(/[\\/]/).pop() || relativePath
+  const encodedRelative = encodeURIComponent(relativePath)
+  return {
+    id: `html-preview:${args.toolCallId}`,
+    kind: "file",
+    displayName,
+    absolutePath: args.absolutePath,
+    relativePath: `./${relativePath}`,
+    contentUrl: `/api/projects/${args.projectId}/files/${encodedRelative}/content`,
+    mimeType: "text/html",
+    size: 0,
+  }
+}
+
 export function ToolCallMessage({ message, isLoading = false, localPath }: Props) {
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
+  const { projectId } = useTranscriptRenderOptions()
+  const [htmlPreview, setHtmlPreview] = useState<ChatAttachment | null>(null)
 
   const name = useMemo(() => {
     if (message.toolKind === "skill") {
@@ -145,6 +181,31 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   const isDeleteTool = message.toolKind === "delete_file"
   const isReadTool = message.toolKind === "read_file"
 
+  const htmlPreviewAttachment = useMemo<ChatAttachment | null>(() => {
+    if (!projectId) return null
+    let filePath: string | undefined
+    if (message.toolKind === "write_file" || message.toolKind === "edit_file" || message.toolKind === "read_file") {
+      filePath = message.input.filePath
+    } else {
+      return null
+    }
+    if (!isHtmlFilePath(filePath)) return null
+    return buildHtmlPreviewAttachment({
+      toolCallId: message.id,
+      projectId,
+      absolutePath: filePath,
+      workspacePath: localPath,
+    })
+  }, [projectId, message.toolKind, message.input, message.id, localPath])
+
+  const handleOpenHtmlPreview = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (htmlPreviewAttachment) {
+      setHtmlPreview(htmlPreviewAttachment)
+    }
+  }
+
   const resultText = useMemo(() => {
     if (typeof message.result === "string") return message.result
     if (!message.result) return ""
@@ -185,9 +246,22 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
     }
   }, [message])
 
+  const previewTrailingAction = htmlPreviewAttachment ? (
+    <button
+      type="button"
+      onClick={handleOpenHtmlPreview}
+      aria-label={`Preview rendered HTML for ${htmlPreviewAttachment.displayName}`}
+      className="touch-manipulation inline-flex min-h-[28px] items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-normal text-muted-foreground hover:bg-accent/50 hover:text-foreground active:scale-95 transition-transform"
+    >
+      <Eye className="h-3.5 w-3.5" />
+      <span className="hidden sm:inline">Preview</span>
+    </button>
+  ) : null
+
   return (
     <MetaRow className="w-full">
       <ExpandableRow
+        trailingAction={previewTrailingAction}
         expandedContent={
           <VerticalLineContainer className="my-4 text-sm">
             <div className="flex flex-col gap-2">
@@ -273,6 +347,12 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
 
 
       </ExpandableRow>
+      <AttachmentPreviewModal
+        attachment={htmlPreview}
+        onOpenChange={(open) => {
+          if (!open) setHtmlPreview(null)
+        }}
+      />
     </MetaRow>
   )
 }

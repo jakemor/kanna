@@ -5,12 +5,14 @@ export interface TranscriptRenderOptions {
   readonly: boolean
   localLinkMode: "open" | "text"
   attachmentMode: "live" | StandaloneTranscriptAttachmentMode
+  projectId: string | null
 }
 
 const DEFAULT_RENDER_OPTIONS: TranscriptRenderOptions = {
   readonly: false,
   localLinkMode: "open",
   attachmentMode: "live",
+  projectId: null,
 }
 
 const TranscriptRenderOptionsContext = createContext<TranscriptRenderOptions>(DEFAULT_RENDER_OPTIONS)

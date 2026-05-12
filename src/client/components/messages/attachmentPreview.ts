@@ -6,11 +6,13 @@ export const TABLE_PREVIEW_ROW_LIMIT = 200
 export const TABLE_PREVIEW_COLUMN_LIMIT = 20
 
 const CODE_OR_CONFIG_EXTENSIONS = new Set([
-  ".c", ".cc", ".cfg", ".conf", ".cpp", ".cs", ".css", ".env", ".go", ".graphql", ".h", ".hpp", ".html",
+  ".c", ".cc", ".cfg", ".conf", ".cpp", ".cs", ".css", ".env", ".go", ".graphql", ".h", ".hpp",
   ".ini", ".java", ".js", ".jsonc", ".jsx", ".kt", ".lua", ".mjs", ".php", ".pl", ".properties", ".py",
   ".rb", ".rs", ".scss", ".sh", ".sql", ".swift", ".toml", ".ts", ".tsx", ".txt", ".vue", ".xml", ".yaml",
   ".yml", ".zsh",
 ])
+
+const HTML_EXTENSIONS = new Set([".html", ".htm"])
 
 const ARCHIVE_EXTENSIONS = new Set([".7z", ".bz2", ".gz", ".rar", ".tar", ".tgz", ".xz", ".zip"])
 const AUDIO_EXTENSIONS = new Set([".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"])
@@ -36,6 +38,7 @@ export type AttachmentPreviewKind =
   | "text"
   | "json"
   | "table"
+  | "html"
   | "external"
 
 export interface AttachmentPreviewTarget {
@@ -77,6 +80,9 @@ export function classifyAttachmentPreview(attachment: ChatAttachment): Attachmen
   if (mimeType === "text/csv" || mimeType === "text/tab-separated-values") {
     return { kind: "table", openInNewTab: false }
   }
+  if (mimeType === "text/html" || HTML_EXTENSIONS.has(extension)) {
+    return { kind: "html", openInNewTab: false }
+  }
   if (mimeType.startsWith("text/")) {
     return { kind: "text", openInNewTab: false }
   }
@@ -98,6 +104,7 @@ export function classifyAttachmentIcon(attachment: ChatAttachment): AttachmentIc
   if (mimeType.startsWith("audio/") || AUDIO_EXTENSIONS.has(extension)) return "audio"
   if (mimeType.startsWith("video/") || VIDEO_EXTENSIONS.has(extension)) return "video"
   if (mimeType.includes("zip") || mimeType.includes("archive") || ARCHIVE_EXTENSIONS.has(extension)) return "archive"
+  if (mimeType === "text/html" || HTML_EXTENSIONS.has(extension)) return "code"
   if (CODE_OR_CONFIG_EXTENSIONS.has(extension)) {
     if (extension === ".txt") return "text"
     return "code"

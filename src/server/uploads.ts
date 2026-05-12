@@ -11,6 +11,8 @@ const TEXT_PLAIN_CONTENT_TYPE = "text/plain; charset=utf-8"
 
 const TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, string>([
   [".csv", "text/csv; charset=utf-8"],
+  [".htm", "text/html; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
   [".jsonc", TEXT_PLAIN_CONTENT_TYPE],
   [".md", "text/markdown; charset=utf-8"],
@@ -18,7 +20,7 @@ const TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, string>([
 ])
 
 const TEXT_LIKE_EXTENSIONS = new Set([
-  ".c", ".cc", ".cfg", ".conf", ".cpp", ".cs", ".css", ".env", ".go", ".graphql", ".h", ".hpp", ".html",
+  ".c", ".cc", ".cfg", ".conf", ".cpp", ".cs", ".css", ".env", ".go", ".graphql", ".h", ".hpp",
   ".ini", ".java", ".js", ".jsx", ".kt", ".lua", ".mjs", ".php", ".pl", ".properties", ".py", ".rb", ".rs",
   ".scss", ".sh", ".sql", ".swift", ".toml", ".ts", ".tsx", ".txt", ".vue", ".xml", ".yaml", ".yml", ".zsh",
 ])

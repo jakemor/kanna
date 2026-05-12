@@ -183,6 +183,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
 
   const htmlPreviewAttachment = useMemo<ChatAttachment | null>(() => {
     if (!projectId) return null
+    if (showLoadingState || message.isError) return null
     let filePath: string | undefined
     if (message.toolKind === "write_file" || message.toolKind === "edit_file" || message.toolKind === "read_file") {
       filePath = message.input.filePath
@@ -196,7 +197,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
       absolutePath: filePath,
       workspacePath: localPath,
     })
-  }, [projectId, message.toolKind, message.input, message.id, localPath])
+  }, [projectId, showLoadingState, message.isError, message.toolKind, message.input, message.id, localPath])
 
   const handleOpenHtmlPreview = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()

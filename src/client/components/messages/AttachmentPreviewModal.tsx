@@ -156,7 +156,9 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
             </DialogBody>
             <DialogFooter className="flex-col items-stretch gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <DialogDescription className="truncate text-center sm:text-left">
-                {attachment.mimeType} · {formatAttachmentSize(attachment.size)}
+                {attachment.size > 0
+                  ? `${attachment.mimeType} · ${formatAttachmentSize(attachment.size)}`
+                  : attachment.mimeType}
               </DialogDescription>
               <div className="flex flex-wrap items-center justify-center gap-2 sm:flex-nowrap sm:justify-end">
                 <DialogGhostButton type="button" onClick={handleCopyLink}>
@@ -206,11 +208,13 @@ function renderAttachmentPreviewBody(
   if (kind === "html") {
     // Sandbox intentionally omits allow-same-origin so the embedded HTML runs in
     // a null origin: scripts cannot read parent cookies, DOM, or fetch same-origin.
+    // allow-modals is omitted so a misbehaving script cannot hang the tab with
+    // alert/confirm/prompt loops.
     return (
       <iframe
         src={attachment.contentUrl}
         title={attachment.displayName}
-        sandbox="allow-scripts allow-popups allow-forms allow-modals"
+        sandbox="allow-scripts allow-popups allow-forms"
         referrerPolicy="no-referrer"
         className="h-[70vh] min-h-[320px] w-full rounded-xl border border-border bg-background"
       />

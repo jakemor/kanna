@@ -1,4 +1,10 @@
-import type { SidebarData } from "../../shared/types"
+import type { SidebarChatRow, SidebarData, SidebarProjectGroup } from "../../shared/types"
+
+const BROWSER_CHAT_TITLE_MAX_LENGTH = 80
+
+function getSidebarGroupChats(group: SidebarProjectGroup): SidebarChatRow[] {
+  return [...group.chats, ...(group.archivedChats ?? [])]
+}
 
 export function getNotificationTitleCount(sidebarData: SidebarData) {
   return sidebarData.projectGroups.reduce((count, group) => (
@@ -8,9 +14,45 @@ export function getNotificationTitleCount(sidebarData: SidebarData) {
   ), 0)
 }
 
+export function getBrowserWindowTitle(args: {
+  appName: string
+  sidebarData: SidebarData
+  activeProjectId: string | null
+  activeChatId: string | null
+}) {
+  const notificationCount = getNotificationTitleCount(args.sidebarData)
+  const baseTitle = notificationCount > 0 ? `[${notificationCount}] ${args.appName}` : args.appName
+  const projectGroup = args.activeProjectId
+    ? args.sidebarData.projectGroups.find((group) => group.groupKey === args.activeProjectId)
+    : args.activeChatId
+      ? args.sidebarData.projectGroups.find((group) => (
+          getSidebarGroupChats(group).some((chat) => chat.chatId === args.activeChatId)
+        ))
+      : null
+  const projectTitle = projectGroup?.title?.trim()
+  if (!projectGroup || !projectTitle) return baseTitle
+
+  const chatTitle = args.activeChatId
+    ? getSidebarGroupChats(projectGroup).find((chat) => chat.chatId === args.activeChatId)?.title.trim()
+    : null
+  if (!chatTitle) return `${baseTitle} : ${projectTitle}`
+
+  const browserChatTitle = chatTitle.length > BROWSER_CHAT_TITLE_MAX_LENGTH
+    ? `${chatTitle.slice(0, BROWSER_CHAT_TITLE_MAX_LENGTH)}...`
+    : chatTitle
+  return `${baseTitle} : ${projectTitle} : ${browserChatTitle}`
+}
+
 interface ChatNotificationSnapshot {
   unreadCount: number
   waitingChatIds: Set<string>
+}
+
+interface ChatNotificationEvent {
+  chatId: string
+  projectTitle: string
+  chatTitle: string
+  message: string
 }
 
 export function getChatNotificationSnapshot(sidebarData: SidebarData): ChatNotificationSnapshot {
@@ -44,4 +86,40 @@ export function getChatSoundBurstCount(previous: SidebarData | null, next: Sideb
   }
 
   return unreadIncrease + newWaitingChats
+}
+
+export function getChatNotificationEvents(previous: SidebarData | null, next: SidebarData): ChatNotificationEvent[] {
+  if (!previous) return []
+
+  const previousChats = new Map<string, { unread: boolean; waiting: boolean }>()
+  for (const group of previous.projectGroups) {
+    for (const chat of group.chats) {
+      previousChats.set(chat.chatId, {
+        unread: chat.unread,
+        waiting: chat.status === "waiting_for_user",
+      })
+    }
+  }
+
+  const events: ChatNotificationEvent[] = []
+  for (const group of next.projectGroups) {
+    for (const chat of group.chats) {
+      const previousChat = previousChats.get(chat.chatId) ?? { unread: false, waiting: false }
+
+      const becameUnread = chat.unread && !previousChat.unread
+      const becameWaiting = chat.status === "waiting_for_user" && !previousChat.waiting
+      if (!becameUnread && !becameWaiting) continue
+
+      events.push({
+        chatId: chat.chatId,
+        projectTitle: group.title?.trim() || group.localPath,
+        chatTitle: chat.title.trim() || "Untitled chat",
+        message: becameWaiting
+          ? chat.pendingUserInputPreview ?? chat.lastAssistantResponsePreview ?? ""
+          : chat.lastAssistantResponsePreview ?? "",
+      })
+    }
+  }
+
+  return events
 }

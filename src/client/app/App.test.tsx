@@ -1,19 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import { getAppAuthStateFromStatus, shouldPlayChatNotificationSound, shouldRedirectToChangelog, shouldRetryAuthStatusRequest } from "./App"
-import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getBrowserWindowTitle, getChatNotificationEvents, getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clampSidebarWidth } from "./KannaSidebar"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
 import type { AppSettingsSnapshot, SidebarChatRow } from "../../shared/types"
 
-function createProjectGroup(chats: SidebarChatRow[]) {
+function createProjectGroup(chats: SidebarChatRow[], title = "Project", archivedChats: SidebarChatRow[] = []) {
   return {
     groupKey: "project-1",
-    title: "Project",
     realTitle: "Project",
     localPath: "/tmp/project",
+    title,
     chats,
     previewChats: chats,
     olderChats: [],
+    archivedChats,
     defaultCollapsed: false,
   }
 }
@@ -96,6 +97,108 @@ describe("getNotificationTitleCount", () => {
   })
 })
 
+describe("getBrowserWindowTitle", () => {
+  test("adds the active project and chat title to the app title", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "project-1",
+      activeChatId: "chat-1",
+      sidebarData: {
+        projectGroups: [createProjectGroup([{
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: "Chat title",
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }], "Project title")],
+      },
+    })).toBe("Kanna : Project title : Chat title")
+  })
+
+  test("keeps the full project title and truncates chat titles after 80 characters", () => {
+    const longProjectTitle = "Project ".repeat(20).trim()
+    const longChatTitle = "A".repeat(81)
+
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "project-1",
+      activeChatId: "chat-1",
+      sidebarData: {
+        projectGroups: [createProjectGroup([{
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: longChatTitle,
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }], longProjectTitle)],
+      },
+    })).toBe(`Kanna : ${longProjectTitle} : ${"A".repeat(80)}...`)
+  })
+
+  test("finds archived active chats by title", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: null,
+      activeChatId: "chat-archived",
+      sidebarData: {
+        projectGroups: [createProjectGroup([], "Project title", [{
+          _id: "chat-archived",
+          _creationTime: 1,
+          chatId: "chat-archived",
+          title: "Archived chat",
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }])],
+      },
+    })).toBe("Kanna : Project title : Archived chat")
+  })
+
+  test("keeps notification counts and omits the chat segment when no chat is active", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "project-1",
+      activeChatId: null,
+      sidebarData: {
+        projectGroups: [createProjectGroup([
+          {
+            _id: "chat-1",
+            _creationTime: 1,
+            chatId: "chat-1",
+            title: "Unread",
+            status: "idle",
+            unread: true,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+          },
+          {
+            _id: "chat-2",
+            _creationTime: 2,
+            chatId: "chat-2",
+            title: "Waiting",
+            status: "waiting_for_user",
+            unread: false,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+          },
+        ], "Project title")],
+      },
+    })).toBe("[2] Kanna : Project title")
+  })
+})
+
 describe("chat sound helpers", () => {
   const previous = {
     projectGroups: [createProjectGroup([{
@@ -174,6 +277,145 @@ describe("chat sound helpers", () => {
           },
         ])],
     })).toBe(3)
+  })
+
+  test("extracts notification events with project, chat, and response text", () => {
+    const events = getChatNotificationEvents(previous, {
+      projectGroups: [createProjectGroup([
+          {
+            _id: "chat-1",
+            _creationTime: 1,
+            chatId: "chat-1",
+            title: "Unread",
+            status: "idle",
+            unread: true,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+            lastAssistantResponsePreview: "Done with the change.",
+          },
+          {
+            _id: "chat-2",
+            _creationTime: 2,
+            chatId: "chat-2",
+            title: "Waiting",
+            status: "waiting_for_user",
+            unread: false,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+            lastAssistantResponsePreview: "Which option should I use?",
+          },
+        ], "Project title")],
+    })
+
+    expect(events).toEqual([
+      {
+        chatId: "chat-1",
+        projectTitle: "Project title",
+        chatTitle: "Unread",
+        message: "Done with the change.",
+      },
+      {
+        chatId: "chat-2",
+        projectTitle: "Project title",
+        chatTitle: "Waiting",
+        message: "Which option should I use?",
+      },
+    ])
+  })
+
+  test("uses pending user input text for new waiting notifications", () => {
+    const events = getChatNotificationEvents(previous, {
+      projectGroups: [createProjectGroup([
+          {
+            _id: "chat-2",
+            _creationTime: 2,
+            chatId: "chat-2",
+            title: "Waiting",
+            status: "waiting_for_user",
+            unread: false,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+            lastAssistantResponsePreview: "Old assistant preview.",
+            pendingUserInputPreview: "Which runtime should I use?",
+          },
+        ], "Project title")],
+    })
+
+    expect(events).toEqual([
+      {
+        chatId: "chat-2",
+        projectTitle: "Project title",
+        chatTitle: "Waiting",
+        message: "Which runtime should I use?",
+      },
+    ])
+  })
+
+  test("extracts notification events when net unread count is unchanged", () => {
+    const previous = {
+      projectGroups: [createProjectGroup([
+        {
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: "Already unread",
+          status: "idle" as const,
+          unread: true,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        },
+        {
+          _id: "chat-2",
+          _creationTime: 2,
+          chatId: "chat-2",
+          title: "Newly unread",
+          status: "idle" as const,
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        },
+      ], "Project title")],
+    }
+    const next = {
+      projectGroups: [createProjectGroup([
+        {
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: "Already unread",
+          status: "idle" as const,
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        },
+        {
+          _id: "chat-2",
+          _creationTime: 2,
+          chatId: "chat-2",
+          title: "Newly unread",
+          status: "idle" as const,
+          unread: true,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+          lastAssistantResponsePreview: "Fresh update.",
+        },
+      ], "Project title")],
+    }
+
+    expect(getChatSoundBurstCount(previous, next)).toBe(0)
+    expect(getChatNotificationEvents(previous, next)).toEqual([{
+      chatId: "chat-2",
+      projectTitle: "Project title",
+      chatTitle: "Newly unread",
+      message: "Fresh update.",
+    }])
   })
 
   test("does not replay for an already-waiting chat", () => {

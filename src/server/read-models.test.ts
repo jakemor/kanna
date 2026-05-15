@@ -23,6 +23,7 @@ describe("read models", () => {
       provider: "codex",
       planMode: false,
       sessionToken: "thread-1",
+      lastAssistantResponsePreview: "Done with the change.",
       lastTurnOutcome: null,
     })
 
@@ -31,10 +32,55 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.localPath).toBe("/tmp/project")
     expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("codex")
     expect(sidebar.projectGroups[0]?.chats[0]?.unread).toBe(true)
+    expect(sidebar.projectGroups[0]?.chats[0]?.lastAssistantResponsePreview).toBe("Done with the change.")
     expect(sidebar.projectGroups[0]?.chats[0]?.canFork).toBe(true)
     expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual(["chat-1"])
     expect(sidebar.projectGroups[0]?.olderChats).toEqual([])
     expect(sidebar.projectGroups[0]?.defaultCollapsed).toBe(false)
+  })
+
+  test("includes pending user input previews only while chats are waiting", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: "codex",
+      planMode: false,
+      sessionToken: "thread-1",
+      lastTurnOutcome: null,
+    })
+
+    const sidebar = deriveSidebarData(
+      state,
+      new Map([["chat-1", "waiting_for_user"]]),
+      {
+        nowMs: 1_000_000,
+        pendingUserInputPreviews: new Map([["chat-1", "Which runtime should I use?"]]),
+      },
+    )
+    expect(sidebar.projectGroups[0]?.chats[0]?.pendingUserInputPreview).toBe("Which runtime should I use?")
+
+    const idleSidebar = deriveSidebarData(
+      state,
+      new Map([["chat-1", "idle"]]),
+      {
+        nowMs: 1_000_000,
+        pendingUserInputPreviews: new Map([["chat-1", "Which runtime should I use?"]]),
+      },
+    )
+    expect(idleSidebar.projectGroups[0]?.chats[0]?.pendingUserInputPreview).toBeUndefined()
   })
 
   test("uses sidebar-only project titles without changing local project metadata", () => {

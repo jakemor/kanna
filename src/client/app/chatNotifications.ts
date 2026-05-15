@@ -1,4 +1,10 @@
-import type { SidebarData } from "../../shared/types"
+import type { SidebarChatRow, SidebarData, SidebarProjectGroup } from "../../shared/types"
+
+const BROWSER_CHAT_TITLE_MAX_LENGTH = 80
+
+function getSidebarGroupChats(group: SidebarProjectGroup): SidebarChatRow[] {
+  return [...group.chats, ...(group.archivedChats ?? [])]
+}
 
 export function getNotificationTitleCount(sidebarData: SidebarData) {
   return sidebarData.projectGroups.reduce((count, group) => (
@@ -6,6 +12,35 @@ export function getNotificationTitleCount(sidebarData: SidebarData) {
       chatCount + (chat.unread ? 1 : 0) + (chat.status === "waiting_for_user" ? 1 : 0)
     ), 0)
   ), 0)
+}
+
+export function getBrowserWindowTitle(args: {
+  appName: string
+  sidebarData: SidebarData
+  activeProjectId: string | null
+  activeChatId: string | null
+}) {
+  const notificationCount = getNotificationTitleCount(args.sidebarData)
+  const baseTitle = notificationCount > 0 ? `[${notificationCount}] ${args.appName}` : args.appName
+  const projectGroup = args.activeProjectId
+    ? args.sidebarData.projectGroups.find((group) => group.groupKey === args.activeProjectId)
+    : args.activeChatId
+      ? args.sidebarData.projectGroups.find((group) => (
+          getSidebarGroupChats(group).some((chat) => chat.chatId === args.activeChatId)
+        ))
+      : null
+  const projectTitle = projectGroup?.title?.trim()
+  if (!projectGroup || !projectTitle) return baseTitle
+
+  const chatTitle = args.activeChatId
+    ? getSidebarGroupChats(projectGroup).find((chat) => chat.chatId === args.activeChatId)?.title.trim()
+    : null
+  if (!chatTitle) return `${baseTitle} : ${projectTitle}`
+
+  const browserChatTitle = chatTitle.length > BROWSER_CHAT_TITLE_MAX_LENGTH
+    ? `${chatTitle.slice(0, BROWSER_CHAT_TITLE_MAX_LENGTH)}...`
+    : chatTitle
+  return `${baseTitle} : ${projectTitle} : ${browserChatTitle}`
 }
 
 interface ChatNotificationSnapshot {

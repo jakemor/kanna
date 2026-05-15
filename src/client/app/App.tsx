@@ -11,7 +11,7 @@ import { APP_NAME, SDK_CLIENT_APP } from "../../shared/branding"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getBrowserWindowTitle, getChatSoundBurstCount } from "./chatNotifications"
 import { KannaSidebar } from "./KannaSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
@@ -205,6 +205,12 @@ function KannaLayout() {
   const showMobileOpenButton = location.pathname === "/"
   const currentVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
   const previousSidebarDataRef = useRef<ReturnType<typeof useKannaState>["sidebarData"] | null>(null)
+  const browserTitle = useMemo(() => getBrowserWindowTitle({
+    appName: APP_NAME,
+    sidebarData: state.sidebarData,
+    activeProjectId: state.activeProjectId,
+    activeChatId: state.activeChatId,
+  }), [state.activeChatId, state.activeProjectId, state.sidebarData])
   const handleSidebarCreateChat = useCallback((projectId: string) => {
     void state.handleCreateChat(projectId)
   }, [state.handleCreateChat])
@@ -320,12 +326,12 @@ function KannaLayout() {
   }, [currentVersion, location.pathname, navigate])
 
   useLayoutEffect(() => {
-    document.title = APP_NAME
-  }, [location.key])
+    document.title = browserTitle
+  }, [browserTitle, location.key])
 
   useEffect(() => {
     function handlePageShow() {
-      document.title = APP_NAME
+      document.title = browserTitle
     }
 
     function handlePageHide() {
@@ -338,12 +344,7 @@ function KannaLayout() {
       window.removeEventListener("pageshow", handlePageShow)
       window.removeEventListener("pagehide", handlePageHide)
     }
-  }, [])
-
-  useEffect(() => {
-    const notificationCount = getNotificationTitleCount(state.sidebarData)
-    document.title = notificationCount > 0 ? `[${notificationCount}] ${APP_NAME}` : APP_NAME
-  }, [state.sidebarData])
+  }, [browserTitle])
 
   useEffect(() => {
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)

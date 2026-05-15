@@ -454,6 +454,7 @@ export function createWsRouter({
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,

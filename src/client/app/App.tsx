@@ -9,9 +9,10 @@ import { Input } from "../components/ui/input"
 import { TooltipProvider } from "../components/ui/tooltip"
 import { APP_NAME, SDK_CLIENT_APP } from "../../shared/branding"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
-import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import type { ChatBrowserNotificationPreference, ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { KannaSidebar } from "./KannaSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
@@ -195,6 +196,14 @@ export function shouldPlayChatNotificationSound(
   return Boolean(appSettings) && shouldPlayChatSound(preference, doc)
 }
 
+export function shouldShowChatNotificationPopup(
+  appSettings: AppSettingsSnapshot | null,
+  preference: ChatBrowserNotificationPreference,
+  doc: Pick<Document, "visibilityState" | "hasFocus"> = document
+) {
+  return Boolean(appSettings) && shouldShowChatBrowserNotification(preference, doc)
+}
+
 function KannaLayout() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -202,6 +211,7 @@ function KannaLayout() {
   const state = useKannaState(params.chatId ?? null)
   const chatSoundPreference = useChatSoundPreferencesStore((store) => store.chatSoundPreference)
   const chatSoundId = useChatSoundPreferencesStore((store) => store.chatSoundId)
+  const chatBrowserNotificationPreference = useChatSoundPreferencesStore((store) => store.chatBrowserNotificationPreference)
   const showMobileOpenButton = location.pathname === "/"
   const currentVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
   const previousSidebarDataRef = useRef<ReturnType<typeof useKannaState>["sidebarData"] | null>(null)
@@ -346,14 +356,27 @@ function KannaLayout() {
   }, [state.sidebarData])
 
   useEffect(() => {
+    const previousSidebarData = previousSidebarDataRef.current
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
+    const browserNotificationEvents = getChatNotificationEvents(previousSidebarData, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
 
-    if (burstCount <= 0) return
-    if (!shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) return
+    if (burstCount > 0 && shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) {
+      void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
+    }
 
-    void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, state.appSettings, state.sidebarData])
+    if (browserNotificationEvents.length <= 0) return
+    if (!shouldShowChatNotificationPopup(state.appSettings, chatBrowserNotificationPreference)) return
+    for (const event of browserNotificationEvents) {
+      showChatBrowserNotification({
+        ...event,
+        onClick: () => {
+          window.focus()
+          navigate(`/chat/${event.chatId}`)
+        },
+      })
+    }
+  }, [chatBrowserNotificationPreference, chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData])
 
   return (
     <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">

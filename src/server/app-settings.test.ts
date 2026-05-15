@@ -25,6 +25,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,
@@ -129,6 +130,7 @@ describe("AppSettingsManager", () => {
     const snapshot = await manager.writePatch({
       theme: "dark",
       chatSoundId: "glass",
+      chatBrowserNotificationPreference: "unfocused",
       terminal: { scrollbackLines: 2_500 },
       editor: { preset: "vscode" },
       providerDefaults: {
@@ -141,6 +143,7 @@ describe("AppSettingsManager", () => {
       analyticsUserId: string
       theme: string
       chatSoundId: string
+      chatBrowserNotificationPreference: string
       terminal: { scrollbackLines: number; minColumnWidth: number }
       editor: { preset: string; commandTemplate: string }
       providerDefaults: { codex: { modelOptions: { fastMode: boolean } } }
@@ -148,6 +151,7 @@ describe("AppSettingsManager", () => {
 
     expect(snapshot.theme).toBe("dark")
     expect(snapshot.chatSoundId).toBe("glass")
+    expect(snapshot.chatBrowserNotificationPreference).toBe("unfocused")
     expect(snapshot.terminal.scrollbackLines).toBe(2_500)
     expect(snapshot.terminal.minColumnWidth).toBe(450)
     expect(snapshot.editor.preset).toBe("vscode")
@@ -156,6 +160,7 @@ describe("AppSettingsManager", () => {
     expect(nextPayload.analyticsUserId).toBe(initialPayload.analyticsUserId)
     expect(nextPayload.theme).toBe("dark")
     expect(nextPayload.chatSoundId).toBe("glass")
+    expect(nextPayload.chatBrowserNotificationPreference).toBe("unfocused")
 
     manager.dispose()
   })

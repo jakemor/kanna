@@ -53,6 +53,44 @@ describe("classifyAttachmentPreview", () => {
     expect(target.kind).toBe("text")
     expect(target.openInNewTab).toBe(false)
   })
+
+  test("routes text/html mime to the html preview", () => {
+    const target = classifyAttachmentPreview(makeAttachment({
+      displayName: "report",
+      mimeType: "text/html",
+    }))
+
+    expect(target.kind).toBe("html")
+    expect(target.openInNewTab).toBe(false)
+  })
+
+  test("routes .html files to the html preview even when mime is generic", () => {
+    const target = classifyAttachmentPreview(makeAttachment({
+      displayName: "page.html",
+      mimeType: "application/octet-stream",
+    }))
+
+    expect(target.kind).toBe("html")
+    expect(target.openInNewTab).toBe(false)
+  })
+
+  test("treats .htm as html", () => {
+    const target = classifyAttachmentPreview(makeAttachment({
+      displayName: "legacy.htm",
+      mimeType: "application/octet-stream",
+    }))
+
+    expect(target.kind).toBe("html")
+  })
+
+  test("does not treat files ending in .bak as html even if name contains .html", () => {
+    const target = classifyAttachmentPreview(makeAttachment({
+      displayName: "app.html.bak",
+      mimeType: "application/octet-stream",
+    }))
+
+    expect(target.kind).not.toBe("html")
+  })
 })
 
 describe("parseDelimitedPreview", () => {

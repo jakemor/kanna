@@ -20,6 +20,7 @@ export interface ChatRecord {
   pendingForkSessionToken?: string | null
   hasMessages?: boolean
   lastMessageAt?: number
+  lastAssistantResponsePreview?: string
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
 }
 

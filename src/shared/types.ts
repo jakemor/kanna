@@ -5,6 +5,7 @@ export type AgentProvider = "claude" | "codex"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
+export type ChatBrowserNotificationPreference = ChatSoundPreference
 export type ChatSoundId = "blow" | "bottle" | "frog" | "funk" | "glass" | "ping" | "pop" | "purr" | "tink"
 export type DefaultProviderPreference = "last_used" | AgentProvider
 export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
@@ -383,6 +384,7 @@ export interface SidebarChatRow {
   localPath: string
   provider: AgentProvider | null
   lastMessageAt?: number
+  lastAssistantResponsePreview?: string
   hasAutomation: boolean
   canFork?: boolean
 }
@@ -427,6 +429,7 @@ export interface AppSettingsSnapshot {
   theme: AppThemePreference
   chatSoundPreference: ChatSoundPreference
   chatSoundId: ChatSoundId
+  chatBrowserNotificationPreference: ChatBrowserNotificationPreference
   terminal: {
     scrollbackLines: number
     minColumnWidth: number
@@ -447,6 +450,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
+  chatBrowserNotificationPreference?: ChatBrowserNotificationPreference
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference

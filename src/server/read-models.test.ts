@@ -23,6 +23,7 @@ describe("read models", () => {
       provider: "codex",
       planMode: false,
       sessionToken: "thread-1",
+      lastAssistantResponsePreview: "Done with the change.",
       lastTurnOutcome: null,
     })
 
@@ -31,6 +32,7 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.localPath).toBe("/tmp/project")
     expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("codex")
     expect(sidebar.projectGroups[0]?.chats[0]?.unread).toBe(true)
+    expect(sidebar.projectGroups[0]?.chats[0]?.lastAssistantResponsePreview).toBe("Done with the change.")
     expect(sidebar.projectGroups[0]?.chats[0]?.canFork).toBe(true)
     expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual(["chat-1"])
     expect(sidebar.projectGroups[0]?.olderChats).toEqual([])

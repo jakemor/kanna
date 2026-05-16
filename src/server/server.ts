@@ -287,6 +287,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)
     }
+    await agent.closeAllSessionsGracefully()
     router.dispose()
     appSettings.dispose()
     keybindings.dispose()

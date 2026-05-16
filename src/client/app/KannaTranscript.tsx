@@ -96,7 +96,7 @@ function getTranscriptMessageRenderState(
         shouldRender = message.toolKind !== "todo_write" || isLatestTodoWrite
         break
       case "result":
-        shouldRender = !hideResult && (!message.success || message.durationMs > 60000)
+        shouldRender = !hideResult && (!message.success || message.durationMs > 60000 || (message.durationMs === 0 && !!message.result))
         break
       case "context_window_updated":
         shouldRender = false

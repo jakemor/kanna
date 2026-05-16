@@ -96,6 +96,7 @@ interface ClaudeSessionState {
   accountInfoLoaded: boolean
   nextPromptSeq: number
   pendingPromptSeqs: number[]
+  runningPromise?: Promise<void>
 }
 
 interface AgentCoordinatorArgs {
@@ -748,6 +749,39 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  async sessionEndCommand(chatId: string): Promise<void> {
+    if (this.activeTurns.has(chatId)) {
+      await this.cancel(chatId, { hideInterrupted: true })
+    }
+    await this.closeChat(chatId)
+    await this.store.appendMessage(
+      chatId,
+      timestamped({
+        kind: "result",
+        subtype: "success",
+        isError: false,
+        durationMs: 0,
+        result: "Session ended.",
+      })
+    )
+    this.emitStateChange(chatId)
+  }
+
+  // Gracefully close all Claude sessions: sends close signal (which delivers SIGTERM
+  // to Claude Code after the SDK's 5-second timer), then waits for each session's
+  // runningPromise to resolve so Claude Code has time to fire its SessionEnd hook.
+  async closeAllSessionsGracefully(timeoutMs = 25_000): Promise<void> {
+    const sessions = [...this.claudeSessions.values()]
+    if (sessions.length === 0) return
+    for (const session of sessions) {
+      session.session.close()
+    }
+    await Promise.race([
+      Promise.all(sessions.map(s => s.runningPromise ?? Promise.resolve())),
+      new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+    ])
+  }
+
   private resolveProvider(options: SendMessageOptions, currentProvider: AgentProvider | null) {
     if (currentProvider) return currentProvider
     return options.provider ?? "claude"
@@ -1093,7 +1127,7 @@ export class AgentCoordinator {
         pendingPromptSeqs: [],
       }
       this.claudeSessions.set(args.chatId, session)
-      void this.runClaudeSession(session)
+      session.runningPromise = this.runClaudeSession(session)
     } else {
       if (session.model !== args.model) {
         await session.session.setModel(args.model)

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { startClaudeSessionPTY, buildPtyEnv, buildPtyCliArgs } from "./driver"
+import { startClaudeSessionPTY, buildPtyEnv, buildPtyCliArgs, OutputRing, PTY_STDERR_RING_BYTES } from "./driver"
 import type { HarnessEvent } from "../harness-types"
 
 
@@ -285,5 +285,35 @@ describe("buildPtyCliArgs", () => {
     const args = buildPtyCliArgs(baseInput)
     expect(args).not.toContain("--mcp-config")
     expect(args).not.toContain("--strict-mcp-config")
+  })
+})
+
+describe("OutputRing (B4 stderr ring buffer)", () => {
+  test("retains short content verbatim", () => {
+    const ring = new OutputRing()
+    ring.append("hello ")
+    ring.append("world")
+    expect(ring.tail()).toBe("hello world")
+  })
+
+  test("caps at PTY_STDERR_RING_BYTES, keeping the most recent tail", () => {
+    const ring = new OutputRing()
+    const big = "A".repeat(PTY_STDERR_RING_BYTES)
+    ring.append(big)
+    ring.append("TAIL_MARKER")
+    const tail = ring.tail()
+    expect(tail.length).toBe(PTY_STDERR_RING_BYTES)
+    expect(tail.endsWith("TAIL_MARKER")).toBe(true)
+    // Oldest bytes evicted.
+    expect(tail.startsWith("A")).toBe(true)
+    expect(tail).not.toBe(big)
+  })
+
+  test("ring size constant is 256 KB", () => {
+    expect(PTY_STDERR_RING_BYTES).toBe(256 * 1024)
+  })
+
+  test("empty ring tail is empty string", () => {
+    expect(new OutputRing().tail()).toBe("")
   })
 })

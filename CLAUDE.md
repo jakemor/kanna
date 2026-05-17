@@ -86,8 +86,6 @@ Limitations of P2 (this release):
 
 **Parity gaps vs SDK driver** — tracked in #162 (umbrella #163). Until those
 land, the following diverge from the SDK path:
-- Crashes / OAuth failures complete silently (no isError result, no
-  rotation / retry).
 - `setPermissionMode(planMode)` at runtime is a warn-only no-op — blocked
   on Claude CLI exposing a runtime switch
   (anthropics/claude-code#59891). Restart the session to flip plan-mode.
@@ -95,6 +93,18 @@ land, the following diverge from the SDK path:
   `KANNA_CLAUDE_DRIVER=pty`. Subagent turns still bill at API rates.
 - `getAccountInfo()` returns `null`; `getSupportedCommands()` returns a
   static four-command list.
+
+**Failure handling (Phase 4):** Every PTY spawn captures terminal output
+into a 256 KB ring buffer. If the process exits without ever emitting a
+`result` transcript entry (silent crash, OAuth failure, preflight kill),
+the driver synthesizes a `{kind:"result", subtype:"error",
+isError:true}` entry from the output tail before draining the stream
+`done`. This feeds the same `detectFromResultText` / auth-error
+detection + rotation/retry path in `agent.ts` that the SDK driver gets
+from thrown stream errors. A clean exit that already produced a `result`
+does not synthesize. The `oneShot` arg (used by one-turn subagent
+sessions) gracefully closes the REPL after the first `result` entry,
+mirroring the SDK driver closing its prompt queue.
 
 **JSONL event parity (Phase 3):** PTY mode uses a stateful
 `createJsonlEventParser` (one per session) that mirrors the SDK driver's

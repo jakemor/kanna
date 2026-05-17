@@ -12,7 +12,7 @@ import { isSandboxEnabledAsync } from "./sandbox/platform"
 import { wrapWithSandbox } from "./sandbox/wrap"
 import { POLICY_DEFAULT } from "../../shared/permission-policy"
 import { startKannaMcpHttpServer, buildMcpConfigJson, type KannaMcpHttpHandle } from "../kanna-mcp-http"
-import { parseConfiguredContextWindowFromModelId } from "../agent"
+import { parseConfiguredContextWindowFromModelId, timestamped } from "../agent"
 import type { PreflightGate } from "./preflight/gate"
 import type { ClaudeSessionHandle } from "../agent"
 import type { HarnessEvent, HarnessToolRequest } from "../harness-types"
@@ -53,6 +53,28 @@ export interface StartClaudeSessionPtyArgs {
   chatPolicy?: ChatPermissionPolicy
   /** Optional override used by tests to inject a fake HTTP MCP starter. */
   startKannaMcpHttpServer?: typeof startKannaMcpHttpServer
+  /**
+   * One-shot semantics: after `initialPrompt` completes one turn (first
+   * `result` entry), gracefully close the REPL. Mirrors the SDK driver
+   * closing its prompt queue after a single subagent prompt. Default false.
+   */
+  oneShot?: boolean
+}
+
+/** B4 — bounded ring buffer for PTY output so a crash/OAuth-failure exit can synthesize an isError result from the tail. */
+export const PTY_STDERR_RING_BYTES = 256 * 1024
+
+export class OutputRing {
+  private buf = ""
+  append(chunk: string): void {
+    this.buf += chunk
+    if (this.buf.length > PTY_STDERR_RING_BYTES) {
+      this.buf = this.buf.slice(this.buf.length - PTY_STDERR_RING_BYTES)
+    }
+  }
+  tail(): string {
+    return this.buf
+  }
 }
 
 export interface BuildPtyCliArgsInput {
@@ -178,6 +200,12 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
   let closed = false
   let pendingModelSwitch: { model: string; resolve: () => void; timer: ReturnType<typeof setTimeout> } | null = null
   let cachedAccountInfo: AccountInfo | null = null
+  // B4 — track whether the turn produced a `result` entry. If the process
+  // exits without one (silent crash / OAuth failure / preflight kill), we
+  // synthesize an isError result so agent.ts can run auth/rate detection
+  // and rotation/retry just like the SDK driver's thrown-error path.
+  let sawResultEntry = false
+  const outputRing = new OutputRing()
   const mergedQueue: HarnessEvent[] = []
   const mergedWaiters: Array<(r: IteratorResult<HarnessEvent>) => void> = []
 
@@ -191,6 +219,9 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
       if (entry.kind === "account_info" && entry.accountInfo !== undefined) {
         cachedAccountInfo = entry.accountInfo as AccountInfo
       }
+      if (entry.kind === "result") {
+        sawResultEntry = true
+      }
       if (pendingModelSwitch && entry.kind === "system_init" && typeof entry.model === "string" && entry.model === pendingModelSwitch.model) {
         clearTimeout(pendingModelSwitch.timer)
         pendingTimers.delete(pendingModelSwitch.timer)
@@ -201,6 +232,23 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     const w = mergedWaiters.shift()
     if (w) w({ value: ev, done: false })
     else mergedQueue.push(ev)
+
+    // D7 — one-shot: terminate after the single turn's result entry so
+    // subagent sessions don't sit on an open REPL forever.
+    if (
+      args.oneShot &&
+      ev.type === "transcript" &&
+      (ev.entry as { kind?: string } | undefined)?.kind === "result"
+    ) {
+      void oneShotClose()
+    }
+  }
+
+  let oneShotClosing = false
+  async function oneShotClose() {
+    if (oneShotClosing || closed) return
+    oneShotClosing = true
+    try { await writeSlashCommand(pty, "exit") } catch { /* swallow */ }
   }
 
   let wrapped: Awaited<ReturnType<typeof wrapWithSandbox>>
@@ -222,6 +270,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
       env: spawnEnv,
       cols: 120,
       rows: 40,
+      onOutput: (chunk) => outputRing.append(chunk),
     })
   } catch (err) {
     try { await mcpHandle.close() } catch { /* swallow */ }
@@ -238,25 +287,47 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     for await (const ev of reader) pushMerged(ev)
   })()
 
-  // Fix 5: observe pty.exited so a crash terminates the stream
-  void pty.exited.then(() => {
-    if (!closed) {
+  // Fix 5 + B4: observe pty.exited so a crash terminates the stream. If the
+  // process died without ever emitting a `result` entry, synthesize an
+  // isError result from the captured output tail before draining done so
+  // agent.ts can detect auth/rate failures and trigger rotation/retry.
+  function drainTerminate(exitCode: number | null) {
+    if (closed || oneShotClosing) {
       reader.close()
       while (mergedWaiters.length > 0) {
         const w = mergedWaiters.shift()
         if (w) w({ value: undefined as unknown as HarnessEvent, done: true })
       }
+      return
     }
-  }).catch(() => {
-    // swallow — exited rejects are handled the same way
-    if (!closed) {
-      reader.close()
-      while (mergedWaiters.length > 0) {
-        const w = mergedWaiters.shift()
-        if (w) w({ value: undefined as unknown as HarnessEvent, done: true })
-      }
+    if (!sawResultEntry) {
+      const tail = outputRing.tail().trim()
+      const codeNote = exitCode === null ? "signal" : `exit code ${exitCode}`
+      const resultText = tail.length > 0
+        ? tail
+        : `claude PTY process exited (${codeNote}) before producing a result.`
+      pushMerged({
+        type: "transcript",
+        entry: timestamped({
+          kind: "result",
+          subtype: "error",
+          isError: true,
+          durationMs: 0,
+          result: resultText,
+          debugRaw: JSON.stringify({ source: "pty-exit", exitCode }),
+        }),
+      })
     }
-  })
+    reader.close()
+    while (mergedWaiters.length > 0) {
+      const w = mergedWaiters.shift()
+      if (w) w({ value: undefined as unknown as HarnessEvent, done: true })
+    }
+  }
+
+  void pty.exited
+    .then((code) => drainTerminate(typeof code === "number" ? code : null))
+    .catch(() => drainTerminate(null))
 
   if (args.initialPrompt) {
     await pty.sendInput(`${args.initialPrompt}\r`)

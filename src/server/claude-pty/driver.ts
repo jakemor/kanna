@@ -159,7 +159,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
   const home = args.homeDir ?? homedir()
   const env = args.env ?? process.env
 
-  const auth = await verifyPtyAuth({ homeDir: home, env })
+  const auth = await verifyPtyAuth({ homeDir: home, env, oauthToken: args.oauthToken })
   if (!auth.ok) {
     throw new Error(auth.error)
   }

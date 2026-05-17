@@ -22,11 +22,44 @@ describe("verifyPtyAuth", () => {
     expect(result.ok).toBe(true)
   })
 
-  test("error when credentials.json missing", async () => {
+  test("error when credentials.json missing AND no oauthToken supplied", async () => {
     const result = await verifyPtyAuth({ homeDir, env: {} })
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.error).toContain("claude /login")
+    }
+  })
+
+  test("ok when oauthToken supplied even if credentials.json missing", async () => {
+    // OAuth-pool-only deployments (CI runners, ephemeral VMs) never have
+    // credentials.json on disk. CLAUDE_CODE_OAUTH_TOKEN overrides the
+    // file/keychain lookup at CLI startup, so the file is not required.
+    const result = await verifyPtyAuth({
+      homeDir,
+      env: {},
+      oauthToken: "sk-ant-oat-abc",
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  test("empty oauthToken does not satisfy auth — credentials.json still required", async () => {
+    const result = await verifyPtyAuth({
+      homeDir,
+      env: {},
+      oauthToken: "",
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  test("oauthToken does NOT bypass the ANTHROPIC_API_KEY rejection", async () => {
+    const result = await verifyPtyAuth({
+      homeDir,
+      env: { ANTHROPIC_API_KEY: "sk-x" },
+      oauthToken: "sk-ant-oat-abc",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toContain("ANTHROPIC_API_KEY")
     }
   })
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.57.4](https://github.com/cuongtranba/kanna/compare/v0.57.3...v0.57.4) (2026-05-17)
+
+
+### Bug Fixes
+
+* **chat-input:** prevent iOS Safari page-jump when tapping file picker ([#192](https://github.com/cuongtranba/kanna/issues/192)) ([e139eb8](https://github.com/cuongtranba/kanna/commit/e139eb83f5044fdc15fa711fd8afa4c4b46f61e4))
+
 ## [0.57.3](https://github.com/cuongtranba/kanna/compare/v0.57.2...v0.57.3) (2026-05-17)
 
 

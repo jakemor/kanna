@@ -84,9 +84,15 @@ Platform support: macOS / Linux only.
 
 **Remaining parity gaps vs SDK driver** (closed phases tracked in #162;
 umbrella #163):
-- `setPermissionMode(planMode)` at runtime is a warn-only no-op — blocked
-  on Claude CLI exposing a runtime switch
-  (anthropics/claude-code#59891). Restart the session to flip plan-mode.
+- `setPermissionMode(planMode)` is now asymmetric, not a full no-op:
+  ENTER plan (`planMode === true`) sends the `/plan` slash command — a
+  real, deterministic runtime mode change (`/plan` "enters plan mode
+  directly from the prompt", code.claude.com/docs/en/commands). EXIT
+  plan (`planMode === false`) is still warn-only: no slash command
+  leaves plan mode, and the only exit is the relative Shift+Tab TUI
+  cycle whose keypress count depends on unobservable TUI state (PTY
+  drains output unparsed). Restart the session to return to acceptEdits.
+  Tracked: anthropics/claude-code#59891.
 - `getSupportedCommands()` returns a static four-command list. Phase 6
   spike confirmed `claude --help` has no slash-command listing flag and
   the CLI exposes no `--print '/help'` mode that prints a structured

@@ -83,6 +83,33 @@ export function deriveAccountInfoFromLabel(label?: string): AccountInfo | null {
   return { organization: label, tokenSource: "kanna-oauth-pool" }
 }
 
+export const PLAN_MODE_EXIT_UNSUPPORTED =
+  "[claude-pty] leaving plan mode at runtime is unsupported in PTY mode "
+  + "(no slash command exits plan mode; awaiting anthropics/claude-code#59891). "
+  + "Restart the session to return to acceptEdits."
+
+export type PlanModeRuntimeAction =
+  | { kind: "slash"; command: string }
+  | { kind: "warn"; message: string }
+
+/**
+ * D4 (partial) — maps an SDK-style `setPermissionMode(planMode)` call to
+ * the runtime action the PTY driver can actually perform.
+ *
+ * ENTER plan (`planMode === true`) → `/plan` slash command. Per
+ * code.claude.com/docs/en/commands, `/plan` "enters plan mode directly
+ * from the prompt" — a real, deterministic mode change over the REPL.
+ *
+ * EXIT plan (`planMode === false`) → warn only. No slash command sets
+ * acceptEdits; the only exit is the relative Shift+Tab TUI cycle whose
+ * correct keypress count depends on unobservable TUI state (PTY drains
+ * output unparsed). Restart required. Tracked: anthropics/claude-code#59891.
+ */
+export function planModeRuntimeAction(planMode: boolean): PlanModeRuntimeAction {
+  if (planMode) return { kind: "slash", command: "plan" }
+  return { kind: "warn", message: PLAN_MODE_EXIT_UNSUPPORTED }
+}
+
 /** B4 — bounded ring buffer for PTY output so a crash/OAuth-failure exit can synthesize an isError result from the tail. */
 export const PTY_STDERR_RING_BYTES = 256 * 1024
 
@@ -404,18 +431,14 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
         pendingModelSwitch = { model, resolve: () => { pendingTimers.delete(timer); resolve() }, timer }
       })
     },
-    setPermissionMode: async (_planMode) => {
-      // D4 — Claude CLI exposes no runtime switch equivalent to the SDK's
-      // q.setPermissionMode("plan" | "acceptEdits"). Filed upstream as
-      // anthropics/claude-code#59891. Previous implementation sent
-      // `/permissions` which only opens the interactive menu — it does
-      // NOT actually change the mode, and gave the false impression the
-      // toggle worked. No-op + warn until upstream lands; callers should
-      // restart the session to flip plan-mode under PTY.
-      console.warn(
-        "[claude-pty] setPermissionMode at runtime is unsupported in PTY mode "
-        + "(awaiting anthropics/claude-code#59891). Restart the session to flip plan-mode.",
-      )
+    setPermissionMode: async (planMode) => {
+      // D4 (partial). See planModeRuntimeAction for the asymmetry rationale.
+      const action = planModeRuntimeAction(planMode)
+      if (action.kind === "slash") {
+        await writeSlashCommand(pty, action.command)
+        return
+      }
+      console.warn(action.message)
     },
     getSupportedCommands: async () => STATIC_SUPPORTED_COMMANDS,
     getAccountInfo: async () => cachedAccountInfo,

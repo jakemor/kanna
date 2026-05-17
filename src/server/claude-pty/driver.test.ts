@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { startClaudeSessionPTY, buildPtyEnv, buildPtyCliArgs, OutputRing, PTY_STDERR_RING_BYTES, deriveAccountInfoFromLabel } from "./driver"
+import { startClaudeSessionPTY, buildPtyEnv, buildPtyCliArgs, OutputRing, PTY_STDERR_RING_BYTES, deriveAccountInfoFromLabel, planModeRuntimeAction, PLAN_MODE_EXIT_UNSUPPORTED } from "./driver"
+import { formatSlashCommand } from "./slash-commands"
 import { KANNA_SYSTEM_PROMPT_APPEND } from "../../shared/kanna-system-prompt"
 import type { HarnessEvent } from "../harness-types"
 
@@ -342,5 +343,26 @@ describe("deriveAccountInfoFromLabel (C1)", () => {
       organization: "work-account",
       tokenSource: "kanna-oauth-pool",
     })
+  })
+})
+
+describe("planModeRuntimeAction (D4 partial)", () => {
+  test("planMode=true → /plan slash command (real enter-plan)", () => {
+    const action = planModeRuntimeAction(true)
+    expect(action).toEqual({ kind: "slash", command: "plan" })
+  })
+
+  test("the slash command formats to the REPL line `/plan\\r`", () => {
+    const action = planModeRuntimeAction(true)
+    if (action.kind !== "slash") throw new Error("expected slash action")
+    expect(formatSlashCommand(action.command)).toBe("/plan\r")
+  })
+
+  test("planMode=false → warn (no slash exits plan mode)", () => {
+    const action = planModeRuntimeAction(false)
+    expect(action.kind).toBe("warn")
+    if (action.kind !== "warn") throw new Error("expected warn action")
+    expect(action.message).toBe(PLAN_MODE_EXIT_UNSUPPORTED)
+    expect(action.message).toContain("anthropics/claude-code#59891")
   })
 })

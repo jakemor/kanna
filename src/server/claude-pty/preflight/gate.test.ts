@@ -123,6 +123,50 @@ describe("preflight gate", () => {
     } finally { await cleanup() }
   })
 
+  test("canSpawn pass returns the sha256 the suite ran against (for TOCTOU re-verify)", async () => {
+    const { filePath, cleanup } = await fixtureBinary("v9")
+    try {
+      const gate = createPreflightGate({
+        toolsString: "mcp__kanna__*",
+        now: () => 0,
+        runSuite: async () => PASS_PROBES,
+      })
+      const r = await gate.canSpawn({ binaryPath: filePath, model: "m" })
+      expect(r.ok).toBe(true)
+      if (r.ok) {
+        expect(r.binarySha256).toMatch(/^[0-9a-f]{64}$/)
+      }
+    } finally { await cleanup() }
+  })
+
+  test("verifyBinaryUnchanged: matching sha256 → ok", async () => {
+    const { verifyBinaryUnchanged } = await import("./gate")
+    const { computeBinarySha256 } = await import("./binary-fingerprint")
+    const { filePath, cleanup } = await fixtureBinary("toctou-a")
+    try {
+      const sha = await computeBinarySha256(filePath)
+      const r = await verifyBinaryUnchanged(filePath, sha)
+      expect(r.ok).toBe(true)
+    } finally { await cleanup() }
+  })
+
+  test("verifyBinaryUnchanged: changed bytes → fail-closed with reason", async () => {
+    const { verifyBinaryUnchanged } = await import("./gate")
+    const { computeBinarySha256 } = await import("./binary-fingerprint")
+    const { writeFile } = await import("node:fs/promises")
+    const { filePath, cleanup } = await fixtureBinary("toctou-orig")
+    try {
+      const oldSha = await computeBinarySha256(filePath)
+      await writeFile(filePath, "toctou-tampered", "utf8")
+      const r = await verifyBinaryUnchanged(filePath, oldSha)
+      expect(r.ok).toBe(false)
+      if (!r.ok) {
+        expect(r.reason).toContain("claude binary changed")
+        expect(r.reason).toContain(oldSha.slice(0, 8))
+      }
+    } finally { await cleanup() }
+  })
+
   test("invalidateAll() forces a re-probe on the next canSpawn", async () => {
     const { filePath, cleanup } = await fixtureBinary("v8")
     try {

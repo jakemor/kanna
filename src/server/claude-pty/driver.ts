@@ -14,6 +14,7 @@ import { POLICY_DEFAULT } from "../../shared/permission-policy"
 import { startKannaMcpHttpServer, buildMcpConfigJson, type KannaMcpHttpHandle } from "../kanna-mcp-http"
 import { parseConfiguredContextWindowFromModelId, timestamped } from "../agent"
 import { KANNA_SYSTEM_PROMPT_APPEND } from "../../shared/kanna-system-prompt"
+import { verifyBinaryUnchanged } from "./preflight/gate"
 import type { PreflightGate } from "./preflight/gate"
 import type { ClaudeSessionHandle } from "../agent"
 import type { HarnessEvent, HarnessToolRequest } from "../harness-types"
@@ -191,12 +192,16 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     throw new Error(auth.error)
   }
 
+  let preflightBinarySha256: string | null = null
+  let preflightClaudeBin: string | null = null
   if (args.preflightGate) {
     const claudeBinAbs = env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, home) || "/usr/local/bin/claude"
     const check = await args.preflightGate.canSpawn({ binaryPath: claudeBinAbs, model: args.model })
     if (!check.ok) {
       throw new Error(`PTY preflight failed: ${check.reason}`)
     }
+    preflightBinarySha256 = check.binarySha256
+    preflightClaudeBin = claudeBinAbs
   }
 
   const spawnEnv = buildPtyEnv({
@@ -303,6 +308,20 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
   let wrapped: Awaited<ReturnType<typeof wrapWithSandbox>>
   let pty: Awaited<ReturnType<typeof spawnPtyProcess>>
   try {
+    // TOCTOU narrowing — re-hash the `claude` binary immediately before
+    // the sandbox wrap + spawn and refuse if it changed since the
+    // preflight gate ran. Does NOT close the window completely (still a
+    // race between this hash and exec), but cuts it from
+    // "seconds-to-minutes of suite latency" down to "one extra hash
+    // delta". A full close needs an fd threaded through `spawnPtyProcess`
+    // (no Node API for `execveat` / `fexecve` on Bun spawn) — out of
+    // scope here. Tracked in #163.
+    if (preflightBinarySha256 && preflightClaudeBin) {
+      const verify = await verifyBinaryUnchanged(preflightClaudeBin, preflightBinarySha256)
+      if (!verify.ok) {
+        throw new Error(`PTY preflight failed: ${verify.reason}`)
+      }
+    }
     wrapped = await wrapWithSandbox({
       platform: process.platform,
       enabled: sandboxOn,

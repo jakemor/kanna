@@ -16,9 +16,35 @@ export interface CanSpawnArgs {
   model: string
 }
 
+/**
+ * `binarySha256` returned on `{ok:true}` is the hash the suite ran
+ * against. Driver passes it to `verifyBinaryUnchanged(...)` immediately
+ * before spawn so any in-between modification of the `claude` binary
+ * (TOCTOU window) is detected and the spawn is refused. Narrows the
+ * gate→exec window from "seconds to minutes" to "one extra hash
+ * delta".
+ */
 export interface PreflightGate {
-  canSpawn(args: CanSpawnArgs): Promise<{ ok: true } | { ok: false; reason: string }>
+  canSpawn(args: CanSpawnArgs): Promise<{ ok: true; binarySha256: string } | { ok: false; reason: string }>
   invalidateAll(): void
+}
+
+/**
+ * Recompute the binary sha256 right before `spawnPtyProcess` and assert
+ * it matches the value the preflight ran against. The kanna PTY driver
+ * is the only call-site; if you call this for any other reason, document
+ * here why the gate's pre-hash is not enough.
+ */
+export async function verifyBinaryUnchanged(
+  binaryPath: string,
+  expectedSha256: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const now = await computeBinarySha256(binaryPath)
+  if (now === expectedSha256) return { ok: true }
+  return {
+    ok: false,
+    reason: `claude binary changed between preflight and spawn (sha256 ${expectedSha256.slice(0, 8)}... → ${now.slice(0, 8)}...)`,
+  }
 }
 
 export function createPreflightGate(opts: PreflightGateArgs): PreflightGate {
@@ -40,7 +66,7 @@ export function createPreflightGate(opts: PreflightGateArgs): PreflightGate {
       }
       const cached = cache.get(key)
       if (cached && cached.verdict === "pass") {
-        return { ok: true }
+        return { ok: true, binarySha256 }
       }
       if (cached && cached.verdict !== "pass") {
         return { ok: false, reason: summarizeFailure(cached.probes) }
@@ -72,7 +98,7 @@ export function createPreflightGate(opts: PreflightGateArgs): PreflightGate {
       const verdict = aggregateProbes(probes).verdict
       const result: SuiteResult = { key, verdict, probes, probedAt: opts.now() }
       cache.put(result)
-      if (verdict === "pass") return { ok: true }
+      if (verdict === "pass") return { ok: true, binarySha256 }
       return { ok: false, reason: summarizeFailure(probes) }
     },
     invalidateAll() {

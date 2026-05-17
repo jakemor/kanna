@@ -55,6 +55,23 @@ const CLIPBOARD_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
   "image/webp": "webp",
 }
 
+export function isTouchDeviceEnvironment(): boolean {
+  if (typeof window === "undefined") return false
+  if ("ontouchstart" in window) return true
+  const nav = typeof navigator !== "undefined" ? navigator : null
+  return (nav?.maxTouchPoints ?? 0) > 0
+}
+
+// iOS Safari emits many `select` events while the user holds the spacebar to
+// drag the cursor through textarea content (the soft-keyboard trackpad
+// gesture). Re-rendering a controlled <textarea> mid-gesture causes the
+// caret to jump because the reconciler re-writes the DOM `value` property.
+// Suppress the caret-version bump on touch devices to keep the gesture
+// smooth. Desktop keeps live picker refresh on cursor moves.
+export function shouldRefreshPickerOnSelection(isTouchDevice: boolean): boolean {
+  return !isTouchDevice
+}
+
 export function willExceedAttachmentLimit(args: {
   currentAttachmentCount: number
   queuedAttachmentCount: number
@@ -245,6 +262,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [pickerIndex, setPickerIndex] = useState(0)
   const [pickerDismissed, setPickerDismissed] = useState(false)
   const [caretVersion, setCaretVersion] = useState(0)
+  const isTouchDevice = useMemo(() => isTouchDeviceEnvironment(), [])
+  const bumpCaretVersionOnSelection = useCallback(() => {
+    if (!shouldRefreshPickerOnSelection(isTouchDevice)) return
+    setCaretVersion((v) => v + 1)
+  }, [isTouchDevice])
 
   useEffect(() => {
     if (!value.startsWith("/")) setPickerDismissed(false)
@@ -1007,7 +1029,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 autoResize()
                 setCaretVersion((v) => v + 1)
               }}
-              onSelect={() => setCaretVersion((v) => v + 1)}
+              onSelect={bumpCaretVersionOnSelection}
               onKeyUp={() => setCaretVersion((v) => v + 1)}
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}

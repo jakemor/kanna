@@ -513,6 +513,34 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     textareaRef.current?.focus()
   }, [chatId])
 
+  // iOS 17+ Safari extends the soft-keyboard `hold-space` trackpad cursor
+  // beyond the focused input: dragging past the textarea boundary moves the
+  // caret onto sibling selectable text (chat-message content) while the
+  // textarea remains the active element. Clamp the selection back inside
+  // the textarea whenever it escapes while we still own focus. Touch-only;
+  // desktop pointer/keyboard interactions never trigger this drift.
+  useEffect(() => {
+    if (!isTouchDevice) return
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    const handleSelectionChange = () => {
+      if (document.activeElement !== textarea) return
+      const selection = window.getSelection()
+      const focusNode = selection?.focusNode
+      if (!focusNode) return
+      if (textarea.contains(focusNode)) return
+      selection?.removeAllRanges()
+      const fallbackCaret = textarea.selectionStart ?? 0
+      textarea.setSelectionRange(fallbackCaret, fallbackCaret)
+    }
+
+    document.addEventListener("selectionchange", handleSelectionChange)
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange)
+    }
+  }, [isTouchDevice])
+
   useEffect(() => {
     latestChatIdRef.current = chatId ?? null
   }, [chatId])

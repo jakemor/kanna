@@ -57,6 +57,123 @@ describe("isTouchDeviceEnvironment", () => {
   })
 })
 
+describe("ChatInput selection clamp guard (iOS keyboard-trackpad caret-escape)", () => {
+  let container: HTMLDivElement
+  let root: Root | null = null
+
+  afterEach(async () => {
+    if (root) {
+      await act(async () => {
+        root?.unmount()
+      })
+      root = null
+    }
+    container?.remove()
+    setTouchDevice(false)
+  })
+
+  test("on touch devices, a Selection that drifts onto sibling content while the textarea is still focused is collapsed back into the textarea", async () => {
+    setTouchDevice(true)
+
+    container = document.createElement("div")
+    document.body.appendChild(container)
+
+    // Sibling content simulates the chat-message transcript above the
+    // composer. iOS lets the hold-space cursor land on this text if the
+    // user drags past the textarea boundary.
+    const chatContent = document.createElement("div")
+    chatContent.append(document.createTextNode("previous assistant reply text"))
+    container.appendChild(chatContent)
+
+    const inputHost = document.createElement("div")
+    container.appendChild(inputHost)
+
+    await act(async () => {
+      root = createRoot(inputHost)
+      root.render(
+        <ChatInput
+          onSubmit={async () => {}}
+          disabled={false}
+          chatId="clamp-chat"
+          projectId={null}
+          activeProvider="claude"
+          availableProviders={PROVIDERS}
+        />,
+      )
+    })
+
+    const textarea = inputHost.querySelector("textarea") as HTMLTextAreaElement
+    textarea.focus()
+    expect(document.activeElement).toBe(textarea)
+
+    // Point the document Selection at sibling chat-content text — mirrors
+    // what iOS does when the keyboard-trackpad caret crosses the textarea
+    // boundary. The textarea remains focused throughout. (The guard's
+    // selectionchange listener fires synchronously whether we dispatch the
+    // event manually or it fires from the addRange call, so we just check
+    // the steady-state result after both: the selection must not point
+    // outside the textarea while the textarea is the active element.)
+    const selection = window.getSelection()
+    const range = document.createRange()
+    range.setStart(chatContent.firstChild as Node, 0)
+    range.setEnd(chatContent.firstChild as Node, 0)
+    selection?.removeAllRanges()
+    await act(async () => {
+      selection?.addRange(range)
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }))
+    })
+
+    const after = window.getSelection()
+    const focusNode = after?.focusNode ?? null
+    expect((after?.rangeCount ?? 0) === 0 || textarea.contains(focusNode)).toBe(true)
+  })
+
+  test("desktop (non-touch): the guard is inactive — Selection on sibling content stays put", async () => {
+    setTouchDevice(false)
+
+    container = document.createElement("div")
+    document.body.appendChild(container)
+
+    const chatContent = document.createElement("div")
+    chatContent.append(document.createTextNode("previous assistant reply text"))
+    container.appendChild(chatContent)
+
+    const inputHost = document.createElement("div")
+    container.appendChild(inputHost)
+
+    await act(async () => {
+      root = createRoot(inputHost)
+      root.render(
+        <ChatInput
+          onSubmit={async () => {}}
+          disabled={false}
+          chatId="clamp-desktop-chat"
+          projectId={null}
+          activeProvider="claude"
+          availableProviders={PROVIDERS}
+        />,
+      )
+    })
+
+    const textarea = inputHost.querySelector("textarea") as HTMLTextAreaElement
+    textarea.focus()
+
+    const selection = window.getSelection()
+    const range = document.createRange()
+    range.setStart(chatContent.firstChild as Node, 0)
+    range.setEnd(chatContent.firstChild as Node, 0)
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+
+    await act(async () => {
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }))
+    })
+
+    const after = window.getSelection()
+    expect(after?.focusNode).toBe(chatContent.firstChild)
+  })
+})
+
 describe("ChatInput onSelect wiring", () => {
   let container: HTMLDivElement
   let root: Root | null = null

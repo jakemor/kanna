@@ -1,9 +1,19 @@
 # Architecture
 
 This project uses C3 docs in `.c3/`.
-For architecture questions, changes, audits, file context -> `/c3`.
+
+**MANDATORY for Claude Code AND Codex:**
+1. **Before coding** — run `/c3 query <topic>` (or `c3x lookup <file>`) to load
+   component context, refs, and rules. Do NOT skip even for "small" edits.
+   Skipping = stale assumptions = wrong patches.
+2. **After coding** — if change touches component boundaries, refs, public
+   contracts, or rules, run `/c3 change` (or `/c3 sweep` for audit) to update
+   `.c3/` docs in the SAME PR. Code-doc drift is a blocker.
+3. **Architecture questions, audits, file→component lookup** — always `/c3`.
+
 Operations: query, audit, change, ref, sweep.
 File lookup: `c3x lookup <file-or-glob>` maps files/directories to components + refs.
+Skill: `c3-skill:c3` (auto-triggers on `/c3` or architecture phrases).
 
 # Pull Requests
 

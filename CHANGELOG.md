@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.57.2](https://github.com/cuongtranba/kanna/compare/v0.57.1...v0.57.2) (2026-05-17)
+
+
+### Chores
+
+* bump to 0.57.2 to bypass tag clash with the prior v0.57.1 release (v0.57.1 was reverted in #186 but the git tag still points at the old release commit)
+
 ## [0.57.1](https://github.com/cuongtranba/kanna/compare/v0.57.0...v0.57.1) (2026-05-17)
 
 

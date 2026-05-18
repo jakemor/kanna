@@ -53,14 +53,17 @@ describe("mcp__kanna__ask_user_question", () => {
     } finally { await cleanup() }
   })
 
-  test("auto-deny → returns isError true", async () => {
+  // Issue #215 follow-up: even under chatPolicy.defaultAction "auto-deny"
+  // the tool must take the ask path (UI is the only meaningful outcome),
+  // then deny only when the user / cancel resolves it that way.
+  test("auto-deny chatPolicy still routes through ask (UI), denial only via cancel/cancelAllForChat", async () => {
     const { store, cleanup } = await newStore()
     try {
       const svc = createToolCallbackService({
         store, serverSecret: "k", now: () => 1, timeoutMs: 600_000,
       })
       const tool = createAskUserQuestionTool({ toolCallback: svc })
-      const result = await tool.handler(
+      const promise = tool.handler(
         {
           questions: [{
             text: "x",
@@ -71,7 +74,46 @@ describe("mcp__kanna__ask_user_question", () => {
         },
         { ...handlerCtx(), chatPolicy: { ...POLICY_DEFAULT, defaultAction: "auto-deny" } },
       )
+      const pending = await store.listPendingToolRequests("c1")
+      expect(pending).toHaveLength(1)
+      await svc.cancelAllForChat("c1", "user-cancel")
+      const result = await promise
       expect(result.isError).toBe(true)
+      expect(result.content[0].type).toBe("text")
+      expect(typeof result.content[0].text).toBe("string")
+    } finally { await cleanup() }
+  })
+
+  // Issue #215 follow-up: fail fast on empty/undefined answer payload.
+  // The earlier bug silently produced `text: JSON.stringify(undefined)` =
+  // `text: undefined` and crashed the MCP SDK validator with -32602.
+  // Coercing to `{}` would hide the underlying policy-gate bug (interactive
+  // tool auto-allowed without user input). Instead the shim throws so the
+  // failure is loud and the root cause is detectable.
+  test("answer decision with no payload → throws loudly (no silent {} coercion)", async () => {
+    const { store, cleanup } = await newStore()
+    try {
+      const svc = createToolCallbackService({
+        store, serverSecret: "k", now: () => 1, timeoutMs: 600_000,
+      })
+      const tool = createAskUserQuestionTool({ toolCallback: svc })
+      const promise = tool.handler(
+        {
+          questions: [{
+            text: "ok?",
+            header: "OK",
+            options: [{ label: "yes", description: "" }, { label: "no", description: "" }],
+            multiSelect: false,
+          }],
+        },
+        handlerCtx(),
+      )
+      const pending = await store.listPendingToolRequests("c1")
+      expect(pending).toHaveLength(1)
+      // Resolve with kind:"allow" and no payload — the exact auto-allow
+      // shape that previously slipped through.
+      await svc.answer(pending[0].id, { kind: "allow" as const })
+      await expect(promise).rejects.toThrow(/empty answer payload/i)
     } finally { await cleanup() }
   })
 })

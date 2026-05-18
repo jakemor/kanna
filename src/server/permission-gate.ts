@@ -116,8 +116,26 @@ function pathMatchesDeny(absPath: string, deny: string[]): string | null {
   return null
 }
 
+/**
+ * Tools whose entire purpose is to surface a question / plan to the user
+ * and wait for an answer. They MUST always go through the "ask" path so
+ * the durable approval protocol renders UI and the model receives the
+ * user's actual response. Auto-allow/auto-deny would resolve the request
+ * with no payload, leaving the shim's `formatAnswer` with an undefined
+ * payload — producing an empty `text` field and an MCP -32602
+ * "Invalid tools/call result" validation error (issue #215 follow-up).
+ * No `chatPolicy.defaultAction` value can override this.
+ */
+const INTERACTIVE_TOOLS = new Set([
+  "mcp__kanna__ask_user_question",
+  "mcp__kanna__exit_plan_mode",
+])
+
 export const policy = {
   evaluate(args: EvaluateArgs): EvaluateResult {
+    if (INTERACTIVE_TOOLS.has(args.toolName)) {
+      return { verdict: "ask", reason: "interactive tool: always asks the user" }
+    }
     if (READ_PATH_TOOLS.has(args.toolName)) {
       const p = getPathArg(args.args)
       if (p !== null) {

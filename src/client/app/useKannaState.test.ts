@@ -7,6 +7,7 @@ import {
   getNewestRemainingChatId,
   getPreviousPrompt,
   getTranscriptPaddingBottom,
+  deriveUiRestartActivity,
   getUiUpdateReadinessPath,
   getUserPromptSignature,
   getUiUpdateRestartReconnectAction,
@@ -214,6 +215,28 @@ describe("getUiUpdateRestartReconnectAction", () => {
     expect(getUiUpdateRestartReconnectAction("awaiting_disconnect", "connected")).toBe("none")
     expect(getUiUpdateRestartReconnectAction("awaiting_server_ready", "disconnected")).toBe("none")
     expect(getUiUpdateRestartReconnectAction("awaiting_server_ready", "connected")).toBe("none")
+  })
+})
+
+describe("deriveUiRestartActivity", () => {
+  test("update install/restart status drives the overlay regardless of phase", () => {
+    expect(deriveUiRestartActivity(null, "updating")).toEqual({ active: true, label: "Installing update" })
+    expect(deriveUiRestartActivity(null, "restart_pending")).toEqual({ active: true, label: "Installing update" })
+  })
+
+  test("restart phase drives the overlay when update status is idle", () => {
+    expect(deriveUiRestartActivity("awaiting_disconnect", "idle")).toEqual({ active: true, label: "Re-deploying Kanna" })
+    expect(deriveUiRestartActivity("awaiting_server_ready", undefined)).toEqual({ active: true, label: "Re-deploying Kanna" })
+  })
+
+  test("inactive when neither phase nor update status indicates a restart", () => {
+    expect(deriveUiRestartActivity(null, "idle")).toEqual({ active: false, label: "" })
+    expect(deriveUiRestartActivity(null, "up_to_date")).toEqual({ active: false, label: "" })
+    expect(deriveUiRestartActivity(null, undefined)).toEqual({ active: false, label: "" })
+  })
+
+  test("update status takes precedence over an active restart phase", () => {
+    expect(deriveUiRestartActivity("awaiting_disconnect", "updating")).toEqual({ active: true, label: "Installing update" })
   })
 })
 

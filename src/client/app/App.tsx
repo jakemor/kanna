@@ -424,6 +424,10 @@ function KannaLayout() {
 
   const ptyDriverActive = state.appSettings?.claudeDriver.preference === "pty"
 
+  if (state.uiRestartActive) {
+    return <AppBootstrap label={state.uiRestartLabel} />
+  }
+
   if (!state.sidebarReady) {
     return <AppBootstrap label="Connecting to workspace" />
   }

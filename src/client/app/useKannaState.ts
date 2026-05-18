@@ -591,6 +591,24 @@ export function getUiUpdateRestartReconnectAction(
   return "none"
 }
 
+export interface UiRestartActivity {
+  active: boolean
+  label: string
+}
+
+export function deriveUiRestartActivity(
+  phase: string | null,
+  updateStatus: UpdateSnapshot["status"] | null | undefined
+): UiRestartActivity {
+  if (updateStatus === "updating" || updateStatus === "restart_pending") {
+    return { active: true, label: "Installing update" }
+  }
+  if (phase === "awaiting_disconnect" || phase === "awaiting_server_ready") {
+    return { active: true, label: "Re-deploying Kanna" }
+  }
+  return { active: false, label: "" }
+}
+
 export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
 const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "kanna:last-update-reload-request"
@@ -717,6 +735,8 @@ export interface KannaState {
   llmProvider: LlmProviderSnapshot | null
   connectionStatus: SocketStatus
   sidebarReady: boolean
+  uiRestartActive: boolean
+  uiRestartLabel: string
   localProjectsReady: boolean
   commandError: string | null
   startingLocalPath: string | null
@@ -831,6 +851,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [optimisticSidebarProjectOrder, setOptimisticSidebarProjectOrder] = useState<string[] | null>(null)
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
+  const [uiRestartPhase, setUiRestartPhaseState] = useState<string | null>(() => getUiUpdateRestartPhase())
+  const markUiRestartPhase = useCallback((phase: "awaiting_disconnect" | "awaiting_server_ready") => {
+    setUiUpdateRestartPhase(phase)
+    setUiRestartPhaseState(phase)
+  }, [])
+  const clearUiRestartPhase = useCallback(() => {
+    clearUiUpdateRestartPhase()
+    setUiRestartPhaseState(null)
+  }, [])
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
   const [olderHistoryEntries, setOlderHistoryEntries] = useState<TranscriptEntry[]>([])
   const [isHistoryLoading, setIsHistoryLoading] = useState(false)
@@ -948,17 +977,19 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
 
     setLastHandledUiUpdateReloadRequest(reloadRequestedAt)
-    setUiUpdateRestartPhase("awaiting_disconnect")
-  }, [updateSnapshot?.reloadRequestedAt])
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    markUiRestartPhase("awaiting_disconnect")
+  }, [markUiRestartPhase, updateSnapshot?.reloadRequestedAt])
 
   useEffect(() => {
     const phase = getUiUpdateRestartPhase()
     const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
     if (reconnectAction === "awaiting_server_ready") {
-      setUiUpdateRestartPhase("awaiting_server_ready")
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      markUiRestartPhase("awaiting_server_ready")
       return
     }
-  }, [connectionStatus])
+  }, [connectionStatus, markUiRestartPhase])
 
   useEffect(() => {
     if (getUiUpdateRestartPhase() !== "awaiting_server_ready") {
@@ -972,7 +1003,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       try {
         if (await isServerReady()) {
           if (cancelled) return
-          clearUiUpdateRestartPhase()
+          clearUiRestartPhase()
           window.location.reload()
           return
         }
@@ -994,7 +1025,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
         window.clearTimeout(timeoutId)
       }
     }
-  }, [connectionStatus])
+  }, [connectionStatus, clearUiRestartPhase])
 
   useEffect(() => {
     function handleWindowFocus() {
@@ -1663,7 +1694,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     try {
       const result = await socket.command<UpdateInstallResult>({ type: "update.install" })
       if (!result.ok) {
-        clearUiUpdateRestartPhase()
+        clearUiRestartPhase()
         setCommandError(null)
         await dialog.alert({
           title: result.userTitle ?? "Update failed",
@@ -1679,20 +1710,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
       }
 
       if (result.ok && result.action === "restart") {
-        setUiUpdateRestartPhase("awaiting_disconnect")
+        markUiRestartPhase("awaiting_disconnect")
       }
       setCommandError(null)
     } catch (error) {
-      clearUiUpdateRestartPhase()
+      clearUiRestartPhase()
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [dialog, socket])
+  }, [clearUiRestartPhase, dialog, markUiRestartPhase, socket])
 
   const handleForceReload = useCallback(async () => {
     try {
       const result = await socket.command<UpdateInstallResult>({ type: "update.reload" })
       if (!result.ok) {
-        clearUiUpdateRestartPhase()
+        clearUiRestartPhase()
         setCommandError(null)
         await dialog.alert({
           title: result.userTitle ?? "Re-deploy failed",
@@ -1707,13 +1738,13 @@ export function useKannaState(activeChatId: string | null): KannaState {
         return
       }
 
-      setUiUpdateRestartPhase("awaiting_disconnect")
+      markUiRestartPhase("awaiting_disconnect")
       setCommandError(null)
     } catch (error) {
-      clearUiUpdateRestartPhase()
+      clearUiRestartPhase()
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [dialog, socket])
+  }, [clearUiRestartPhase, dialog, markUiRestartPhase, socket])
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -2362,6 +2393,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [activeChatId, socket])
 
+  const uiRestart = deriveUiRestartActivity(uiRestartPhase, updateSnapshot?.status)
+
   // eslint-disable-next-line react-hooks/refs
   return {
     socket,
@@ -2378,6 +2411,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     llmProvider,
     connectionStatus,
     sidebarReady,
+    uiRestartActive: uiRestart.active,
+    uiRestartLabel: uiRestart.label,
     localProjectsReady,
     commandError,
     startingLocalPath,

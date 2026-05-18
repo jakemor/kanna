@@ -122,7 +122,7 @@ describe("trimTrailingPastedNewlines", () => {
 })
 
 describe("ChatInput", () => {
-  test("renders the mobile attachment trigger as a native file input target", () => {
+  test("renders the mobile attachment trigger as a native file input target on the right side", () => {
     const html = renderToStaticMarkup(createElement(ChatInput, {
       onSubmit: async () => undefined,
       disabled: false,
@@ -134,6 +134,7 @@ describe("ChatInput", () => {
     expect(html).toContain('aria-label="Add attachment"')
     expect(html).toContain('type="file"')
     expect(html).toContain("absolute inset-0 cursor-pointer opacity-0")
+    expect(html.indexOf('aria-label="Add attachment"')).toBeGreaterThan(html.indexOf('placeholder="Build something..."'))
     expect(html).not.toContain('type="file" multiple="" class="hidden"')
   })
 })

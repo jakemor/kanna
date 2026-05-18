@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.61.4](https://github.com/cuongtranba/kanna/compare/v0.61.3...v0.61.4) (2026-05-18)
+
+
+### Bug Fixes
+
+* **ui:** normalize mcp__kanna__ask_user_question text→question in pending card ([#223](https://github.com/cuongtranba/kanna/issues/223)) ([3610f9b](https://github.com/cuongtranba/kanna/commit/3610f9b2cbf46510d8db0b3910d8a1cd87e07d0b))
+
 ## [0.61.3](https://github.com/cuongtranba/kanna/compare/v0.61.2...v0.61.3) (2026-05-18)
 
 

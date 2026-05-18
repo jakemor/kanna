@@ -1,19 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import { getAppAuthStateFromStatus, shouldPlayChatNotificationSound, shouldRedirectToChangelog, shouldRetryAuthStatusRequest } from "./App"
-import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getBrowserWindowTitle, getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clampSidebarWidth } from "./KannaSidebar"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
 import type { AppSettingsSnapshot, SidebarChatRow } from "../../shared/types"
 
-function createProjectGroup(chats: SidebarChatRow[]) {
+function createProjectGroup(chats: SidebarChatRow[], title = "Project", archivedChats: SidebarChatRow[] = []) {
   return {
     groupKey: "project-1",
-    title: "Project",
     realTitle: "Project",
     localPath: "/tmp/project",
+    title,
     chats,
     previewChats: chats,
     olderChats: [],
+    archivedChats,
     defaultCollapsed: false,
   }
 }
@@ -93,6 +94,129 @@ describe("getNotificationTitleCount", () => {
           },
         ])],
     })).toBe(4)
+  })
+})
+
+describe("getBrowserWindowTitle", () => {
+  test("adds the active project and chat title to the app title", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "project-1",
+      activeChatId: "chat-1",
+      sidebarData: {
+        projectGroups: [createProjectGroup([{
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: "Chat title",
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }], "Project title")],
+      },
+    })).toBe("Kanna : Project title : Chat title")
+  })
+
+  test("keeps the full project title and truncates chat titles after 80 characters", () => {
+    const longProjectTitle = "Project ".repeat(20).trim()
+    const longChatTitle = "A".repeat(81)
+
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "project-1",
+      activeChatId: "chat-1",
+      sidebarData: {
+        projectGroups: [createProjectGroup([{
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: longChatTitle,
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }], longProjectTitle)],
+      },
+    })).toBe(`Kanna : ${longProjectTitle} : ${"A".repeat(80)}...`)
+  })
+
+  test("finds archived active chats by title", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: null,
+      activeChatId: "chat-archived",
+      sidebarData: {
+        projectGroups: [createProjectGroup([], "Project title", [{
+          _id: "chat-archived",
+          _creationTime: 1,
+          chatId: "chat-archived",
+          title: "Archived chat",
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }])],
+      },
+    })).toBe("Kanna : Project title : Archived chat")
+  })
+
+  test("falls back to the active chat project when the active project id is stale", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "stale-project",
+      activeChatId: "chat-1",
+      sidebarData: {
+        projectGroups: [createProjectGroup([{
+          _id: "chat-1",
+          _creationTime: 1,
+          chatId: "chat-1",
+          title: "Chat title",
+          status: "idle",
+          unread: false,
+          localPath: "/tmp/project",
+          provider: null,
+          hasAutomation: false,
+        }], "Project title")],
+      },
+    })).toBe("Kanna : Project title : Chat title")
+  })
+
+  test("keeps notification counts and omits the chat segment when no chat is active", () => {
+    expect(getBrowserWindowTitle({
+      appName: "Kanna",
+      activeProjectId: "project-1",
+      activeChatId: null,
+      sidebarData: {
+        projectGroups: [createProjectGroup([
+          {
+            _id: "chat-1",
+            _creationTime: 1,
+            chatId: "chat-1",
+            title: "Unread",
+            status: "idle",
+            unread: true,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+          },
+          {
+            _id: "chat-2",
+            _creationTime: 2,
+            chatId: "chat-2",
+            title: "Waiting",
+            status: "waiting_for_user",
+            unread: false,
+            localPath: "/tmp/project",
+            provider: null,
+            hasAutomation: false,
+          },
+        ], "Project title")],
+      },
+    })).toBe("[2] Kanna : Project title :")
   })
 })
 

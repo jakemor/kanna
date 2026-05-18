@@ -2403,19 +2403,20 @@ export class AgentCoordinator {
       authReady: async (provider) => {
         if (provider === "claude") {
           const settings = this.getAppSettingsSnapshot()
-          // Use hasUsable() (read-only) instead of pickActive() so the preflight
-          // check doesn't silently un-limit elapsed tokens before the actual
-          // pickOauthToken() call is made.
-          return Boolean(settings.claudeAuth?.authenticated || this.oauthPool?.hasUsable())
+          // Pass parent chat id so a token already reserved by the parent
+          // counts as usable. Subagent runs are sequential under the parent
+          // (parent's turn is paused), so sharing the parent's reservation
+          // is correct — see oauth-token-pool isEligible.
+          return Boolean(settings.claudeAuth?.authenticated || this.oauthPool?.hasUsable(args.chatId))
         }
         return true
       },
       pickOauthToken: () => {
-        // Subagent runs aren't currently wired into the reservation lifecycle
-        // (no release on subagent completion), so pick without a reservation
-        // to avoid leaking. The chat-level rotation race this guards against
-        // is between top-level chat sessions, not subagent ephemerals.
-        const picked = this.oauthPool?.pickActive() ?? null
+        // Subagent inherits the parent chat's reservation by re-picking under
+        // the same chatId. pickActive treats the parent's reservation as
+        // owned-by-self (drops + re-binds to chatId), so the lifecycle stays
+        // bound to the parent's close path — no separate subagent release.
+        const picked = this.oauthPool?.pickActive(args.chatId) ?? null
         if (this.oauthPool && this.oauthPool.hasAnyToken() && !picked) {
           throw new Error(
             "All OAuth tokens are unavailable for subagent run "

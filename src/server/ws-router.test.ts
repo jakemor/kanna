@@ -76,6 +76,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   theme: "system",
   chatSoundPreference: "always",
   chatSoundId: "funk",
+  chatBrowserNotificationPreference: "never",
   terminal: {
     scrollbackLines: 1_000,
     minColumnWidth: 450,
@@ -226,7 +227,7 @@ describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -267,7 +268,7 @@ describe("ws-router", () => {
     const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">> = []
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -361,7 +362,7 @@ describe("ws-router", () => {
     let analyticsEnabled = DEFAULT_APP_SETTINGS_SNAPSHOT.analyticsEnabled
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -440,7 +441,7 @@ describe("ws-router", () => {
     let listener: ((nextSnapshot: AppSettingsSnapshot) => void) | null = null
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -463,6 +464,7 @@ describe("ws-router", () => {
             theme: patch.theme ?? snapshot.theme,
             chatSoundPreference: patch.chatSoundPreference ?? snapshot.chatSoundPreference,
             chatSoundId: patch.chatSoundId ?? snapshot.chatSoundId,
+            chatBrowserNotificationPreference: patch.chatBrowserNotificationPreference ?? snapshot.chatBrowserNotificationPreference,
             defaultProvider: patch.defaultProvider ?? snapshot.defaultProvider,
             terminal: { ...snapshot.terminal, ...patch.terminal },
             editor: { ...snapshot.editor, ...patch.editor },
@@ -558,7 +560,7 @@ describe("ws-router", () => {
     let analyticsEnabled = true
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -672,6 +674,7 @@ describe("ws-router", () => {
           closeChat: async () => {},
           getActiveStatuses: () => new Map(),
           getDrainingChatIds: () => new Set(),
+          getPendingToolPreviews: () => new Map(),
         } as never,
         analytics: {
           track: (eventName: string) => {
@@ -728,7 +731,7 @@ describe("ws-router", () => {
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -772,7 +775,7 @@ describe("ws-router", () => {
   test("subscribes and unsubscribes chat topics", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -844,6 +847,7 @@ describe("ws-router", () => {
           return new Map()
         },
         getDrainingChatIds: () => new Set(),
+        getPendingToolPreviews: () => new Map(),
       } as never,
       terminals: {
         getSnapshot: () => null,
@@ -908,7 +912,7 @@ describe("ws-router", () => {
         ignoreFile: async () => ({ snapshotChanged: false }),
         readPatch: async () => ({ patch: "" }),
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -981,7 +985,7 @@ describe("ws-router", () => {
         ignoreFile: async () => ({ snapshotChanged: false }),
         readPatch: async () => ({ patch: "diff --git a/app.txt b/app.txt" }),
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1063,7 +1067,7 @@ describe("ws-router", () => {
         ignoreFile: async () => ({ snapshotChanged: false }),
         readPatch: async () => ({ patch: "" }),
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1172,7 +1176,7 @@ describe("ws-router", () => {
         }),
         getChat: () => state.chatsById.get("chat-1") ?? null,
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1257,6 +1261,7 @@ describe("ws-router", () => {
       agent: {
         getActiveStatuses: () => new Map(),
         getDrainingChatIds: () => new Set(),
+        getPendingToolPreviews: () => new Map(),
       } as never,
       terminals: {
         getSnapshot: () => null,
@@ -1395,7 +1400,7 @@ describe("ws-router", () => {
           sidebarProjectOrder = [...projectIds]
         },
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1493,7 +1498,8 @@ describe("ws-router", () => {
       agent: {
         getActiveStatuses: () => new Map(),
         getDrainingChatIds: () => new Set(),
-          forkChat: async (chatId: string) => {
+        getPendingToolPreviews: () => new Map(),
+        forkChat: async (chatId: string) => {
           forkChatCalls.push(chatId)
           state.chatsById.set("chat-fork-1", {
             id: "chat-fork-1",
@@ -1627,7 +1633,7 @@ describe("ws-router", () => {
           return ["chat-stale"]
         },
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1707,7 +1713,7 @@ describe("ws-router", () => {
           return []
         },
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1809,7 +1815,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -1916,7 +1922,7 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -2054,7 +2060,7 @@ describe("ws-router", () => {
         getRecentChatHistory: () => ({ entries: [], hasOlder: false, olderCursor: null }),
       } as never,
       diffStore: diffStore as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -2150,7 +2156,7 @@ describe("ws-router", () => {
           return { snapshotChanged: false }
         },
       } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getPendingToolPreviews: () => new Map() } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},

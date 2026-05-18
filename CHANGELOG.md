@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.61.1](https://github.com/cuongtranba/kanna/compare/v0.61.0...v0.61.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **claude-pty:** route AskUserQuestion/ExitPlanMode to UI under PTY ([#216](https://github.com/cuongtranba/kanna/issues/216)) ([2316725](https://github.com/cuongtranba/kanna/commit/2316725845263948761e24d897d5eba5b03bcebb)), closes [#215](https://github.com/cuongtranba/kanna/issues/215)
+* **update:** instant overlay + per-button loading for install/rollback/redeploy ([#213](https://github.com/cuongtranba/kanna/issues/213)) ([e2f0801](https://github.com/cuongtranba/kanna/commit/e2f0801810ae12ee704e67d2eb375e8c5f387a24))
+
 ## [0.61.0](https://github.com/cuongtranba/kanna/compare/v0.60.0...v0.61.0) (2026-05-18)
 
 

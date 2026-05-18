@@ -17,6 +17,12 @@ import { createEditTool } from "./kanna-mcp-tools/edit"
 import { createWriteTool } from "./kanna-mcp-tools/write"
 import { createWebFetchTool } from "./kanna-mcp-tools/webfetch"
 import { createWebSearchTool } from "./kanna-mcp-tools/websearch"
+import {
+  createDelegateSubagentTool,
+  DELEGATE_SUBAGENT_DESCRIPTION,
+  type DelegateSubagentContext,
+} from "./kanna-mcp-tools/delegate-subagent"
+import type { SubagentOrchestrator } from "./subagent-orchestrator"
 import type { ToolCallbackService } from "./tool-callback"
 import type { ChatPermissionPolicy } from "../shared/permission-policy"
 import { POLICY_DEFAULT } from "../shared/permission-policy"
@@ -26,12 +32,30 @@ export interface OfferDownloadArgs {
   localPath: string
 }
 
+/**
+ * Per-spawn delegation context for `mcp__kanna__delegate_subagent`.
+ * Main-agent spawns set `depth: 0`, `parentSubagentId: null`,
+ * `parentRunId: null`, `ancestorSubagentIds: []`. Subagent spawns set
+ * the caller's own run context so cycle / depth checks apply.
+ */
+export interface KannaMcpDelegationContext {
+  parentSubagentId: string | null
+  parentRunId: string | null
+  ancestorSubagentIds: string[]
+  depth: number
+  getParentUserMessageId: () => string | null
+}
+
 export interface KannaMcpArgs extends OfferDownloadArgs {
   chatId?: string
   sessionId?: string
   tunnelGateway?: TunnelGateway | null
   toolCallback?: ToolCallbackService
   chatPolicy?: ChatPermissionPolicy
+  /** Required for delegate_subagent. Omit when subagent registry is unavailable; the tool will then be hidden from the model. */
+  subagentOrchestrator?: SubagentOrchestrator
+  /** Required alongside `subagentOrchestrator`. Defaults to a stub returning null when omitted. */
+  delegationContext?: KannaMcpDelegationContext
 }
 
 export interface ResolvedOfferDownload {
@@ -122,6 +146,35 @@ Returns one of:
 - invalid_port: the port is outside the valid range
 `
 
+function buildDelegateSubagentToolList(args: {
+  orchestrator?: SubagentOrchestrator
+  delegationContext?: KannaMcpDelegationContext
+  chatId: string | null
+}): SdkMcpToolDefinition<any>[] {
+  if (!args.orchestrator || !args.delegationContext || !args.chatId) return []
+  const ctx = args.delegationContext
+  const chatId = args.chatId
+  const delegate = createDelegateSubagentTool({ orchestrator: args.orchestrator })
+  return [
+    tool(
+      delegate.name,
+      DELEGATE_SUBAGENT_DESCRIPTION,
+      delegate.schema.shape,
+      async (input) => {
+        const handlerCtx: DelegateSubagentContext = {
+          chatId,
+          parentSubagentId: ctx.parentSubagentId,
+          parentRunId: ctx.parentRunId,
+          ancestorSubagentIds: ctx.ancestorSubagentIds,
+          depth: ctx.depth,
+          getParentUserMessageId: ctx.getParentUserMessageId,
+        }
+        return await delegate.handler(input, handlerCtx)
+      },
+    ),
+  ]
+}
+
 export function buildKannaMcpTools(args: KannaMcpArgs): SdkMcpToolDefinition<any>[] {
   const tunnelGateway = args.tunnelGateway ?? null
   const chatId = args.chatId ?? null
@@ -153,6 +206,11 @@ export function buildKannaMcpTools(args: KannaMcpArgs): SdkMcpToolDefinition<any
         }
       },
     ),
+    ...buildDelegateSubagentToolList({
+      orchestrator: args.subagentOrchestrator,
+      delegationContext: args.delegationContext,
+      chatId: chatId,
+    }),
     tool(
       "expose_port",
       EXPOSE_PORT_DESCRIPTION,

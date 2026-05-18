@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { verifyPtyAuth } from "./auth"
 import { startKannaMcpHttpServer, buildMcpConfigJson, type KannaMcpHttpHandle } from "../kanna-mcp-http"
+import type { KannaMcpDelegationContext } from "../kanna-mcp"
+import type { SubagentOrchestrator } from "../subagent-orchestrator"
 import { parseConfiguredContextWindowFromModelId, timestamped } from "../agent"
 import { KANNA_SYSTEM_PROMPT_APPEND } from "../../shared/kanna-system-prompt"
 import type { PreflightGate } from "./preflight/gate"
@@ -41,6 +43,14 @@ export interface StartClaudeSessionPtyArgs {
   sessionToken: string | null
   additionalDirectories?: string[]
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  /**
+   * Append text for `--append-system-prompt`. Defaults to the static
+   * {@link KANNA_SYSTEM_PROMPT_APPEND} blurb for back-compat with older
+   * callers; production callers in `agent.ts` pass the dynamic value
+   * from `buildKannaSystemPromptAppend` so the subagent roster is
+   * embedded.
+   */
+  systemPromptAppend?: string
   systemPromptOverride?: string
   initialPrompt?: string
   homeDir?: string
@@ -52,6 +62,10 @@ export interface StartClaudeSessionPtyArgs {
   tunnelGateway?: TunnelGateway | null
   /** Per-chat permission policy for kanna-mcp built-in shims. */
   chatPolicy?: ChatPermissionPolicy
+  /** Orchestrator for delegate_subagent. Omit to hide the tool from the model. */
+  subagentOrchestrator?: SubagentOrchestrator
+  /** Per-spawn delegation context (depth / ancestor chain / parentUserMessageId resolver). */
+  delegationContext?: KannaMcpDelegationContext
   /** Optional override used by tests to inject a fake HTTP MCP starter. */
   startKannaMcpHttpServer?: typeof startKannaMcpHttpServer
   /**
@@ -117,6 +131,7 @@ export interface BuildPtyCliArgsInput {
   forkSession: boolean
   additionalDirectories?: string[]
   systemPromptOverride?: string
+  systemPromptAppend?: string
   /** Absolute path to kanna's own mcp-config JSON. Merged with user's MCP configs (no --strict-mcp-config). */
   mcpConfigPath?: string
 }
@@ -175,7 +190,7 @@ export function buildPtyCliArgs(args: BuildPtyCliArgsInput): string[] {
   if (args.systemPromptOverride) {
     cliArgs.push("--system-prompt", args.systemPromptOverride)
   } else {
-    cliArgs.push("--append-system-prompt", KANNA_SYSTEM_PROMPT_APPEND)
+    cliArgs.push("--append-system-prompt", args.systemPromptAppend ?? KANNA_SYSTEM_PROMPT_APPEND)
   }
   return cliArgs
 }
@@ -276,6 +291,8 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
         tunnelGateway: args.tunnelGateway ?? null,
         toolCallback: args.toolCallback,
         chatPolicy: args.chatPolicy,
+        subagentOrchestrator: args.subagentOrchestrator,
+        delegationContext: args.delegationContext,
       },
     })
     await writeFile(mcpConfigPath, buildMcpConfigJson(mcpHandle), { encoding: "utf8", mode: 0o600 })
@@ -295,6 +312,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     forkSession: args.forkSession,
     additionalDirectories: args.additionalDirectories,
     systemPromptOverride: args.systemPromptOverride,
+    systemPromptAppend: args.systemPromptAppend,
     mcpConfigPath,
   })
 

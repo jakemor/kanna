@@ -208,6 +208,43 @@ still uses its native built-ins and these shims sit unused.
 `websearch` is a stub that always returns `isError: true` — real web search
 needs an external API integration which is out of scope for P3a.
 
+# Subagent Delegation (Anthropic Task-tool pattern)
+
+The main agent is always in the loop. `@agent/<name>` in chat input is a
+**hint**, not server-side routing — it no longer short-circuits the main
+turn. The main model decides whether to delegate and calls
+`mcp__kanna__delegate_subagent({ subagent_id, prompt })`. The tool blocks
+until the run finishes and returns the subagent's final reply as text;
+the main model then synthesizes it into its own response.
+
+- **Roster injection:** `buildKannaSystemPromptAppend(subagents)` in
+  `src/shared/kanna-system-prompt.ts` builds a dynamic system-prompt
+  suffix listing every configured subagent's `name`, `id`, and
+  `description`. Computed per-spawn in `agent.ts` and passed to both
+  drivers (SDK via `systemPrompt.append`, PTY via
+  `--append-system-prompt`). Truncated at 20 entries by `updatedAt`
+  descending; remainder surfaced as "(N more subagents omitted ...)".
+- **MCP tool:** registered in `kanna-mcp.ts` only when the spawn
+  supplies both `subagentOrchestrator` AND `delegationContext`. Main
+  spawns supply `depth: 0`, `ancestorSubagentIds: []`, `parentRunId:
+  null`. Subagent spawns (sub-spawn-sub) supply the caller's own
+  context so cycle / depth checks apply — `LOOP_DETECTED` when the
+  target appears in the ancestor chain, `DEPTH_EXCEEDED` when
+  `depth > maxChainDepth` (default 1, configurable on the orchestrator).
+- **`SubagentOrchestrator.delegateRun(args)`:** public async API that
+  awaits a single run and returns `DelegationOutcome` —
+  `{status:"completed", text}` or `{status:"failed", errorCode, errorMessage}`.
+  Used by the MCP tool; also exposed via
+  `AgentCoordinator.getSubagentOrchestrator()` for tests.
+- **Cancellation:** `cancelChat` / `cancelRun` cascade through delegated
+  runs as before. Each `delegateRun` registers a `RunState` and obeys
+  the same permit / timeout / abort wiring as the legacy
+  mention-triggered path.
+- **Backwards compat:** `parseMentions` still runs inside the normal
+  `appendUserPrompt` path so `subagentMentions` metadata stays on
+  `user_prompt` entries for UI badges and analytics. The assistant-text
+  mention scan and the `chat_send` / dequeue short-circuits are removed.
+
 # Tests
 
 `bun test` MUST pass locally before any push or PR. CI (`.github/workflows/test.yml`)

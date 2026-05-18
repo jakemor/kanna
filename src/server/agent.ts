@@ -1,5 +1,5 @@
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
-import { createKannaMcpServer } from "./kanna-mcp"
+import { createKannaMcpServer, type KannaMcpDelegationContext } from "./kanna-mcp"
 import { KANNA_MCP_SERVER_NAME } from "../shared/tools"
 import { homedir } from "node:os"
 import type {
@@ -25,7 +25,7 @@ import {
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
 import { LOG_PREFIX } from "../shared/branding"
-import { KANNA_SYSTEM_PROMPT_APPEND } from "../shared/kanna-system-prompt"
+import { KANNA_SYSTEM_PROMPT_APPEND, buildKannaSystemPromptAppend } from "../shared/kanna-system-prompt"
 import { EventStore } from "./event-store"
 import type { AnalyticsReporter } from "./analytics"
 import { NoopAnalyticsReporter } from "./analytics"
@@ -127,10 +127,6 @@ interface ActiveTurn {
   // this turn). Used to attribute main-Claude-initiated subagent runs to the
   // originating user message.
   userMessageId: string | null
-  // Concatenated assistant_text emitted during this turn. Scanned for
-  // `@agent/<name>` mentions on `result` so main Claude can delegate to a
-  // subagent by writing the mention in its reply.
-  assistantTextAccum: string
 }
 
 export interface ClaudeSessionHandle {
@@ -189,6 +185,17 @@ interface AgentCoordinatorArgs {
     chatId?: string
     tunnelGateway?: TunnelGateway | null
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+    /**
+     * Append text for the claude_code preset's `systemPrompt.append`.
+     * Defaults to the static refusal-policy blurb; production callers in
+     * `agent.ts` pass the dynamic value from `buildKannaSystemPromptAppend`
+     * so the subagent roster is embedded.
+     */
+    systemPromptAppend?: string
+    /** Orchestrator for delegate_subagent. Omit to hide the tool. */
+    subagentOrchestrator?: SubagentOrchestrator
+    /** Per-spawn delegation context (depth / ancestor chain / parentUserMessageId resolver). */
+    delegationContext?: KannaMcpDelegationContext
     /**
      * Subagent-only override. When set, REPLACES the claude_code preset
      * append on systemPrompt entirely. Primary chats leave this unset.
@@ -873,12 +880,17 @@ async function startClaudeSession(args: {
   chatId?: string
   tunnelGateway?: TunnelGateway | null
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  systemPromptAppend?: string
   systemPromptOverride?: string
   initialPrompt?: string
   /** Routes AskUserQuestion/ExitPlanMode through tool-callback when KANNA_MCP_TOOL_CALLBACKS=1. */
   toolCallback?: ToolCallbackService
   /** Per-chat permission policy. Defaults to POLICY_DEFAULT if omitted. */
   chatPolicy?: ChatPermissionPolicy
+  /** Orchestrator for delegate_subagent. Omit to hide the tool. */
+  subagentOrchestrator?: SubagentOrchestrator
+  /** Per-spawn delegation context (depth / ancestor chain / parentUserMessageId resolver). */
+  delegationContext?: KannaMcpDelegationContext
 }): Promise<ClaudeSessionHandle> {
   const canUseTool = buildCanUseTool({
     localPath: args.localPath,
@@ -914,6 +926,8 @@ async function startClaudeSession(args: {
           tunnelGateway: args.tunnelGateway ?? null,
           toolCallback: args.toolCallback,
           chatPolicy: args.chatPolicy,
+          subagentOrchestrator: args.subagentOrchestrator,
+          delegationContext: args.delegationContext,
         }),
       },
       systemPrompt: args.systemPromptOverride != null
@@ -921,7 +935,7 @@ async function startClaudeSession(args: {
         : {
             type: "preset",
             preset: "claude_code",
-            append: KANNA_SYSTEM_PROMPT_APPEND,
+            append: args.systemPromptAppend ?? KANNA_SYSTEM_PROMPT_APPEND,
           },
       settingSources: ["user", "project", "local"],
       pathToClaudeCodeExecutable: process.env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, homedir()) || undefined,
@@ -1061,6 +1075,10 @@ export class AgentCoordinator {
   private readonly getSubagents: () => Subagent[]
   private readonly getAppSettingsSnapshot: NonNullable<AgentCoordinatorArgs["getAppSettingsSnapshot"]>
   private readonly subagentOrchestrator: SubagentOrchestrator
+  /** Public accessor for tests + the `delegate_subagent` MCP tool wiring. */
+  getSubagentOrchestrator(): SubagentOrchestrator {
+    return this.subagentOrchestrator
+  }
   private readonly throwOnClaudeSessionStart: boolean
   private readonly autoResumeByChat = new Map<string, boolean>()
   // Per-chat circuit breaker for proactive `/compact` injection lives in the
@@ -1105,7 +1123,17 @@ export class AgentCoordinator {
     this.subagentOrchestrator = new SubagentOrchestrator({
       store: this.store,
       appSettings: { getSnapshot: () => ({ subagents: this.getSubagents() }) },
-      startProviderRun: ({ subagent, chatId, primer, userInstruction, runId, abortSignal }) => this.buildSubagentProviderRunForChat({ subagent, chatId, primer, userInstruction, runId, abortSignal }),
+      startProviderRun: (a) => this.buildSubagentProviderRunForChat({
+        subagent: a.subagent,
+        chatId: a.chatId,
+        primer: a.primer,
+        userInstruction: a.userInstruction,
+        runId: a.runId,
+        abortSignal: a.abortSignal,
+        depth: a.depth,
+        ancestorSubagentIds: a.ancestorSubagentIds,
+        parentUserMessageId: a.parentUserMessageId,
+      }),
       onRunTerminal: (chatId, runId) => {
         this.rejectPendingResolversForRun(chatId, runId)
         // failRun appended the terminal event synchronously before invoking
@@ -1419,6 +1447,7 @@ export class AgentCoordinator {
         }
         if (picked) this.oauthPool!.markUsed(picked.id)
         const usePtyEphemeral = this.resolveClaudeDriverPreference() === "pty"
+        const ephemeralSystemPromptAppend = buildKannaSystemPromptAppend(this.getSubagents())
         const ephemeral = usePtyEphemeral
           ? await this.startClaudeSessionPTYFn({
               chatId,
@@ -1432,6 +1461,7 @@ export class AgentCoordinator {
               oauthToken: picked?.token ?? null,
               oauthLabel: picked?.label,
               onToolRequest: async () => null,
+              systemPromptAppend: ephemeralSystemPromptAppend,
               preflightGate: this.preflightGate ?? undefined,
             })
           : await this.startClaudeSessionFn({
@@ -1444,6 +1474,7 @@ export class AgentCoordinator {
               forkSession: false,
               oauthToken: picked?.token ?? null,
               onToolRequest: async () => null,
+              systemPromptAppend: ephemeralSystemPromptAppend,
             })
         try {
           commands = await ephemeral.getSupportedCommands()
@@ -1515,39 +1546,10 @@ export class AgentCoordinator {
     await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     const chat = this.store.requireChat(chatId)
 
-    // B4 — A message queued while another turn was active may carry
-    // `@agent/<name>` mentions that the send-path short-circuit
-    // (chat_send route at agent.ts:2081) would have routed to the
-    // orchestrator. Re-parse on dequeue so the queued message still
-    // triggers subagent runs instead of silently running as a normal
-    // main-provider turn. Steered messages are user-edited replays of a
-    // previous turn — we re-inject them verbatim and do not route as
-    // new mentions.
-    if (!options?.steered) {
-      const parsedMentions = parseMentions(queuedMessage.content, this.getSubagents())
-      if (parsedMentions.length > 0) {
-        this.analytics.track("message_sent")
-        const userMessageId = await this.appendUserPromptForSubagentRun(
-          chatId,
-          queuedMessage.content,
-          queuedMessage.attachments,
-          parsedMentions,
-        )
-        void this.subagentOrchestrator
-          .runMentionsForUserMessage({
-            chatId,
-            userMessageId,
-            mentions: parsedMentions,
-            userContent: queuedMessage.content,
-          })
-          .then(() => this.emitStateChange(chatId))
-          .catch((err) => {
-            console.warn(`${LOG_PREFIX} subagent orchestrator (dequeued mention) failed`, { chatId, err })
-          })
-        return
-      }
-    }
-
+    // Mentions no longer short-circuit the main turn (Anthropic-style
+    // Task-tool pattern). The main agent always runs; mention metadata is
+    // still attached to the user_prompt entry by `startTurnForChat` →
+    // `appendUserPrompt`.
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage)
     await this.startTurnForChat({
@@ -1860,7 +1862,6 @@ export class AgentCoordinator {
       profilingStartedAt: args.profile?.startedAt,
       waitStartedAt: null,
       userMessageId: appendedUserMessageId ?? this.findLastUserMessageId(args.chatId),
-      assistantTextAccum: "",
     }
     this.activeTurns.set(args.chatId, active)
     logSendToStartingProfile(args.profile, "start_turn.active_turn_registered", {
@@ -1958,7 +1959,6 @@ export class AgentCoordinator {
       clientTraceId: args.clientTraceId,
       waitStartedAt: null,
       userMessageId: this.findLastUserMessageId(args.chatId),
-      assistantTextAccum: "",
     }
     this.activeTurns.set(args.chatId, active)
     return active
@@ -1971,35 +1971,6 @@ export class AgentCoordinator {
       if (entry.kind === "user_prompt") return entry._id
     }
     return null
-  }
-
-  /**
-   * Scans the just-completed main turn's assistant text for `@agent/<name>`
-   * mentions. Each known mention spawns a fresh subagent run attributed to
-   * the user message that triggered this turn. Runs are dispatched
-   * fire-and-forget — the orchestrator persists progress via the event log.
-   * Skipped when no userMessageId is known (defensive: orchestrator requires
-   * one to attribute the run, and we should not silently drop work).
-   */
-  private dispatchAssistantMentions(chatId: string, active: ActiveTurn): void {
-    const text = active.assistantTextAccum
-    if (!text) return
-    const mentions = parseMentions(text, this.getSubagents())
-    if (mentions.length === 0) return
-    const userMessageId = active.userMessageId
-    if (!userMessageId) {
-      console.warn(
-        `${LOG_PREFIX} skipping assistant mentions — no userMessageId on active turn`,
-        { chatId, mentionCount: mentions.length },
-      )
-      return
-    }
-    void this.subagentOrchestrator
-      .runMentionsForUserMessage({ chatId, userMessageId, mentions, userContent: text })
-      .then(() => this.emitStateChange(chatId))
-      .catch((err) => {
-        console.warn(`${LOG_PREFIX} subagent orchestrator (assistant mentions) failed`, { chatId, err })
-      })
   }
 
   private async startClaudeTurn(args: {
@@ -2042,6 +2013,15 @@ export class AgentCoordinator {
       }
       if (picked) this.oauthPool!.markUsed(picked.id)
       const usePty = this.resolveClaudeDriverPreference() === "pty"
+      const systemPromptAppend = buildKannaSystemPromptAppend(this.getSubagents())
+      const chatIdForCtx = args.chatId
+      const delegationContext: KannaMcpDelegationContext = {
+        parentSubagentId: null,
+        parentRunId: null,
+        ancestorSubagentIds: [],
+        depth: 0,
+        getParentUserMessageId: () => this.activeTurns.get(chatIdForCtx)?.userMessageId ?? null,
+      }
       const started = usePty
         ? await this.startClaudeSessionPTYFn({
             chatId: args.chatId,
@@ -2056,6 +2036,9 @@ export class AgentCoordinator {
             oauthLabel: picked?.label,
             additionalDirectories: args.additionalDirectories,
             onToolRequest: args.onToolRequest,
+            systemPromptAppend,
+            subagentOrchestrator: this.subagentOrchestrator,
+            delegationContext,
             preflightGate: this.preflightGate ?? undefined,
             toolCallback: this.toolCallback ?? undefined,
             tunnelGateway: this.tunnelGateway,
@@ -2074,6 +2057,9 @@ export class AgentCoordinator {
             chatId: args.chatId,
             tunnelGateway: this.tunnelGateway,
             onToolRequest: args.onToolRequest,
+            systemPromptAppend,
+            subagentOrchestrator: this.subagentOrchestrator,
+            delegationContext,
             toolCallback: this.toolCallback ?? undefined,
             chatPolicy: this.resolveChatPolicy(args.chatId),
           })
@@ -2170,32 +2156,11 @@ export class AgentCoordinator {
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
-    const parsedMentions = parseMentions(command.content, this.getSubagents())
-    if (parsedMentions.length > 0) {
-      this.analytics.track("message_sent")
-      const userMessageId = await this.appendUserPromptForSubagentRun(
-        chatId,
-        command.content,
-        command.attachments ?? [],
-        parsedMentions,
-      )
-      logSendToStartingProfile(profile, "chat_send.subagent_routed", {
-        chatId,
-        userMessageId,
-        mentionCount: parsedMentions.length,
-      })
-      // Fire-and-forget: orchestrator runs are durable via the event log; the
-      // client observes progress through subagentRuns snapshot deltas. We
-      // intentionally do not await here so the WebSocket ack returns quickly.
-      void this.subagentOrchestrator
-        .runMentionsForUserMessage({ chatId, userMessageId, mentions: parsedMentions, userContent: command.content })
-        .then(() => this.emitStateChange(chatId))
-        .catch((err) => {
-          console.warn(`${LOG_PREFIX} subagent orchestrator failed`, { chatId, err })
-        })
-      return { chatId }
-    }
-
+    // Mentions no longer short-circuit the main turn. The main agent always
+    // runs and decides whether to delegate via `mcp__kanna__delegate_subagent`
+    // (Anthropic-style Task-tool pattern). `parseMentions` still runs inside
+    // `startTurnForChat` → `appendUserPrompt` so the user_prompt entry
+    // continues to carry `subagentMentions` metadata for UI badges + analytics.
     const provider = this.resolveProvider(command, chat.provider)
     const settings = this.getProviderSettings(provider, command)
     this.analytics.track("message_sent")
@@ -2278,32 +2243,6 @@ export class AgentCoordinator {
     return shouldProactivelyCompact(usage)
   }
 
-  private async appendUserPromptForSubagentRun(
-    chatId: string,
-    content: string,
-    attachments: ChatAttachment[],
-    parsedMentions: ParsedMention[],
-  ): Promise<string> {
-    const subagentMentions = parsedMentions
-      .filter((mention): mention is Extract<ParsedMention, { kind: "subagent" }> => mention.kind === "subagent")
-      .map((mention) => ({ subagentId: mention.subagentId, raw: mention.raw }))
-    const unknownSubagentMentions = parsedMentions
-      .filter((mention): mention is Extract<ParsedMention, { kind: "unknown-subagent" }> => mention.kind === "unknown-subagent")
-      .map((mention) => ({ name: mention.name, raw: mention.raw }))
-    const entry = timestamped(
-      {
-        kind: "user_prompt",
-        content,
-        attachments,
-        ...(subagentMentions.length > 0 ? { subagentMentions } : {}),
-        ...(unknownSubagentMentions.length > 0 ? { unknownSubagentMentions } : {}),
-      },
-      Date.now(),
-    )
-    await this.store.appendMessage(chatId, entry)
-    return entry._id
-  }
-
   /**
    * D6 — subagent Claude starter. When `KANNA_CLAUDE_DRIVER=pty` the
    * subagent turn runs through the PTY driver (subscription billing)
@@ -2330,6 +2269,8 @@ export class AgentCoordinator {
           onToolRequest: a.onToolRequest,
           systemPromptOverride: a.systemPromptOverride,
           initialPrompt: a.initialPrompt,
+          subagentOrchestrator: a.subagentOrchestrator,
+          delegationContext: a.delegationContext,
           preflightGate: this.preflightGate ?? undefined,
           toolCallback: this.toolCallback ?? undefined,
           tunnelGateway: this.tunnelGateway,
@@ -2348,6 +2289,9 @@ export class AgentCoordinator {
     userInstruction: string | null
     runId: string
     abortSignal: AbortSignal
+    depth: number
+    ancestorSubagentIds: string[]
+    parentUserMessageId: string
   }): ProviderRunStart {
     const chat = this.store.requireChat(args.chatId)
     const project = this.store.getProject(chat.projectId)
@@ -2387,6 +2331,18 @@ export class AgentCoordinator {
       })
     }
 
+    const delegationContext: KannaMcpDelegationContext = {
+      parentSubagentId: args.subagent.id,
+      parentRunId: args.runId,
+      ancestorSubagentIds: [...args.ancestorSubagentIds, args.subagent.id],
+      depth: args.depth + 1,
+      // For sub-spawn-sub, the parent_user_message_id stays anchored to the
+      // chat turn that started the whole chain — that's the attribution the
+      // run_started events use, and the orchestrator's depth/cycle checks
+      // protect against runaway chains.
+      getParentUserMessageId: () => args.parentUserMessageId,
+    }
+
     return buildSubagentProviderRun({
       subagent: args.subagent,
       chatId: args.chatId,
@@ -2398,6 +2354,8 @@ export class AgentCoordinator {
       additionalDirectories: spawn.additionalDirectories,
       projectId: project.id,
       startClaudeSession: this.buildClaudeSubagentStarter(),
+      subagentOrchestrator: this.subagentOrchestrator,
+      delegationContext,
       codexManager: this.codexManager,
       onToolRequest,
       authReady: async (provider) => {
@@ -2547,9 +2505,6 @@ export class AgentCoordinator {
         await this.store.appendMessage(session.chatId, event.entry)
         this.trackBashToolEntry(session.chatId, event.entry)
         const active = this.activeTurns.get(session.chatId)
-        if (event.entry.kind === "assistant_text" && active) {
-          active.assistantTextAccum += event.entry.text
-        }
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
           const chat = this.store.getChat(session.chatId)
@@ -2630,7 +2585,6 @@ export class AgentCoordinator {
             }
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(session.chatId)
-            this.dispatchAssistantMentions(session.chatId, active)
             if (active.proactiveCompactInjection) {
               await this.store.setCompactFailureCount(session.chatId, 0)
             }
@@ -2755,9 +2709,6 @@ export class AgentCoordinator {
         await this.store.appendMessage(active.chatId, event.entry)
         this.trackBashToolEntry(active.chatId, event.entry)
 
-        if (event.entry.kind === "assistant_text") {
-          active.assistantTextAccum += event.entry.text
-        }
         if (event.entry.kind === "system_init") {
           active.status = "running"
         }
@@ -2768,7 +2719,6 @@ export class AgentCoordinator {
             await this.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed")
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
-            this.dispatchAssistantMentions(active.chatId, active)
           }
           // Remove from activeTurns as soon as the result arrives so the UI
           // transitions to idle immediately. The stream may still be open

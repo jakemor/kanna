@@ -9,6 +9,8 @@ import type {
 } from "../shared/types"
 import type { ClaudeSessionHandle } from "./agent"
 import type { ProviderRunStart } from "./subagent-orchestrator"
+import type { SubagentOrchestrator } from "./subagent-orchestrator"
+import type { KannaMcpDelegationContext } from "./kanna-mcp"
 
 /**
  * Builds a ProviderRunStart for a single subagent run. Each call returns a
@@ -53,7 +55,13 @@ export interface BuildSubagentProviderRunArgs {
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     systemPromptOverride?: string
     initialPrompt?: string
+    subagentOrchestrator?: SubagentOrchestrator
+    delegationContext?: KannaMcpDelegationContext
   }) => Promise<ClaudeSessionHandle>
+  /** Optional — propagated into the subagent's own kanna-mcp so it can call `delegate_subagent`. */
+  subagentOrchestrator?: SubagentOrchestrator
+  /** Optional — per-spawn delegation context forwarded to kanna-mcp for sub-spawn-sub. */
+  delegationContext?: KannaMcpDelegationContext
   codexManager: CodexAppServerManager
   /** Forwards interactive tool requests (AskUserQuestion / ExitPlanMode) to the parent chat's UI handler. */
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
@@ -117,6 +125,8 @@ async function runClaudeSubagent(opts: {
     onToolRequest: args.onToolRequest,
     systemPromptOverride: args.subagent.systemPrompt,
     initialPrompt,
+    subagentOrchestrator: args.subagentOrchestrator,
+    delegationContext: args.delegationContext,
   })
   args.abortSignal.addEventListener("abort", () => { session.interrupt() }, { once: true })
   try {

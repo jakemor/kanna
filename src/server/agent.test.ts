@@ -3783,36 +3783,7 @@ describe("AgentCoordinator subagent mention gating", () => {
     }
   }
 
-  test("send with resolved @agent mention does NOT start primary turn", async () => {
-    const store = createFakeStore()
-    const startTurnCalls: unknown[] = []
-    const fakeCodexManager = {
-      async startSession() { startTurnCalls.push("session") },
-      async startTurn(): Promise<HarnessTurn> { startTurnCalls.push("turn"); throw new Error("primary turn should not start") },
-    }
-    const coordinator = new AgentCoordinator({
-      store: store as never,
-      onStateChange: () => {},
-      codexManager: fakeCodexManager as never,
-      getSubagents: () => [makeSubagentRecord({ id: "sa-1", name: "alpha" })],
-    })
-
-    await coordinator.send({
-      type: "chat.send",
-      chatId: "chat-1",
-      provider: "claude",
-      content: "hi @agent/alpha please review",
-      model: "claude-opus-4-7",
-    })
-
-    await waitFor(() => Object.keys(store.getSubagentRuns()).length > 0)
-    expect(startTurnCalls).toEqual([])
-    const runs = Object.values(store.getSubagentRuns())
-    expect(runs).toHaveLength(1)
-    expect(store.messages[0]?.kind).toBe("user_prompt")
-  })
-
-  test("send with only unknown-subagent mention emits UNKNOWN_SUBAGENT and skips primary", async () => {
+  test("delegateRun for unknown subagent emits UNKNOWN_SUBAGENT and never starts a primary turn", async () => {
     const store = createFakeStore()
     const startTurnCalls: unknown[] = []
     const fakeCodexManager = {
@@ -3826,19 +3797,23 @@ describe("AgentCoordinator subagent mention gating", () => {
       getSubagents: () => [],
     })
 
-    await coordinator.send({
-      type: "chat.send",
+    const outcome = await coordinator.getSubagentOrchestrator().delegateRun({
       chatId: "chat-1",
-      provider: "claude",
-      content: "hi @agent/nobody",
-      model: "claude-opus-4-7",
+      parentUserMessageId: "umsg-1",
+      parentRunId: null,
+      parentSubagentId: null,
+      ancestorSubagentIds: [],
+      depth: 0,
+      subagentId: "sa-missing",
+      prompt: "ignored",
     })
 
-    await waitFor(() => Object.keys(store.getSubagentRuns()).length > 0)
+    expect(outcome.status).toBe("failed")
+    if (outcome.status !== "failed") throw new Error("unreachable")
+    expect(outcome.errorCode).toBe("UNKNOWN_SUBAGENT")
     expect(startTurnCalls).toEqual([])
     const runs = Object.values(store.getSubagentRuns()) as Array<{ status: string; error: { code: string } | null }>
     expect(runs).toHaveLength(1)
-    expect(runs[0].status).toBe("failed")
     expect(runs[0].error?.code).toBe("UNKNOWN_SUBAGENT")
   })
 
@@ -3884,12 +3859,15 @@ describe("AgentCoordinator subagent mention gating", () => {
       },
     })
 
-    await coordinator.send({
-      type: "chat.send",
+    void coordinator.getSubagentOrchestrator().delegateRun({
       chatId: "chat-1",
-      provider: "claude",
-      content: "@agent/alpha",
-      model: "claude-opus-4-7",
+      parentUserMessageId: "umsg-1",
+      parentRunId: null,
+      parentSubagentId: null,
+      ancestorSubagentIds: [],
+      depth: 0,
+      subagentId: "sa-1",
+      prompt: "go",
     })
 
     // Wait for the pending tool event to be appended by the orchestrator
@@ -3974,12 +3952,15 @@ describe("AgentCoordinator subagent mention gating", () => {
       },
     })
 
-    await coordinator.send({
-      type: "chat.send",
+    void coordinator.getSubagentOrchestrator().delegateRun({
       chatId: "chat-1",
-      provider: "claude",
-      content: "@agent/alpha",
-      model: "claude-opus-4-7",
+      parentUserMessageId: "umsg-1",
+      parentRunId: null,
+      parentSubagentId: null,
+      ancestorSubagentIds: [],
+      depth: 0,
+      subagentId: "sa-1",
+      prompt: "go",
     })
 
     // Wait for the pending tool event to be appended by the orchestrator
@@ -4068,12 +4049,15 @@ describe("AgentCoordinator subagent mention gating", () => {
       },
     })
 
-    await coordinator.send({
-      type: "chat.send",
+    void coordinator.getSubagentOrchestrator().delegateRun({
       chatId: "chat-1",
-      provider: "claude",
-      content: "@agent/alpha",
-      model: "claude-opus-4-7",
+      parentUserMessageId: "umsg-1",
+      parentRunId: null,
+      parentSubagentId: null,
+      ancestorSubagentIds: [],
+      depth: 0,
+      subagentId: "sa-1",
+      prompt: "go",
     })
     await waitFor(() => store.subagentEvents.some((e: any) => e.type === "subagent_tool_pending"))
 
@@ -4138,12 +4122,15 @@ describe("AgentCoordinator subagent mention gating", () => {
       },
     })
 
-    await coordinator.send({
-      type: "chat.send",
+    void coordinator.getSubagentOrchestrator().delegateRun({
       chatId: "chat-1",
-      provider: "claude",
-      content: "@agent/alpha",
-      model: "claude-opus-4-7",
+      parentUserMessageId: "umsg-1",
+      parentRunId: null,
+      parentSubagentId: null,
+      ancestorSubagentIds: [],
+      depth: 0,
+      subagentId: "sa-1",
+      prompt: "go",
     })
     await waitFor(() => store.subagentEvents.some((e: any) => e.type === "subagent_run_started"))
     const runId = Object.keys(store.getSubagentRuns())[0]!

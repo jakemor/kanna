@@ -271,13 +271,22 @@ describe("buildPtyCliArgs", () => {
     expect(args[idx + 1]).toContain("Kanna coding agent")
   })
 
-  test("D8: appended prompt is the shared KANNA_SYSTEM_PROMPT_APPEND verbatim", () => {
+  test("D8: appended prompt is the shared KANNA_SYSTEM_PROMPT_APPEND when no override is supplied", () => {
     const args = buildPtyCliArgs(baseInput)
     const idx = args.indexOf("--append-system-prompt")
     expect(args[idx + 1]).toBe(KANNA_SYSTEM_PROMPT_APPEND)
     // Regression guard: PTY must carry the full trusted-developer /
     // security-research guidance, not the old one-sentence stub.
     expect(args[idx + 1]).toContain("Reverse-engineering, security research")
+  })
+
+  test("D8b: systemPromptAppend overrides the static default (dynamic subagent roster path)", () => {
+    const dynamic = `${KANNA_SYSTEM_PROMPT_APPEND}\n\n## Available subagents\n\n- codereview [id=sa-1]: review PR diffs`
+    const args = buildPtyCliArgs({ ...baseInput, systemPromptAppend: dynamic })
+    const idx = args.indexOf("--append-system-prompt")
+    expect(args[idx + 1]).toBe(dynamic)
+    expect(args[idx + 1]).toContain("Available subagents")
+    expect(args[idx + 1]).toContain("codereview [id=sa-1]")
   })
 
   test("--system-prompt override replaces default append", () => {

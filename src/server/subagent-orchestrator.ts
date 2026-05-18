@@ -101,6 +101,12 @@ export interface SubagentOrchestratorDeps {
     userInstruction: string | null
     runId: string
     abortSignal: AbortSignal
+    /** Depth of THIS run in the chain (top-level user delegation = 0). */
+    depth: number
+    /** Ancestor chain of subagent ids leading to this run, oldest first. */
+    ancestorSubagentIds: string[]
+    /** User message id the originating chat turn is responding to. */
+    parentUserMessageId: string
   }) => ProviderRunStart
   /**
    * Called when a subagent run enters a terminal state (failed / completed /
@@ -118,6 +124,15 @@ export interface SubagentOrchestratorDeps {
 
 const DEFAULT_MAX_PARALLEL = 4
 const DEFAULT_MAX_CHAIN_DEPTH = 1
+
+/**
+ * Terminal outcome of a single subagent run, surfaced to callers that
+ * need the final reply text — e.g. `mcp__kanna__delegate_subagent` so
+ * the main agent can synthesize the subagent's answer into its own reply.
+ */
+export type DelegationOutcome =
+  | { status: "completed"; runId: string; text: string }
+  | { status: "failed"; runId: string; errorCode: SubagentErrorCode; errorMessage: string }
 // Subagents now run with full toolset (Bash, Read, etc) so single turns may
 // take minutes. 600s matches the default Bash tool wall-clock cap. Tests still
 // override via SubagentOrchestratorDeps.runTimeoutMs.
@@ -362,6 +377,105 @@ export class SubagentOrchestrator {
     ))
   }
 
+  /**
+   * Public entry point for `mcp__kanna__delegate_subagent`. The main agent
+   * (or a parent subagent, when sub-spawning-sub is enabled) calls this with
+   * a subagent id and a prompt; the orchestrator runs the subagent and the
+   * caller awaits the terminal {@link DelegationOutcome}.
+   *
+   * Cycle / depth guards mirror the chained-mention path in `spawnRun`: a
+   * parent cannot delegate to a subagent already in its ancestor chain, and
+   * `depth > maxChainDepth` fails fast with `DEPTH_EXCEEDED`.
+   */
+  async delegateRun(args: {
+    chatId: string
+    parentUserMessageId: string
+    parentRunId: string | null
+    parentSubagentId: string | null
+    ancestorSubagentIds: string[]
+    depth: number
+    subagentId: string
+    prompt: string
+  }): Promise<DelegationOutcome> {
+    await this.recoveryPromise
+    const subagent = this.deps.appSettings
+      .getSnapshot()
+      .subagents.find((s) => s.id === args.subagentId)
+    if (!subagent) {
+      const runId = crypto.randomUUID()
+      await this.deps.store.appendSubagentEvent({
+        v: 3,
+        type: "subagent_run_started",
+        timestamp: this.now(),
+        chatId: args.chatId,
+        runId,
+        subagentId: args.subagentId,
+        subagentName: args.subagentId,
+        provider: "claude",
+        model: "",
+        parentUserMessageId: args.parentUserMessageId,
+        parentRunId: args.parentRunId,
+        depth: args.depth,
+      })
+      return await this.failRun(args.chatId, runId, "UNKNOWN_SUBAGENT", `Subagent ${args.subagentId} not found`)
+    }
+    if (args.depth > this.maxDepth()) {
+      const runId = crypto.randomUUID()
+      await this.deps.store.appendSubagentEvent({
+        v: 3,
+        type: "subagent_run_started",
+        timestamp: this.now(),
+        chatId: args.chatId,
+        runId,
+        subagentId: subagent.id,
+        subagentName: subagent.name,
+        provider: subagent.provider,
+        model: subagent.model,
+        parentUserMessageId: args.parentUserMessageId,
+        parentRunId: args.parentRunId,
+        depth: args.depth,
+      })
+      return await this.failRun(
+        args.chatId,
+        runId,
+        "DEPTH_EXCEEDED",
+        `Chain depth ${args.depth} exceeds limit ${this.maxDepth()}`,
+      )
+    }
+    if (args.ancestorSubagentIds.includes(subagent.id)) {
+      const runId = crypto.randomUUID()
+      await this.deps.store.appendSubagentEvent({
+        v: 3,
+        type: "subagent_run_started",
+        timestamp: this.now(),
+        chatId: args.chatId,
+        runId,
+        subagentId: subagent.id,
+        subagentName: subagent.name,
+        provider: subagent.provider,
+        model: subagent.model,
+        parentUserMessageId: args.parentUserMessageId,
+        parentRunId: args.parentRunId,
+        depth: args.depth,
+      })
+      return await this.failRun(
+        args.chatId,
+        runId,
+        "LOOP_DETECTED",
+        `Subagent ${subagent.name} already in ancestor chain`,
+      )
+    }
+    return await this.spawnRun({
+      subagent,
+      chatId: args.chatId,
+      parentUserMessageId: args.parentUserMessageId,
+      parentRunId: args.parentRunId,
+      depth: args.depth,
+      ancestorSubagentIds: args.ancestorSubagentIds,
+      userInstruction: args.prompt,
+    })
+  }
+
   private async spawnRun(args: {
     subagent: Subagent
     chatId: string
@@ -375,7 +489,7 @@ export class SubagentOrchestrator {
      * provider run so composeInitialPrompt can render it above the primer.
      */
     userInstruction: string
-  }): Promise<void> {
+  }): Promise<DelegationOutcome> {
     const runId = crypto.randomUUID()
     await this.deps.store.appendSubagentEvent({
       v: 3,
@@ -418,9 +532,9 @@ export class SubagentOrchestrator {
       const message = msg === "USER_CANCELLED"
         ? "Cancelled before run started"
         : "Chat cancelled before run started"
-      await this.failRun(args.chatId, runId, code, message)
+      const outcome = await this.failRun(args.chatId, runId, code, message)
       this.cleanupRunState(runId)
-      return
+      return outcome
     }
     let released = false
     const releaseSlot = () => {
@@ -431,9 +545,9 @@ export class SubagentOrchestrator {
 
     if (this.cancelledChats.has(args.chatId)) {
       releaseSlot()
-      await this.failRun(args.chatId, runId, "PROVIDER_ERROR", "Chat cancelled before run started")
+      const outcome = await this.failRun(args.chatId, runId, "PROVIDER_ERROR", "Chat cancelled before run started")
       this.cleanupRunState(runId)
-      return
+      return outcome
     }
 
     try {
@@ -455,6 +569,9 @@ export class SubagentOrchestrator {
           userInstruction: args.userInstruction.length > 0 ? args.userInstruction : null,
           runId,
           abortSignal: runState.abortController.signal,
+          depth: args.depth,
+          ancestorSubagentIds: args.ancestorSubagentIds,
+          parentUserMessageId: args.parentUserMessageId,
         })
       } catch (err) {
         // Defensive: startProviderRun is a synchronous factory but a real impl
@@ -462,20 +579,20 @@ export class SubagentOrchestrator {
         // chat's project lookup fails. Without this guard the run would leak
         // as `running` forever (no failed/completed event ever appended).
         const msg = err instanceof Error ? err.message : String(err)
-        await this.failRun(args.chatId, runId, "PROVIDER_ERROR", msg)
+        const outcome = await this.failRun(args.chatId, runId, "PROVIDER_ERROR", msg)
         // releaseSlot — outer `finally` would re-release if we called raw
         // `this.release()` here (B2). releaseSlot is idempotent via the
         // `released` flag so the finally is a no-op.
         releaseSlot()
         this.cleanupRunState(runId)
-        return
+        return outcome
       }
 
       if (!(await runStart.authReady())) {
-        await this.failRun(args.chatId, runId, "AUTH_REQUIRED", `Authentication required for ${args.subagent.provider}`)
+        const outcome = await this.failRun(args.chatId, runId, "AUTH_REQUIRED", `Authentication required for ${args.subagent.provider}`)
         releaseSlot()
         this.cleanupRunState(runId)
-        return
+        return outcome
       }
 
       let finalText = ""
@@ -548,14 +665,15 @@ export class SubagentOrchestrator {
         usage = result.usage
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
+        let outcome: DelegationOutcome
         if (message === "TIMEOUT") {
-          await this.failRun(args.chatId, runId, "TIMEOUT", `Run exceeded ${this.timeoutMs()}ms`)
+          outcome = await this.failRun(args.chatId, runId, "TIMEOUT", `Run exceeded ${this.timeoutMs()}ms`)
         } else if (message === "USER_CANCELLED" || runState.cancelled) {
-          await this.failRun(args.chatId, runId, "USER_CANCELLED", "Cancelled by user")
+          outcome = await this.failRun(args.chatId, runId, "USER_CANCELLED", "Cancelled by user")
         } else {
-          await this.failRun(args.chatId, runId, "PROVIDER_ERROR", message)
+          outcome = await this.failRun(args.chatId, runId, "PROVIDER_ERROR", message)
         }
-        return
+        return outcome
       } finally {
         pausable.clear()
         runState.timeout = null
@@ -565,8 +683,7 @@ export class SubagentOrchestrator {
       // rejecting — without this guard, a cancelled run can reach the
       // success path.
       if (runState.cancelled) {
-        await this.failRun(args.chatId, runId, "USER_CANCELLED", "Cancelled by user")
-        return
+        return await this.failRun(args.chatId, runId, "USER_CANCELLED", "Cancelled by user")
       }
 
       await this.deps.store.appendSubagentEvent({
@@ -640,6 +757,7 @@ export class SubagentOrchestrator {
           userInstruction: finalText,
         })
       }
+      return { status: "completed", runId, text: finalText }
     } finally {
       releaseSlot()
       this.cleanupRunState(runId)
@@ -656,7 +774,12 @@ export class SubagentOrchestrator {
     this.runStateByRunId.delete(runId)
   }
 
-  private async failRun(chatId: string, runId: string, code: SubagentErrorCode, message: string) {
+  private async failRun(
+    chatId: string,
+    runId: string,
+    code: SubagentErrorCode,
+    message: string,
+  ): Promise<DelegationOutcome> {
     try {
       await this.deps.store.appendSubagentEvent({
         v: 3,
@@ -678,5 +801,6 @@ export class SubagentOrchestrator {
     } catch (err) {
       console.warn(`${LOG_PREFIX} onRunTerminal(failed) threw`, { chatId, runId, err })
     }
+    return { status: "failed", runId, errorCode: code, errorMessage: message }
   }
 }

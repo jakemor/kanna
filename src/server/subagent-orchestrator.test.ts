@@ -973,4 +973,95 @@ describe("SubagentOrchestrator", () => {
 
     await runPromise
   }, 30_000)
+
+  describe("delegateRun", () => {
+    test("returns { status: completed, text } when the run finishes", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({})] })
+      h.programReply("sa-1", "delegated reply")
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: [],
+        depth: 0,
+        subagentId: "sa-1",
+        prompt: "review the diff",
+      })
+      expect(outcome.status).toBe("completed")
+      if (outcome.status !== "completed") throw new Error("unreachable")
+      expect(outcome.text).toBe("delegated reply")
+      expect(outcome.runId).toMatch(/[0-9a-f-]{36}/)
+    })
+
+    test("returns { status: failed, errorCode: UNKNOWN_SUBAGENT } when the id is unknown", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({ id: "sa-known" })] })
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: [],
+        depth: 0,
+        subagentId: "sa-missing",
+        prompt: "x",
+      })
+      expect(outcome.status).toBe("failed")
+      if (outcome.status !== "failed") throw new Error("unreachable")
+      expect(outcome.errorCode).toBe("UNKNOWN_SUBAGENT")
+    })
+
+    test("rejects with DEPTH_EXCEEDED when depth > maxChainDepth", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({})], maxChainDepth: 1 })
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: [],
+        depth: 2,
+        subagentId: "sa-1",
+        prompt: "deep",
+      })
+      expect(outcome.status).toBe("failed")
+      if (outcome.status !== "failed") throw new Error("unreachable")
+      expect(outcome.errorCode).toBe("DEPTH_EXCEEDED")
+    })
+
+    test("rejects with LOOP_DETECTED when subagent is in ancestor chain", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({})] })
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: ["sa-1"],
+        depth: 1,
+        subagentId: "sa-1",
+        prompt: "loop",
+      })
+      expect(outcome.status).toBe("failed")
+      if (outcome.status !== "failed") throw new Error("unreachable")
+      expect(outcome.errorCode).toBe("LOOP_DETECTED")
+    })
+
+    test("propagates PROVIDER_ERROR when the provider stream throws", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({})] })
+      h.programs.set("sa-1", { authReady: true, error: "provider boom" })
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: [],
+        depth: 0,
+        subagentId: "sa-1",
+        prompt: "go",
+      })
+      expect(outcome.status).toBe("failed")
+      if (outcome.status !== "failed") throw new Error("unreachable")
+      expect(outcome.errorCode).toBe("PROVIDER_ERROR")
+      expect(outcome.errorMessage).toContain("provider boom")
+    })
+  })
 })

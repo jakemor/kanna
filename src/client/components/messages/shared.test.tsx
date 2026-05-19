@@ -1,8 +1,22 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, mock } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { createMarkdownComponents, markdownComponents, OpenLocalLinkProvider } from "./shared"
+
+mock.module("../../hooks/useTheme", () => ({
+  useTheme: () => ({ resolvedTheme: "light", theme: "light", setTheme: () => {} }),
+}))
+
+const { createMarkdownComponents, defaultMarkdownComponents, defaultRemarkPlugins, markdownComponents, MermaidFallbackCodeBlock, OpenLocalLinkProvider } = await import("./shared")
+
+test("MermaidFallbackCodeBlock renders source inside a pre/code block", () => {
+  const html = renderToStaticMarkup(
+    <MermaidFallbackCodeBlock source={"graph TD\nA-->B"} />
+  )
+  expect(html).toContain("<pre")
+  expect(html).toContain("graph TD")
+  expect(html).toContain("A--&gt;B")
+})
 
 describe("markdownComponents", () => {
   test("renders markdown headings with transcript-specific sizes and no bold weight", () => {
@@ -105,4 +119,25 @@ describe("markdownComponents", () => {
     expect(html).toContain("/Users/jake/Projects/kanna/src/client/app/App.tsx#L1")
     expect(html).not.toContain('target="_blank"')
   })
+})
+
+test("mermaid fenced block routes to MermaidDiagram (not a raw code block)", () => {
+  const md = "```mermaid\ngraph TD\nA-->B\n```"
+  const html = renderToStaticMarkup(
+    <Markdown remarkPlugins={defaultRemarkPlugins} components={defaultMarkdownComponents}>
+      {md}
+    </Markdown>
+  )
+  expect(html).toContain("group/mermaid")
+})
+
+test("non-mermaid fenced block still renders as a normal code block", () => {
+  const md = "```ts\nconst x = 1\n```"
+  const html = renderToStaticMarkup(
+    <Markdown remarkPlugins={defaultRemarkPlugins} components={defaultMarkdownComponents}>
+      {md}
+    </Markdown>
+  )
+  expect(html).not.toContain("group/mermaid")
+  expect(html).toContain("const x = 1")
 })

@@ -35,6 +35,7 @@ import remarkGfm from "remark-gfm"
 import { cn } from "../../lib/utils"
 import { isAbsoluteLocalFilePath, parseLocalFileLink, shouldOpenLocalFileLinkInEditor, toLocalFileUrl } from "../../lib/pathUtils"
 import { LocalFileLinkCard } from "./LocalFileLinkCard"
+import { MermaidDiagram } from "./MermaidDiagram"
 import { useTranscriptRenderOptions } from "./render-context"
 
 export type OpenLocalLinkTarget = {
@@ -299,6 +300,14 @@ function PreBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   )
 }
 
+export function MermaidFallbackCodeBlock({ source }: { source: string }) {
+  return (
+    <PreBlock>
+      <code className="block text-xs whitespace-pre language-mermaid">{source}</code>
+    </PreBlock>
+  )
+}
+
 // Markdown component overrides
 export const markdownComponents = {
   h1: ({ children }: { children?: ReactNode }) => (
@@ -326,6 +335,9 @@ export const markdownComponents = {
     const isInline = !className
     if (isInline) {
       return <code className="break-all px-1 bg-border/60 dark:[.no-pre-highlight_&]:bg-background dark:[.text-pretty_&]:bg-neutral [.no-code-highlight_&]:!bg-transparent py-0.5 rounded text-sm whitespace-wrap" {...props}>{children}</code>
+    }
+    if (className.split(/\s+/).includes("language-mermaid")) {
+      return <MermaidDiagram source={extractText(children)} />
     }
     return (
       <code className="block text-xs whitespace-pre" {...props}>

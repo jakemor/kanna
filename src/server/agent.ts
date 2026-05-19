@@ -1141,6 +1141,15 @@ export class AgentCoordinator {
         // multi-subagent fan-outs do not have to wait for Promise.all.
         this.emitStateChange(chatId)
       },
+      onRunProgress: (chatId) => {
+        // Run start + every persisted subagent entry. Without this the
+        // client only gets a snapshot at terminal, so a delegated run
+        // renders blank until it finishes (delegate_subagent blocks the
+        // main turn, which itself emits nothing meanwhile). ws-router
+        // coalesces (16ms) and signature-dedups, so per-entry fan-out is
+        // cheap.
+        this.emitStateChange(chatId)
+      },
     })
     this.throwOnClaudeSessionStart = args.throwOnClaudeSessionStart ?? false
     this.tunnelGateway = args.tunnelGateway ?? null

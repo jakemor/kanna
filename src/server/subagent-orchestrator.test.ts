@@ -61,6 +61,8 @@ interface OrchestratorHarness {
   activeStarts: { value: number; max: number }
   pendingHolds: Map<string, (text: string) => void>
   mockProviderRun: (override: Pick<ProviderRunStart, "start" | "authReady">) => void
+  progressCalls: Array<{ chatId: string; runId: string }>
+  terminalCalls: Array<{ chatId: string; runId: string; reason: "failed" | "completed" }>
 }
 
 async function setupHarness(opts: {
@@ -88,6 +90,9 @@ async function setupHarness(opts: {
 
   let providerRunOverride: Pick<ProviderRunStart, "start" | "authReady"> | null = null
 
+  const progressCalls: Array<{ chatId: string; runId: string }> = []
+  const terminalCalls: Array<{ chatId: string; runId: string; reason: "failed" | "completed" }> = []
+
   let nowCounter = chat.createdAt + 1
   const orchestrator = new SubagentOrchestrator({
     store,
@@ -96,6 +101,8 @@ async function setupHarness(opts: {
     maxParallel: opts.maxParallel,
     maxChainDepth: opts.maxChainDepth,
     runTimeoutMs: opts.runTimeoutMs,
+    onRunProgress: (chatId, runId) => { progressCalls.push({ chatId, runId }) },
+    onRunTerminal: (chatId, runId, reason) => { terminalCalls.push({ chatId, runId, reason }) },
     startProviderRun: ({ subagent }): ProviderRunStart => {
       if (providerRunOverride) {
         return {
@@ -165,6 +172,8 @@ async function setupHarness(opts: {
     mockProviderRun: (override) => {
       providerRunOverride = override
     },
+    progressCalls,
+    terminalCalls,
   }
 }
 
@@ -1116,6 +1125,69 @@ describe("SubagentOrchestrator", () => {
       if (outcome.status !== "failed") throw new Error("unreachable")
       expect(outcome.errorCode).toBe("PROVIDER_ERROR")
       expect(outcome.errorMessage).toContain("provider boom")
+    })
+
+    test("fires onRunProgress on run start and on every persisted entry (live UI broadcast)", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({})] })
+      h.mockProviderRun({
+        authReady: async () => true,
+        async start(_onChunk, onEntry) {
+          onEntry({ _id: "e1", createdAt: 1, kind: "assistant_text", text: "working" } as TranscriptEntry)
+          onEntry({
+            _id: "e2",
+            createdAt: 2,
+            kind: "tool_call",
+            tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t1", input: { command: "ls" } },
+          } as TranscriptEntry)
+          onEntry({ _id: "e3", createdAt: 3, kind: "tool_result", toolId: "t1", content: "ok" } as TranscriptEntry)
+          return { text: "done" }
+        },
+      })
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: [],
+        depth: 0,
+        subagentId: "sa-1",
+        prompt: "go",
+      })
+      expect(outcome.status).toBe("completed")
+      if (outcome.status !== "completed") throw new Error("unreachable")
+      const runId = outcome.runId
+      // 1 run_started + 3 entries = at least 4 progress emits, all for this run/chat.
+      expect(h.progressCalls.length).toBeGreaterThanOrEqual(4)
+      for (const c of h.progressCalls) {
+        expect(c.chatId).toBe(h.chatId)
+        expect(c.runId).toBe(runId)
+      }
+      // run_started fires before any entry-driven emit.
+      expect(h.progressCalls[0]).toEqual({ chatId: h.chatId, runId })
+      // Terminal hook still fires exactly once on completion.
+      expect(h.terminalCalls).toEqual([{ chatId: h.chatId, runId, reason: "completed" }])
+    })
+
+    test("fires onRunProgress for run start even when the run fails before any entry", async () => {
+      const h = await setupHarness({ subagents: [makeSubagent({})] })
+      h.programs.set("sa-1", { authReady: true, error: "boom" })
+      const outcome = await h.orchestrator.delegateRun({
+        chatId: h.chatId,
+        parentUserMessageId: h.userMessageId,
+        parentRunId: null,
+        parentSubagentId: null,
+        ancestorSubagentIds: [],
+        depth: 0,
+        subagentId: "sa-1",
+        prompt: "go",
+      })
+      expect(outcome.status).toBe("failed")
+      if (outcome.status !== "failed") throw new Error("unreachable")
+      // run_started progress emit fired before the failure.
+      expect(h.progressCalls).toEqual([{ chatId: h.chatId, runId: outcome.runId }])
+      expect(h.terminalCalls).toEqual([
+        { chatId: h.chatId, runId: outcome.runId, reason: "failed" },
+      ])
     })
   })
 })

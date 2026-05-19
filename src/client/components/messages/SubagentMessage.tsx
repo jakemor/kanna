@@ -160,7 +160,12 @@ export function SubagentMessage({
         )}
       </header>
       {messages.map((m) => (
-        <SubagentEntryRow key={m.id} message={m} localPath={localPath} />
+        <SubagentEntryRow
+          key={m.id}
+          message={m}
+          localPath={localPath}
+          isRunning={run.status === "running"}
+        />
       ))}
       {run.pendingTool && (
         <SubagentPendingToolCard

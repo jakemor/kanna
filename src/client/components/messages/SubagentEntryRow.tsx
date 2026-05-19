@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { toLocalFileUrl } from "../../lib/pathUtils"
 import { TextMessage } from "./TextMessage"
@@ -7,6 +8,7 @@ import { ResultMessage } from "./ResultMessage"
 interface SubagentEntryRowProps {
   message: HydratedTranscriptMessage
   localPath: string
+  isRunning?: boolean
 }
 
 function formatBytes(n: number): string {
@@ -25,11 +27,11 @@ function stripPersistedTags(s: string): string {
     .replace(/\n?<\/persisted-output>/g, "")
 }
 
-export function SubagentEntryRow({ message, localPath }: SubagentEntryRowProps) {
+export function SubagentEntryRow({ message, localPath, isRunning = false }: SubagentEntryRowProps) {
   if (message.kind === "tool" && message.persisted) {
     const previewBody = stripPersistedTags(asString(message.rawResult ?? ""))
     return (
-      <div className="rounded-md border border-border bg-muted/30 p-2 space-y-1 text-xs">
+      <div className="animate-in fade-in-0 duration-200 rounded-md border border-border bg-muted/30 p-2 space-y-1 text-xs">
         <div className="font-medium">
           {message.toolName}: output too large ({formatBytes(message.persisted.originalSize)}) — saved to disk
         </div>
@@ -47,14 +49,19 @@ export function SubagentEntryRow({ message, localPath }: SubagentEntryRowProps) 
       </div>
     )
   }
+  let inner: ReactNode
   switch (message.kind) {
     case "assistant_text":
-      return <TextMessage message={message} />
+      inner = <TextMessage message={message} />
+      break
     case "tool":
-      return <ToolCallMessage message={message} isLoading={false} localPath={localPath} />
+      inner = <ToolCallMessage message={message} isLoading={isRunning} localPath={localPath} />
+      break
     case "result":
-      return <ResultMessage message={message} />
+      inner = <ResultMessage message={message} />
+      break
     default:
       return null
   }
+  return <div className="animate-in fade-in-0 duration-200">{inner}</div>
 }

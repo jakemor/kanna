@@ -123,6 +123,52 @@ describe("SubagentMessage", () => {
     expect(html).toContain("ls")
   })
 
+  test("pending tool_call (no result yet) shows shiny loading state while run is running", () => {
+    const run = makeRunSnapshot({
+      status: "running",
+      entries: [
+        {
+          _id: "e1",
+          createdAt: 1,
+          kind: "tool_call",
+          tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t1", input: { command: "ls" } },
+        },
+      ] as TranscriptEntry[],
+    })
+    const html = renderToStaticMarkup(<SubagentMessage run={run} indentDepth={0} localPath="/tmp" />)
+    // AnimatedShinyText activates only when isLoading=true AND no result — class applied via animate prop
+    expect(html).toContain("animate-shiny-pulse")
+  })
+
+  test("resolved tool_call does NOT show shiny loading state even while running", () => {
+    const run = makeRunSnapshot({
+      status: "running",
+      entries: [
+        {
+          _id: "e1",
+          createdAt: 1,
+          kind: "tool_call",
+          tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t1", input: { command: "ls" } },
+        },
+        { _id: "e2", createdAt: 2, kind: "tool_result", toolId: "t1", content: "f.txt", isError: false },
+      ] as TranscriptEntry[],
+    })
+    const html = renderToStaticMarkup(<SubagentMessage run={run} indentDepth={0} localPath="/tmp" />)
+    expect(html).not.toContain("animate-shiny-pulse")
+  })
+
+  test("each subagent row gets fade-in animation wrapper", () => {
+    const run = makeRunSnapshot({
+      status: "completed",
+      entries: [
+        { _id: "e1", createdAt: 1, kind: "assistant_text", text: "hi" },
+      ] as TranscriptEntry[],
+    })
+    const html = renderToStaticMarkup(<SubagentMessage run={run} indentDepth={0} localPath="/tmp" />)
+    expect(html).toContain("animate-in")
+    expect(html).toContain("fade-in-0")
+  })
+
   test("renders token usage badge when run.usage present", () => {
     const run = makeRunSnapshot({
       status: "completed",

@@ -116,6 +116,18 @@ export interface SubagentOrchestratorDeps {
    * hangs forever and leaks. Optional for tests.
    */
   onRunTerminal?: (chatId: string, runId: string, reason: "failed" | "completed") => void
+  /**
+   * Called on every non-terminal subagent state change — run start and each
+   * persisted transcript entry. Wired by AgentCoordinator to
+   * `emitStateChange(chatId)` so the ws-router pushes a fresh chat snapshot
+   * (carrying `subagentRuns`) to connected clients WHILE the run is in
+   * flight. Without this the client only ever sees the run at terminal
+   * (the sole `onRunTerminal` broadcast), so a delegated run renders as
+   * blank/absent until it finishes. ws-router coalesces these at 16ms and
+   * signature-dedups, so high-frequency entry fan-out is cheap. Optional
+   * for tests.
+   */
+  onRunProgress?: (chatId: string, runId: string) => void
   now?: () => number
   maxParallel?: number
   maxChainDepth?: number
@@ -516,6 +528,7 @@ export class SubagentOrchestrator {
       parentRunId: args.parentRunId,
       depth: args.depth,
     })
+    this.deps.onRunProgress?.(args.chatId, runId)
 
     // Register RunState BEFORE acquire so cancelRun can find a queued run.
     // The reducer marks the run as `status: "running"` from this event on,
@@ -633,6 +646,11 @@ export class SubagentOrchestrator {
             chatId: args.chatId,
             runId,
             entry,
+          })
+          .then(() => {
+            // Fire AFTER the append's writeChain resolves so the broadcast
+            // snapshots in-memory state that already includes this entry.
+            this.deps.onRunProgress?.(args.chatId, runId)
           })
           .catch((err) => {
             console.warn(`${LOG_PREFIX} subagent entry append failed`, { chatId: args.chatId, runId, err })

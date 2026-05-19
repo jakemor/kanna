@@ -157,6 +157,8 @@ c3-223:
   - src/server/cloudflare-tunnel/**/*.ts
 c3-224:
   - src/server/oauth-pool/**/*.ts
+c3-225:
+  - src/server/claude-pty/**
 c3-301:
   - src/shared/types.ts
 c3-302:

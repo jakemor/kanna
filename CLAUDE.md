@@ -81,9 +81,10 @@ Periodic `tickTimeouts` driver fires every 5s; default request timeout is
 # Claude Driver Flag (KANNA_CLAUDE_DRIVER)
 
 Setting `KANNA_CLAUDE_DRIVER=pty` launches the `claude` CLI under a
-pseudo-terminal and tails the on-disk JSONL transcript instead of using
-the `@anthropic-ai/claude-agent-sdk` `query()` programmatic API. PTY mode
-preserves Pro/Max subscription billing; SDK mode bills at API rates.
+pseudo-terminal and parses the CLI's stdout JSONL stream line-by-line
+instead of using the `@anthropic-ai/claude-agent-sdk` `query()`
+programmatic API. PTY mode preserves Pro/Max subscription billing; SDK
+mode bills at API rates.
 
 Default is `sdk` (no behaviour change). Authentication requires an OAuth-pool token configured in Kanna settings; the token is injected via `CLAUDE_CODE_OAUTH_TOKEN`. The local `claude /login` keychain path is not supported in this deployment. PTY mode is OAuth-only and NEVER uses an API key: `buildPtyEnv` unconditionally strips `ANTHROPIC_API_KEY` from the spawned child env, so a key left in the parent environment is harmless — it does not block the spawn and cannot force API billing. `verifyPtyAuth` only requires the OAuth-pool token.
 
@@ -180,11 +181,18 @@ the SDK driver uses. `AgentCoordinator` picks an active token from
 `OAuthTokenPool` per chat and the PTY driver injects it via the
 `CLAUDE_CODE_OAUTH_TOKEN` env var. No per-account `$HOME` directories or local `.credentials.json` files required.
 
-**Architecture note:** PTY mode uses the on-disk JSONL transcript at
-`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl` as the sole event
-source. The PTY is a subprocess holder + input channel only; output is
-drained, not parsed. Model switches, rate-limit signals, and permission
-changes all surface through JSONL.
+**Architecture note:** PTY mode parses the `claude` CLI subprocess
+**stdout** as the sole event source. `driver.ts` `pumpStdout` reads the
+stdout `ReadableStream` via `reader.read()` (event-driven, no poll
+interval / `fs.watch` / file-tail loop / sleep), splits on `\n`, and
+feeds each line to `createJsonlEventParser`. The PTY supplies the
+subprocess + input channel; its stdout IS parsed (not drained). Model
+switches, rate-limit signals, and permission changes all surface through
+this stdout JSONL stream. Nothing reads the on-disk transcript at
+`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl` —
+`claude-pty/jsonl-path.ts` (`computeJsonlPath`/`encodeCwd`) has zero
+production callers (referenced only by its own test) and is currently
+dead code.
 
 **Allowlist preflight (P3b):** When `KANNA_CLAUDE_DRIVER=pty`, every PTY
 spawn passes through `claude-pty/preflight/gate.ts`. The gate computes a

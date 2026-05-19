@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.62.0](https://github.com/cuongtranba/kanna/compare/v0.61.5...v0.62.0) (2026-05-19)
+
+
+### Features
+
+* **ui:** unify AskUserQuestion slide UI across native + pending paths ([#229](https://github.com/cuongtranba/kanna/issues/229)) ([a565506](https://github.com/cuongtranba/kanna/commit/a5655068e415ead2389da36b40c1759f8b0635db))
+
+
+### Bug Fixes
+
+* **oauth-pool:** stop turn-end release from leaking the rotation pin; OAuth-only PTY auth ([#227](https://github.com/cuongtranba/kanna/issues/227)) ([024e09b](https://github.com/cuongtranba/kanna/commit/024e09be2862fe5c2f7a8ccff1b4a76237626340))
+
 ## [0.61.5](https://github.com/cuongtranba/kanna/compare/v0.61.4...v0.61.5) (2026-05-19)
 
 

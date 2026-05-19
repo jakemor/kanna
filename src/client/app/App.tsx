@@ -433,26 +433,28 @@ function KannaLayout() {
   }
 
   return (
-    <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
-      {sidebarElement}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {ptyDriverActive ? (
-          <div
-            role="status"
-            className="flex items-center justify-center gap-2 border-b border-warning/30 bg-warning/[0.06] px-3 py-1.5 text-xs"
-          >
-            <span
-              aria-hidden="true"
-              className="inline-block size-1.5 rounded-full"
-              style={{ backgroundColor: "var(--warning)" }}
-            />
-            <span className="font-medium text-foreground">PTY driver active.</span>
-            <span className="text-muted-foreground">
-              Tools run under the <code className="font-mono">claude</code> CLI with subscription billing. Use a worktree for risky tasks.
-            </span>
-          </div>
-        ) : null}
-        <Outlet context={state} />
+    <div className="flex flex-col h-[100dvh] min-h-[100dvh] overflow-hidden">
+      {ptyDriverActive ? (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-b border-border bg-warning/[0.06] px-4 py-2 text-xs leading-tight"
+        >
+          <span
+            aria-hidden="true"
+            className="inline-block size-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: "var(--warning)" }}
+          />
+          <span className="font-medium text-foreground">PTY driver active.</span>
+          <span className="text-muted-foreground">
+            Tools run under the <code className="font-mono">claude</code> CLI with subscription billing. Use a worktree for risky tasks.
+          </span>
+        </div>
+      ) : null}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {sidebarElement}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Outlet context={state} />
+        </div>
       </div>
       <StandaloneShareDialog
         open={Boolean(state.standaloneShareUrl)}

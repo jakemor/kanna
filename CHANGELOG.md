@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.66.1](https://github.com/cuongtranba/kanna/compare/v0.66.0...v0.66.1) (2026-05-20)
+
+
+### Bug Fixes
+
+* **wiki:** editorial home page, WCAG AA gray ramp, Starlight cascade ([#252](https://github.com/cuongtranba/kanna/issues/252)) ([ed2acf3](https://github.com/cuongtranba/kanna/commit/ed2acf32b78ffb417178455e49552553251eaa27))
+
 ## [0.66.0](https://github.com/cuongtranba/kanna/compare/v0.65.1...v0.66.0) (2026-05-20)
 
 

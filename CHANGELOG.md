@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.66.0](https://github.com/cuongtranba/kanna/compare/v0.65.1...v0.66.0) (2026-05-20)
+
+
+### Features
+
+* **client:** render &lt;thinking&gt; blocks as collapsible disclosure ([#250](https://github.com/cuongtranba/kanna/issues/250)) ([f91722d](https://github.com/cuongtranba/kanna/commit/f91722d64e640b74f800a6f5f52a5ec5be36926d))
+* **wiki:** Kanna documentation site at kanna-wiki.lowbit.link ([#249](https://github.com/cuongtranba/kanna/issues/249)) ([01a86a2](https://github.com/cuongtranba/kanna/commit/01a86a24c33e2af66ada7443373693180a06d040))
+
 ## [0.65.1](https://github.com/cuongtranba/kanna/compare/v0.65.0...v0.65.1) (2026-05-19)
 
 

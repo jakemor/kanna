@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.68.0](https://github.com/cuongtranba/kanna/compare/v0.67.0...v0.68.0) (2026-05-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **claude-pty:** Shannon-style TUI transport — drop --print, tail transcript JSONL ([#261](https://github.com/cuongtranba/kanna/issues/261))
+
+### Features
+
+* **claude-pty:** on-disk pid registry to reap crash orphans on next boot ([#267](https://github.com/cuongtranba/kanna/issues/267)) ([1817cde](https://github.com/cuongtranba/kanna/commit/1817cde883b2a5ad992d359a22be682ba134850c))
+* **claude-pty:** plan-mode exit via Shift+Tab (F1) + getSupportedCommands live list (F2) ([#262](https://github.com/cuongtranba/kanna/issues/262)) ([5d941a5](https://github.com/cuongtranba/kanna/commit/5d941a574f8686701ad87554ece7bbe9167ada1b))
+* **claude-pty:** Shannon-style TUI transport — drop --print, tail transcript JSONL ([#261](https://github.com/cuongtranba/kanna/issues/261)) ([273386c](https://github.com/cuongtranba/kanna/commit/273386cdb8d63803bc863f0ebfcf26b208e84ed9))
+* **messages:** mask OAuth key as primary AccountInfo identifier ([#257](https://github.com/cuongtranba/kanna/issues/257)) ([d91f880](https://github.com/cuongtranba/kanna/commit/d91f880747ccad444cbc04c8bf970f412d773a40))
+* **notice-banner:** extract reusable shell notice primitive ([#256](https://github.com/cuongtranba/kanna/issues/256)) ([1d1539e](https://github.com/cuongtranba/kanna/commit/1d1539e300a094b98b7e71a805759ae35f37d216))
+* **settings:** add global prompt append for Claude + Codex turns ([#260](https://github.com/cuongtranba/kanna/issues/260)) ([f700d08](https://github.com/cuongtranba/kanna/commit/f700d085cd1d60249d582411a449ed25e14288f5))
+
+
+### Bug Fixes
+
+* **claude-pty, subagent:** adaptive paste-commit wait + clear stale cancel on new turn ([#265](https://github.com/cuongtranba/kanna/issues/265)) ([0782da4](https://github.com/cuongtranba/kanna/commit/0782da4bac0a30b03f2e4b1d7565c8d71204a3bd))
+* **claude-pty:** fail-close hung turns on stream-end + add lifecycle trace logs ([#268](https://github.com/cuongtranba/kanna/issues/268)) ([b321973](https://github.com/cuongtranba/kanna/commit/b3219739b0c81afa864c4f006fc6b4e5dda94889))
+* **claude-pty:** multi-line paste submit + mtime-floor JSONL discovery ([#264](https://github.com/cuongtranba/kanna/issues/264)) ([d9d9052](https://github.com/cuongtranba/kanna/commit/d9d905207929351df42c33d512f586337895a952))
+* **claude-pty:** plug PTY resource leaks + harden graceful shutdown ([#266](https://github.com/cuongtranba/kanna/issues/266)) ([2dd5a16](https://github.com/cuongtranba/kanna/commit/2dd5a1625157896a4fb60ec67049b3a59969aded))
+* **claude-pty:** TUI prompt submission, turn-end marker, deterministic JSONL path ([#263](https://github.com/cuongtranba/kanna/issues/263)) ([57aa777](https://github.com/cuongtranba/kanna/commit/57aa77703f31ae9940f3c655e4d7bee7d1c76460))
+
 ## [0.67.0](https://github.com/cuongtranba/kanna/compare/v0.66.1...v0.67.0) (2026-05-20)
 
 

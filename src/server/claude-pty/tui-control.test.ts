@@ -19,6 +19,7 @@ function fakePty(): PtyProcess & { sent: string[] } {
     resize() { /* noop */ },
     exited: new Promise<number>(() => { /* never */ }),
     close() { /* noop */ },
+    kill() { /* noop */ },
   } as PtyProcess & { sent: string[] }
 }
 

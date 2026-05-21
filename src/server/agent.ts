@@ -2160,47 +2160,57 @@ export class AgentCoordinator {
         depth: 0,
         getParentUserMessageId: () => this.activeTurns.get(chatIdForCtx)?.userMessageId ?? null,
       }
-      const started = usePty
-        ? await this.startClaudeSessionPTYFn({
-            chatId: args.chatId,
-            projectId: args.projectId,
-            localPath: args.localPath,
-            model: args.model,
-            effort: args.effort,
-            planMode: args.planMode,
-            sessionToken: args.sessionToken,
-            forkSession: args.forkSession,
-            oauthToken: picked?.token ?? null,
-            oauthLabel: picked?.label,
-            oauthKeyMasked: picked ? maskOauthKey(picked.token) : undefined,
-            additionalDirectories: args.additionalDirectories,
-            onToolRequest: args.onToolRequest,
-            systemPromptAppend,
-            subagentOrchestrator: this.subagentOrchestrator,
-            delegationContext,
-            toolCallback: this.toolCallback ?? undefined,
-            tunnelGateway: this.tunnelGateway,
-            chatPolicy: this.resolveChatPolicy(args.chatId),
-          })
-        : await this.startClaudeSessionFn({
-            projectId: args.projectId,
-            localPath: args.localPath,
-            model: args.model,
-            effort: args.effort,
-            planMode: args.planMode,
-            sessionToken: args.sessionToken,
-            forkSession: args.forkSession,
-            oauthToken: picked?.token ?? null,
-            additionalDirectories: args.additionalDirectories,
-            chatId: args.chatId,
-            tunnelGateway: this.tunnelGateway,
-            onToolRequest: args.onToolRequest,
-            systemPromptAppend,
-            subagentOrchestrator: this.subagentOrchestrator,
-            delegationContext,
-            toolCallback: this.toolCallback ?? undefined,
-            chatPolicy: this.resolveChatPolicy(args.chatId),
-          })
+      let started: ClaudeSessionHandle
+      try {
+        started = usePty
+          ? await this.startClaudeSessionPTYFn({
+              chatId: args.chatId,
+              projectId: args.projectId,
+              localPath: args.localPath,
+              model: args.model,
+              effort: args.effort,
+              planMode: args.planMode,
+              sessionToken: args.sessionToken,
+              forkSession: args.forkSession,
+              oauthToken: picked?.token ?? null,
+              oauthLabel: picked?.label,
+              oauthKeyMasked: picked ? maskOauthKey(picked.token) : undefined,
+              additionalDirectories: args.additionalDirectories,
+              onToolRequest: args.onToolRequest,
+              systemPromptAppend,
+              subagentOrchestrator: this.subagentOrchestrator,
+              delegationContext,
+              toolCallback: this.toolCallback ?? undefined,
+              tunnelGateway: this.tunnelGateway,
+              chatPolicy: this.resolveChatPolicy(args.chatId),
+            })
+          : await this.startClaudeSessionFn({
+              projectId: args.projectId,
+              localPath: args.localPath,
+              model: args.model,
+              effort: args.effort,
+              planMode: args.planMode,
+              sessionToken: args.sessionToken,
+              forkSession: args.forkSession,
+              oauthToken: picked?.token ?? null,
+              additionalDirectories: args.additionalDirectories,
+              chatId: args.chatId,
+              tunnelGateway: this.tunnelGateway,
+              onToolRequest: args.onToolRequest,
+              systemPromptAppend,
+              subagentOrchestrator: this.subagentOrchestrator,
+              delegationContext,
+              toolCallback: this.toolCallback ?? undefined,
+              chatPolicy: this.resolveChatPolicy(args.chatId),
+            })
+      } catch (err) {
+        // Spawn failed before we registered the session — release the OAuth
+        // pool reservation we took at line ~2144. Without this the token
+        // stays "in use" until process restart, eventually starving every
+        // chat once all tokens are reserved.
+        if (picked) this.oauthPool?.release(args.chatId)
+        throw err
+      }
 
       session = {
         id: crypto.randomUUID(),

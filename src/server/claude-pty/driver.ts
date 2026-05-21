@@ -344,10 +344,18 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     if (cleanedUp) return
     cleanedUp = true
     if (args.toolCallback) {
-      try { await args.toolCallback.cancelAllForSession(sessionId, "session_closed") } catch { /* swallow */ }
+      try { await args.toolCallback.cancelAllForSession(sessionId, "session_closed") } catch (err) {
+        console.warn("[kanna/pty] toolCallback.cancelAllForSession failed", { chatId: args.chatId, sessionId, err })
+      }
     }
-    try { await mcpHandle.close() } catch { /* swallow */ }
-    try { await rm(runtimeDir, { recursive: true, force: true }) } catch { /* swallow */ }
+    try { await mcpHandle.close() } catch (err) {
+      // Logged because a swallowed mcpHandle close error means the loopback
+      // HTTP server may still be listening — a real resource leak.
+      console.warn("[kanna/pty] mcpHandle.close failed (HTTP server may leak)", { chatId: args.chatId, sessionId, err })
+    }
+    try { await rm(runtimeDir, { recursive: true, force: true }) } catch (err) {
+      console.warn("[kanna/pty] runtimeDir cleanup failed", { chatId: args.chatId, runtimeDir, err })
+    }
   }
 
   function pushMerged(ev: HarnessEvent) {
@@ -599,19 +607,24 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
       if (closed) return
       closed = true
       void (async () => {
+        // 3-stage shutdown escalation:
+        //   1. /exit (graceful REPL exit)               — 2 s grace
+        //   2. SIGTERM (terminal.close + proc.kill)     — 3 s grace
+        //   3. SIGKILL (force kill, unblocks hung TUI)
+        // Each timer is cleared if pty.exited resolves before the deadline.
         try { await sendExitCommand(pty) } catch { /* swallow */ }
         const sigkillTimer = { ref: null as ReturnType<typeof setTimeout> | null }
         const termTimer = setTimeout(() => {
           try { pty.close() } catch { /* swallow */ }
           sigkillTimer.ref = setTimeout(() => {
-            try { pty.close() } catch { /* swallow */ }
+            try { pty.kill("SIGKILL") } catch { /* swallow */ }
           }, 3000)
         }, 2000)
         try {
           await pty.exited
-          clearTimeout(termTimer)
-          if (sigkillTimer.ref !== null) clearTimeout(sigkillTimer.ref)
         } catch { /* swallow */ }
+        clearTimeout(termTimer)
+        if (sigkillTimer.ref !== null) clearTimeout(sigkillTimer.ref)
         try { transcriptStream.close() } catch { /* swallow */ }
         await cleanupResources()
         while (mergedWaiters.length > 0) {

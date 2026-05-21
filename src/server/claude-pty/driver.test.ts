@@ -546,6 +546,7 @@ async function makeTestHandle(opts?: { planMode?: boolean }) {
     resize() {},
     exited,
     close() { exitResolve(0) },
+    kill() { exitResolve(137) },
   }
 
   const fakeSpawn = async (spawnArgs: SpawnPtyProcessArgs): Promise<PtyProcess> => {
@@ -643,6 +644,53 @@ describe("setPermissionMode (F1 — plan mode exit)", () => {
       expect(sentInputs).not.toContain(SHIFT_TAB_KEY)
     } finally {
       await cleanup()
+    }
+  }, 10_000)
+})
+
+describe("session close escalation (graceful → SIGTERM → SIGKILL)", () => {
+  test("close() escalates to SIGKILL when SIGTERM does not terminate within the grace window", async () => {
+    if (process.platform === "win32") return
+    // Stand-alone fake PTY: ignore SIGTERM (close()), only exit on SIGKILL (kill()).
+    let killSignal: NodeJS.Signals | number | undefined
+    let exitResolve!: (code: number) => void
+    const exited = new Promise<number>((r) => { exitResolve = r })
+    const stubbornPty: PtyProcess = {
+      async sendInput() { /* swallow */ },
+      resize() {},
+      exited,
+      close() { /* deliberately ignore SIGTERM to simulate a hung TUI */ },
+      kill(signal) { killSignal = signal; exitResolve(137) },
+    }
+    const tmp = await mkdtemp(path.join(tmpdir(), "kanna-pty-close-"))
+    try {
+      const handle = await startClaudeSessionPTY({
+        chatId: "test-close", projectId: "p", localPath: tmp,
+        model: "claude-haiku-4-5-20251001",
+        planMode: false, forkSession: false,
+        oauthToken: "test-token", sessionToken: null,
+        onToolRequest: async () => null,
+        homeDir: tmp,
+        env: { HOME: tmp, CLAUDE_CODE_OAUTH_TOKEN: "test-token", KANNA_PTY_TRUST_DISMISS: "disabled", CLAUDE_EXECUTABLE: "/bin/sh" },
+        spawnPtyProcess: async (s) => { s.onOutput?.("❯ "); return stubbornPty },
+        startKannaMcpHttpServer: async () => ({ url: "http://127.0.0.1:0/mcp", bearerToken: "t", close: async () => {} }),
+        startTranscriptStreamFn: async () => ({
+          lines: { [Symbol.asyncIterator]() { return { next(): Promise<IteratorResult<string, undefined>> { return new Promise(() => {}) } } } },
+          filePath: new Promise<string>(() => {}),
+          close() {},
+        }),
+        smokeTestGate: { async canSpawn() { return { ok: true } } },
+      })
+      handle.close()
+      // 2 s SIGTERM grace + 3 s SIGKILL grace + a safety margin.
+      const code = await Promise.race([
+        exited,
+        new Promise<number>((_, reject) => setTimeout(() => reject(new Error("escalation timed out")), 8_000)),
+      ])
+      expect(code).toBe(137)
+      expect(killSignal).toBe("SIGKILL")
+    } finally {
+      await rm(tmp, { recursive: true, force: true })
     }
   }, 10_000)
 })

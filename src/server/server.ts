@@ -484,6 +484,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)
     }
+    // After cancel handles in-flight turns, dispose() closes any RESIDENT
+    // claudeSessions that have no active turn (idle but cached) — without
+    // this, those PTY children leak past server shutdown.
+    agent.dispose()
     router.dispose()
     await auth?.dispose()
     terminals.closeAll()

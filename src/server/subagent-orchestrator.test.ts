@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ClaudeModelOptions, Subagent, TranscriptEntry } from "../shared/types"
-import { EventStore } from "./event-store"
+import type { EventStore } from "./event-store"
+import { createTestEventStore } from "./storage/test-helpers"
 import {
   SubagentOrchestrator,
   type OrchestratorAppSettings,
@@ -72,7 +73,7 @@ async function setupHarness(opts: {
   runTimeoutMs?: number
 }): Promise<OrchestratorHarness> {
   const dataDir = await createTempDataDir()
-  const store = new EventStore(dataDir)
+  const store = createTestEventStore(dataDir)
   await store.initialize()
   const project = await store.openProject("/tmp/p-orch")
   const chat = await store.createChat(project.id)
@@ -572,7 +573,7 @@ describe("SubagentOrchestrator", () => {
 
   test("recoverInterruptedRuns: marks runs with pendingTool as INTERRUPTED", async () => {
     const dataDir = await createTempDataDir()
-    const store = new EventStore(dataDir)
+    const store = createTestEventStore(dataDir)
     await store.initialize()
     const project = await store.openProject("/tmp/p-interrupted")
     const chat = await store.createChat(project.id)
@@ -606,7 +607,7 @@ describe("SubagentOrchestrator", () => {
 
   test("recoverInterruptedRuns: marks running runs WITHOUT pendingTool as INTERRUPTED too", async () => {
     const dataDir = await createTempDataDir()
-    const store = new EventStore(dataDir)
+    const store = createTestEventStore(dataDir)
     await store.initialize()
     const project = await store.openProject("/tmp/p-orphan")
     const chat = await store.createChat(project.id)
@@ -634,7 +635,7 @@ describe("SubagentOrchestrator", () => {
 
   test("failRun invokes onRunTerminal callback so external resolvers are released", async () => {
     const dataDir = await createTempDataDir()
-    const store = new EventStore(dataDir)
+    const store = createTestEventStore(dataDir)
     await store.initialize()
     const project = await store.openProject("/tmp/p-terminal")
     const chat = await store.createChat(project.id)
@@ -729,7 +730,7 @@ describe("SubagentOrchestrator", () => {
 
   test("cancelRun on a running run aborts the provider stream and appends USER_CANCELLED", async () => {
     const dataDir = await createTempDataDir()
-    const store = new EventStore(dataDir)
+    const store = createTestEventStore(dataDir)
     await store.initialize()
     const project = await store.openProject("/tmp/p-cancelrun")
     const chat = await store.createChat(project.id)

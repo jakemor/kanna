@@ -1,21 +1,11 @@
-import { describe, expect, test, afterAll } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { describe, expect, test } from "bun:test"
 import type { KeybindingsSnapshot } from "../shared/types"
 import type { ClientCommand } from "../shared/protocol"
-import { EventStore } from "./event-store"
 import { createWsRouter } from "./ws-router"
-
-const tempDirs: string[] = []
-afterAll(async () => {
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
-})
+import { createTestEventStore } from "./storage/test-helpers"
 
 async function createTempDataDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "kanna-stack-ws-test-"))
-  tempDirs.push(dir)
-  return dir
+  return `/virtual/stack-ws-test-${crypto.randomUUID()}`
 }
 
 class FakeWebSocket {
@@ -66,7 +56,7 @@ const NOOP_PUSH_MANAGER = {
 } as never
 
 async function buildRouterWithStore() {
-  const store = new EventStore(await createTempDataDir())
+  const store = createTestEventStore(await createTempDataDir())
   await store.initialize()
   const p1 = await store.openProject("/tmp/stack-test-p1", "Project 1")
   const p2 = await store.openProject("/tmp/stack-test-p2", "Project 2")

@@ -1,22 +1,13 @@
-import { describe, test, expect, afterAll } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { EventStore } from "./event-store"
-
-const tempDirs: string[] = []
-afterAll(async () => {
-  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
-})
+import { describe, test, expect } from "bun:test"
+import type { EventStore } from "./event-store"
+import { createTestEventStore } from "./storage/test-helpers"
 
 async function createTempDataDir(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "kanna-stack-test-"))
-  tempDirs.push(dir)
-  return dir
+  return `/virtual/stack-test-${crypto.randomUUID()}`
 }
 
 async function buildStoreWithProjects(paths: string[]): Promise<{ store: EventStore; projectIds: string[] }> {
-  const store = new EventStore(await createTempDataDir())
+  const store = createTestEventStore(await createTempDataDir())
   await store.initialize()
   const projectIds: string[] = []
   for (const p of paths) {
@@ -31,7 +22,7 @@ describe("Replay determinism", () => {
     const dir = await createTempDataDir()
 
     // Live mutations.
-    const store1 = new EventStore(dir)
+    const store1 = createTestEventStore(dir)
     await store1.initialize()
     const pa = await store1.openProject("/tmp/a", "A")
     const pb = await store1.openProject("/tmp/b", "B")
@@ -43,7 +34,7 @@ describe("Replay determinism", () => {
     const liveStacks = store1.listStacks()
 
     // Fresh store, same dir → replays the log.
-    const store2 = new EventStore(dir)
+    const store2 = createTestEventStore(dir)
     await store2.initialize()
     const replayed = store2.listStacks()
     expect(replayed).toEqual(liveStacks)
@@ -275,7 +266,7 @@ test("createChat rejects empty worktreePath", async () => {
 
 test("Replay preserves chat stackId and stackBindings", async () => {
   const dir = await createTempDataDir()
-  const store1 = new EventStore(dir)
+  const store1 = createTestEventStore(dir)
   await store1.initialize()
   const pa = await store1.openProject("/tmp/a", "A")
   const pb = await store1.openProject("/tmp/b", "B")
@@ -288,7 +279,7 @@ test("Replay preserves chat stackId and stackBindings", async () => {
     ],
   })
 
-  const store2 = new EventStore(dir)
+  const store2 = createTestEventStore(dir)
   await store2.initialize()
   const replayed = store2.getChat(chat.id)
   expect(replayed?.stackId).toBe(stack.id)

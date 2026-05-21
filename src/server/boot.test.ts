@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EventStore } from "./event-store"
 import { initToolCallbackOnBoot } from "./tool-callback"
+import { createTestEventStore } from "./storage/test-helpers"
 
 describe("tool-callback boot wiring", () => {
   test("initToolCallbackOnBoot calls recoverOnStartup before returning service", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "kanna-boot-"))
     try {
-      const store = new EventStore(dir)
+      const store = createTestEventStore(dir)
       await store.initialize()
       await store.putToolRequest({
         id: "x",

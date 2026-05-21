@@ -3,13 +3,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { POLICY_DEFAULT } from "../../shared/permission-policy"
-import { EventStore } from "../event-store"
 import { createToolCallbackService } from "../tool-callback"
+import { createTestEventStore } from "../storage/test-helpers"
 import { createReadTool } from "./read"
 
 async function newStore() {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-mcp-read-"))
-  const store = new EventStore(dir)
+  const store = createTestEventStore(dir)
   await store.initialize()
   const cleanup = async () => {
     await new Promise<void>((r) => setTimeout(r, 50))

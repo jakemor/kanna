@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EventStore } from "./event-store"
 import { importClaudeSessions } from "./claude-session-importer"
+import { createTestEventStore } from "./storage/test-helpers"
 
 function fresh() {
   const dataDir = mkdtempSync(path.join(tmpdir(), "kanna-data-"))
@@ -49,7 +49,7 @@ describe("importClaudeSessions", () => {
     const ctx = fresh()
     try {
       seedSession(ctx.homeDir, ctx.realProj, "sess-aaa")
-      const store = new EventStore(ctx.dataDir)
+      const store = createTestEventStore(ctx.dataDir)
       await store.initialize()
 
       const result = await importClaudeSessions({ store, homeDir: ctx.homeDir })
@@ -72,7 +72,7 @@ describe("importClaudeSessions", () => {
     const ctx = fresh()
     try {
       seedSession(ctx.homeDir, ctx.realProj, "sess-bbb")
-      const store = new EventStore(ctx.dataDir)
+      const store = createTestEventStore(ctx.dataDir)
       await store.initialize()
 
       await importClaudeSessions({ store, homeDir: ctx.homeDir })
@@ -90,7 +90,7 @@ describe("importClaudeSessions", () => {
     try {
       seedSession(ctx.homeDir, ctx.realProj, "sess-ccc")
       rmSync(ctx.realProj, { recursive: true, force: true })
-      const store = new EventStore(ctx.dataDir)
+      const store = createTestEventStore(ctx.dataDir)
       await store.initialize()
 
       const result = await importClaudeSessions({ store, homeDir: ctx.homeDir })
@@ -128,7 +128,7 @@ describe("importClaudeSessions", () => {
       })
       writeFileSync(path.join(projDir, "sess-array.jsonl"), `${line}\n${line2}\n`, "utf8")
 
-      const store = new EventStore(ctx.dataDir)
+      const store = createTestEventStore(ctx.dataDir)
       await store.initialize()
       const result = await importClaudeSessions({ store, homeDir: ctx.homeDir })
       expect(result.imported).toBe(1)
@@ -145,7 +145,7 @@ describe("importClaudeSessions", () => {
     const ctx = fresh()
     try {
       seedSession(ctx.homeDir, ctx.realProj, "sess-hash-1")
-      const store = new EventStore(ctx.dataDir)
+      const store = createTestEventStore(ctx.dataDir)
       await store.initialize()
 
       const first = await importClaudeSessions({ store, homeDir: ctx.homeDir })
@@ -180,7 +180,7 @@ describe("importClaudeSessions", () => {
       })
       writeFileSync(jsonlPath, `${line1}\n${line2}\n`, "utf8")
 
-      const store = new EventStore(ctx.dataDir)
+      const store = createTestEventStore(ctx.dataDir)
       await store.initialize()
 
       const first = await importClaudeSessions({ store, homeDir: ctx.homeDir })

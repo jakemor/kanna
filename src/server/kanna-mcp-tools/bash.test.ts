@@ -3,13 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { POLICY_DEFAULT } from "../../shared/permission-policy"
-import { EventStore } from "../event-store"
+import { createTestEventStore } from "../storage/test-helpers"
 import { createToolCallbackService } from "../tool-callback"
 import { createBashTool } from "./bash"
 
 async function newStore() {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-mcp-bash-"))
-  const store = new EventStore(dir)
+  const store = createTestEventStore(dir)
   await store.initialize()
   // Delay before removing dir so background persist tasks (fired by auto-allow/auto-deny)
   // have time to complete before the tmpdir is removed.

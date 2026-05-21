@@ -16,8 +16,8 @@ import {
   listInstalledSkills,
   parseInstalledSkillsLock,
 } from "./ws-router"
-import { EventStore } from "./event-store"
 import { createToolCallbackService } from "./tool-callback"
+import { createTestEventStore } from "./storage/test-helpers"
 import { POLICY_DEFAULT } from "../shared/permission-policy"
 
 function withSidebarGroupDefaults(group: {
@@ -3131,7 +3131,7 @@ describe("ws-router bg-tasks", () => {
 test("ws-router: chat.toolRequestAnswer broadcasts chat snapshot after answering", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-ws-toolreq-broadcast-"))
   try {
-    const store = new EventStore(dir)
+    const store = createTestEventStore(dir)
     await store.initialize()
 
     const project = await store.openProject("/tmp/project")
@@ -3221,7 +3221,7 @@ test("ws-router: chat.toolRequestAnswer broadcasts chat snapshot after answering
 test("ws-router: chat.toolRequestAnswer throws when toolRequestId belongs to different chat", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-ws-toolreq-ownership-"))
   try {
-    const store = new EventStore(dir)
+    const store = createTestEventStore(dir)
     await store.initialize()
 
     const toolCallbackSvc = createToolCallbackService({
@@ -3304,7 +3304,7 @@ test("ws-router: chat.toolRequestAnswer throws when toolRequestId belongs to dif
 test("ws-router: chat.toolRequestAnswer throws on invalid decision.kind", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-ws-toolreq-kind-"))
   try {
-    const store = new EventStore(dir)
+    const store = createTestEventStore(dir)
     await store.initialize()
 
     const toolCallbackSvc = createToolCallbackService({
@@ -3385,7 +3385,7 @@ test("ws-router: chat.toolRequestAnswer throws on invalid decision.kind", async 
 test("ws-router: chat.toolRequestAnswer resolves a pending tool request", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-ws-toolreq-"))
   try {
-    const store = new EventStore(dir)
+    const store = createTestEventStore(dir)
     await store.initialize()
 
     const toolCallbackSvc = createToolCallbackService({

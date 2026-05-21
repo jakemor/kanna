@@ -1,8 +1,8 @@
-import { appendFile, mkdir, rename, rm, writeFile } from "node:fs/promises"
-import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
+import type { StorageBackend } from "./storage/backend"
+import { FsStorageBackend } from "./storage/fs-storage"
 import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, SlashCommand, StackBinding, SubagentRunSnapshot, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import type { AutoContinueEvent } from "./auto-continue/events"
@@ -234,8 +234,11 @@ export class EventStore implements PushEventStore {
   private readonly tunnelEventsByChatId = new Map<string, CloudflareTunnelEvent[]>()
   private replayChatProvider = new Map<string, AgentProvider | null>()
 
-  constructor(dataDir = getDataDir(homedir())) {
+  private readonly storage: StorageBackend
+
+  constructor(dataDir = getDataDir(homedir()), storage: StorageBackend = new FsStorageBackend()) {
     this.dataDir = dataDir
+    this.storage = storage
     this.snapshotPath = path.join(this.dataDir, "snapshot.json")
     this.projectsLogPath = path.join(this.dataDir, "projects.jsonl")
     this.chatsLogPath = path.join(this.dataDir, "chats.jsonl")
@@ -252,8 +255,8 @@ export class EventStore implements PushEventStore {
   }
 
   async initialize() {
-    await mkdir(this.dataDir, { recursive: true })
-    await mkdir(this.transcriptsDir, { recursive: true })
+    await this.storage.mkdir(this.dataDir)
+    await this.storage.mkdir(this.transcriptsDir)
     await this.ensureFile(this.projectsLogPath)
     await this.ensureFile(this.chatsLogPath)
     await this.ensureFile(this.messagesLogPath)
@@ -274,9 +277,8 @@ export class EventStore implements PushEventStore {
   }
 
   private async ensureFile(filePath: string) {
-    const file = Bun.file(filePath)
-    if (!(await file.exists())) {
-      await Bun.write(filePath, "")
+    if (!(await this.storage.exists(filePath))) {
+      await this.storage.writeText(filePath, "")
     }
   }
 
@@ -286,25 +288,24 @@ export class EventStore implements PushEventStore {
     this.resetState()
     this.clearLegacyTranscriptState()
     await Promise.all([
-      Bun.write(this.snapshotPath, ""),
-      Bun.write(this.projectsLogPath, ""),
-      Bun.write(this.chatsLogPath, ""),
-      Bun.write(this.messagesLogPath, ""),
-      Bun.write(this.queuedMessagesLogPath, ""),
-      Bun.write(this.turnsLogPath, ""),
-      Bun.write(this.schedulesLogPath, ""),
-      Bun.write(this.tunnelLogPath, ""),
-      Bun.write(this.stacksLogPath, ""),
-      Bun.write(this.toolRequestsLogPath, ""),
+      this.storage.writeText(this.snapshotPath, ""),
+      this.storage.writeText(this.projectsLogPath, ""),
+      this.storage.writeText(this.chatsLogPath, ""),
+      this.storage.writeText(this.messagesLogPath, ""),
+      this.storage.writeText(this.queuedMessagesLogPath, ""),
+      this.storage.writeText(this.turnsLogPath, ""),
+      this.storage.writeText(this.schedulesLogPath, ""),
+      this.storage.writeText(this.tunnelLogPath, ""),
+      this.storage.writeText(this.stacksLogPath, ""),
+      this.storage.writeText(this.toolRequestsLogPath, ""),
     ])
   }
 
   private async loadSnapshot() {
-    const file = Bun.file(this.snapshotPath)
-    if (!(await file.exists())) return
+    if (!(await this.storage.exists(this.snapshotPath))) return
 
     try {
-      const text = await file.text()
+      const text = await this.storage.readText(this.snapshotPath)
       if (!text.trim()) return
       const parsed = JSON.parse(text) as SnapshotFile
       if (parsed.v !== STORE_VERSION) {
@@ -407,10 +408,9 @@ export class EventStore implements PushEventStore {
   }
 
   private async loadSidebarProjectOrder() {
-    const file = Bun.file(this.sidebarProjectOrderPath)
-    if (await file.exists()) {
+    if (await this.storage.exists(this.sidebarProjectOrderPath)) {
       try {
-        const text = await file.text()
+        const text = await this.storage.readText(this.sidebarProjectOrderPath)
         if (!text.trim()) {
           this.sidebarProjectOrder = []
           return
@@ -439,10 +439,9 @@ export class EventStore implements PushEventStore {
   }
 
   private async readLegacySidebarProjectOrderFromProjectsLog() {
-    const file = Bun.file(this.projectsLogPath)
-    if (!(await file.exists())) return []
+    if (!(await this.storage.exists(this.projectsLogPath))) return []
 
-    const text = await file.text()
+    const text = await this.storage.readText(this.projectsLogPath)
     if (!text.trim()) return []
 
     const lines = text.split("\n")
@@ -482,8 +481,8 @@ export class EventStore implements PushEventStore {
   }
 
   private async writeSidebarProjectOrderFile(projectIds: string[]) {
-    await mkdir(this.dataDir, { recursive: true })
-    await writeFile(this.sidebarProjectOrderPath, `${JSON.stringify(projectIds, null, 2)}\n`, "utf8")
+    await this.storage.mkdir(this.dataDir)
+    await this.storage.writeText(this.sidebarProjectOrderPath, `${JSON.stringify(projectIds, null, 2)}\n`)
   }
 
   private async replayLogs() {
@@ -514,9 +513,8 @@ export class EventStore implements PushEventStore {
   }
 
   private async loadReplayEvents(filePath: string, sourceIndex: number): Promise<ParsedReplayEvent[]> {
-    const file = Bun.file(filePath)
-    if (!(await file.exists())) return []
-    const text = await file.text()
+    if (!(await this.storage.exists(filePath))) return []
+    const text = await this.storage.readText(filePath)
     if (!text.trim()) return []
 
     const parsedEvents: ParsedReplayEvent[] = []
@@ -1031,7 +1029,7 @@ export class EventStore implements PushEventStore {
 
   private enqueueDiskAppend(filePath: string, payload: string): void {
     this.writeChain = this.writeChain
-      .then(() => appendFile(filePath, payload, "utf8"))
+      .then(() => this.storage.appendText(filePath, payload))
       .catch((err) => {
         console.error("[event-store] subagent disk append failed:", err)
       })
@@ -1040,7 +1038,7 @@ export class EventStore implements PushEventStore {
   private append<TEvent extends StoreEvent>(filePath: string, event: TEvent) {
     const payload = `${JSON.stringify(event)}\n`
     this.writeChain = this.writeChain.then(async () => {
-      await appendFile(filePath, payload, "utf8")
+      await this.storage.appendText(filePath, payload)
       this.applyEvent(event)
     })
     return this.writeChain
@@ -1052,11 +1050,11 @@ export class EventStore implements PushEventStore {
 
   private loadTranscriptFromDisk(chatId: string) {
     const transcriptPath = this.transcriptPath(chatId)
-    if (!existsSync(transcriptPath)) {
+    if (!this.storage.existsSync(transcriptPath)) {
       return []
     }
 
-    const text = readFileSyncImmediate(transcriptPath, "utf8")
+    const text = this.storage.readTextSync(transcriptPath)
     if (!text.trim()) return []
 
     const entries: TranscriptEntry[] = []
@@ -1348,8 +1346,8 @@ export class EventStore implements PushEventStore {
       const transcriptPath = this.transcriptPath(chatId)
       const payload = sourceEntries.map((entry) => JSON.stringify(entry)).join("\n")
       this.writeChain = this.writeChain.then(async () => {
-        await mkdir(this.transcriptsDir, { recursive: true })
-        await writeFile(transcriptPath, `${payload}\n`, "utf8")
+        await this.storage.mkdir(this.transcriptsDir)
+        await this.storage.writeText(transcriptPath, `${payload}\n`)
         const chat = this.state.chatsById.get(chatId)
         if (chat) {
           chat.hasMessages = true
@@ -1403,7 +1401,7 @@ export class EventStore implements PushEventStore {
       this.dataDir, "projects", projectId, "chats", chatId, "subagent-results",
     )
     try {
-      await rm(dir, { recursive: true, force: true })
+      await this.storage.remove(dir, { recursive: true })
     } catch (err) {
       console.warn(`${LOG_PREFIX} subagent-results cleanup failed`, { chatId, err })
     }
@@ -1463,7 +1461,7 @@ export class EventStore implements PushEventStore {
       await this.append(this.chatsLogPath, event)
 
       const transcriptPath = this.transcriptPath(chat.id)
-      await rm(transcriptPath, { force: true })
+      await this.storage.remove(transcriptPath)
       if (this.cachedTranscript?.chatId === chat.id) {
         this.cachedTranscript = null
       }
@@ -1565,9 +1563,9 @@ export class EventStore implements PushEventStore {
         }
         seen.add(mid)
       }
-      await mkdir(this.transcriptsDir, { recursive: true })
+      await this.storage.mkdir(this.transcriptsDir)
       const beforeAppendAt = performance.now()
-      await appendFile(transcriptPath, payload, "utf8")
+      await this.storage.appendText(transcriptPath, payload)
       const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
       if (this.cachedTranscript?.chatId === chatId) {
@@ -1916,7 +1914,7 @@ export class EventStore implements PushEventStore {
   }
 
   async getLegacyTranscriptStats(): Promise<LegacyTranscriptStats> {
-    const messagesLogSize = Bun.file(this.messagesLogPath).size
+    const messagesLogSize = await this.storage.size(this.messagesLogPath)
     const sources: LegacyTranscriptStats["sources"] = []
     if (this.snapshotHasLegacyMessages) {
       sources.push("snapshot")
@@ -1970,22 +1968,22 @@ export class EventStore implements PushEventStore {
 
   async snapshotAndTruncateLogs() {
     const snapshot = this.createSnapshot()
-    await Bun.write(this.snapshotPath, JSON.stringify(snapshot, null, 2))
+    await this.storage.writeText(this.snapshotPath, JSON.stringify(snapshot, null, 2))
     await Promise.all([
-      Bun.write(this.projectsLogPath, ""),
-      Bun.write(this.chatsLogPath, ""),
-      Bun.write(this.messagesLogPath, ""),
-      Bun.write(this.queuedMessagesLogPath, ""),
-      Bun.write(this.turnsLogPath, ""),
-      Bun.write(this.schedulesLogPath, ""),
-      Bun.write(this.stacksLogPath, ""),
+      this.storage.writeText(this.projectsLogPath, ""),
+      this.storage.writeText(this.chatsLogPath, ""),
+      this.storage.writeText(this.messagesLogPath, ""),
+      this.storage.writeText(this.queuedMessagesLogPath, ""),
+      this.storage.writeText(this.turnsLogPath, ""),
+      this.storage.writeText(this.schedulesLogPath, ""),
+      this.storage.writeText(this.stacksLogPath, ""),
       // tunnels.jsonl is NOT compacted into the snapshot — it's left as-is
       // so that active tunnel state survives server restarts.
       // tool-requests.jsonl is NOT persisted to the snapshot. After compaction,
       // in-memory state remains intact for the current process lifetime.
       // On next server boot, tool-requests will be absent (fail-closed);
       // Task 7 recoverOnStartup marks them session_closed.
-      Bun.write(this.toolRequestsLogPath, ""),
+      this.storage.writeText(this.toolRequestsLogPath, ""),
     ])
   }
 
@@ -1999,15 +1997,15 @@ export class EventStore implements PushEventStore {
     const messageSets = [...this.legacyMessagesByChatId.entries()]
     onProgress?.(`${LOG_PREFIX} transcript migration: writing ${messageSets.length} per-chat transcript files`)
 
-    await mkdir(this.transcriptsDir, { recursive: true })
+    await this.storage.mkdir(this.transcriptsDir)
     const logEveryChat = messageSets.length <= 10
     for (let index = 0; index < messageSets.length; index += 1) {
       const [chatId, entries] = messageSets[index]
       const transcriptPath = this.transcriptPath(chatId)
       const tempPath = `${transcriptPath}.tmp`
       const payload = entries.map((entry) => JSON.stringify(entry)).join("\n")
-      await writeFile(tempPath, payload ? `${payload}\n` : "", "utf8")
-      await rename(tempPath, transcriptPath)
+      await this.storage.writeText(tempPath, payload ? `${payload}\n` : "")
+      await this.storage.rename(tempPath, transcriptPath)
       if (logEveryChat || (index + 1) % 25 === 0 || index === messageSets.length - 1) {
         onProgress?.(`${LOG_PREFIX} transcript migration: ${index + 1}/${messageSets.length} chats`)
       }
@@ -2022,14 +2020,14 @@ export class EventStore implements PushEventStore {
 
   private async shouldSnapshotLogs() {
     const sizes = await Promise.all([
-      Bun.file(this.projectsLogPath).size,
-      Bun.file(this.chatsLogPath).size,
-      Bun.file(this.messagesLogPath).size,
-      Bun.file(this.queuedMessagesLogPath).size,
-      Bun.file(this.turnsLogPath).size,
-      Bun.file(this.schedulesLogPath).size,
-      Bun.file(this.stacksLogPath).size,
-      Bun.file(this.toolRequestsLogPath).size,
+      this.storage.size(this.projectsLogPath),
+      this.storage.size(this.chatsLogPath),
+      this.storage.size(this.messagesLogPath),
+      this.storage.size(this.queuedMessagesLogPath),
+      this.storage.size(this.turnsLogPath),
+      this.storage.size(this.schedulesLogPath),
+      this.storage.size(this.stacksLogPath),
+      this.storage.size(this.toolRequestsLogPath),
     ])
     return sizes.reduce((total, size) => total + size, 0) >= SNAPSHOT_THRESHOLD_BYTES
   }
@@ -2050,7 +2048,7 @@ export class EventStore implements PushEventStore {
   async appendTunnelEvent(event: CloudflareTunnelEvent): Promise<void> {
     const payload = `${JSON.stringify(event)}\n`
     this.writeChain = this.writeChain.then(async () => {
-      await appendFile(this.tunnelLogPath, payload, "utf8")
+      await this.storage.appendText(this.tunnelLogPath, payload)
       this.applyTunnelEvent(event)
     })
     await this.writeChain
@@ -2072,9 +2070,8 @@ export class EventStore implements PushEventStore {
   }
 
   private async loadTunnelEvents(): Promise<void> {
-    const file = Bun.file(this.tunnelLogPath)
-    if (!(await file.exists())) return
-    const text = await file.text()
+    if (!(await this.storage.exists(this.tunnelLogPath))) return
+    const text = await this.storage.readText(this.tunnelLogPath)
     if (!text.trim()) return
 
     for (const rawLine of text.split("\n")) {
@@ -2092,15 +2089,14 @@ export class EventStore implements PushEventStore {
   async appendPushEvent(event: PushEvent): Promise<void> {
     const payload = `${JSON.stringify(event)}\n`
     this.writeChain = this.writeChain.then(async () => {
-      await appendFile(this.pushLogPath, payload, "utf8")
+      await this.storage.appendText(this.pushLogPath, payload)
     })
     await this.writeChain
   }
 
   async loadPushEvents(): Promise<PushEvent[]> {
-    const file = Bun.file(this.pushLogPath)
-    if (!(await file.exists())) return []
-    const text = await file.text()
+    if (!(await this.storage.exists(this.pushLogPath))) return []
+    const text = await this.storage.readText(this.pushLogPath)
     if (!text.trim()) return []
 
     const events: PushEvent[] = []

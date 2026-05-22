@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.69.0](https://github.com/cuongtranba/kanna/compare/v0.68.1...v0.69.0) (2026-05-22)
+
+
+### Features
+
+* **oauth-pool:** per-token concurrency cap (share OAuth across chats) ([#275](https://github.com/cuongtranba/kanna/issues/275)) ([9fdbfdd](https://github.com/cuongtranba/kanna/commit/9fdbfdd142130aa032c4a0b842420e3cbc9772af))
+* **transcript:** render Claude CLI synthetic API errors as dedicated entry kind ([#273](https://github.com/cuongtranba/kanna/issues/273)) ([b2b1585](https://github.com/cuongtranba/kanna/commit/b2b158517f03c0be2f0993c2070db90745442e49))
+
 ## [0.68.1](https://github.com/cuongtranba/kanna/compare/v0.68.0...v0.68.1) (2026-05-21)
 
 

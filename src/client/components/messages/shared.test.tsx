@@ -141,3 +141,37 @@ test("non-mermaid fenced block still renders as a normal code block", () => {
   expect(html).not.toContain("group/mermaid")
   expect(html).toContain("const x = 1")
 })
+
+test("known-language fenced block carries language class for syntax highlighting", () => {
+  const md = "```ts\nconst x = 1\n```"
+  const html = renderToStaticMarkup(
+    <Markdown remarkPlugins={defaultRemarkPlugins} components={defaultMarkdownComponents}>
+      {md}
+    </Markdown>
+  )
+  expect(html).toContain("language-typescript")
+  expect(html).toContain("const x = 1")
+})
+
+test("unknown-language fenced block still renders text, language class preserved", () => {
+  const md = "```madeuplang\nhello world\n```"
+  const html = renderToStaticMarkup(
+    <Markdown remarkPlugins={defaultRemarkPlugins} components={defaultMarkdownComponents}>
+      {md}
+    </Markdown>
+  )
+  expect(html).toContain("language-madeuplang")
+  expect(html).toContain("hello world")
+  expect(html).not.toContain("shiki-highlighted")
+})
+
+test("fenced block without language renders as plain code block", () => {
+  const md = "```\nplain text\n```"
+  const html = renderToStaticMarkup(
+    <Markdown remarkPlugins={defaultRemarkPlugins} components={defaultMarkdownComponents}>
+      {md}
+    </Markdown>
+  )
+  expect(html).toContain("plain text")
+  expect(html).not.toContain("language-")
+})

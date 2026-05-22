@@ -36,6 +36,7 @@ import { cn } from "../../lib/utils"
 import { isAbsoluteLocalFilePath, parseLocalFileLink, shouldOpenLocalFileLinkInEditor, toLocalFileUrl } from "../../lib/pathUtils"
 import { LocalFileLinkCard } from "./LocalFileLinkCard"
 import { MermaidDiagram } from "./MermaidDiagram"
+import { HighlightedCode } from "./HighlightedCode"
 import { useTranscriptRenderOptions } from "./render-context"
 
 export type OpenLocalLinkTarget = {
@@ -336,8 +337,14 @@ export const markdownComponents = {
     if (isInline) {
       return <code className="break-all px-1 bg-border/60 dark:[.no-pre-highlight_&]:bg-background dark:[.text-pretty_&]:bg-neutral [.no-code-highlight_&]:!bg-transparent py-0.5 rounded text-sm whitespace-wrap" {...props}>{children}</code>
     }
-    if (className.split(/\s+/).includes("language-mermaid")) {
+    const classes = className.split(/\s+/)
+    if (classes.includes("language-mermaid")) {
       return <MermaidDiagram source={extractText(children)} />
+    }
+    const langClass = classes.find((c) => c.startsWith("language-"))
+    const lang = langClass ? langClass.slice("language-".length) : ""
+    if (lang) {
+      return <HighlightedCode source={extractText(children)} lang={lang} />
     }
     return (
       <code className="block text-xs whitespace-pre" {...props}>

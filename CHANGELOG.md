@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.70.0](https://github.com/cuongtranba/kanna/compare/v0.69.0...v0.70.0) (2026-05-22)
+
+
+### Features
+
+* **transcript:** syntax-highlight fenced code blocks in chat messages ([#276](https://github.com/cuongtranba/kanna/issues/276)) ([f966b56](https://github.com/cuongtranba/kanna/commit/f966b560dc4a5081d3c54fcd7019a6476c1a523c))
+
 ## [0.69.0](https://github.com/cuongtranba/kanna/compare/v0.68.1...v0.69.0) (2026-05-22)
 
 

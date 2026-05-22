@@ -152,7 +152,7 @@ function TokenRow({
           <span className={`text-sm font-medium ${isDisabled ? "text-muted-foreground/60" : "text-foreground"}`}>{entry.label}</span>
           <code className="text-xs font-mono text-muted-foreground">{maskToken(entry.token)}</code>
           {isCurrent && (
-            <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+            <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
               In use
             </span>
           )}

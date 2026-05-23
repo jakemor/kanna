@@ -48,8 +48,6 @@ import { ClaudeAuthErrorDetector, type AuthErrorDetection } from "./auto-continu
 import type { ScheduleManager } from "./auto-continue/schedule-manager"
 import { deriveChatSchedules } from "./auto-continue/read-model"
 import type { TunnelGateway } from "./cloudflare-tunnel/gateway"
-import type { BackgroundTaskRegistry } from "./background-tasks"
-import type { TerminalManager } from "./terminal-manager"
 import { OAuthTokenPool } from "./oauth-pool/oauth-token-pool"
 import { maskOauthKey } from "../shared/mask-oauth-key"
 import { parseMentions, type ParsedMention } from "./mention-parser"
@@ -203,7 +201,6 @@ interface AgentCoordinatorArgs {
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
-  terminalManager?: TerminalManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   tunnelGateway?: TunnelGateway
   startClaudeSession?: (args: {
@@ -264,7 +261,6 @@ interface AgentCoordinatorArgs {
     customMcpServers?: readonly McpServerConfig[]
   }
   throwOnClaudeSessionStart?: boolean
-  backgroundTasks?: BackgroundTaskRegistry
   oauthPool?: OAuthTokenPool
   /** Populated on boot; will be consumed by canUseTool in Task 11. */
   toolCallback?: ToolCallbackService
@@ -341,22 +337,6 @@ function buildSteeredMessageContent(content: string) {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-function stringifyToolResultContent(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((item) => {
-        if (item && typeof item === "object") {
-          const r = item as Record<string, unknown>
-          return typeof r.text === "string" ? r.text : ""
-        }
-        return ""
-      })
-      .join("")
-  }
-  return ""
 }
 
 function asNumber(value: unknown): number | undefined {
@@ -1092,44 +1072,6 @@ async function startClaudeSession(args: {
   }
 }
 
-function parseBackgroundPid(output: string): number | null {
-  const match = output.match(/\bpid[\s:=]+(\d+)\b/i)
-  return match ? Number(match[1]) : null
-}
-
-function parseBackgroundShellId(output: string): string | null {
-  const match = output.match(/shell[_\s-]?id[:\s]+([\w-]+)/i)
-  return match ? match[1] : null
-}
-
-/**
- * Extracts the canonical background task ID from a tool_result content value.
- *
- * The SDK may surface `backgroundTaskId` either:
- *  - as a top-level field on a BashOutput object (the direct-object form), or
- *  - as a field on one of the items in a content-block array.
- *
- * Returns the first non-empty string found, or null if absent.
- */
-function extractBackgroundTaskId(content: unknown): string | null {
-  if (content === null || typeof content !== "object") return null
-  if (Array.isArray(content)) {
-    for (const item of content) {
-      if (typeof item === "object" && item !== null && "backgroundTaskId" in item) {
-        const id = (item as { backgroundTaskId?: unknown }).backgroundTaskId
-        if (typeof id === "string" && id.length > 0) return id
-      }
-    }
-    return null
-  }
-  // Direct BashOutput-like object
-  if ("backgroundTaskId" in content) {
-    const id = (content as { backgroundTaskId?: unknown }).backgroundTaskId
-    if (typeof id === "string" && id.length > 0) return id
-  }
-  return null
-}
-
 const TOKEN_ROTATION_SCHEDULE_DELAY_MS = 100
 // When a single OAuth token is shared by N chats (per
 // adr-20260522-oauth-token-share-cap), all N chats can detect the same
@@ -1169,7 +1111,6 @@ export class AgentCoordinator {
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly analytics: AnalyticsReporter
   private readonly codexManager: CodexAppServerManager
-  private readonly terminalManager: TerminalManager | null
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly startClaudeSessionPTYFn: (args: StartClaudeSessionPtyArgs) => Promise<ClaudeSessionHandle>
@@ -1206,7 +1147,6 @@ export class AgentCoordinator {
   // turn (mirrors claude-code's autoCompact circuit breaker). Persisting it
   // means a server restart cannot reset a doomed chat's breaker to 0.
   private readonly tunnelGateway: TunnelGateway | null
-  private readonly backgroundTasks: BackgroundTaskRegistry | null
   private readonly oauthPool: OAuthTokenPool | null
   private readonly toolCallback: ToolCallbackService | null
   private readonly chatPolicy: ChatPermissionPolicy
@@ -1214,7 +1154,6 @@ export class AgentCoordinator {
   private readonly claudeSessionSweepTimer: ReturnType<typeof setInterval> | null
   private readonly claudePtyRegistry: import("./claude-pty/pid-registry.adapter").ClaudePtyRegistry | null
   private readonly ptyInstanceRegistry: import("./claude-pty/pty-instance-registry").PtyInstanceRegistry | null
-  private readonly pendingBashCalls = new Map<string, { command: string; chatId: string; isBg: boolean }>()
   private readonly subagentPendingResolvers = new Map<
     string,
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
@@ -1224,10 +1163,7 @@ export class AgentCoordinator {
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.analytics = args.analytics ?? NoopAnalyticsReporter
-    this.codexManager = args.codexManager ?? new CodexAppServerManager({
-      backgroundTasks: args.backgroundTasks,
-    })
-    this.terminalManager = args.terminalManager ?? null
+    this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.startClaudeSessionPTYFn = args.startClaudeSessionPTY ?? startClaudeSessionPTY
@@ -1271,7 +1207,6 @@ export class AgentCoordinator {
     })
     this.throwOnClaudeSessionStart = args.throwOnClaudeSessionStart ?? false
     this.tunnelGateway = args.tunnelGateway ?? null
-    this.backgroundTasks = args.backgroundTasks ?? null
     this.oauthPool = args.oauthPool ?? null
     this.toolCallback = args.toolCallback ?? null
     this.chatPolicy = args.chatPolicy ?? POLICY_DEFAULT
@@ -1289,17 +1224,6 @@ export class AgentCoordinator {
     this.claudeSessionSweepTimer?.unref?.()
     this.claudePtyRegistry = args.claudePtyRegistry ?? null
     this.ptyInstanceRegistry = args.ptyInstanceRegistry ?? null
-    this.backgroundTasks?.setStrategies({
-      closeStream: async (task) => {
-        await this.stopDraining(task.chatId)
-      },
-      killPty: async (task) => {
-        this.terminalManager?.close(task.ptyId)
-      },
-      shutdownCodex: async (task) => {
-        this.codexManager.stopSession(task.chatId, task.scope ?? "main")
-      },
-    })
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -1536,42 +1460,6 @@ export class AgentCoordinator {
     this.rejectPendingResolvers((k) => k.startsWith(prefix), "subagent run terminated")
   }
 
-  private trackBashToolEntry(chatId: string, entry: TranscriptEntry): void {
-    if (entry.kind === "tool_call" && entry.tool.toolKind === "bash") {
-      const command = entry.tool.input.command ?? ""
-      const isBg = entry.tool.input.runInBackground === true
-      this.pendingBashCalls.set(entry.tool.toolId, { command, chatId, isBg })
-      return
-    }
-
-    if (entry.kind === "tool_result") {
-      const pending = this.pendingBashCalls.get(entry.toolId)
-      if (!pending) return
-      this.pendingBashCalls.delete(entry.toolId)
-      const stdout = stringifyToolResultContent(entry.content)
-
-      if (pending.isBg && this.backgroundTasks) {
-        const registryId = `bash:${entry.toolId}`
-        const shellId =
-          extractBackgroundTaskId(entry.content) ??
-          parseBackgroundShellId(stdout) ??
-          entry.toolId
-        const pid = parseBackgroundPid(stdout)
-        this.backgroundTasks.register({
-          kind: "bash_shell",
-          id: registryId,
-          chatId: pending.chatId,
-          command: pending.command,
-          shellId,
-          pid,
-          startedAt: Date.now(),
-          lastOutput: stdout.slice(-1024),
-          status: "running",
-        })
-      }
-    }
-  }
-
   getActiveTurnProfile(chatId: string): SendToStartingProfile | null {
     const active = this.activeTurns.get(chatId)
     if (!active?.clientTraceId || active.profilingStartedAt === undefined) {
@@ -1586,7 +1474,6 @@ export class AgentCoordinator {
 
   private clearDrainingStream(chatId: string): void {
     this.drainingStreams.delete(chatId)
-    this.backgroundTasks?.unregister(`drain:${chatId}`)
   }
 
   async stopDraining(chatId: string) {
@@ -2756,7 +2643,6 @@ export class AgentCoordinator {
         if (!event.entry) continue
         if (this.claudeSessions.get(session.chatId) !== session) break
         await this.store.appendMessage(session.chatId, event.entry)
-        this.trackBashToolEntry(session.chatId, event.entry)
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
@@ -2998,7 +2884,6 @@ export class AgentCoordinator {
 
         if (!event.entry) continue
         await this.store.appendMessage(active.chatId, event.entry)
-        this.trackBashToolEntry(active.chatId, event.entry)
 
         if (event.entry.kind === "system_init") {
           active.status = "running"
@@ -3016,16 +2901,7 @@ export class AgentCoordinator {
           // (e.g. background tasks), but the user should be able to send
           // new messages without having to hit stop first.
           this.activeTurns.delete(active.chatId)
-          // Track the still-open stream so the UI can show a draining
-          // indicator and the user can stop background tasks.
           this.drainingStreams.set(active.chatId, { turn: active.turn })
-          this.backgroundTasks?.register({
-            kind: "draining_stream",
-            id: `drain:${active.chatId}`,
-            chatId: active.chatId,
-            startedAt: Date.now(),
-            lastOutput: "",
-          })
         }
 
         this.emitStateChange(active.chatId)

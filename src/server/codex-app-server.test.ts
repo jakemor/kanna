@@ -5,7 +5,6 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { CodexAppServerManager, type CodexSessionScope } from "./codex-app-server"
-import { BackgroundTaskRegistry } from "./background-tasks"
 
 class FakeCodexProcess extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -1816,74 +1815,6 @@ describe("CodexAppServerManager", () => {
     const resultEvent = events.find((event) => event.type === "transcript" && event.entry.kind === "result")
     expect(resultEvent?.entry.subtype).toBe("error")
     expect(resultEvent?.entry.result).toContain("fatal: app-server crashed")
-  })
-
-  test("registers codex_session entry in BackgroundTaskRegistry on startSession", async () => {
-    const fakeProcess = new FakeCodexProcess((message, child) => {
-      if (message.method === "initialize") {
-        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
-      } else if (message.method === "thread/start") {
-        child.writeServerMessage({
-          id: message.id,
-          result: { thread: { id: "thread-reg-1" }, model: "gpt-5.4", reasoningEffort: "high" },
-        })
-      }
-    })
-
-    const registry = new BackgroundTaskRegistry()
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => fakeProcess as never,
-      backgroundTasks: registry,
-    })
-
-    await manager.startSession({
-      chatId: "chat-reg-1",
-      cwd: "/tmp/project",
-      model: "gpt-5.4",
-      sessionToken: null,
-    })
-
-    const tasks = registry.list()
-    const task = tasks.find((t) => t.id === "codex:chat-reg-1:main")
-    expect(task).toBeDefined()
-    expect(task?.kind).toBe("codex_session")
-    if (task?.kind === "codex_session") {
-      expect(task.chatId).toBe("chat-reg-1")
-      expect(task.pid).toBeNull()
-      expect(typeof task.startedAt).toBe("number")
-    }
-  })
-
-  test("unregisters codex_session entry from BackgroundTaskRegistry on stopSession", async () => {
-    const fakeProcess = new FakeCodexProcess((message, child) => {
-      if (message.method === "initialize") {
-        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
-      } else if (message.method === "thread/start") {
-        child.writeServerMessage({
-          id: message.id,
-          result: { thread: { id: "thread-reg-2" }, model: "gpt-5.4", reasoningEffort: "high" },
-        })
-      }
-    })
-
-    const registry = new BackgroundTaskRegistry()
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => fakeProcess as never,
-      backgroundTasks: registry,
-    })
-
-    await manager.startSession({
-      chatId: "chat-reg-2",
-      cwd: "/tmp/project",
-      model: "gpt-5.4",
-      sessionToken: null,
-    })
-
-    expect(registry.list().find((t) => t.id === "codex:chat-reg-2:main")).toBeDefined()
-
-    manager.stopSession("chat-reg-2")
-
-    expect(registry.list().find((t) => t.id === "codex:chat-reg-2:main")).toBeUndefined()
   })
 
   test("renders imageGeneration item as tool_call/tool_result", async () => {

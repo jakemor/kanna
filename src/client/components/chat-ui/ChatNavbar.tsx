@@ -12,7 +12,6 @@ import { statusLabel, statusTone, statusToneClass } from "../../lib/statusLabel"
 import { branchLabel as computeBranchLabel } from "../../lib/branchLabel"
 import { OpenExternalSelect } from "../open-external-menu"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
-import { BackgroundTasksIndicator } from "./BackgroundTasksIndicator"
 import { PtyInstancesIndicator } from "./PtyInstancesIndicator"
 import type { KannaSocket } from "../../app/socket"
 
@@ -125,7 +124,6 @@ interface Props {
   gitStatus?: "unknown" | "ready" | "no_repo"
   timings?: ChatStateTimings
   status?: KannaStatus
-  onOpenBgTasks?: () => void
   resolvedBindings?: ResolvedStackBinding[]
   provider?: AgentProvider | null
   onOpenPath?: (path: string) => void
@@ -160,7 +158,6 @@ export function ChatNavbar({
   gitStatus = "unknown",
   timings,
   status,
-  onOpenBgTasks,
   resolvedBindings,
   provider,
   onOpenPath = () => undefined,
@@ -267,12 +264,6 @@ export function ChatNavbar({
         ) : (
           <div className="flex-1 min-w-0" />
         )}
-
-        {onOpenBgTasks ? (
-          <div className="flex items-center flex-shrink-0 border border-border rounded-2xl backdrop-blur-lg">
-            <BackgroundTasksIndicator onOpen={onOpenBgTasks} />
-          </div>
-        ) : null}
 
         <div className="flex items-center flex-shrink-0 border border-border rounded-2xl backdrop-blur-lg">
           <PtyInstancesIndicator socket={socket} onOpenChat={onOpenPtyChat} />

@@ -43,8 +43,6 @@ import { setQuickResponseOAuthPool } from "./quick-response"
 import { TunnelGateway } from "./cloudflare-tunnel/gateway"
 import { TunnelManager } from "./cloudflare-tunnel/tunnel-manager.adapter"
 import { TunnelLifecycle } from "./cloudflare-tunnel/lifecycle"
-import { BackgroundTaskRegistry } from "./background-tasks"
-import { subscribeOrphanPersistence, recoverOrphans } from "./orphan-persistence.adapter"
 import { initToolCallbackOnBoot, type ToolCallbackService } from "./tool-callback"
 
 function resolveCloudflaredPath(settingsPath: string): string {
@@ -218,8 +216,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     currentVersion: options.update?.version ?? "unknown",
     environment: runtimeProfile === "dev" ? "dev" : "prod",
   })
-  const backgroundTasks = new BackgroundTaskRegistry({ analytics })
-  const terminals = new TerminalManager({ backgroundTasks, pidRegistry: terminalPidRegistry })
+  const terminals = new TerminalManager({ pidRegistry: terminalPidRegistry })
   const updateManager: UpdateManager | null = (() => {
     if (!options.update) return null
     let manager: UpdateManager | null = null
@@ -294,7 +291,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     throwOnClaudeSessionStart: options.agentOverrides?.throwOnClaudeSessionStart,
     analytics,
     tunnelGateway,
-    backgroundTasks,
     oauthPool,
     toolCallback,
     claudePtyRegistry,
@@ -324,13 +320,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     },
   })
 
-  // Boot recovery: re-register surviving bash_shell PIDs from a previous session.
-  // Must run after backgroundTasks registry and agent are wired, before WS routes serve.
-  // The port is not finalised yet (bind loop below), so we use the desired port for the
-  // orphan file key. If the port shifts due to EADDRINUSE, the file for the original
-  // port is silently ignored on the next boot — acceptable for the edge case.
-  const bootOrphanRecoveryCount = await recoverOrphans(backgroundTasks, port, { analytics })
-
   router = createWsRouter({
     store,
     diffStore,
@@ -350,8 +339,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     machineDisplayName,
     updateManager,
     pushManager,
-    backgroundTasks,
-    bootOrphanRecoveryCount,
     ptyInstances: ptyInstanceRegistry,
     killPtyInstance: async (chatId: string) => {
       try {
@@ -365,9 +352,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   scheduleManager.rehydrate(
     store.listAutoContinueChats().flatMap((chatId) => store.getAutoContinueEvents(chatId))
   )
-
-  // Subscribe registry events to debounced atomic persist of bash_shell tasks.
-  const unsubOrphanPersistence = subscribeOrphanPersistence(backgroundTasks, port)
 
   await tunnelGateway.reapOrphanedTunnels()
   const staleEmptyChatPruneInterval = setInterval(() => {
@@ -520,9 +504,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     // the watchers close even if the rest of shutdown fails.
     appSettings.dispose()
     keybindings.dispose()
-    // Clear the debounce timer for orphan persistence so no straggler writes fire
-    // after the process starts shutting down.
-    unsubOrphanPersistence()
     scheduleManager.shutdown()
     tunnelGateway.shutdown()
     clearInterval(staleEmptyChatPruneInterval)

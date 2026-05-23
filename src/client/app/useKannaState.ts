@@ -20,12 +20,10 @@ import { processTranscriptMessages } from "../lib/parseTranscript"
 import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { KannaSocket, type SocketStatus } from "./socket"
-import type { BackgroundTaskDiffEvent, BgTasksSnapshotData, EditorOpenSettings, OpenExternalAction, PtyInstancesEvent } from "../../shared/protocol"
+import type { EditorOpenSettings, OpenExternalAction, PtyInstancesEvent } from "../../shared/protocol"
 import type { PtyInstancesSnapshot } from "../../shared/pty-instance"
 import type { ChatPermissionPolicyOverride, ToolRequestDecision } from "../../shared/permission-policy"
-import { useBackgroundTasksStore } from "../stores/backgroundTasksStore"
 import { usePtyInstancesStore } from "../stores/ptyInstancesStore"
-import { fireOrphanRecoveryToast } from "../lib/orphanToast"
 
 function shallowProviderTokenEquals(
   a: Partial<Record<AgentProvider, string | null>>,
@@ -1105,29 +1103,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
           usePtyInstancesStore.getState().applyDiff({ op: "removed", chatId: event.chatId })
         }
       },
-    )
-  }, [socket])
-
-  useEffect(() => {
-    let orphanToastShown = false
-    return socket.subscribe<BgTasksSnapshotData, BackgroundTaskDiffEvent>(
-      { type: "bg-tasks" },
-      (snapshot) => {
-        useBackgroundTasksStore.getState().applySnapshot(snapshot.tasks)
-        if (!orphanToastShown && snapshot.orphanRecoveryCount != null && snapshot.orphanRecoveryCount > 0) {
-          orphanToastShown = true
-          void fireOrphanRecoveryToast(snapshot.orphanRecoveryCount)
-        }
-      },
-      (event) => {
-        if (event.type === "bg-tasks.added") {
-          useBackgroundTasksStore.getState().applyDiff({ op: "added", task: event.task })
-        } else if (event.type === "bg-tasks.updated") {
-          useBackgroundTasksStore.getState().applyDiff({ op: "updated", task: event.task })
-        } else if (event.type === "bg-tasks.removed") {
-          useBackgroundTasksStore.getState().applyDiff({ op: "removed", task: event.task })
-        }
-      }
     )
   }, [socket])
 

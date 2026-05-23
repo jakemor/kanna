@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto"
 import { defaultSpawnCodexAppServer } from "./codex-spawn.adapter"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
-import type { BackgroundTaskRegistry } from "./background-tasks"
 import type {
   AskUserQuestionItem,
   CodexReasoningEffort,
@@ -918,7 +917,6 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly spawnProcess: SpawnCodexAppServer
-  private readonly backgroundTasks: BackgroundTaskRegistry | null
 
   private static keyFor(chatId: string, scope: CodexSessionScope = "main"): string {
     if ((scope as string) === "sub:") {
@@ -927,8 +925,7 @@ export class CodexAppServerManager {
     return `${chatId}::${scope}`
   }
 
-  constructor(args: { spawnProcess?: SpawnCodexAppServer; backgroundTasks?: BackgroundTaskRegistry } = {}) {
-    this.backgroundTasks = args.backgroundTasks ?? null
+  constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
     this.spawnProcess = args.spawnProcess ?? defaultSpawnCodexAppServer
   }
 
@@ -958,15 +955,6 @@ export class CodexAppServerManager {
       closed: false,
     }
     this.sessions.set(key, context)
-    this.backgroundTasks?.register({
-      kind: "codex_session",
-      id: `codex:${args.chatId}:${scope}`,
-      chatId: args.chatId,
-      scope,
-      pid: null,
-      startedAt: Date.now(),
-      lastOutput: "",
-    })
     this.attachListeners(context)
 
     await this.sendRequest(context, "initialize", {
@@ -1170,7 +1158,6 @@ export class CodexAppServerManager {
     context.closed = true
     context.pendingTurn?.queue.finish()
     this.sessions.delete(key)
-    this.backgroundTasks?.unregister(`codex:${chatId}:${scope}`)
     try {
       context.child.kill("SIGKILL")
     } catch {

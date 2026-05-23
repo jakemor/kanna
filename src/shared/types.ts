@@ -1643,44 +1643,6 @@ export interface CloudflareTunnelRecord {
   stoppedAt: number | null
 }
 
-export type BackgroundTask =
-  | {
-      kind: "bash_shell"
-      id: string
-      chatId: string | null
-      command: string
-      shellId: string
-      pid: number | null
-      startedAt: number
-      lastOutput: string
-      status: "running" | "stopping"
-      orphan?: boolean
-    }
-  | {
-      kind: "draining_stream"
-      id: string
-      chatId: string
-      startedAt: number
-      lastOutput: string
-    }
-  | {
-      kind: "terminal_pty"
-      id: string
-      ptyId: string
-      cwd: string
-      startedAt: number
-      lastOutput: string
-    }
-  | {
-      kind: "codex_session"
-      id: string
-      chatId: string
-      scope?: "main" | `sub:${string}`   // optional for back-compat with pre-migration in-memory tasks
-      pid: number | null
-      startedAt: number
-      lastOutput: string
-    }
-
 export interface GitWorktree {
   path: string                 // absolute
   branch: string               // e.g. "main", "feat/x", "(detached)"

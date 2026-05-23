@@ -4,7 +4,6 @@ import defaultShell, { detectDefaultShell } from "default-shell"
 import { Terminal } from "@xterm/headless"
 import { SerializeAddon } from "@xterm/addon-serialize"
 import type { TerminalEvent, TerminalSnapshot } from "../shared/protocol"
-import type { BackgroundTaskRegistry } from "./background-tasks"
 import type { TerminalPidRegistry } from "./terminal-pid-registry.adapter"
 import { createBunTerminal, hasBunTerminal, spawnTerminalProcess } from "./terminal-manager-io.adapter"
 
@@ -163,11 +162,9 @@ function signalTerminalProcessGroup(subprocess: Bun.Subprocess | null, signal: N
 export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>()
   private readonly listeners = new Set<(event: TerminalEvent) => void>()
-  private readonly backgroundTasks: BackgroundTaskRegistry | null
   private readonly pidRegistry: TerminalPidRegistry | null
 
-  constructor(args: { backgroundTasks?: BackgroundTaskRegistry; pidRegistry?: TerminalPidRegistry | null } = {}) {
-    this.backgroundTasks = args.backgroundTasks ?? null
+  constructor(args: { pidRegistry?: TerminalPidRegistry | null } = {}) {
     this.pidRegistry = args.pidRegistry ?? null
   }
 
@@ -274,7 +271,6 @@ export class TerminalManager {
         terminalId: args.terminalId,
         exitCode,
       })
-      this.backgroundTasks?.unregister(`pty:${args.terminalId}`)
     }).catch((error) => {
       handleShellExit()
       const active = this.sessions.get(args.terminalId)
@@ -291,18 +287,9 @@ export class TerminalManager {
         terminalId: args.terminalId,
         exitCode: 1,
       })
-      this.backgroundTasks?.unregister(`pty:${args.terminalId}`)
     })
 
     this.sessions.set(args.terminalId, session)
-    this.backgroundTasks?.register({
-      kind: "terminal_pty",
-      id: `pty:${args.terminalId}`,
-      ptyId: args.terminalId,
-      cwd: args.projectPath,
-      startedAt: Date.now(),
-      lastOutput: "",
-    })
     return this.snapshotOf(session)
   }
 
@@ -352,7 +339,6 @@ export class TerminalManager {
     if (!session) return
 
     this.sessions.delete(terminalId)
-    this.backgroundTasks?.unregister(`pty:${terminalId}`)
     killTerminalProcessTree(session.process)
     void this.pidRegistry?.unregister(terminalId)
     session.terminal.close()

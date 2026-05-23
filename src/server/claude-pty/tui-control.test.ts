@@ -9,7 +9,7 @@ import {
   TUI_READY_MARKER,
 } from "./tui-control"
 import { OutputRing } from "./output-ring"
-import type { PtyProcess } from "./pty-process"
+import type { PtyProcess } from "./pty-process.adapter"
 
 function fakePty(): PtyProcess & { sent: string[] } {
   const sent: string[] = []

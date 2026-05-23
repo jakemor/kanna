@@ -1,4 +1,4 @@
-import type { PtyProcess } from "./pty-process"
+import type { PtyProcess } from "./pty-process.adapter"
 import type { OutputRing } from "./output-ring"
 
 export const TRUST_DIALOG_MARKER = "trust this folder"

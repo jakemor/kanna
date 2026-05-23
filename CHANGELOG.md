@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.71.0](https://github.com/cuongtranba/kanna/compare/v0.70.0...v0.71.0) (2026-05-23)
+
+
+### Features
+
+* custom MCP servers in settings (SDK + PTY) ([#282](https://github.com/cuongtranba/kanna/issues/282)) ([996b732](https://github.com/cuongtranba/kanna/commit/996b732d6fffdaf42e07afe7ee513d7995813300))
+* **lint:** ban side-effect imports in src/shared and src/client ([#283](https://github.com/cuongtranba/kanna/issues/283)) ([c5d6934](https://github.com/cuongtranba/kanna/commit/c5d69342fe6e96dec05a829c93a424743792ad48))
+* **lint:** catch DB construction, process.exit, process.env in pure layers ([#286](https://github.com/cuongtranba/kanna/issues/286)) ([8977d83](https://github.com/cuongtranba/kanna/commit/8977d83caa1139394b933d2e6b726ec0ad257905))
+* **lint:** ratchet side-effect call sites in src/server (warn + lower-only baseline) ([#287](https://github.com/cuongtranba/kanna/issues/287)) ([9ec4c7e](https://github.com/cuongtranba/kanna/commit/9ec4c7e528f200b69336bb21721d7067ca8fbe44))
+
+
+### Bug Fixes
+
+* **file-preview:** restore scroll inside @-triggered file sheet ([#305](https://github.com/cuongtranba/kanna/issues/305)) ([c388e5a](https://github.com/cuongtranba/kanna/commit/c388e5a06976f71d2b6579a5eebf8529f5f00f64))
+* **oauth-pool:** keep "In use" badge on single line ([#278](https://github.com/cuongtranba/kanna/issues/278)) ([4aa2aa8](https://github.com/cuongtranba/kanna/commit/4aa2aa8d2a288ba588c665fa277989ac129ffcda))
+* point the dynamic import at `./terminal-pid-registry.adapter`. ([54270c6](https://github.com/cuongtranba/kanna/commit/54270c63ebab9d1aa550818d3cddc65784d6362a))
+* **settings:** forward globalPromptAppend to agent spawn ([#281](https://github.com/cuongtranba/kanna/issues/281)) ([37e9fbd](https://github.com/cuongtranba/kanna/commit/37e9fbdb56766604bf7496f43eca0b7fb9569fba))
+* **test:** update dynamic import after terminal-pid-registry rename ([#291](https://github.com/cuongtranba/kanna/issues/291)) ([54270c6](https://github.com/cuongtranba/kanna/commit/54270c63ebab9d1aa550818d3cddc65784d6362a))
+
 ## [0.70.0](https://github.com/cuongtranba/kanna/compare/v0.69.0...v0.70.0) (2026-05-22)
 
 

@@ -1,7 +1,7 @@
-import { homedir, tmpdir } from "node:os"
+import { homedir } from "node:os"
 import path from "node:path"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
+import { createRuntimeDir, writeRuntimeFile, removeRuntimeDir } from "./runtime-dir.adapter"
 import { verifyPtyAuth } from "./auth"
 import { startKannaMcpHttpServer, buildMcpConfigJson, type KannaMcpHttpHandle } from "../kanna-mcp-http"
 import type { KannaMcpDelegationContext } from "../kanna-mcp"
@@ -295,7 +295,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
 
   const sessionId = args.sessionToken ?? randomUUID()
 
-  const runtimeDir = await mkdtemp(path.join(tmpdir(), `kanna-pty-${sessionId.slice(0, 8)}-`))
+  const runtimeDir = await createRuntimeDir(`kanna-pty-${sessionId.slice(0, 8)}-`)
 
   const mcpConfigPath = path.join(runtimeDir, "mcp-config.json")
   let mcpHandle: KannaMcpHttpHandle
@@ -320,14 +320,14 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
         forceInteractiveToolCallbacks: true,
       },
     })
-    await writeFile(
+    await writeRuntimeFile(
       mcpConfigPath,
       buildMcpConfigJson(mcpHandle, args.customMcpServers ?? []),
       { encoding: "utf8", mode: 0o600 },
     )
   } catch (err) {
     try { await (mcpHandle! as KannaMcpHttpHandle | undefined)?.close() } catch { /* swallow */ }
-    try { await rm(runtimeDir, { recursive: true, force: true }) } catch { /* swallow */ }
+    try { await removeRuntimeDir(runtimeDir) } catch { /* swallow */ }
     throw err
   }
 
@@ -367,7 +367,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
       // HTTP server may still be listening — a real resource leak.
       console.warn("[kanna/pty] mcpHandle.close failed (HTTP server may leak)", { chatId: args.chatId, sessionId, err })
     }
-    try { await rm(runtimeDir, { recursive: true, force: true }) } catch (err) {
+    try { await removeRuntimeDir(runtimeDir) } catch (err) {
       console.warn("[kanna/pty] runtimeDir cleanup failed", { chatId: args.chatId, runtimeDir, err })
     }
     if (args.ptyRegistry) {
@@ -456,7 +456,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
       error: err instanceof Error ? err.message : String(err),
     })
     try { await mcpHandle.close() } catch { /* swallow */ }
-    try { await rm(runtimeDir, { recursive: true, force: true }) } catch { /* swallow */ }
+    try { await removeRuntimeDir(runtimeDir) } catch { /* swallow */ }
     throw err
   }
 

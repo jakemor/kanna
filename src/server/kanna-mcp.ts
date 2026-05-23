@@ -1,8 +1,8 @@
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod"
 import path from "node:path"
-import { stat } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
+import { statPathOrNull } from "./fs-stat.adapter"
 import { KANNA_MCP_SERVER_NAME } from "../shared/tools"
 import { buildProjectFileContentUrl } from "../shared/projectFileUrl"
 import { inferProjectFileContentType } from "./uploads"
@@ -102,10 +102,8 @@ export async function resolveOfferDownload(
     return { ok: false, error: "Path resolves outside the project root" }
   }
 
-  let info
-  try {
-    info = await stat(absolutePath)
-  } catch {
+  const info = await statPathOrNull(absolutePath)
+  if (!info) {
     return { ok: false, error: `File not found: ${relativePath}` }
   }
   if (!info.isFile()) {

@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { defaultSpawnCodexAppServer } from "./codex-spawn.adapter"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type { BackgroundTaskRegistry } from "./background-tasks"
@@ -57,7 +57,7 @@ import {
   isServerRequest,
 } from "./codex-app-server-protocol"
 
-interface CodexAppServerProcess {
+export interface CodexAppServerProcess {
   stdin: Writable
   stdout: Readable
   stderr: Readable
@@ -69,7 +69,7 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
+export type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
 
 interface PendingRequest<TResult> {
   method: string
@@ -929,12 +929,7 @@ export class CodexAppServerManager {
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer; backgroundTasks?: BackgroundTaskRegistry } = {}) {
     this.backgroundTasks = args.backgroundTasks ?? null
-    this.spawnProcess = args.spawnProcess ?? ((cwd) =>
-      spawn("codex", ["app-server"], {
-        cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
-      }) as unknown as CodexAppServerProcess)
+    this.spawnProcess = args.spawnProcess ?? defaultSpawnCodexAppServer
   }
 
   async startSession(args: StartCodexSessionArgs) {

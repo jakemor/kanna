@@ -1,9 +1,9 @@
-import { stat } from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
 import type { ClientCommand, EditorOpenSettings, EditorPreset } from "../shared/protocol"
 import { resolveLocalPath } from "./paths"
 import { canOpenMacApp, hasCommand, spawnDetached } from "./process-utils.adapter"
+import { statPathOrNull } from "./fs-stat.adapter"
 
 type OpenExternalCommand = Extract<ClientCommand, { type: "system.openExternal" }>
 
@@ -21,7 +21,7 @@ export async function openExternal(command: OpenExternalCommand) {
   const resolvedPath = resolveLocalPath(command.localPath)
   const platform = process.platform
   const info = command.action === "open_editor" || command.action === "open_finder" || command.action === "open_preview" || command.action === "open_default"
-    ? await stat(resolvedPath).catch(() => null)
+    ? await statPathOrNull(resolvedPath)
     : null
 
   if (command.action === "open_editor") {

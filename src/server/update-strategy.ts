@@ -1,6 +1,7 @@
 import { compareVersions } from "./cli-runtime"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { PACKAGE_NAME } from "../shared/branding"
+import { spawnCapture } from "./process-utils.adapter"
 import type { UpdateInstallErrorCode } from "../shared/types"
 
 export interface UpdateChecker {
@@ -178,12 +179,7 @@ export function createUpdateStrategy(deps: CreateUpdateStrategyDeps): UpdateStra
 }
 
 async function runCommandCapture(command: string, args: string[], cwd: string): Promise<string> {
-  const proc = Bun.spawn({ cmd: [command, ...args], cwd, stdout: "pipe", stderr: "pipe" })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
+  const { stdout, stderr, exitCode } = await spawnCapture(command, args, cwd)
   if (exitCode !== 0) {
     const tail = stderr.trim().slice(-500)
     throw new Error(tail || `${command} exited with code ${exitCode}`)

@@ -1,8 +1,12 @@
-import { existsSync } from "node:fs"
 import { renderANSI } from "uqr"
-import { ConfigHandler, Tunnel, bin as cloudflaredBin, install as installCloudflared } from "cloudflared"
+import { ConfigHandler, Tunnel } from "cloudflared"
 import type { ShareMode } from "../shared/share"
 import { isTokenShareMode } from "../shared/share"
+import {
+  defaultCloudflaredBin,
+  defaultExistsSync,
+  defaultInstallCloudflared,
+} from "./share-defaults.adapter"
 
 export interface StartedShareTunnel {
   publicUrl: string | null
@@ -40,9 +44,9 @@ export async function renderTerminalQr(url: string) {
 export async function ensureCloudflaredInstalled(
   deps: ShareTunnelDeps = {},
 ) {
-  const resolvedBin = deps.cloudflaredBin ?? cloudflaredBin
-  const fileExists = deps.existsSync ?? existsSync
-  const installBinary = deps.installCloudflared ?? installCloudflared
+  const resolvedBin = deps.cloudflaredBin ?? defaultCloudflaredBin
+  const fileExists = deps.existsSync ?? defaultExistsSync
+  const installBinary = deps.installCloudflared ?? defaultInstallCloudflared
 
   if (fileExists(resolvedBin)) {
     return resolvedBin

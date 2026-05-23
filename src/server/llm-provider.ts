@@ -1,4 +1,3 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import OpenAI from "openai"
@@ -6,11 +5,15 @@ import { getLlmProviderFilePath } from "../shared/branding"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
-  type LlmProviderFile,
   type LlmProviderKind,
   type LlmProviderSnapshot,
   type LlmProviderValidationResult,
 } from "../shared/types"
+
+export {
+  readLlmProviderSnapshotFromDisk as readLlmProviderSnapshot,
+  writeLlmProviderSnapshotToDisk as writeLlmProviderSnapshot,
+} from "./llm-provider-store.adapter"
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1"
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -103,7 +106,7 @@ export function normalizeLlmProviderSnapshot(
   }
 }
 
-function createDefaultSnapshot(filePath: string, warning: string | null = null): LlmProviderSnapshot {
+export function createDefaultSnapshot(filePath: string, warning: string | null = null): LlmProviderSnapshot {
   return {
     provider: DEFAULT_PROVIDER,
     apiKey: "",
@@ -114,40 +117,6 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
     warning,
     filePathDisplay: formatDisplayPath(filePath),
   }
-}
-
-export async function readLlmProviderSnapshot(filePath = getLlmProviderFilePath(homedir())) {
-  try {
-    const text = await readFile(filePath, "utf8")
-    if (!text.trim()) {
-      return createDefaultSnapshot(filePath, "LLM provider file was empty. Using defaults.")
-    }
-    return normalizeLlmProviderSnapshot(JSON.parse(text), filePath)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return createDefaultSnapshot(filePath)
-    }
-    if (error instanceof SyntaxError) {
-      return createDefaultSnapshot(filePath, "LLM provider file is invalid JSON. Using defaults.")
-    }
-    throw error
-  }
-}
-
-export async function writeLlmProviderSnapshot(
-  value: Pick<LlmProviderFile, "provider" | "apiKey" | "model"> & { baseUrl: string },
-  filePath = getLlmProviderFilePath(homedir())
-) {
-  const snapshot = normalizeLlmProviderSnapshot(value, filePath)
-  const payload: LlmProviderFile = {
-    provider: snapshot.provider,
-    apiKey: snapshot.apiKey,
-    model: snapshot.model,
-    baseUrl: snapshot.provider === "custom" ? snapshot.baseUrl : null,
-  }
-  await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
-  return snapshot
 }
 
 function toSerializableValue(value: unknown): unknown {

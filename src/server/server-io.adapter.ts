@@ -13,7 +13,6 @@ export function statFile(p: string): Promise<Stats> {
   return stat(p)
 }
 
- 
-export function serveHttp<T = unknown>(opts: any): Server<T> {
+export function serveHttp<T = unknown>(opts: Bun.Serve.Options<T>): Server<T> {
   return Bun.serve(opts) as unknown as Server<T>
 }

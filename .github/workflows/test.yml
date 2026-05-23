@@ -23,6 +23,9 @@ jobs:
 
       - run: bun run lint
 
+      - name: Type check
+        run: bunx tsc --noEmit
+
       - run: bun run build
 
       - name: Run tests

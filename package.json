@@ -40,7 +40,6 @@
     "prepare:export-viewer-release-assets": "bun run ./scripts/prepare-export-viewer-release-assets.ts",
     "check": "tsc --noEmit && bun run lint && bun run build:client && bun run build:export-viewer",
     "lint": "eslint src/ --max-warnings=0",
-    "lint:ratchet": "bun run scripts/lint-ratchet.ts",
     "dev": "bun run ./scripts/dev.ts",
     "dev:client": "vite --host 0.0.0.0 --port 5174",
     "dev:server": "bun run ./scripts/dev-server.ts --no-open --port 5175",

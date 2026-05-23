@@ -110,4 +110,47 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ["src/server/**/*.{ts,tsx}"],
+    ignores: [
+      "src/server/**/*.test.ts",
+      "src/server/**/*.test.tsx",
+      "src/server/__fixtures__/**",
+      "src/server/test-helpers/**",
+      "src/server/adapters/**",
+      "src/server/**/*.adapter.ts",
+    ],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["fs", "fs/*", "node:fs", "node:fs/*", "chokidar"],
+              message:
+                "Side-effect IO must move into an adapter file (src/server/**/*.adapter.ts) or be reached through an injected port.",
+            },
+            {
+              group: ["bun:sqlite", "better-sqlite3", "pg"],
+              message:
+                "Database clients must move into an adapter file or be reached through an injected port.",
+            },
+            {
+              group: ["child_process", "node:child_process", "node:http", "node:https", "http", "https"],
+              message:
+                "Process spawn / raw http must move into an adapter file or be reached through an injected port.",
+            },
+          ],
+        },
+      ],
+      "no-restricted-globals": [
+        "error",
+        {
+          name: "Bun",
+          message:
+            "Bun globals (Bun.spawn, Bun.$, Bun.file, Bun.write, Bun.serve) must move into an adapter file or be reached through an injected port.",
+        },
+      ],
+    },
+  },
 )

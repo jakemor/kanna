@@ -23,8 +23,6 @@ jobs:
 
       - run: bun run lint
 
-      - run: bun run lint:ratchet
-
       - run: bun run build
 
       - name: Run tests

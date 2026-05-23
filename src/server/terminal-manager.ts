@@ -6,6 +6,7 @@ import { SerializeAddon } from "@xterm/addon-serialize"
 import type { TerminalEvent, TerminalSnapshot } from "../shared/protocol"
 import type { BackgroundTaskRegistry } from "./background-tasks"
 import type { TerminalPidRegistry } from "./terminal-pid-registry.adapter"
+import { createBunTerminal, hasBunTerminal, spawnTerminalProcess } from "./terminal-manager-io.adapter"
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
@@ -181,7 +182,7 @@ export class TerminalManager {
     if (process.platform === "win32") {
       throw new Error("Embedded terminal is currently supported on macOS/Linux only.")
     }
-    if (typeof Bun.Terminal !== "function") {
+    if (!hasBunTerminal()) {
       throw new Error("Embedded terminal requires Bun 1.3.5+ with Bun.Terminal support.")
     }
 
@@ -217,11 +218,11 @@ export class TerminalManager {
       status: "running",
       exitCode: null,
       process: null,
-      terminal: new Bun.Terminal({
+      terminal: createBunTerminal({
         cols,
         rows,
         name: "xterm-256color",
-        data: (_terminal, data) => {
+        data: (_terminal: unknown, data: Uint8Array) => {
           const chunk = Buffer.from(data).toString("utf8")
           updateFocusReportingState(session, chunk)
           headless.write(chunk)
@@ -239,7 +240,7 @@ export class TerminalManager {
     }
 
     try {
-      session.process = Bun.spawn([shell, ...resolveShellArgs(shell)], {
+      session.process = spawnTerminalProcess([shell, ...resolveShellArgs(shell)], {
         cwd: args.projectPath,
         env: createTerminalEnv(),
         terminal: session.terminal,

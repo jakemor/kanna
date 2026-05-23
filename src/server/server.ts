@@ -1,5 +1,6 @@
 import path from "node:path"
-import { stat } from "node:fs/promises"
+import type { Server } from "bun"
+import { getServerFile, serveHttp, statFile } from "./server-io.adapter"
 import { bin as cloudflaredBin } from "cloudflared"
 import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import {
@@ -178,7 +179,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   await refreshDiscovery()
 
-  let server: ReturnType<typeof Bun.serve<ClientState>>
+  let server: Server<ClientState>
   let router: ReturnType<typeof createWsRouter>
   const terminalPidRegistry = new TerminalPidRegistry(path.join(store.dataDir, "terminals.json"))
   const reapedTerminals = await terminalPidRegistry.reapStale()
@@ -373,7 +374,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
     try {
-      server = Bun.serve<ClientState>({
+      server = serveHttp<ClientState>({
         port: actualPort,
         hostname,
         maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
@@ -616,10 +617,10 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
   }
 
   const filePath = path.join(getProjectUploadDir(project.localPath), storedName)
-  const file = Bun.file(filePath)
+  const file = getServerFile(filePath)
   let fileSize: number
   try {
-    const info = await stat(filePath)
+    const info = await statFile(filePath)
     if (!info.isFile()) {
       return Response.json({ error: "Attachment not found" }, { status: 404 })
     }
@@ -667,10 +668,10 @@ async function handleProjectFileContent(req: Request, url: URL, store: EventStor
     return Response.json({ error: "Invalid project file path" }, { status: 400 })
   }
 
-  const file = Bun.file(filePath)
+  const file = getServerFile(filePath)
   let fileSize: number
   try {
-    const info = await stat(filePath)
+    const info = await statFile(filePath)
     if (!info.isFile()) {
       return Response.json({ error: "File not found" }, { status: 404 })
     }
@@ -717,7 +718,7 @@ async function handleLocalFileContent(req: Request, url: URL) {
 
   let fileSize: number
   try {
-    const info = await stat(absolutePath)
+    const info = await statFile(absolutePath)
     if (!info.isFile()) {
       return Response.json({ error: "Not a file" }, { status: 404 })
     }
@@ -726,7 +727,7 @@ async function handleLocalFileContent(req: Request, url: URL) {
     return Response.json({ error: "File not found" }, { status: 404 })
   }
 
-  const file = Bun.file(absolutePath)
+  const file = getServerFile(absolutePath)
   const fileName = path.basename(absolutePath)
   return new Response(req.method === "HEAD" ? null : file, {
     headers: {
@@ -797,14 +798,14 @@ async function serveStatic(distDir: string, pathname: string) {
   const filePath = path.join(distDir, requestedPath)
   const indexPath = path.join(distDir, "index.html")
 
-  const file = Bun.file(filePath)
+  const file = getServerFile(filePath)
   if (await file.exists()) {
     return new Response(file, {
       headers: getStaticHeaders(requestedPath),
     })
   }
 
-  const indexFile = Bun.file(indexPath)
+  const indexFile = getServerFile(indexPath)
   if (await indexFile.exists()) {
     return new Response(indexFile, {
       headers: {

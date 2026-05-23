@@ -1,7 +1,17 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import path from "node:path"
+import {
+  getBunEnv,
+  getDiffFile,
+  makeTempDir,
+  readTextFileOrNull,
+  readTextFileOrThrow,
+  rmPathRecursive,
+  spawnCommandCapture,
+  spawnGitCapture,
+  statOrNull,
+  writeTextFile,
+} from "./diff-store-io.adapter"
 import type {
   BranchMetadata,
   ChatBranchHistoryEntry,
@@ -128,43 +138,12 @@ const NON_INTERACTIVE_GIT_ENV = {
   GCM_INTERACTIVE: "Never",
 } as const
 
-export async function runGit(args: string[], cwd: string) {
-  const process = Bun.spawn(["git", "-C", cwd, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "ignore",
-    env: { ...Bun.env, ...NON_INTERACTIVE_GIT_ENV },
-  })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
-  ])
-
-  return {
-    stdout,
-    stderr,
-    exitCode,
-  }
+export function runGit(args: string[], cwd: string) {
+  return spawnGitCapture(args, cwd, { ...getBunEnv(), ...NON_INTERACTIVE_GIT_ENV })
 }
 
-async function runCommand(args: string[]) {
-  const process = Bun.spawn(args, {
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "ignore",
-  })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
-  ])
-
-  return {
-    stdout,
-    stderr,
-    exitCode,
-  }
+function runCommand(args: string[]) {
+  return spawnCommandCapture(args)
 }
 
 export function formatGitFailure(result: Awaited<ReturnType<typeof runGit>>) {
@@ -304,7 +283,7 @@ async function getLastFetchedAt(repoRoot: string) {
   const gitDir = gitDirResult.stdout.trim()
   const fetchHeadPath = path.resolve(repoRoot, gitDir, "FETCH_HEAD")
   try {
-    const fetchHeadStat = await stat(fetchHeadPath)
+    const fetchHeadStat = (await statOrNull(fetchHeadPath))!
     return fetchHeadStat.mtime.toISOString()
   } catch {
     return undefined
@@ -887,12 +866,12 @@ async function listDirtyPaths(repoRoot: string) {
 
 async function readWorktreeFile(repoRoot: string, relativePath: string): Promise<string | null> {
   const absolutePath = path.join(repoRoot, relativePath)
-  const fileInfo = await stat(absolutePath).catch(() => null)
+  const fileInfo = await statOrNull(absolutePath)
   if (!fileInfo?.isFile()) {
     return null
   }
 
-  return await readFile(absolutePath, "utf8")
+  return await readTextFileOrThrow(absolutePath)
 }
 
 async function readBaseFile(repoRoot: string, baseCommit: string | null, relativePath: string): Promise<string | null> {
@@ -908,13 +887,13 @@ async function readBaseFile(repoRoot: string, baseCommit: string | null, relativ
 }
 
 async function createPatch(beforePathLabel: string, afterPathLabel: string, beforeText: string | null, afterText: string | null) {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "kanna-diff-"))
+  const tempDir = await makeTempDir("kanna-diff-")
   const beforePath = path.join(tempDir, "before")
   const afterPath = path.join(tempDir, "after")
 
   try {
-    await writeFile(beforePath, beforeText ?? "", "utf8")
-    await writeFile(afterPath, afterText ?? "", "utf8")
+    await writeTextFile(beforePath, beforeText ?? "")
+    await writeTextFile(afterPath, afterText ?? "")
 
     const result = await runGit(
       [
@@ -940,7 +919,7 @@ async function createPatch(beforePathLabel: string, afterPathLabel: string, befo
       .replace("--- a/before", `--- a/${beforePathLabel}`)
       .replace("+++ b/after", `+++ b/${afterPathLabel}`)
   } finally {
-    await rm(tempDir, { recursive: true, force: true })
+    await rmPathRecursive(tempDir)
   }
 }
 
@@ -1029,8 +1008,8 @@ async function computeCurrentFiles(repoRoot: string, baseCommit: string | null):
     const beforeText = await readBaseFile(repoRoot, baseCommit, beforePath)
     const afterText = await readWorktreeFile(repoRoot, relativePath)
     const absolutePath = path.join(repoRoot, relativePath)
-    const fileInfo = await stat(absolutePath).catch(() => null)
-    const file = fileInfo?.isFile() ? Bun.file(absolutePath) : null
+    const fileInfo = await statOrNull(absolutePath)
+    const file = fileInfo?.isFile() ? getDiffFile(absolutePath) : null
     const mimeType = file ? inferProjectFileContentType(relativePath, file.type) : undefined
     const size = fileInfo?.isFile() ? fileInfo.size : undefined
 
@@ -1104,7 +1083,7 @@ async function discardRenamedPath(repoRoot: string, entry: DirtyPathEntry) {
     throw new Error(formatGitFailure(restoreResult) || "Failed to restore renamed file")
   }
 
-  await rm(path.join(repoRoot, entry.path), { recursive: true, force: true })
+  await rmPathRecursive(path.join(repoRoot, entry.path))
 }
 
 export function appendGitIgnoreEntry(currentContents: string | null, entry: string) {
@@ -2149,10 +2128,10 @@ export class DiffStore {
     }
 
     if (entry.isUntracked) {
-      await rm(path.join(repo.repoRoot, entry.path), { recursive: true, force: true })
+      await rmPathRecursive(path.join(repo.repoRoot, entry.path))
     } else if (entry.changeType === "added") {
       await discardAddedPath(repo.repoRoot, repo.baseCommit !== null, entry.path)
-      await rm(path.join(repo.repoRoot, entry.path), { recursive: true, force: true })
+      await rmPathRecursive(path.join(repo.repoRoot, entry.path))
     } else if (entry.changeType === "renamed") {
       if (!repo.baseCommit) {
         throw new Error("Cannot discard a rename before the repository has an initial commit")
@@ -2196,10 +2175,10 @@ export class DiffStore {
     }
 
     const gitignorePath = path.join(repo.repoRoot, ".gitignore")
-    const currentContents = await readFile(gitignorePath, "utf8").catch(() => null)
+    const currentContents = await readTextFileOrNull(gitignorePath)
     const nextContents = appendGitIgnoreEntry(currentContents, ignoreEntry)
     if (nextContents !== currentContents) {
-      await writeFile(gitignorePath, nextContents, "utf8")
+      await writeTextFile(gitignorePath, nextContents)
     }
 
     return {

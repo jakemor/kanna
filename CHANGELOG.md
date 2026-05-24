@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.75.0](https://github.com/cuongtranba/kanna/compare/v0.74.0...v0.75.0) (2026-05-24)
+
+
+### Features
+
+* **pty:** realtime memory tracking in live status panel ([#316](https://github.com/cuongtranba/kanna/issues/316)) ([8148302](https://github.com/cuongtranba/kanna/commit/814830259868c93183418de32af5ed9b031c2b2d))
+
 ## [0.74.0](https://github.com/cuongtranba/kanna/compare/v0.73.1...v0.74.0) (2026-05-23)
 
 

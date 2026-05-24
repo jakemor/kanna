@@ -79,6 +79,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     customMcpServers: [],
     claudeDriver: { ...CLAUDE_DRIVER_DEFAULTS, lifecycle: { ...CLAUDE_PTY_LIFECYCLE_DEFAULTS } },
     globalPromptAppend: "",
+    shareDefaultTtlHours: 24,
     ...overrides,
   }
 }
@@ -937,6 +938,28 @@ describe("globalPromptAppend", () => {
     await mgr.initialize()
     const overflow = "x".repeat(GLOBAL_PROMPT_APPEND_MAX_CHARS + 1)
     await expect(mgr.setGlobalPromptAppend(overflow)).rejects.toThrow(/globalPromptAppend/)
+    mgr.dispose()
+  })
+})
+
+describe("shareDefaultTtlHours", () => {
+  test("shareDefaultTtlHours defaults to 24 and is patchable", async () => {
+    const filePath = await createTempFilePath()
+    const mgr = trackManager(new AppSettingsManager(filePath))
+    await mgr.initialize()
+    expect(mgr.getSnapshot().shareDefaultTtlHours).toBe(24)
+    await mgr.writePatch({ shareDefaultTtlHours: 48 })
+    expect(mgr.getSnapshot().shareDefaultTtlHours).toBe(48)
+    mgr.dispose()
+  })
+
+  test("shareDefaultTtlHours rejects non-positive integers", async () => {
+    const filePath = await createTempFilePath()
+    const mgr = trackManager(new AppSettingsManager(filePath))
+    await mgr.initialize()
+    await expect(mgr.writePatch({ shareDefaultTtlHours: 0 })).rejects.toThrow()
+    await expect(mgr.writePatch({ shareDefaultTtlHours: -1 })).rejects.toThrow()
+    await expect(mgr.writePatch({ shareDefaultTtlHours: 1.5 })).rejects.toThrow()
     mgr.dispose()
   })
 })

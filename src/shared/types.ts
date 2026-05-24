@@ -743,6 +743,7 @@ export interface AppSettingsSnapshot {
   customMcpServers: McpServerConfig[]
   claudeDriver: ClaudeDriverSettings
   globalPromptAppend: string
+  shareDefaultTtlHours: number
 }
 
 export interface AppSettingsPatch {
@@ -779,6 +780,7 @@ export interface AppSettingsPatch {
     lifecycle?: Partial<ClaudePtyLifecycleSettings>
   }
   globalPromptAppend?: string
+  shareDefaultTtlHours?: number
 }
 
 export interface LlmProviderFile {

@@ -1,3 +1,4 @@
+import type { ShareClientCommand } from "./session-share/protocol"
 import type {
   AppSettingsSnapshot,
   AppSettingsPatch,
@@ -292,6 +293,7 @@ export type ClientCommand =
   | { type: "push.test" }
   | { type: "push.setProjectMute"; localPath: string; muted: boolean }
   | { type: "push.setFocusedChat"; chatId: string | null }
+  | ShareClientCommand
 
 export type OpenExternalAction = Extract<ClientCommand, { type: "system.openExternal" }>["action"]
 

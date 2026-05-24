@@ -1,6 +1,6 @@
 ---
 id: adr-20260524-pty-cpu-tracking
-c3-seal: 04fbf58039895a1da721eb3cf880139ab09ea53d182fcee30cc5b1fcfdbd86a1
+c3-seal: 0b2a34236c7696cc813a1a4b7d47543ff581c46c8ebefeea1c3cd0ced9cace2b
 title: pty-cpu-tracking
 type: adr
 goal: 'Extend the PTY live-status panel with realtime CPU% per instance: each tracked `claude` PTY exposes current CPU% plus session-peak CPU%, summed across the process tree (`claude` + descendants), polled on the same 2 s tick as the existing memory sampler. Adds two nullable-number fields (`cpuPercent`, `cpuPeakPercent`) to `PtyInstanceState`, widens the sampler API from `sampleProcessTreeRssBytes` to `sampleProcessTreeUsage` (returns `{rssBytes, cpuPercent}`), and adds a `cpu` cell to `PtyInstancesIndicator`.'
@@ -89,7 +89,7 @@ CPU% sums per-process `pcpu` values across the tree. On multi-core hosts each pr
 | Alternative | Rejected because |
 | --- | --- |
 | Keep sampler API as RSS-only and add a second ps call for CPU | Doubles the per-tick spawn cost for zero gain — pcpu is already in the default ps output, one extra column is free |
-| Add a third *time* column for elapsed CPU seconds (sum-of-thread CPU time) | The up cell already shows wall-clock uptime; adding CPU-seconds duplicates intent and clutters the panel |
+| Add a third time column for elapsed CPU seconds (sum-of-thread CPU time) | The up cell already shows wall-clock uptime; adding CPU-seconds duplicates intent and clutters the panel |
 | Use BSD-only ps -o pcpu= with macOS-specific code path | Both BSD ps (macOS) and procps-ng ps (Linux) accept -o pcpu= identically; no need to branch |
 | Render CPU as a color-coded badge over a threshold | Out of scope — current panel uses text-only style; consistent with the mem cell already shipped |
 

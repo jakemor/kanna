@@ -41,6 +41,7 @@ import { listWorktrees } from "./worktree-store.adapter"
 import type { TunnelGateway } from "./cloudflare-tunnel/gateway"
 import type { PushManager } from "./push/push-manager"
 import { validateMcpServer } from "./mcp-validator"
+import type { SessionShareService } from "./session-share"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
@@ -148,6 +149,7 @@ interface CreateWsRouterArgs {
   pushManager: PushManager
   ptyInstances?: PtyInstanceRegistry
   killPtyInstance?: (chatId: string) => Promise<{ ok: boolean; error?: string }>
+  sessionShare?: SessionShareService
 }
 
 interface SnapshotBroadcastFilter {
@@ -414,6 +416,7 @@ export function createWsRouter({
   pushManager,
   ptyInstances,
   killPtyInstance,
+  sessionShare,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
   let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
@@ -519,6 +522,7 @@ export function createWsRouter({
     customMcpServers: [],
     claudeDriver: { ...CLAUDE_DRIVER_DEFAULTS, lifecycle: { ...CLAUDE_PTY_LIFECYCLE_DEFAULTS } },
     globalPromptAppend: "",
+    shareDefaultTtlHours: 24,
   }
   const mergeAppSettingsPatch = (snapshot: AppSettingsSnapshot, patch: AppSettingsPatch): AppSettingsSnapshot => {
     let subagents = snapshot.subagents
@@ -2058,6 +2062,33 @@ export function createWsRouter({
           }
           const worktrees = await listWorktrees(project.localPath)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { worktrees } })
+          return
+        }
+        case "share.mint": {
+          if (!sessionShare) {
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { ok: false, error: { kind: "no_tunnel" } } })
+            return
+          }
+          const r = await sessionShare.mintToken(command.payload)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: r })
+          return
+        }
+        case "share.revoke": {
+          if (!sessionShare) {
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { ok: false, error: { kind: "not_found" } } })
+            return
+          }
+          const r = await sessionShare.revokeToken(command.payload)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: r })
+          return
+        }
+        case "share.list": {
+          if (!sessionShare) {
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { ok: true, data: { shares: [] } } })
+            return
+          }
+          const shares = sessionShare.listSharesForChat(command.payload.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { ok: true, data: { shares } } })
           return
         }
       }

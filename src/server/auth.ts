@@ -122,6 +122,18 @@ export interface AuthManagerOptions {
   getMaxAgeMs: () => number
 }
 
+export function isPublicSharePath(url: string): boolean {
+  let pathname: string
+  try {
+    pathname = new URL(url).pathname
+  } catch {
+    pathname = url
+  }
+  return pathname.startsWith("/share/")
+    || pathname === "/share"
+    || pathname.startsWith("/assets/share-view/")
+}
+
 export function createAuthManager(password: string, options: AuthManagerOptions): AuthManager {
   const expectedPassword = Buffer.from(password)
   const trustProxy = options.trustProxy ?? false

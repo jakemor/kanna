@@ -1,5 +1,8 @@
-import { type MouseEvent as ReactMouseEvent } from "react"
+import { useState, type MouseEvent as ReactMouseEvent } from "react"
 import { Check, Flower, GitBranch, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
+import { ShareButton } from "../share/ShareButton"
+import { SharePopover } from "../share/SharePopover"
+import type { ShareSummary } from "../../../shared/session-share/types"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 import type { AgentProvider, ChatStateTimings, KannaStatus, ResolvedStackBinding } from "../../../shared/types"
 import { PeerWorktreeStrip } from "./PeerWorktreeStrip"
@@ -129,6 +132,11 @@ interface Props {
   onOpenPath?: (path: string) => void
   socket?: KannaSocket
   onOpenPtyChat?: (chatId: string) => void
+  shareTunnelUp?: boolean
+  currentChatId?: string
+  shareShares?: readonly ShareSummary[]
+  onShareMint?: (chatId: string) => Promise<void>
+  onShareRevoke?: (tokenId: string) => Promise<void>
 }
 
 export function ChatNavbar({
@@ -163,8 +171,14 @@ export function ChatNavbar({
   onOpenPath = () => undefined,
   socket,
   onOpenPtyChat,
+  shareTunnelUp,
+  currentChatId,
+  shareShares,
+  onShareMint,
+  onShareRevoke,
 }: Props) {
   const branchLabel = computeBranchLabel({ hasGitRepo, gitStatus, localPath, branchName })
+  const [sharePopoverOpen, setSharePopoverOpen] = useState(false)
   const isMac = platform === "darwin"
 
   return (
@@ -335,6 +349,24 @@ export function ChatNavbar({
                       <UserRoundPlus strokeWidth={2} className="h-4.5" />
                     )}
                   </Button>
+                ) : null}
+                {currentChatId && onShareMint && onShareRevoke ? (
+                  <SharePopover
+                    chatId={currentChatId}
+                    tunnelUp={shareTunnelUp ?? false}
+                    shares={shareShares ?? []}
+                    open={sharePopoverOpen}
+                    onOpenChange={setSharePopoverOpen}
+                    trigger={
+                      <ShareButton
+                        chatId={currentChatId}
+                        tunnelUp={shareTunnelUp ?? false}
+                        onOpenPopover={() => setSharePopoverOpen(true)}
+                      />
+                    }
+                    onMint={onShareMint}
+                    onRevoke={onShareRevoke}
+                  />
                 ) : null}
                 {onToggleRightSidebar ? (
                   <HotkeyTooltip>

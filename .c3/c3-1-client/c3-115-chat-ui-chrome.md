@@ -1,7 +1,7 @@
 ---
 id: c3-115
 c3-version: 4
-c3-seal: c93db2b7848f0c198be85596cff8c6f2c86e891b106c7fe9f388b9e184ba2c25
+c3-seal: d7e82da963e2a764aebfb3ff17eb76c2110cc197b1a5b8eb628c1e6c01de8291
 title: chat-ui-chrome
 type: component
 category: feature
@@ -68,6 +68,7 @@ Owns the composer and surrounding chrome: textarea input, provider/model/effort 
 | Composer component | OUT | Renders input + pickers; emits send | c3-112 | src/client/components/chat-ui |
 | Send callback | OUT | Calls socket command chat.send with provider/model | c3-101 | src/client/components/chat-ui |
 | Attachment controls | OUT | Opens file picker; pushes to upload pipeline | c3-217 | src/client/components/chat-ui |
+| Public link button | OUT | Renders "Public link" button in chat header toolbar, next to existing Share button; triggers share.mint command | c3-228 | src/client/components/chat-ui |
 
 ## Change Safety
 

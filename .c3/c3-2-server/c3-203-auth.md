@@ -1,7 +1,7 @@
 ---
 id: c3-203
 c3-version: 4
-c3-seal: 16f47220ad609fc1c3d1322c9f95c99d8ea0d153e080d80b84fb3a10a6e697f9
+c3-seal: 1e8aba899cef58a6197200c340a2b8ddb5a97ad954c783c31f314096d1ada971
 title: auth
 type: component
 category: foundation
@@ -62,6 +62,7 @@ Issues and validates a launch-password session cookie, blocks unauthenticated HT
 | attachAuth(server) | OUT | Wraps HTTP server, gates routes | c3-202 | src/server/auth.ts |
 | Login endpoint | IN | Accepts password form, sets session cookie | c3-202 | src/server/auth.ts |
 | WS auth check | OUT | Rejects upgrade without valid cookie | c3-208 | src/server/auth.ts |
+| isPublicSharePath(url) | OUT | Exempts /share/* and /assets/share-view/* from owner auth; called at the top of the middleware before any cookie check | c3-228 | src/server/auth.ts |
 
 ## Change Safety
 

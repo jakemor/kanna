@@ -1,13 +1,14 @@
 ---
 id: c3-202
 c3-version: 4
-c3-seal: 6bb82ef3e11c3024f2e8388589d39405072a06924f40dbc8d4672d39604a7dc0
+c3-seal: f58866c80e38d426fb062c197cd5da0d5523016aed3a1e393a6b1a7a46e168c5
 title: http-ws-server
 type: component
 category: foundation
 parent: c3-2
 goal: Serve HTTP (static + API) and upgrade to WebSocket; attach auth gating; expose `/health`.
 uses:
+    - c3-228
     - ref-local-first-data
     - ref-ws-subscription
 ---
@@ -58,6 +59,7 @@ Hosts the Bun-side HTTP server, serves built client assets, exposes API + upgrad
 | --- | --- | --- | --- | --- |
 | ref-ws-subscription | ref | Single-WS upgrade pattern | must follow | Hand off to ws-router |
 | ref-local-first-data | ref | Default bind 127.0.0.1 | must follow | Wider bind requires explicit flag |
+| c3-228 | ref | /share/:token and /assets/share-view/* routes are dispatched before the auth gate | must follow | Wired for session-share coupling |
 
 ## Contract
 
@@ -66,6 +68,8 @@ Hosts the Bun-side HTTP server, serves built client assets, exposes API + upgrad
 | HTTP listener | IN | Serves static assets + API + upgrade | c3-101 | src/server/http.ts |
 | WS upgrade hookup | OUT | Hands socket to ws-router | c3-208 | src/server/http.ts |
 | /health | OUT | Liveness probe | c3-2 | src/server/http.ts |
+| /share/:token | OUT | Public read-only snapshot endpoint dispatched BEFORE the auth gate; serves frozen chat snapshot JSON | c3-228 | src/server/http.ts |
+| /assets/share-view/* | OUT | Reserved static path for the share viewer bundle, also pre-auth | c3-228 | src/server/http.ts |
 
 ## Change Safety
 

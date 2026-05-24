@@ -1,0 +1,31 @@
+---
+title: Read-only session share
+description: Mint a public Cloudflare-tunnel URL that lets anyone view a Kanna chat as a frozen snapshot.
+---
+
+The Share button in a chat's header creates a public read-only link that anyone with the URL can open. The link points at your local Kanna over the same Cloudflare tunnel you've already enabled — Kanna does not host the snapshot anywhere else.
+
+## How it works
+
+- The server projects the current event log into a frozen JSON snapshot.
+- The snapshot is stored under `~/.kanna/shares/<token>.json` (file mode `0600`).
+- The URL is `<your-tunnel>/share/<token>`. The 256-bit token is the credential.
+- Viewers see the chat transcript, tool calls, diffs, and terminal output. They cannot send messages.
+
+## Lifecycle
+
+- Default link lifetime is 24 hours — change it in Settings → "Default share link expiry".
+- Click **Revoke** on any active link to invalidate it immediately. The snapshot file is deleted.
+- Expired links return a 410 page; the snapshot disk is reclaimed by a daily sweep.
+
+## Limits
+
+- 10 MB per snapshot before large bodies (diffs, terminal output) are stripped.
+- 50 MB hard cap per snapshot.
+- 1 GB total shares directory budget.
+
+## Security
+
+- `/share/:token` and `/assets/share-view/*` are the only unauthenticated paths.
+- The token is the credential — anyone with the URL can view. Treat it as a secret.
+- Viewers cannot mint, revoke, or interact. The composer is hidden client-side and the server does not accept any write commands from share-view requests.

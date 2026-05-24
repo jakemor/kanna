@@ -1,13 +1,14 @@
 ---
 id: c3-208
 c3-version: 4
-c3-seal: a8112da92510af7ebc56879041bf40feadef6584e77b24acd84ab3d036b0da47
+c3-seal: 84bb93824011b523ed71e02324eb0473fbc9c77f838625000cf793816cf866a9
 title: ws-router
 type: component
 category: foundation
 parent: c3-2
 goal: 'Multiplex WS traffic: route subscribe/unsubscribe/command envelopes, push projections on every state change.'
 uses:
+    - c3-228
     - ref-colocated-bun-test
     - ref-cqrs-read-models
     - ref-ws-subscription
@@ -62,6 +63,7 @@ Accepts upgraded WS sockets, decodes typed `ClientEnvelope` payloads, dispatches
 | ref-cqrs-read-models | ref | Only projections cross the wire | must follow | Raw events stay server-side |
 | ref-colocated-bun-test | ref | Tests next to router | must follow | ws-router.test.ts |
 | rule-colocated-bun-test | rule | Compliance target added by c3x wire; refine what must be reviewed or complied with before handoff. | wired compliance target beats uncited local prose | Added by c3x wire for explicit compliance review. |
+| c3-228 | ref | Session-share envelopes (share.mint, share.revoke, share.list) dispatched through ws-router | must follow | Wired for session-share coupling |
 
 ## Contract
 

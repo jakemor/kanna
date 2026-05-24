@@ -1,7 +1,7 @@
 ---
 id: c3-116
 c3-version: 4
-c3-seal: 178a7518b2bca5d1af8db97e78148f96cb31df67fb73c4d36375d7ae8296eb37
+c3-seal: 72ccfdb8495323653e32e38da789836066c397a86c1bf67cfe22bae1a790b6a7
 title: settings-page
 type: component
 category: feature
@@ -68,6 +68,7 @@ Surfaces user-facing configuration: provider API keys, theme, custom keybindings
 | <SettingsPage> route | OUT | Mounts at /settings; sections per concern | c3-110 | src/client/app/SettingsPage.tsx |
 | Setting setters | OUT | Emit typed commands (keybindings.set, tunnel.set, ...) | c3-208 | src/client/app/SettingsPage.tsx |
 | Provider key form | IN/OUT | Reads/writes provider config via server | c3-203 | src/client/app/SettingsPage.tsx |
+| Share expiry row | IN/OUT | "Default share link expiry (hours)" input wired through settings.writeAppSettingsPatch | c3-228 | src/client/app/SettingsPage.tsx |
 
 ## Change Safety
 

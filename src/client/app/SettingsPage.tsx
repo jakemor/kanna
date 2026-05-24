@@ -1108,6 +1108,8 @@ export function SettingsPage() {
   const [cloudflaredPathDraft, setCloudflaredPathDraft] = useState(
     appSettings?.cloudflareTunnel.cloudflaredPath ?? CLOUDFLARE_TUNNEL_DEFAULTS.cloudflaredPath
   )
+  const shareDefaultTtlHours = appSettings?.shareDefaultTtlHours ?? 24
+  const [shareDefaultTtlDraft, setShareDefaultTtlDraft] = useState(String(shareDefaultTtlHours))
   const [llmProviderDraft, setLlmProviderDraft] = useState({
     provider: "openai" as LlmProviderKind,
     apiKey: "",
@@ -1359,6 +1361,22 @@ export function SettingsPage() {
       claudeDriver: { lifecycle: { maxConcurrent: Math.round(nextValue) } },
     }).catch((error) => {
       setAppSettingsError(error instanceof Error ? error.message : "Unable to save Claude lifecycle settings.")
+    })
+  }
+
+  function commitShareDefaultTtl() {
+    const nextValue = Number(shareDefaultTtlDraft)
+    if (!Number.isInteger(nextValue) || nextValue < 1) {
+      setShareDefaultTtlDraft(String(shareDefaultTtlHours))
+      setAppSettingsError("Default share link expiry must be a whole number of hours >= 1.")
+      return
+    }
+    if (nextValue === shareDefaultTtlHours) {
+      setShareDefaultTtlDraft(String(shareDefaultTtlHours))
+      return
+    }
+    void handleWriteAppSettings({ shareDefaultTtlHours: nextValue }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save share settings.")
     })
   }
 
@@ -2135,6 +2153,33 @@ export function SettingsPage() {
                           </SettingsRow>
                         </>
                       )}
+                    </div>
+                    <div className="border-b border-border">
+                      <SettingsRow
+                        title="Public share links"
+                        description="Default expiry for read-only chat share links. Owners can revoke any link manually at any time."
+                        bordered={false}
+                      >
+                        <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">
+                          <div className="flex items-center gap-2 md:justify-end">
+                            <Input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={shareDefaultTtlDraft}
+                              onChange={(event) => setShareDefaultTtlDraft(event.target.value)}
+                              onBlur={commitShareDefaultTtl}
+                              onKeyDown={(event) => handleNumberInputKeyDown(event, commitShareDefaultTtl)}
+                              className="hide-number-steppers w-full text-left font-mono tabular-nums md:w-24 md:text-right"
+                              aria-label="Default share link expiry in hours"
+                            />
+                            <span className="text-sm text-muted-foreground">hours</span>
+                          </div>
+                          <div className="text-left text-xs text-muted-foreground tabular-nums md:text-right">
+                            Minimum 1 hour · default 24
+                          </div>
+                        </div>
+                      </SettingsRow>
                     </div>
                   </>
                 ) : selectedPage === "providers" ? (

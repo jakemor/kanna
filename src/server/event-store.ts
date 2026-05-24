@@ -27,6 +27,7 @@ import type { ChatPermissionPolicyOverride, ToolRequest, ToolRequestDecision, To
 import { resolveLocalPath } from "./paths"
 import type { CloudflareTunnelEvent } from "./cloudflare-tunnel/events"
 import type { PushEvent, PushEventStore } from "./push/events"
+import type { ShareEvent } from "./session-share/share-projection"
 import { ACTIVE_SESSION_IDLE_GAP_MS } from "./read-models"
 import { capTranscriptEntry } from "./subagent-entry-cap.adapter"
 
@@ -215,6 +216,7 @@ export class EventStore implements PushEventStore {
   private readonly turnsLogPath: string
   private readonly schedulesLogPath: string
   private readonly tunnelLogPath: string
+  private readonly sharesLogPath: string
   private readonly pushLogPath: string
   private readonly stacksLogPath: string
   private readonly toolRequestsLogPath: string
@@ -232,6 +234,7 @@ export class EventStore implements PushEventStore {
   private snapshotHasLegacyMessages = false
   private cachedTranscript: { chatId: string; entries: TranscriptEntry[] } | null = null
   private readonly tunnelEventsByChatId = new Map<string, CloudflareTunnelEvent[]>()
+  private shareEventsAll: ShareEvent[] = []
   private replayChatProvider = new Map<string, AgentProvider | null>()
 
   private readonly storage: StorageBackend
@@ -247,6 +250,7 @@ export class EventStore implements PushEventStore {
     this.turnsLogPath = path.join(this.dataDir, "turns.jsonl")
     this.schedulesLogPath = path.join(this.dataDir, "schedules.jsonl")
     this.tunnelLogPath = path.join(this.dataDir, "tunnels.jsonl")
+    this.sharesLogPath = path.join(this.dataDir, "shares.jsonl")
     this.pushLogPath = path.join(this.dataDir, "push.jsonl")
     this.stacksLogPath = path.join(this.dataDir, "stacks.jsonl")
     this.toolRequestsLogPath = path.join(this.dataDir, "tool-requests.jsonl")
@@ -264,12 +268,14 @@ export class EventStore implements PushEventStore {
     await this.ensureFile(this.turnsLogPath)
     await this.ensureFile(this.schedulesLogPath)
     await this.ensureFile(this.tunnelLogPath)
+    await this.ensureFile(this.sharesLogPath)
     await this.ensureFile(this.pushLogPath)
     await this.ensureFile(this.stacksLogPath)
     await this.ensureFile(this.toolRequestsLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
     await this.loadTunnelEvents()
+    await this.loadShareEvents()
     await this.loadSidebarProjectOrder()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldSnapshotLogs()) {
       await this.snapshotAndTruncateLogs()
@@ -296,6 +302,7 @@ export class EventStore implements PushEventStore {
       this.storage.writeText(this.turnsLogPath, ""),
       this.storage.writeText(this.schedulesLogPath, ""),
       this.storage.writeText(this.tunnelLogPath, ""),
+      this.storage.writeText(this.sharesLogPath, ""),
       this.storage.writeText(this.stacksLogPath, ""),
       this.storage.writeText(this.toolRequestsLogPath, ""),
     ])
@@ -2082,6 +2089,35 @@ export class EventStore implements PushEventStore {
         this.applyTunnelEvent(event)
       } catch {
         console.warn(`${LOG_PREFIX} Ignoring malformed line in tunnels.jsonl`)
+      }
+    }
+  }
+
+  async appendShareEvent(event: ShareEvent): Promise<void> {
+    const payload = `${JSON.stringify(event)}\n`
+    this.writeChain = this.writeChain.then(async () => {
+      await this.storage.appendText(this.sharesLogPath, payload)
+      this.shareEventsAll.push(event)
+    })
+    await this.writeChain
+  }
+
+  getShareEvents(): ShareEvent[] {
+    return [...this.shareEventsAll]
+  }
+
+  private async loadShareEvents(): Promise<void> {
+    if (!(await this.storage.exists(this.sharesLogPath))) return
+    const text = await this.storage.readText(this.sharesLogPath)
+    if (!text.trim()) return
+    for (const rawLine of text.split("\n")) {
+      const line = rawLine.trim()
+      if (!line) continue
+      try {
+        const event = JSON.parse(line) as ShareEvent
+        this.shareEventsAll.push(event)
+      } catch {
+        console.warn(`${LOG_PREFIX} Ignoring malformed line in shares.jsonl`)
       }
     }
   }

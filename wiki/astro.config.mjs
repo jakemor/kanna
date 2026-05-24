@@ -45,6 +45,12 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Sharing',
+          items: [
+            { label: 'Read-only session share', slug: 'sharing/session-share' },
+          ],
+        },
+        {
           label: 'Reference',
           items: [
             { label: 'Env Vars', slug: 'reference/env-vars' },

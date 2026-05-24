@@ -104,6 +104,7 @@ interface AppSettingsFile {
   customMcpServers?: unknown
   claudeDriver?: unknown
   globalPromptAppend?: unknown
+  shareDefaultTtlHours?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -116,6 +117,7 @@ interface NormalizedAppSettings {
   shouldWrite: boolean
 }
 
+const DEFAULT_SHARE_DEFAULT_TTL_HOURS = 24
 const DEFAULT_TERMINAL_SCROLLBACK = 1_000
 const MIN_TERMINAL_SCROLLBACK = 500
 const MAX_TERMINAL_SCROLLBACK = 5_000
@@ -752,6 +754,7 @@ function toFilePayload(state: AppSettingsState) {
     customMcpServers: state.customMcpServers,
     claudeDriver: state.claudeDriver,
     globalPromptAppend: state.globalPromptAppend,
+    shareDefaultTtlHours: state.shareDefaultTtlHours,
   }
 }
 
@@ -776,6 +779,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     customMcpServers: state.customMcpServers,
     claudeDriver: state.claudeDriver,
     globalPromptAppend: state.globalPromptAppend,
+    shareDefaultTtlHours: state.shareDefaultTtlHours,
   }
 }
 
@@ -814,6 +818,16 @@ function normalizeAppSettings(
   const claudeDriver = normalizeClaudeDriverSettings(source?.claudeDriver, warnings)
   const globalPromptAppend = normalizeGlobalPromptAppend(source?.globalPromptAppend, warnings)
 
+  let shareDefaultTtlHours = DEFAULT_SHARE_DEFAULT_TTL_HOURS
+  if (source?.shareDefaultTtlHours !== undefined) {
+    const raw = source.shareDefaultTtlHours
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+      warnings.push("shareDefaultTtlHours must be a positive integer")
+    } else {
+      shareDefaultTtlHours = raw
+    }
+  }
+
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
   const state: AppSettingsState = {
     analyticsEnabled,
@@ -842,6 +856,7 @@ function normalizeAppSettings(
     customMcpServers: normalizeMcpServers(source?.customMcpServers, warnings),
     claudeDriver,
     globalPromptAppend,
+    shareDefaultTtlHours,
   }
 
   const shouldWrite = JSON.stringify(source ? toComparablePayload(source) : null) !== JSON.stringify(toFilePayload(state))
@@ -878,6 +893,7 @@ function toComparablePayload(source: AppSettingsFile) {
     globalPromptAppend: typeof source.globalPromptAppend === "string"
       ? source.globalPromptAppend.replace(/\s+$/u, "")
       : source.globalPromptAppend,
+    shareDefaultTtlHours: source.shareDefaultTtlHours,
   }
 }
 
@@ -1000,6 +1016,13 @@ function applyMcpPatch(existing: McpServerConfig, patch: McpServerPatch): McpSer
 }
 
 function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettingsState {
+  if (patch.shareDefaultTtlHours !== undefined) {
+    const value = patch.shareDefaultTtlHours
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error("shareDefaultTtlHours must be a positive integer >= 1")
+    }
+  }
+
   let nextSubagents = state.subagents
   if (patch.subagents?.create) {
     const input = patch.subagents.create
@@ -1140,6 +1163,7 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
       },
     },
     globalPromptAppend: patch.globalPromptAppend ?? state.globalPromptAppend,
+    shareDefaultTtlHours: patch.shareDefaultTtlHours ?? state.shareDefaultTtlHours,
   }, state.filePathDisplay).payload
 }
 

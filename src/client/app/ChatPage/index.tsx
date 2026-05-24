@@ -29,6 +29,8 @@ import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
 import { EMPTY_SCHEDULES } from "../KannaTranscript"
+import { useShareStore } from "../../components/share/share-store"
+import type { ShareCommandResult } from "../../../shared/session-share/protocol"
 import { ChatInputDock } from "./ChatInputDock"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -751,6 +753,38 @@ export function ChatPage() {
     void state.socket.command({ type: "chat.cancelSubagentRun", chatId, runId }).catch(() => {})
   }, [state.socket])
 
+  // Share popover: derive tunnel-up status from the live tunnel record
+  const liveTunnelRecord = state.chatSnapshot?.liveTunnelId
+    ? state.chatSnapshot.tunnels[state.chatSnapshot.liveTunnelId]
+    : undefined
+  const shareTunnelUp = liveTunnelRecord?.state === "active"
+
+  const shareShares = useShareStore((s) => s.listForChat(state.activeChatId ?? ""))
+  const addShare = useShareStore((s) => s.addShare)
+  const removeShare = useShareStore((s) => s.removeShare)
+
+  const handleShareMint = useCallback(async (chatId: string): Promise<void> => {
+    const reply = await state.socket.command<ShareCommandResult>({
+      type: "share.mint",
+      payload: { chatId },
+    })
+    if (reply.ok && reply.kind === "mint") {
+      addShare(chatId, reply.data.summary)
+    }
+  }, [addShare, state.socket])
+
+  const handleShareRevoke = useCallback(async (tokenId: string): Promise<void> => {
+    const chatId = state.activeChatId
+    if (!chatId) return
+    const reply = await state.socket.command<ShareCommandResult>({
+      type: "share.revoke",
+      payload: { tokenId },
+    })
+    if (reply.ok) {
+      removeShare(chatId, tokenId)
+    }
+  }, [removeShare, state.activeChatId, state.socket])
+
   useEffect(() => {
     return () => clearShowScrollTimeout()
   }, [clearShowScrollTimeout])
@@ -938,6 +972,11 @@ export function ChatPage() {
           status={state.runtime?.status}
           socket={state.socket}
           onOpenPtyChat={handleOpenPtyChat}
+          currentChatId={state.activeChatId ?? undefined}
+          shareTunnelUp={shareTunnelUp}
+          shareShares={shareShares}
+          onShareMint={handleShareMint}
+          onShareRevoke={handleShareRevoke}
         />
         <ChatTranscriptViewport
           activeChatId={state.activeChatId}

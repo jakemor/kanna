@@ -120,6 +120,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   customMcpServers: [],
   claudeDriver: { ...CLAUDE_DRIVER_DEFAULTS, lifecycle: { ...CLAUDE_PTY_LIFECYCLE_DEFAULTS } },
   globalPromptAppend: "",
+  shareDefaultTtlHours: 24,
 }
 
 describe("isBenignStaleStateMessage", () => {
@@ -3556,5 +3557,89 @@ describe("settings.writeAppSettingsPatch auto-test", () => {
     // Assert lastTest still equals the captured value.
     const currentLastTest = appSettings.getSnapshot().customMcpServers.find((s) => s.id === entryId)!.lastTest
     expect(currentLastTest).toEqual(capturedLastTest)
+  })
+
+  test("share.mint command dispatches to sessionShare.mintToken", async () => {
+    const mintResult = { ok: true as const, data: { summary: { tokenId: "tok-1", chatId: "chat-1", url: "https://example.com/share/tok-1", expiresAt: 9999, createdAt: 1000, revoked: false } } }
+    const mintToken = async (_req: unknown) => mintResult
+    const fakeSessionShare = { mintToken, revokeToken: async () => ({ ok: true as const, data: { tokenId: "tok-1" } }), listSharesForChat: () => [] } as never
+
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getSlashCommandsLoadingChatIds: () => new Set(), getWaitStartedAtByChatId: () => new Map(), ensureSlashCommandsLoaded: async () => {} } as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+      pushManager: NOOP_PUSH_MANAGER,
+      sessionShare: fakeSessionShare,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "command", id: "mint-1", command: { type: "share.mint", payload: { chatId: "chat-1" } } }),
+    )
+
+    expect(ws.sent).toEqual([{ v: PROTOCOL_VERSION, type: "ack", id: "mint-1", result: mintResult }])
+  })
+
+  test("share.revoke command dispatches to sessionShare.revokeToken", async () => {
+    const revokeResult = { ok: true as const, data: { tokenId: "tok-2" } }
+    const revokeToken = async (_req: unknown) => revokeResult
+    const fakeSessionShare = { mintToken: async () => revokeResult, revokeToken, listSharesForChat: () => [] } as never
+
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getSlashCommandsLoadingChatIds: () => new Set(), getWaitStartedAtByChatId: () => new Map(), ensureSlashCommandsLoaded: async () => {} } as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+      pushManager: NOOP_PUSH_MANAGER,
+      sessionShare: fakeSessionShare,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "command", id: "revoke-1", command: { type: "share.revoke", payload: { tokenId: "tok-2" } } }),
+    )
+
+    expect(ws.sent).toEqual([{ v: PROTOCOL_VERSION, type: "ack", id: "revoke-1", result: revokeResult }])
+  })
+
+  test("share.list returns shares from sessionShare.listSharesForChat", async () => {
+    const shares = [{ tokenId: "tok-3", chatId: "chat-3", url: "https://example.com/share/tok-3", expiresAt: 9999, createdAt: 1000, revoked: false }]
+    const listSharesForChat = (_chatId: string) => shares
+    const fakeSessionShare = { mintToken: async () => ({ ok: false as const, error: { kind: "no_tunnel" as const } }), revokeToken: async () => ({ ok: false as const, error: { kind: "not_found" as const } }), listSharesForChat } as never
+
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getSlashCommandsLoadingChatIds: () => new Set(), getWaitStartedAtByChatId: () => new Map(), ensureSlashCommandsLoaded: async () => {} } as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+      pushManager: NOOP_PUSH_MANAGER,
+      sessionShare: fakeSessionShare,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "command", id: "list-1", command: { type: "share.list", payload: { chatId: "chat-3" } } }),
+    )
+
+    expect(ws.sent).toEqual([{ v: PROTOCOL_VERSION, type: "ack", id: "list-1", result: { ok: true, data: { shares } } }])
   })
 })

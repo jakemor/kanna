@@ -1,7 +1,7 @@
 ---
 id: c3-205
 c3-version: 4
-c3-seal: a6c925ef4225f33956f524c36c2f4dbe75c354b361ff1443421e82405f8d2f05
+c3-seal: db3dfa4b3eb72c604aa38aa59400c31112150e89eb4d57d63669097cfb003e38
 title: events-schema
 type: component
 category: foundation
@@ -65,6 +65,8 @@ Owns the discriminated union of every event written to the JSONL log: project ev
 | --- | --- | --- | --- | --- |
 | Event union | OUT | Discriminated union of every persisted kind | c3-206 | src/server/events.ts |
 | Event constructors | OUT | Helpers returning typed events with timestamps | c3-210 | src/server/events.ts |
+| share.token_minted event | OUT | { tokenId, chatId, expiresAt, createdAt, createdBy } — appended to shares.jsonl (owned by c3-206) when a share link is created | c3-228 | src/server/events.ts |
+| share.token_revoked event | OUT | { tokenId, revokedAt } — appended to shares.jsonl when a link is revoked or expires | c3-228 | src/server/events.ts |
 
 ## Change Safety
 

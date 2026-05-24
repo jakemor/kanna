@@ -1,7 +1,7 @@
 ---
 id: c3-306
 c3-version: 4
-c3-seal: 40e667d02a2a23a938dc2685cb23708b714613e344016e82021387fdd61107a8
+c3-seal: 6746ce8a78464cb978f7abcf0bfbea4de7757412733f762adb7ba38d3871efb2
 title: share-shared
 type: component
 category: foundation
@@ -30,7 +30,7 @@ Expose share/tunnel types used on both client and server (QR payload, public URL
 
 ## Purpose
 
-Holds the typed DTOs for the `--share` feature: public URL payload, QR-code payload, tunnel state. Non-goals: tunnel runtime, classifier logic.
+Holds the typed DTOs for the `--share` feature: public URL payload, QR-code payload, tunnel state. Now also covers read-only session-share types under `src/shared/session-share/` (`ChatSnapshot`, `ShareError`, `ShareSummary`, etc.) imported by both client and server for the session-share feature (c3-228). Non-goals: tunnel runtime, classifier logic.
 
 ## Foundational Flow
 

@@ -44,6 +44,27 @@ import { TunnelGateway } from "./cloudflare-tunnel/gateway"
 import { TunnelManager } from "./cloudflare-tunnel/tunnel-manager.adapter"
 import { TunnelLifecycle } from "./cloudflare-tunnel/lifecycle"
 import { initToolCallbackOnBoot, type ToolCallbackService } from "./tool-callback"
+import { SessionShareService } from "./session-share"
+import { SnapshotStore } from "./session-share/snapshot-store.adapter"
+import { handleShareRequest } from "./session-share/http-routes"
+import { buildChatSnapshot, type SnapshotSources } from "./session-share/snapshot-builder"
+import { startSnapshotSweep } from "./session-share/sweep"
+import type {
+  ChatSnapshotMessage,
+  AttachmentManifestEntry,
+  ChatMeta,
+} from "../shared/session-share/types"
+import type {
+  UserPromptEntry,
+  AssistantTextEntry,
+  ToolCallEntry,
+  ToolResultEntry,
+} from "../shared/types"
+
+let sessionShareTunnelBaseUrl: string | null = null
+export function setSessionShareTunnelBaseUrl(url: string | null) {
+  sessionShareTunnelBaseUrl = url
+}
 
 function resolveCloudflaredPath(settingsPath: string): string {
   if (settingsPath !== CLOUDFLARE_TUNNEL_DEFAULTS.cloudflaredPath) {
@@ -194,6 +215,70 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const keybindings = new KeybindingsManager()
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
   await appSettings.initialize()
+
+  const snapshotStore = new SnapshotStore(path.join(store.dataDir, "shares"))
+
+  const snapshotSources: SnapshotSources = {
+    getChatMeta(chatId): ChatMeta | null {
+      const chat = store.getChat(chatId)
+      if (!chat) return null
+      // Find model from the first system_init transcript entry
+      const transcript = store.getMessages(chatId)
+      const systemInit = transcript.find((e) => e.kind === "system_init")
+      const model = systemInit?.kind === "system_init" ? systemInit.model : "unknown"
+      return {
+        id: chat.id,
+        title: chat.title ?? "Untitled chat",
+        model,
+        createdAt: chat.createdAt ?? 0,
+      }
+    },
+    getTranscript(chatId): ChatSnapshotMessage[] {
+      const out: ChatSnapshotMessage[] = []
+      for (const entry of store.getMessages(chatId)) {
+        switch (entry.kind) {
+          case "user_prompt": {
+            const e = entry as UserPromptEntry
+            out.push({ kind: "user_prompt", id: e._id, createdAt: e.createdAt, text: e.content })
+            break
+          }
+          case "assistant_text": {
+            const e = entry as AssistantTextEntry
+            out.push({ kind: "assistant_text", id: e._id, createdAt: e.createdAt, text: e.text })
+            break
+          }
+          case "tool_call": {
+            const e = entry as ToolCallEntry
+            out.push({ kind: "tool_call", id: e._id, createdAt: e.createdAt, name: e.tool.toolName, input: e.tool.input })
+            break
+          }
+          case "tool_result": {
+            const e = entry as ToolResultEntry
+            out.push({ kind: "tool_result", id: e._id, createdAt: e.createdAt, toolCallId: e.toolId, output: e.content, isError: e.isError ?? false })
+            break
+          }
+          default:
+            // skip status/system_init/account_info/etc — public viewers see only the transcript
+            break
+        }
+      }
+      return out
+    },
+    getAttachments(_chatId): AttachmentManifestEntry[] {
+      // Attachments manifest is deferred — surface stays stable for forward-compat.
+      return []
+    },
+  }
+
+  const sessionShareService = new SessionShareService({
+    events: store,
+    snapshotStore,
+    buildSnapshot: (chatId) => buildChatSnapshot(snapshotSources, chatId),
+    getTunnelBaseUrl: () => sessionShareTunnelBaseUrl,
+    getDefaultTtlHours: () => appSettings.getSnapshot().shareDefaultTtlHours,
+    owner: () => "owner",
+  })
+  const snapshotSweepHandle = startSnapshotSweep(sessionShareService, 24 * 60 * 60 * 1000)
 
   // PTY preflight gate + OS sandbox + mcp tool-callback shims are gone:
   // kanna trusts the claude CLI as the source of truth for tool execution.
@@ -348,6 +433,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
+    sessionShare: sessionShareService,
   })
   scheduleManager.rehydrate(
     store.listAutoContinueChats().flatMap((chatId) => store.getAutoContinueEvents(chatId))
@@ -391,6 +477,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return auth
               ? auth.handleLogout(req)
               : Response.json({ ok: true })
+          }
+
+          if (url.pathname.startsWith("/share/")) {
+            return handleShareRequest(req, sessionShareService)
           }
 
           if (auth) {
@@ -506,6 +596,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     keybindings.dispose()
     scheduleManager.shutdown()
     tunnelGateway.shutdown()
+    snapshotSweepHandle.stop()
     clearInterval(staleEmptyChatPruneInterval)
     clearInterval(toolCallbackTickInterval)
     for (const chatId of [...agent.activeTurns.keys()]) {

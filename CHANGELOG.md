@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.77.0](https://github.com/cuongtranba/kanna/compare/v0.76.0...v0.77.0) (2026-05-25)
+
+
+### Features
+
+* **share:** derive share URL from request origin, drop tunnel gate ([#321](https://github.com/cuongtranba/kanna/issues/321)) ([24599e9](https://github.com/cuongtranba/kanna/commit/24599e9b12118c623c6730ba65244f5017ea18cd))
+
 ## [0.76.0](https://github.com/cuongtranba/kanna/compare/v0.75.0...v0.76.0) (2026-05-24)
 
 

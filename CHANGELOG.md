@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.77.2](https://github.com/cuongtranba/kanna/compare/v0.77.1...v0.77.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* **share:** popover trigger + share-view rendering ([#325](https://github.com/cuongtranba/kanna/issues/325)) ([fd896ff](https://github.com/cuongtranba/kanna/commit/fd896ffcc574f649c1815b40e635e0bddcc89ec3))
+
 ## [0.77.1](https://github.com/cuongtranba/kanna/compare/v0.77.0...v0.77.1) (2026-05-25)
 
 

@@ -8,23 +8,16 @@ function renderNavbar(sidebarCollapsed: boolean) {
       sidebarCollapsed={sidebarCollapsed}
       onOpenSidebar={() => undefined}
       onExpandSidebar={() => undefined}
-      onNewChat={() => undefined}
     />
   )
 }
 
-function getComposeButtonClass(html: string) {
-  const match = html.match(/<button class="([^"]*)"[^>]*title="Compose"/)
-  expect(match).not.toBeNull()
-  return match?.[1] ?? ""
-}
-
 describe("ChatNavbar", () => {
-  test("hides the compose button on desktop when the sidebar is expanded", () => {
-    expect(getComposeButtonClass(renderNavbar(false))).toContain("md:hidden")
+  test("does not render the compose button when the sidebar is expanded", () => {
+    expect(renderNavbar(false)).not.toContain("title=\"Compose\"")
   })
 
-  test("keeps the compose button visible on desktop when the sidebar is collapsed", () => {
-    expect(getComposeButtonClass(renderNavbar(true))).not.toContain("md:hidden")
+  test("does not render the compose button when the sidebar is collapsed", () => {
+    expect(renderNavbar(true)).not.toContain("title=\"Compose\"")
   })
 })

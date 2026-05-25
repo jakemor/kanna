@@ -920,7 +920,6 @@ export function ChatPage() {
           sidebarCollapsed={state.sidebarCollapsed}
           onOpenSidebar={state.openSidebar}
           onExpandSidebar={state.expandSidebar}
-          onNewChat={state.handleCompose}
           localPath={state.navbarLocalPath}
           embeddedTerminalVisible={showTerminalPane}
           onToggleEmbeddedTerminal={projectId ? handleToggleEmbeddedTerminal : undefined}

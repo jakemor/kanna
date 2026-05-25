@@ -1,5 +1,5 @@
 import { type MouseEvent as ReactMouseEvent } from "react"
-import { Check, Flower, GitBranch, Globe, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
+import { Check, Flower, GitBranch, Globe, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, Terminal, UserRoundPlus } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
@@ -94,7 +94,6 @@ interface Props {
   sidebarCollapsed: boolean
   onOpenSidebar: () => void
   onExpandSidebar: () => void
-  onNewChat: () => void
   localPath?: string
   embeddedTerminalVisible?: boolean
   onToggleEmbeddedTerminal?: () => void
@@ -122,7 +121,6 @@ export function ChatNavbar({
   sidebarCollapsed,
   onOpenSidebar,
   onExpandSidebar,
-  onNewChat,
   localPath,
   embeddedTerminalVisible = false,
   onToggleEmbeddedTerminal,
@@ -190,18 +188,6 @@ export function ChatNavbar({
               </Button>
             </>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "hover:!border-border/0 hover:!bg-transparent",
-              !sidebarCollapsed && "md:hidden"
-            )}
-            onClick={onNewChat}
-            title="Compose"
-          >
-            <SquarePen className="size-4" />
-          </Button>
         </div>
 
         <div className="flex-1 min-w-0" />

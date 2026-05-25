@@ -714,6 +714,10 @@ export class AgentCoordinator {
     return new Set(this.drainingStreams.keys())
   }
 
+  isIdle() {
+    return this.activeTurns.size === 0 && this.drainingStreams.size === 0
+  }
+
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
     this.onStateChange(chatId, options)
   }

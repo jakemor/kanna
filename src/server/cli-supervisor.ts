@@ -4,6 +4,7 @@ import { CLI_COMMAND, LOG_PREFIX } from "../shared/branding"
 import {
   CLI_CHILD_ARGS_ENV_VAR,
   CLI_CHILD_COMMAND_ENV_VAR,
+  CLI_DEFERRED_RESTART_SIGNAL,
   CLI_CHILD_MODE,
   CLI_CHILD_MODE_ENV_VAR,
   CLI_STARTUP_UPDATE_RESTART_EXIT_CODE,
@@ -52,19 +53,25 @@ function spawnChild(argv: string[]) {
     const onSigterm = () => {
       forwardSignal("SIGTERM")
     }
+    const onDeferredRestart = () => {
+      forwardSignal(CLI_DEFERRED_RESTART_SIGNAL)
+    }
 
     process.on("SIGINT", onSigint)
     process.on("SIGTERM", onSigterm)
+    process.on(CLI_DEFERRED_RESTART_SIGNAL, onDeferredRestart)
 
     child.once("error", (error) => {
       process.off("SIGINT", onSigint)
       process.off("SIGTERM", onSigterm)
+      process.off(CLI_DEFERRED_RESTART_SIGNAL, onDeferredRestart)
       reject(error)
     })
 
     child.once("exit", (code, signal) => {
       process.off("SIGINT", onSigint)
       process.off("SIGTERM", onSigterm)
+      process.off(CLI_DEFERRED_RESTART_SIGNAL, onDeferredRestart)
       resolve({ code, signal })
     })
   })

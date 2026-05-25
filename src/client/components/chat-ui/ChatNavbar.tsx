@@ -193,7 +193,10 @@ export function ChatNavbar({
           <Button
             variant="ghost"
             size="icon"
-            className="hover:!border-border/0 hover:!bg-transparent"
+            className={cn(
+              "hover:!border-border/0 hover:!bg-transparent",
+              !sidebarCollapsed && "md:hidden"
+            )}
             onClick={onNewChat}
             title="Compose"
           >

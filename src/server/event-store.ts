@@ -3,7 +3,7 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, InterruptedReason, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -1019,13 +1019,15 @@ export class EventStore {
     await this.append(this.turnsLogPath, event)
   }
 
-  async recordTurnCancelled(chatId: string) {
+  async recordTurnCancelled(chatId: string, options?: { reason?: InterruptedReason; detail?: string }) {
     this.requireChat(chatId)
     const event: TurnEvent = {
       v: STORE_VERSION,
       type: "turn_cancelled",
       timestamp: Date.now(),
       chatId,
+      reason: options?.reason,
+      detail: options?.detail,
     }
     await this.append(this.turnsLogPath, event)
   }

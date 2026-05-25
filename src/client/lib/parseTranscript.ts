@@ -151,6 +151,8 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         messages.push({
           ...createBaseMessage(entry),
           kind: "interrupted",
+          reason: entry.reason,
+          detail: entry.detail,
         })
         break
       default:

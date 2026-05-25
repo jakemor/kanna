@@ -704,6 +704,14 @@ export interface ResultEntry extends TranscriptEntryBase {
   costUsd?: number
 }
 
+export type InterruptedReason =
+  | "user_cancelled"
+  | "chat_deleted"
+  | "server_shutdown"
+  | "steer_replaced_turn"
+  | "provider_reported_cancelled"
+  | "unknown"
+
 export interface StatusEntry extends TranscriptEntryBase {
   kind: "status"
   status: string
@@ -901,6 +909,8 @@ export interface ContextClearedEntry extends TranscriptEntryBase {
 
 export interface InterruptedEntry extends TranscriptEntryBase {
   kind: "interrupted"
+  reason?: InterruptedReason
+  detail?: string
 }
 
 export type TranscriptEntry =
@@ -1034,7 +1044,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
-  | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean; reason?: InterruptedReason; detail?: string })
   | ({ kind: "unknown"; json: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 

@@ -285,7 +285,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
     for (const chatId of [...agent.activeTurns.keys()]) {
-      await agent.cancel(chatId)
+      await agent.cancel(chatId, { reason: "server_shutdown" })
     }
     router.dispose()
     appSettings.dispose()

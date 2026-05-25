@@ -4,6 +4,7 @@ import type {
   AgentProvider,
   ChatAttachment,
   ContextWindowUsageSnapshot,
+  InterruptedReason,
   ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
@@ -68,6 +69,8 @@ interface ActiveTurn {
   postToolFollowUp: { content: string; planMode: boolean } | null
   hasFinalResult: boolean
   cancelRequested: boolean
+  cancelReason?: InterruptedReason
+  cancelDetail?: string
   cancelRecorded: boolean
   clientTraceId?: string
   profilingStartedAt?: number
@@ -142,6 +145,12 @@ interface SendMessageOptions {
   modelOptions?: ModelOptions
   effort?: string
   planMode?: boolean
+}
+
+interface CancelOptions {
+  hideInterrupted?: boolean
+  reason?: InterruptedReason
+  detail?: string
 }
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
@@ -395,7 +404,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
   if (message.type === "result") {
     if (message.subtype === "cancelled") {
-      return [timestamped({ kind: "interrupted", messageId, debugRaw })]
+      return [timestamped({ kind: "interrupted", messageId, reason: "provider_reported_cancelled", debugRaw })]
     }
     return [
       timestamped({
@@ -1207,7 +1216,7 @@ export class AgentCoordinator {
     })
 
     if (this.activeTurns.has(command.chatId)) {
-      await this.cancel(command.chatId, { hideInterrupted: true })
+      await this.cancel(command.chatId, { hideInterrupted: true, reason: "steer_replaced_turn" })
     }
 
     logClaudeSteer("steer_after_cancel", {
@@ -1297,9 +1306,28 @@ export class AgentCoordinator {
           active.hasFinalResult = true
           if (event.entry.isError) {
             await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
+          } else if (event.entry.subtype === "cancelled") {
+            await this.store.recordTurnCancelled(session.chatId, {
+              reason: "provider_reported_cancelled",
+              detail: event.entry.result || undefined,
+            })
+            active.cancelRecorded = true
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(session.chatId)
           }
+          this.activeTurns.delete(session.chatId)
+          if (!active.cancelRequested) {
+            await this.maybeStartNextQueuedMessage(session.chatId)
+          }
+        }
+
+        if (event.entry.kind === "interrupted" && active && completedClaudePromptSeq === (active.claudePromptSeq ?? null)) {
+          active.hasFinalResult = true
+          await this.store.recordTurnCancelled(session.chatId, {
+            reason: event.entry.reason ?? "provider_reported_cancelled",
+            detail: event.entry.detail,
+          })
+          active.cancelRecorded = true
           this.activeTurns.delete(session.chatId)
           if (!active.cancelRequested) {
             await this.maybeStartNextQueuedMessage(session.chatId)
@@ -1329,7 +1357,10 @@ export class AgentCoordinator {
       const active = this.activeTurns.get(session.chatId)
       if (active?.provider === "claude") {
         if (active.cancelRequested && !active.cancelRecorded) {
-          await this.store.recordTurnCancelled(session.chatId)
+          await this.store.recordTurnCancelled(session.chatId, {
+            reason: active.cancelReason ?? "unknown",
+            detail: active.cancelDetail,
+          })
         }
         this.activeTurns.delete(session.chatId)
       }
@@ -1392,6 +1423,12 @@ export class AgentCoordinator {
           active.hasFinalResult = true
           if (event.entry.isError) {
             await this.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed")
+          } else if (event.entry.subtype === "cancelled") {
+            await this.store.recordTurnCancelled(active.chatId, {
+              reason: "provider_reported_cancelled",
+              detail: event.entry.result || undefined,
+            })
+            active.cancelRecorded = true
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
           }
@@ -1424,7 +1461,10 @@ export class AgentCoordinator {
       }
     } finally {
       if (active.cancelRequested && !active.cancelRecorded) {
-        await this.store.recordTurnCancelled(active.chatId)
+        await this.store.recordTurnCancelled(active.chatId, {
+          reason: active.cancelReason ?? "unknown",
+          detail: active.cancelDetail,
+        })
       }
       active.turn.close()
       // Only remove if we're still the active turn for this chat.
@@ -1487,7 +1527,7 @@ export class AgentCoordinator {
     }
   }
 
-  async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {
+  async cancel(chatId: string, options?: CancelOptions) {
     // Also clean up any draining stream for this chat.
     const draining = this.drainingStreams.get(chatId)
     if (draining) {
@@ -1507,6 +1547,8 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
+    active.cancelReason = options?.reason ?? "user_cancelled"
+    active.cancelDetail = options?.detail
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
@@ -1526,8 +1568,16 @@ export class AgentCoordinator {
       }
     }
 
-    await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-    await this.store.recordTurnCancelled(chatId)
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "interrupted",
+      hidden: options?.hideInterrupted,
+      reason: active.cancelReason,
+      detail: active.cancelDetail,
+    }))
+    await this.store.recordTurnCancelled(chatId, {
+      reason: active.cancelReason,
+      detail: active.cancelDetail,
+    })
     active.cancelRecorded = true
     active.hasFinalResult = true
 

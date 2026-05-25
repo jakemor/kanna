@@ -1464,11 +1464,21 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const handleCreateTask = useCallback(async (task: TaskRequest) => {
     try {
       setStartingLocalPath(task.localPath)
-      await socket.command<{ taskId: string; projectId: string }>({
+      const result = await socket.command<{ taskId: string; projectId: string; chatId: string }>({
         type: "task.create",
         localPath: task.localPath,
         title: task.title,
       })
+      const chatPreferences = useChatPreferencesStore.getState()
+      const sourceComposerState = activeChatId
+        ? chatPreferences.getComposerState(activeChatId)
+        : chatPreferences.getComposerState(NEW_CHAT_COMPOSER_ID)
+      chatPreferences.initializeComposerForChat(result.chatId, {
+        sourceState: sourceComposerState,
+      })
+      setSelectedProjectId(result.projectId)
+      setPendingChatId(result.chatId)
+      navigate(`/chat/${result.chatId}`)
       setCommandError(null)
       setSidebarOpen(false)
     } catch (error) {
@@ -1476,7 +1486,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     } finally {
       setStartingLocalPath(null)
     }
-  }, [socket])
+  }, [activeChatId, navigate, socket])
 
   const handleCheckForUpdates = useCallback(async (options?: { force?: boolean }) => {
     try {

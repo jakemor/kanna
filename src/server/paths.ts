@@ -26,6 +26,24 @@ export async function ensureProjectDirectory(localPath: string) {
   }
 }
 
+export async function validateExistingProjectDirectory(localPath: string) {
+  const resolvedPath = resolveLocalPath(localPath)
+
+  let info
+  try {
+    info = await stat(resolvedPath)
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      throw new Error("Project path does not exist")
+    }
+    throw error
+  }
+
+  if (!info.isDirectory()) {
+    throw new Error("Project path must be a directory")
+  }
+}
+
 export function getProjectUploadDir(localPath: string) {
   return path.join(resolveLocalPath(localPath), ".kanna", "uploads")
 }

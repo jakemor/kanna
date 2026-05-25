@@ -15,7 +15,7 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { ensureProjectDirectory, resolveLocalPath } from "./paths"
+import { ensureProjectDirectory, resolveLocalPath, validateExistingProjectDirectory } from "./paths"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
@@ -1212,17 +1212,23 @@ export function createWsRouter({
           break
         }
         case "task.create": {
-          await ensureProjectDirectory(command.localPath)
+          await validateExistingProjectDirectory(command.localPath)
           const normalizedPath = resolveLocalPath(command.localPath)
           const existingProjectId = store.state.projectIdsByPath.get(normalizedPath)
           const project = await store.openProject(command.localPath, command.title)
           const task = await store.createTask(command.localPath, command.title)
+          const chat = await store.createChat(project.id, { taskId: task.id })
           await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { taskId: task.id, projectId: project.id } })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { taskId: task.id, projectId: project.id, chatId: chat.id } })
           if (!existingProjectId) {
             resolvedAnalytics.track("project_opened")
           }
-          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          resolvedAnalytics.track("chat_created")
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([chat.id]),
+          })
           return
         }
         case "project.rename": {

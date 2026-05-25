@@ -163,15 +163,73 @@ describe("read models", () => {
     })
 
     expect(sidebar.projectGroups.map((group) => [group.kind, group.title])).toEqual([
-      ["unassigned", "Unassigned Sessions"],
       ["task", "Launch"],
+      ["unassigned", "Unassigned Sessions"],
     ])
     expect(sidebar.projectGroups[0]?.chats.map((chat) => [chat.chatId, chat.localPath])).toEqual([
-      ["chat-unassigned", "/tmp/workspace-b"],
-    ])
-    expect(sidebar.projectGroups[1]?.chats.map((chat) => [chat.chatId, chat.localPath])).toEqual([
       ["chat-task-b", "/tmp/workspace-b"],
       ["chat-task-a", "/tmp/workspace-a"],
+    ])
+    expect(sidebar.projectGroups[1]?.chats.map((chat) => [chat.chatId, chat.localPath])).toEqual([
+      ["chat-unassigned", "/tmp/workspace-b"],
+    ])
+  })
+
+  test("sorts task groups by the most recently updated task or session", () => {
+    const state = createEmptyState()
+    state.projectsById.set("workspace-a", {
+      id: "workspace-a",
+      localPath: "/tmp/workspace-a",
+      title: "Workspace A",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/workspace-a", "workspace-a")
+    state.tasksById.set("task-old", {
+      id: "task-old",
+      title: "Older Task",
+      localPath: "/tmp/workspace-a",
+      createdAt: 1,
+      updatedAt: 10,
+    })
+    state.tasksById.set("task-recent-chat", {
+      id: "task-recent-chat",
+      title: "Recent Chat Task",
+      localPath: "/tmp/workspace-a",
+      createdAt: 1,
+      updatedAt: 5,
+    })
+    state.tasksById.set("task-recent-task", {
+      id: "task-recent-task",
+      title: "Recent Task",
+      localPath: "/tmp/workspace-a",
+      createdAt: 1,
+      updatedAt: 30,
+    })
+    state.chatsById.set("chat-recent", {
+      id: "chat-recent",
+      projectId: "workspace-a",
+      taskId: "task-recent-chat",
+      title: "Recent Session",
+      createdAt: 1,
+      updatedAt: 50,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+
+    const sidebar = deriveSidebarData(state, new Map(), {
+      nowMs: 1_000_000,
+      sessionGrouping: "tasks",
+    })
+
+    expect(sidebar.projectGroups.map((group) => group.title)).toEqual([
+      "Recent Chat Task",
+      "Recent Task",
+      "Older Task",
+      "Unassigned Sessions",
     ])
   })
 

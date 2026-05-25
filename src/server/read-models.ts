@@ -8,7 +8,7 @@ import type {
   SidebarData,
   SidebarProjectGroup,
 } from "../shared/types"
-import type { ChatRecord, StoreState } from "./events"
+import type { ChatRecord, StoreState, TaskRecord } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
@@ -144,8 +144,16 @@ export function deriveSidebarData(
       }
     }
 
+    const getTaskSortTimestamp = (task: TaskRecord) => {
+      const taskChats = [
+        ...(chatsByTaskId.get(task.id) ?? []),
+        ...(archivedChatsByTaskId.get(task.id) ?? []),
+      ]
+      return Math.max(task.updatedAt, ...taskChats.map((chat) => chat.updatedAt))
+    }
+
     const taskGroups = activeTasks
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .sort((a, b) => getTaskSortTimestamp(b) - getTaskSortTimestamp(a))
       .map((task): SidebarProjectGroup => {
         const chats = toSidebarChatRows(chatsByTaskId.get(task.id) ?? [])
         const archivedChats = toSidebarChatRows(archivedChatsByTaskId.get(task.id) ?? [])
@@ -184,8 +192,8 @@ export function deriveSidebarData(
 
     return {
       projectGroups: [
-        unassignedGroup,
         ...taskGroups,
+        unassignedGroup,
       ],
     }
   }

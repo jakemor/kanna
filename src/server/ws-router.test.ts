@@ -726,6 +726,159 @@ describe("ws-router", () => {
     }
   })
 
+  test("creates an initial chat when creating a task", async () => {
+    const analyticsEvents: string[] = []
+    const state = createEmptyState()
+    const projectPath = await mkdtemp(path.join(tmpdir(), "kanna-router-task-"))
+    let refreshed = false
+
+    try {
+      const router = createWsRouter({
+        store: {
+          state,
+          openProject: async (localPath: string, title?: string) => {
+            const project = {
+              id: "project-1",
+              localPath,
+              title: title ?? "Project",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              deletedAt: null,
+            }
+            state.projectsById.set(project.id, project as never)
+            state.projectIdsByPath.set(localPath, project.id)
+            return project
+          },
+          createTask: async (localPath: string, title: string) => {
+            const task = {
+              id: "task-1",
+              localPath,
+              title,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              deletedAt: null,
+            }
+            state.tasksById.set(task.id, task as never)
+            return task
+          },
+          createChat: async (projectId: string, options?: { taskId?: string | null }) => {
+            const chat = {
+              id: "chat-1",
+              projectId,
+              taskId: options?.taskId ?? null,
+              title: "New Chat",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              unread: false,
+              provider: null,
+              planMode: false,
+              sessionToken: null,
+              lastTurnOutcome: null,
+            }
+            state.chatsById.set(chat.id, chat as never)
+            return chat
+          },
+        } as never,
+        agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+        analytics: {
+          track: (eventName: string) => {
+            analyticsEvents.push(eventName)
+          },
+          trackLaunch: () => {},
+        },
+        terminals: {
+          getSnapshot: () => null,
+          onEvent: () => () => {},
+        } as never,
+        keybindings: {
+          getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+          onChange: () => () => {},
+        } as never,
+        refreshDiscovery: async () => {
+          refreshed = true
+          return []
+        },
+        getDiscoveredProjects: () => [],
+        machineDisplayName: "Local Machine",
+        updateManager: null,
+      })
+      const ws = new FakeWebSocket()
+
+      await router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "task-create-1",
+          command: { type: "task.create", localPath: projectPath, title: "Launch" },
+        })
+      )
+
+      expect(ws.sent[0]).toEqual({
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "task-create-1",
+        result: { taskId: "task-1", projectId: "project-1", chatId: "chat-1" },
+      })
+      expect(state.chatsById.get("chat-1")?.taskId).toBe("task-1")
+      expect(refreshed).toBe(true)
+      expect(analyticsEvents).toEqual(["project_opened", "chat_created"])
+    } finally {
+      await rm(projectPath, { recursive: true, force: true })
+    }
+  })
+
+  test("rejects task creation when the path does not exist", async () => {
+    const missingPath = path.join(tmpdir(), `kanna-missing-task-${crypto.randomUUID()}`)
+    let storeCalled = false
+    const router = createWsRouter({
+      store: {
+        state: createEmptyState(),
+        openProject: async () => {
+          storeCalled = true
+        },
+        createTask: async () => {
+          storeCalled = true
+        },
+        createChat: async () => {
+          storeCalled = true
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "task-create-missing-path",
+        command: { type: "task.create", localPath: missingPath, title: "Launch" },
+      })
+    )
+
+    expect(ws.sent[0]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "error",
+      id: "task-create-missing-path",
+      message: "Project path does not exist",
+    })
+    expect(storeCalled).toBe(false)
+  })
+
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,

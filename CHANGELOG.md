@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.78.0](https://github.com/cuongtranba/kanna/compare/v0.77.3...v0.78.0) (2026-05-29)
+
+
+### Features
+
+* **models:** add claude-opus-4-8 to provider catalog ([#335](https://github.com/cuongtranba/kanna/issues/335)) ([8d36fdb](https://github.com/cuongtranba/kanna/commit/8d36fdb392561bfcd91534a168aaa0bd4e16cd34))
+
 ## [0.77.3](https://github.com/cuongtranba/kanna/compare/v0.77.2...v0.77.3) (2026-05-28)
 
 

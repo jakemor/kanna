@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.79.0](https://github.com/cuongtranba/kanna/compare/v0.78.0...v0.79.0) (2026-05-30)
+
+
+### Features
+
+* **subagent:** keep-alive multi-turn PTY sessions ([#338](https://github.com/cuongtranba/kanna/issues/338)) ([deb412b](https://github.com/cuongtranba/kanna/commit/deb412b2c321899375e235a1c4e6adff90235ac2))
+
+
+### Bug Fixes
+
+* **pty:** deliver subagent prompt via MCP channel push (fail-fast) ([#333](https://github.com/cuongtranba/kanna/issues/333)) ([c93afc3](https://github.com/cuongtranba/kanna/commit/c93afc35a14d710b7bd2c8814e03323901e6c879))
+
 ## [0.78.0](https://github.com/cuongtranba/kanna/compare/v0.77.3...v0.78.0) (2026-05-29)
 
 

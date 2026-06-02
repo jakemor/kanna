@@ -1121,14 +1121,15 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             includePlanMode={showPlanMode}
             className="max-w-[840px] mx-auto"
           />
-          {activeContextWindow ? (
-            <div className="flex items-center md:hidden mx-[13px] gap-2">
-              <SessionTokenPill usage={activeContextWindow} />
-              <ContextWindowMeter usage={activeContextWindow} />
-            </div>
-          ) : null}
           <div className="min-w-3" />
         </div>
+
+        {activeContextWindow ? (
+          <div className="flex md:hidden items-center justify-end gap-2 px-[13px] pt-2">
+            <SessionTokenPill usage={activeContextWindow} />
+            <ContextWindowMeter usage={activeContextWindow} />
+          </div>
+        ) : null}
 
         {activeContextWindow ? (
           <div className="absolute right-[29px] top-1/2 translate-x-1/2 -translate-y-1/2 hidden md:block">

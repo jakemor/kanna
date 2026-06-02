@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.81.1](https://github.com/cuongtranba/kanna/compare/v0.81.0...v0.81.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **chat-ui:** keep session token pill visible on mobile ([#345](https://github.com/cuongtranba/kanna/issues/345)) ([3f5b30e](https://github.com/cuongtranba/kanna/commit/3f5b30e906096c5311088c70bf0e661e92def738))
+* **pty:** read assistant usage from nested message.usage ([#344](https://github.com/cuongtranba/kanna/issues/344)) ([c387112](https://github.com/cuongtranba/kanna/commit/c387112ec7b715daebf9f34245b2dc584ba08a9c))
+
 ## [0.81.0](https://github.com/cuongtranba/kanna/compare/v0.80.0...v0.81.0) (2026-06-01)
 
 

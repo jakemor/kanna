@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Activity } from "lucide-react"
 import { cn } from "../lib/utils"
 import { formatCompactDuration } from "../lib/formatDuration"
@@ -337,17 +337,44 @@ export interface WorkflowsSectionWithDetailProps {
 
 export function WorkflowsSectionWithDetail({ runs, getRunDetail }: WorkflowsSectionWithDetailProps) {
   const [selectedRun, setSelectedRun] = useState<WorkflowRun | null | "loading">(null)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const isOpen = selectedRun !== null
+  // Track the runs reference that was present when the run was last selected
+  // via a click. The push-refetch effect only fires when runs changes identity
+  // AFTER the selection has already been established.
+  const runsAtSelectionRef = useRef<WorkflowRunSummary[] | null>(null)
 
   const handleSelectRun = useCallback(async (runId: string) => {
+    runsAtSelectionRef.current = runs
+    setSelectedRunId(runId)
     setSelectedRun("loading")
     const detail = await getRunDetail(runId)
     setSelectedRun(detail)
-  }, [getRunDetail])
+  }, [getRunDetail, runs])
 
   const handleClose = useCallback(() => {
+    setSelectedRunId(null)
     setSelectedRun(null)
+    runsAtSelectionRef.current = null
   }, [])
+
+  // Re-fetch the selected run's detail in-place (no "loading" swap) whenever
+  // the snapshot push delivers a new `runs` reference AND the selected run is
+  // still running. Stops naturally once the sidecar lands (status flips).
+  // Guard: skip when `runs` is the same reference as when the row was clicked
+  // (that click already initiated the initial fetch).
+  useEffect(() => {
+    if (selectedRunId === null) return
+    if (runs === runsAtSelectionRef.current) return
+    const row = runs.find((r) => r.runId === selectedRunId)
+    if (!row || row.status !== "running") return
+    let stale = false
+    void getRunDetail(selectedRunId).then((detail) => {
+      if (stale || detail === null) return
+      setSelectedRun(detail)
+    })
+    return () => { stale = true }
+  }, [runs, selectedRunId, getRunDetail])
 
   return (
     <>

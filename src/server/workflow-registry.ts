@@ -1,6 +1,6 @@
-import type { WorkflowRawFile, WorkflowRunDirInfo } from "./workflow-watch-io.adapter"
+import type { WorkflowJournalEntry, WorkflowRawFile, WorkflowRunDirInfo } from "./workflow-watch-io.adapter"
 import { parseWorkflowRunFile, toRunSummary } from "../shared/workflow-types"
-import type { WorkflowRun, WorkflowRunSummary } from "../shared/workflow-types"
+import type { WorkflowAgentProgress, WorkflowRun, WorkflowRunSummary } from "../shared/workflow-types"
 
 export interface WorkflowRegistryDeps {
   read: (dir: string) => WorkflowRawFile[]
@@ -17,6 +17,12 @@ export interface WorkflowRegistryDeps {
    * sidecar-change pushes — preserves prior behavior).
    */
   watchRunDirs?: (workflowsDir: string, onChange: () => void) => () => void
+  /**
+   * Read the live `journal.jsonl` for a running run. Used by `getRun` to
+   * derive per-agent state for a synthesized running `WorkflowRun`. Absent in
+   * legacy callers (running run keeps `agents:[]`, preserving prior behavior).
+   */
+  readRunJournal?: (workflowsDir: string, runId: string) => WorkflowJournalEntry[]
 }
 export interface WorkflowRegistry {
   register(chatId: string, workflowsDir: string): void
@@ -51,6 +57,38 @@ function byNewest(a: WorkflowRun, b: WorkflowRun): number {
 
 function synthRunningRun(runId: string, startTime: number): WorkflowRun {
   return { runId, status: "running", startTime, phases: [], agents: [] }
+}
+
+function basenameAfterSlash(p: string | undefined): string | undefined {
+  if (!p) return undefined
+  // Strip trailing slash so "/repo/pkg/x/" still yields "x", not "".
+  const trimmed = p.replace(/\/+$/, "")
+  if (!trimmed) return undefined
+  const i = trimmed.lastIndexOf("/")
+  const out = i < 0 ? trimmed : trimmed.slice(i + 1)
+  return out || undefined
+}
+
+function buildAgentsFromJournal(entries: WorkflowJournalEntry[]): WorkflowAgentProgress[] {
+  const out = new Map<string, WorkflowAgentProgress>()
+  for (const e of entries) {
+    if (!e.agentId) continue // defensive: drop entries with blank/missing agentId
+    if (!out.has(e.agentId)) {
+      out.set(e.agentId, { index: out.size + 1, label: "agent", agentId: e.agentId, state: "running" })
+    }
+    if (e.type === "result") {
+      const cur = out.get(e.agentId)
+      if (!cur) continue
+      cur.state = "completed"
+      const dirBase = basenameAfterSlash(e.result?.dir)
+      if (dirBase) cur.label = dirBase
+      const parts: string[] = []
+      if (typeof e.result?.fixed === "number") parts.push(`fixed ${e.result.fixed}`)
+      if (e.result?.test_status) parts.push(`test:${e.result.test_status}`)
+      if (parts.length > 0) cur.lastToolSummary = parts.join(", ")
+    }
+  }
+  return [...out.values()]
 }
 
 export function createWorkflowRegistry(deps: WorkflowRegistryDeps): WorkflowRegistry {
@@ -107,13 +145,18 @@ export function createWorkflowRegistry(deps: WorkflowRegistryDeps): WorkflowRegi
       if (!entry) return null
       const sidecar = entry.runs.get(runId)
       if (sidecar) return sidecar
-      // Mirror snapshot(): an in-flight run has no sidecar yet, so synthesize a
-      // running run from its live dir. Without this, the drill-in dialog fetches
-      // null for a running row and flickers open→closed.
+      // Synthesize a running run from the live dir, enriched from the journal.
       if (deps.listRunDirs) {
         const floor = Date.now() - SNAPSHOT_LIVE_WINDOW_MS
         const live = deps.listRunDirs(entry.dir).find((r) => r.runId === runId && r.newestMtimeMs >= floor)
-        if (live) return synthRunningRun(runId, live.newestMtimeMs)
+        if (live) {
+          const base = synthRunningRun(runId, live.newestMtimeMs)
+          if (deps.readRunJournal) {
+            const agents = buildAgentsFromJournal(deps.readRunJournal(entry.dir, runId))
+            return { ...base, agentCount: agents.length, agents }
+          }
+          return base
+        }
       }
       return null
     },

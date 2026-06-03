@@ -88,6 +88,57 @@ export function watchWorkflowRunDirs(
   return watchWorkflowDir(liveRunRoot(workflowsDir), onChange, opts)
 }
 
+export interface WorkflowJournalEntry {
+  type: "started" | "result"
+  agentId: string
+  key?: string
+  result?: {
+    dir?: string
+    fixed?: number
+    test_status?: string
+    summary?: string
+  }
+}
+
+const KNOWN_JOURNAL_KINDS: ReadonlySet<string> = new Set(["started", "result"])
+
+function parseJournalLine(line: string): WorkflowJournalEntry | null {
+  if (!line) return null
+  let raw: unknown
+  try { raw = JSON.parse(line) } catch { return null }
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const type = r.type
+  const agentId = r.agentId
+  if (typeof type !== "string" || !KNOWN_JOURNAL_KINDS.has(type)) return null
+  if (typeof agentId !== "string") return null
+  const out: WorkflowJournalEntry = { type: type as "started" | "result", agentId }
+  if (typeof r.key === "string") out.key = r.key
+  if (r.result && typeof r.result === "object" && !Array.isArray(r.result)) {
+    const rr = r.result as Record<string, unknown>
+    const res: WorkflowJournalEntry["result"] = {}
+    if (typeof rr.dir === "string") res.dir = rr.dir
+    if (typeof rr.fixed === "number") res.fixed = rr.fixed
+    if (typeof rr.test_status === "string") res.test_status = rr.test_status
+    if (typeof rr.summary === "string") res.summary = rr.summary
+    out.result = res
+  }
+  return out
+}
+
+export function readWorkflowRunJournal(workflowsDir: string, runId: string): WorkflowJournalEntry[] {
+  const journalPath = join(liveRunRoot(workflowsDir), runId, "journal.jsonl")
+  if (!existsSync(journalPath)) return []
+  let text: string
+  try { text = readFileSync(journalPath, "utf8") } catch { return [] }
+  const out: WorkflowJournalEntry[] = []
+  for (const line of text.split("\n")) {
+    const entry = parseJournalLine(line)
+    if (entry) out.push(entry)
+  }
+  return out
+}
+
 export function watchWorkflowDir(
   dir: string, onChange: () => void, opts?: { debounceMs?: number },
 ): () => void {

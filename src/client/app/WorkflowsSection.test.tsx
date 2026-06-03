@@ -197,3 +197,104 @@ describe("WorkflowsSectionWithDetail — drill-in", () => {
     container.remove()
   })
 })
+
+async function mountWithDetail(props: {
+  runs: WorkflowRunSummary[]
+  getRunDetail: (runId: string) => Promise<WorkflowRun | null>
+}): Promise<{ container: HTMLDivElement; rerender: (next: WorkflowRunSummary[]) => Promise<void>; cleanup: () => void }> {
+  const container = document.createElement("div")
+  document.body.appendChild(container)
+  const root = createRoot(container)
+  await act(async () => {
+    root.render(<WorkflowsSectionWithDetail runs={props.runs} getRunDetail={props.getRunDetail} />)
+  })
+  const rerender = async (next: WorkflowRunSummary[]) => {
+    await act(async () => {
+      root.render(<WorkflowsSectionWithDetail runs={next} getRunDetail={props.getRunDetail} />)
+    })
+  }
+  return { container, rerender, cleanup: () => container.remove() }
+}
+
+function makeFullRunForPush(over: Partial<WorkflowRun> = {}): WorkflowRun {
+  return {
+    runId: "run-1",
+    workflowName: "wf",
+    status: "running",
+    startTime: 1,
+    phases: [],
+    agents: [],
+    ...over,
+  }
+}
+
+describe("WorkflowsSectionWithDetail re-fetch on snapshot push", () => {
+  test("running row: snapshot push triggers a re-fetch and swaps detail without flashing 'loading'", async () => {
+    const runRow = makeRun({ runId: "run-1", status: "running" })
+    const detailV1 = makeFullRunForPush({
+      agentCount: 2,
+      agents: [{ index: 1, label: "pkg-alpha", agentId: "a1", state: "running" }],
+    })
+    const detailV2 = makeFullRunForPush({
+      agentCount: 3,
+      agents: [
+        { index: 1, label: "pkg-alpha", agentId: "a1", state: "completed" },
+        { index: 2, label: "pkg-bravo", agentId: "a2", state: "running" },
+        { index: 3, label: "pkg-charlie", agentId: "a3", state: "running" },
+      ],
+    })
+    const calls: string[] = []
+    let n = 0
+    const getRunDetail = mock(async (runId: string) => {
+      calls.push(runId)
+      return n++ === 0 ? detailV1 : detailV2
+    })
+
+    const { container, rerender, cleanup } = await mountWithDetail({ runs: [runRow], getRunDetail })
+
+    const btn = container.querySelector<HTMLButtonElement>(`[data-testid="workflow-row:run-1"]`)
+    expect(btn).not.toBeNull()
+    await act(async () => { btn!.click() })
+    expect(calls).toEqual(["run-1"])
+    // v1 must be visible (alpha agent label rendered) but NOT bravo yet
+    expect(document.body.textContent ?? "").toContain("pkg-alpha")
+    expect(document.body.textContent ?? "").not.toContain("pkg-bravo")
+
+    // snapshot push — same row, new prop reference (running unchanged)
+    await rerender([{ ...runRow }])
+    expect(calls).toEqual(["run-1", "run-1"])
+    expect(document.body.textContent ?? "").toContain("pkg-charlie")
+
+    cleanup()
+  })
+
+  test("terminal sidecar arriving stops further fetches", async () => {
+    const runRow = makeRun({ runId: "run-1", status: "running" })
+    const detail = makeFullRunForPush({
+      agentCount: 1,
+      agents: [{ index: 1, label: "a", agentId: "a1", state: "running" }],
+    })
+    const calls: string[] = []
+    const getRunDetail = mock(async (runId: string) => { calls.push(runId); return detail })
+
+    const { container, rerender, cleanup } = await mountWithDetail({ runs: [runRow], getRunDetail })
+    const btn = container.querySelector<HTMLButtonElement>(`[data-testid="workflow-row:run-1"]`)!
+    await act(async () => { btn.click() })
+    expect(calls).toHaveLength(1)
+
+    await rerender([{ ...runRow, status: "completed" }])
+    expect(calls).toHaveLength(1)
+    await rerender([{ ...runRow, status: "completed" }])
+    expect(calls).toHaveLength(1)
+
+    cleanup()
+  })
+
+  test("no React error #185 across many pushes (renderForLoopCheck)", async () => {
+    const runRow = makeRun({ runId: "run-1", status: "running" })
+    const detail = makeFullRunForPush({ agents: [] })
+    const getRunDetail = mock(async () => detail)
+    const result = await renderForLoopCheck(<WorkflowsSectionWithDetail runs={[runRow]} getRunDetail={getRunDetail} />)
+    expect(result.loopWarnings).toEqual([])
+  })
+})

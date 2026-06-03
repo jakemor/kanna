@@ -46,7 +46,7 @@ import { TunnelLifecycle } from "./cloudflare-tunnel/lifecycle"
 import { initToolCallbackOnBoot, type ToolCallbackService } from "./tool-callback"
 import { SessionShareService } from "./session-share"
 import { createWorkflowRegistry } from "./workflow-registry"
-import { listWorkflowRunDirs, readWorkflowDir, watchWorkflowDir, watchWorkflowRunDirs } from "./workflow-watch-io.adapter"
+import { listWorkflowRunDirs, readWorkflowDir, readWorkflowRunJournal, watchWorkflowDir, watchWorkflowRunDirs } from "./workflow-watch-io.adapter"
 import { SnapshotStore } from "./session-share/snapshot-store.adapter"
 import { handleShareApiRequest } from "./session-share/http-routes"
 import { buildChatSnapshot, type SnapshotSources } from "./session-share/snapshot-builder"
@@ -242,6 +242,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     watch: (dir, onChange) => watchWorkflowDir(dir, onChange),
     listRunDirs: listWorkflowRunDirs,
     watchRunDirs: (dir, onChange) => watchWorkflowRunDirs(dir, onChange),
+    readRunJournal: readWorkflowRunJournal,
   })
   const reapedClaudePty = await claudePtyRegistry.reapStale()
   if (reapedClaudePty.length > 0) {

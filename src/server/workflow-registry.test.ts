@@ -86,6 +86,40 @@ describe("WorkflowRegistry", () => {
       expect(snap[0].status).toBe("killed")
     })
 
+    test("getRun running enrich: derives agents + agentCount from the journal", () => {
+      const io = fakeIo(new Map([["/d", []]]))
+      const journal: import("./workflow-watch-io.adapter").WorkflowJournalEntry[] = [
+        { type: "started", agentId: "a1" },
+        { type: "started", agentId: "a2" },
+        { type: "result", agentId: "a1", result: { dir: "/repo/pkg/x", fixed: 3, test_status: "pass" } },
+      ]
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_live", newestMtimeMs: Date.now() }],
+        readRunJournal: () => journal,
+      })
+      reg.register("chat1", "/d")
+      const run = reg.getRun("chat1", "wf_live")
+      expect(run?.status).toBe("running")
+      expect(run?.agentCount).toBe(2)
+      expect(run?.agents).toHaveLength(2)
+      expect(run?.agents[0]).toMatchObject({ agentId: "a1", state: "completed", label: "x" })
+      expect(run?.agents[0].lastToolSummary).toBe("fixed 3, test:pass")
+      expect(run?.agents[1]).toMatchObject({ agentId: "a2", state: "running", label: "agent" })
+    })
+
+    test("getRun: legacy/no-readRunJournal dep still works (agents:[] for running)", () => {
+      const io = fakeIo(new Map([["/d", []]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_live", newestMtimeMs: Date.now() }],
+      })
+      reg.register("chat1", "/d")
+      const run = reg.getRun("chat1", "wf_live")
+      expect(run?.status).toBe("running")
+      expect(run?.agents).toEqual([])
+    })
+
     test("getRun returns a synthetic running run for a live dir with no sidecar (no dialog flicker)", () => {
       const io = fakeIo(new Map([["/d", []]]))
       const reg = createWorkflowRegistry({

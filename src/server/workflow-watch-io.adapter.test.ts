@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { listWorkflowRunDirs, readWorkflowDir, watchWorkflowDir } from "./workflow-watch-io.adapter"
+import type { WorkflowJournalEntry } from "./workflow-watch-io.adapter"
+import { listWorkflowRunDirs, readWorkflowDir, readWorkflowRunJournal, watchWorkflowDir } from "./workflow-watch-io.adapter"
 
 const dirs: string[] = []
 function tmp(): string { const d = mkdtempSync(join(tmpdir(), "wf-")); dirs.push(d); return d }
@@ -74,5 +75,51 @@ describe("workflow-watch-io.adapter", () => {
   test("listWorkflowRunDirs returns [] when the sibling dir is absent", () => {
     const session = tmp()
     expect(listWorkflowRunDirs(join(session, "workflows"))).toEqual([])
+  })
+
+  test("readWorkflowRunJournal parses started + result lines for a runId", () => {
+    const session = tmp()
+    const liveRoot = join(session, "subagents", "workflows")
+    const runDir = join(liveRoot, "wf_a")
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      [
+        JSON.stringify({ type: "started", agentId: "a1", key: "v2:x" }),
+        JSON.stringify({
+          type: "result",
+          agentId: "a1",
+          key: "v2:x",
+          result: { dir: "/repo/pkg/x", fixed: 3, test_status: "pass", summary: "ok" },
+        }),
+      ].join("\n") + "\n",
+    )
+
+    const entries = readWorkflowRunJournal(join(session, "workflows"), "wf_a")
+    expect(entries).toHaveLength(2)
+    expect(entries[0]).toMatchObject({ type: "started", agentId: "a1" })
+    expect(entries[1]).toMatchObject({ type: "result", agentId: "a1" })
+    expect(entries[1].result).toMatchObject({ dir: "/repo/pkg/x", fixed: 3, test_status: "pass" })
+  })
+
+  test("readWorkflowRunJournal skips blank + unparseable lines; returns [] for missing file", () => {
+    const session = tmp()
+    const liveRoot = join(session, "subagents", "workflows")
+    const runDir = join(liveRoot, "wf_b")
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(
+      join(runDir, "journal.jsonl"),
+      [
+        "",
+        "{not json",
+        JSON.stringify({ type: "started", agentId: "b1" }),
+        JSON.stringify({ type: "unrelated", agentId: "x" }),
+      ].join("\n") + "\n",
+    )
+
+    const entries = readWorkflowRunJournal(join(session, "workflows"), "wf_b")
+    expect(entries.map((e: WorkflowJournalEntry) => e.agentId)).toEqual(["b1"])
+
+    expect(readWorkflowRunJournal(join(session, "workflows"), "wf_missing")).toEqual([])
   })
 })

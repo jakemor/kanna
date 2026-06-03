@@ -1380,9 +1380,23 @@ export class AgentCoordinator {
     return this.claudeSessionLifecycle.maxResidentSessions
   }
 
+  /**
+   * True when the chat is hosting an in-flight background Workflow (a run the
+   * #358 disk-watch registry reports as `status: "running"`). A live workflow
+   * runs inside the warm PTY claude process but registers no activeTurn,
+   * pendingPromptSeq, or lastUsedAt bump, so without this signal the idle
+   * reaper / budget enforcer would tear the process down mid-run and abort the
+   * workflow. The sidecar status is written terminal on abort/exit, so a dead
+   * run never strands a session in a false `running` state.
+   */
+  private hasLiveWorkflow(chatId: string): boolean {
+    return this.workflowRegistry?.snapshot(chatId).some((run) => run.status === "running") ?? false
+  }
+
   private isClaudeSessionIdle(chatId: string, session: ClaudeSessionState, now = Date.now()): boolean {
     if (this.activeTurns.get(chatId)?.provider === "claude") return false
     if (session.pendingPromptSeqs.length > 0) return false
+    if (this.hasLiveWorkflow(chatId)) return false
     return now - session.lastUsedAt >= this.resolveClaudeIdleMs()
   }
 
@@ -1427,6 +1441,7 @@ export class AgentCoordinator {
         chatId !== protectedChatId
         && !this.activeTurns.has(chatId)
         && session.pendingPromptSeqs.length === 0
+        && !this.hasLiveWorkflow(chatId)
       ))
       .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)
 

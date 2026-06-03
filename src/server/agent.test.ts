@@ -22,8 +22,29 @@ import { POLICY_DEFAULT } from "../shared/permission-policy"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, McpServerConfig, SlashCommand, TranscriptEntry } from "../shared/types"
 import type { AutoContinueEvent } from "./auto-continue/events"
+import type { WorkflowRegistry } from "./workflow-registry"
+import type { WorkflowRunSummary, WorkflowStatus } from "../shared/workflow-types"
 import { AsyncEventQueue } from "./test-helpers/async-event-queue"
 import { waitFor } from "./test-helpers/wait-for"
+
+/**
+ * Minimal in-memory WorkflowRegistry whose snapshot reflects a per-chat
+ * status map. Only `snapshot` is exercised by the idle/budget guards; the
+ * rest are inert stubs to satisfy the interface.
+ */
+function makeFakeWorkflowRegistry(statusByChat: Map<string, WorkflowStatus>): WorkflowRegistry {
+  return {
+    register: () => {},
+    unregister: () => {},
+    snapshot: (chatId: string): WorkflowRunSummary[] => {
+      const status = statusByChat.get(chatId)
+      if (!status) return []
+      return [{ runId: `run-${chatId}`, status, phases: [], agents: [] }]
+    },
+    getRun: () => null,
+    subscribe: () => () => {},
+  }
+}
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
@@ -1735,6 +1756,122 @@ describe("AgentCoordinator claude integration", () => {
 
     expect(closed).toEqual(["chat-old"])
     expect([...coordinator.claudeSessions.keys()].sort()).toEqual(["chat-mid", "chat-new"])
+
+    coordinator.dispose()
+  })
+
+  test("does not reap an idle Claude session while it hosts a running workflow", () => {
+    const store = createFakeStore()
+    const closed: string[] = []
+    const runningByChat = new Map<string, WorkflowStatus>([["chat-wf", "running"]])
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      claudeSessionLifecycle: { idleMs: 10, maxResidentSessions: 4, sweepIntervalMs: 0 },
+      startClaudeSession: async () => {
+        throw new Error("not used")
+      },
+      workflowRegistry: makeFakeWorkflowRegistry(runningByChat),
+    })
+
+    function put(chatId: string) {
+      const events = new AsyncEventQueue<any>()
+      coordinator.claudeSessions.set(chatId, {
+        id: `state-${chatId}`,
+        chatId,
+        session: {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => { closed.push(chatId); events.close() },
+          sendPrompt: async () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          getSupportedCommands: async () => [],
+        },
+        localPath: "/tmp/project",
+        additionalDirectories: [],
+        model: "claude-opus-4-1",
+        planMode: false,
+        sessionToken: null,
+        accountInfoLoaded: false,
+        nextPromptSeq: 0,
+        pendingPromptSeqs: [],
+        activeTokenId: null,
+        lastUsedAt: 0,
+      } as any)
+    }
+
+    put("chat-wf")
+    put("chat-plain")
+
+    ;(coordinator as any).sweepIdleClaudeSessions(100)
+
+    // chat-plain has no live workflow → reaped; chat-wf is protected.
+    expect(closed).toEqual(["chat-plain"])
+    expect(coordinator.claudeSessions.has("chat-wf")).toBe(true)
+
+    // Once the run is no longer running, the next sweep reaps it.
+    runningByChat.set("chat-wf", "completed")
+    ;(coordinator as any).sweepIdleClaudeSessions(200)
+    expect(closed).toEqual(["chat-plain", "chat-wf"])
+
+    coordinator.dispose()
+  })
+
+  test("budget eviction skips a session hosting a running workflow", () => {
+    const store = createFakeStore()
+    const closed: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      claudeSessionLifecycle: { idleMs: 10_000, maxResidentSessions: 2, sweepIntervalMs: 0 },
+      startClaudeSession: async () => {
+        throw new Error("not used")
+      },
+      workflowRegistry: makeFakeWorkflowRegistry(new Map([["chat-old", "running"]])),
+    })
+
+    function put(chatId: string, lastUsedAt: number) {
+      const events = new AsyncEventQueue<any>()
+      coordinator.claudeSessions.set(chatId, {
+        id: `state-${chatId}`,
+        chatId,
+        session: {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => { closed.push(chatId); events.close() },
+          sendPrompt: async () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          getSupportedCommands: async () => [],
+        },
+        localPath: "/tmp/project",
+        additionalDirectories: [],
+        model: "claude-opus-4-1",
+        planMode: false,
+        sessionToken: null,
+        accountInfoLoaded: false,
+        nextPromptSeq: 0,
+        pendingPromptSeqs: [],
+        activeTokenId: null,
+        lastUsedAt,
+      } as any)
+    }
+
+    // chat-old is the LRU candidate but hosts a running workflow, so the
+    // enforcer must skip it and evict the next-oldest plain session instead.
+    put("chat-old", 1)
+    put("chat-mid", 2)
+    put("chat-new", 3)
+
+    ;(coordinator as any).enforceClaudeSessionBudget("chat-new")
+
+    expect(closed).toEqual(["chat-mid"])
+    expect([...coordinator.claudeSessions.keys()].sort()).toEqual(["chat-new", "chat-old"])
 
     coordinator.dispose()
   })

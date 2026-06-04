@@ -470,6 +470,10 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
 
   let closed = false
   let cleanedUp = false
+  // This handle's own OS pid, captured once the child spawns. Teardown is
+  // scoped to it so a stale re-spawn handle (same chatId + sessionId, older
+  // pid) cannot clobber the live registry entry on its delayed exit.
+  let ownPid: number | null = null
   let workflowRegistrationCancelled = false
   let cachedAccountInfo: AccountInfo | null = deriveAccountInfoFromOauth({ label: args.oauthLabel, oauthKeyMasked: args.oauthKeyMasked })
   let sawResultEntry = false
@@ -482,11 +486,16 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     if (cleanedUp) return
     cleanedUp = true
     stopMemorySampler()
-    args.ptyInstanceRegistry?.upsert(args.chatId, {
-      phase: "exited",
-      exitedAt: Date.now(),
-      lastEventAt: Date.now(),
-    })
+    // Guard against the re-spawn clobber: only flip the chat to "exited" if
+    // its live registry entry still belongs to THIS handle's pid. A newer
+    // spawn for the same chatId already overwrote pid → leave it alone.
+    if (ownPid !== null) {
+      args.ptyInstanceRegistry?.markExitedIfCurrent(args.chatId, ownPid, {
+        phase: "exited",
+        exitedAt: Date.now(),
+        lastEventAt: Date.now(),
+      })
+    }
     // PTY teardown no longer cancels pending tool-callback records. close()
     // also fires on transparent rotation / idle sweep where the model's
     // turn is still live; denying mid-prompt asks was the source of the
@@ -501,11 +510,14 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
     try { await removeRuntimeDir(runtimeDir) } catch (err) {
       console.warn("[kanna/pty] runtimeDir cleanup failed", { chatId: args.chatId, runtimeDir, err })
     }
-    if (args.ptyRegistry) {
-      try { await args.ptyRegistry.unregister(sessionId) } catch (err) {
+    if (args.ptyRegistry && ownPid !== null) {
+      // Unregister by THIS handle's pid (not sessionId): a live re-spawn
+      // shares the sessionId, so a sessionId-scoped unregister would delete
+      // the live process's reap entry. See pid-registry.adapter.ts.
+      try { await args.ptyRegistry.unregister(ownPid) } catch (err) {
         // A stale entry on disk only matters across server restarts — log
         // for observability but do not fail cleanup.
-        console.warn("[kanna/pty] ptyRegistry.unregister failed", { chatId: args.chatId, sessionId, err })
+        console.warn("[kanna/pty] ptyRegistry.unregister failed", { chatId: args.chatId, sessionId, pid: ownPid, err })
       }
     }
     workflowRegistrationCancelled = true
@@ -603,6 +615,7 @@ export async function startClaudeSessionPTY(args: StartClaudeSessionPtyArgs): Pr
       onOutput: (chunk) => { ring.append(chunk) },
     })
     console.log("[kanna/pty] pty spawned", { chatId: args.chatId, sessionId, pid: pty.pid })
+    ownPid = pty.pid
     args.ptyInstanceRegistry?.upsert(args.chatId, {
       sessionId,
       pid: pty.pid,

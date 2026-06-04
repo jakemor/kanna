@@ -3525,9 +3525,9 @@ export class AgentCoordinator {
     if (!instance || instance.pid === null) {
       throw new Error("No live PTY instance for chat")
     }
-    const { killPgroup } = await import("./claude-pty/pid-registry.adapter")
-    killPgroup(instance.pid)
-    this.ptyInstanceRegistry?.upsert(chatId, {
+    const { killProcessTree } = await import("./claude-pty/pid-registry.adapter")
+    await killProcessTree(instance.pid)
+    this.ptyInstanceRegistry?.markExitedIfCurrent(chatId, instance.pid, {
       phase: "exited",
       exitedAt: Date.now(),
       lastEventAt: Date.now(),

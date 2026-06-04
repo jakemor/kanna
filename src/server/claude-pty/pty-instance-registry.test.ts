@@ -55,6 +55,40 @@ describe("PtyInstanceRegistry", () => {
     })
   })
 
+  test("markExitedIfCurrent applies the patch when the live pid matches", () => {
+    const registry = createPtyInstanceRegistry({ coalesceMs: 0 })
+    registry.upsert("c1", baseline({ pid: 41506, phase: "ready" }))
+    const events: PtyInstanceDelta[] = []
+    registry.subscribe((d) => events.push(d))
+    registry.markExitedIfCurrent("c1", 41506, { phase: "exited", exitedAt: 5_000 })
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: "updated",
+      instance: { chatId: "c1", phase: "exited", exitedAt: 5_000 },
+    })
+  })
+
+  test("markExitedIfCurrent is a no-op when a newer pid owns the chat entry", () => {
+    // The leak: an OLD handle (pid 38830) tears down AFTER the NEW handle
+    // (pid 41506) already re-registered the same chatId. The stale handle must
+    // NOT flip the live entry to exited.
+    const registry = createPtyInstanceRegistry({ coalesceMs: 0 })
+    registry.upsert("c1", baseline({ pid: 41506, phase: "ready" }))
+    const events: PtyInstanceDelta[] = []
+    registry.subscribe((d) => events.push(d))
+    registry.markExitedIfCurrent("c1", 38830, { phase: "exited", exitedAt: 5_000 })
+    expect(events).toHaveLength(0)
+    expect(registry.snapshot()[0]).toMatchObject({ chatId: "c1", phase: "ready", pid: 41506 })
+  })
+
+  test("markExitedIfCurrent is a no-op when the chat has no entry", () => {
+    const registry = createPtyInstanceRegistry({ coalesceMs: 0 })
+    const events: PtyInstanceDelta[] = []
+    registry.subscribe((d) => events.push(d))
+    registry.markExitedIfCurrent("missing", 1, { phase: "exited" })
+    expect(events).toHaveLength(0)
+  })
+
   test("remove fires removed event and drops state", () => {
     const registry = createPtyInstanceRegistry({ coalesceMs: 0 })
     registry.upsert("c1", baseline())

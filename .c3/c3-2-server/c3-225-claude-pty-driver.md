@@ -1,6 +1,6 @@
 ---
 id: c3-225
-c3-seal: d1b1eb79896b1525055a4a73b292fcda20fc8b8ec02c223e6a2de9c8e3cfa7b7
+c3-seal: 2b67d72bd3d830ab385c32cec968efeb9bda5609562e0f99a38cf1b5c8e85db9
 title: claude-pty-driver
 type: component
 category: feature
@@ -79,7 +79,7 @@ Owns the Claude CLI PTY transport: spawns the `claude` subprocess (after the smo
 | Channel prompt push | IN | One-shot subagent sessions: full prompt delivered via kanna-mcp notifications/claude/channel push after channelClientReady resolves; bracketed paste path is bypassed for one-shot. Gated by KANNA_PTY_CHANNEL_DELIVERY (default enabled); KANNA_PTY_CHANNEL_READY_TIMEOUT_MS bounds readiness wait; fail-fast (no paste fallback) on timeout | c3-226 | src/server/claude-pty/driver.ts, src/server/kanna-mcp-http.ts, src/server/claude-pty/channel-notification.ts |
 | Keep-alive multi-turn | IN/OUT | When StartClaudeSessionPtyArgs.keepAlive is set, the first result does NOT trigger oneShotClose so the REPL stays open; the handle exposes pushChannelPrompt(text) to deliver subsequent turns via the same channel push (after a short REPL idle beat). buildChannelPromptFraming(keepAlive) appends plural channel framing so the model expects multiple channel messages over the session. Drives c3-210 LiveTurnSource turns | c3-210 | src/server/claude-pty/driver.ts |
 | Dev-channels CLI flag | OUT | One-shot spawns append --dangerously-load-development-channels server:kanna so the channel handler registers in the spawned claude | c3-226 | src/server/claude-pty/pty-cli-args.ts |
-| Live-status registry upserts | OUT | Driver upserts PtyInstanceState (phase, pid, model, account, rssBytes, rssPeakBytes, cpuPercent, cpuPeakPercent) into PtyInstanceRegistry; ws-router fans deltas to subscribed clients. Resource sampler ticks every 2 s (configurable via memorySamplerIntervalMs) using sampleProcessTreeUsage which shells one ps -A -o pid=,ppid=,rss=,pcpu= per tick and sums RSS + CPU% across child + descendants; interval cleared on cleanupResources | c3-102 | src/server/claude-pty/pty-instance-registry.ts, src/server/claude-pty/pty-memory-sampler.adapter.ts, src/server/claude-pty/driver.ts |
+| Live-status registry upserts | OUT | Driver upserts PtyInstanceState (phase, pid, model, account, rssBytes, rssPeakBytes, cpuPercent, cpuPeakPercent) into PtyInstanceRegistry; ws-router fans deltas to subscribed clients. Resource sampler ticks every 2 s (configurable via memorySamplerIntervalMs) using sampleProcessTreeUsage which shells one ps -A -o pid=,ppid=,rss=,pcpu= per tick and sums RSS + CPU% across child + descendants; interval cleared on cleanupResources. Teardown is pid-scoped: cleanupResources captures the handle's own pid and uses markExitedIfCurrent(chatId, pid, …) + on-disk ptyRegistry.unregister(pid) so a stale re-spawn handle (same chatId+sessionId via --resume, older pid) cannot clobber the live entry. Orphan reap kills by process SUBTREE (killProcessTree), never by process group — the PTY child is not guaranteed to be its own pgid leader under a supervisor like PM2 | c3-102 | src/server/claude-pty/pty-instance-registry.ts, src/server/claude-pty/pid-registry.adapter.ts, src/server/claude-pty/pty-memory-sampler.adapter.ts, src/server/claude-pty/driver.ts |
 
 ## Change Safety
 
@@ -91,6 +91,8 @@ Owns the Claude CLI PTY transport: spawns the `claude` subprocess (after the smo
 | Channel-ready timeout silently falls back to paste | Edit re-introduces paste fallback after channelClientReady timeout | grep for sendUserPrompt in the fail-fast cleanup block of driver.ts | bun test src/server/claude-pty/driver.test.ts (fail-fast throw assertion) |
 | Dev-channels dialog dismissal regresses or signals premature ready | Edit removes postDismissOffset reference guard from waitForTuiReadyDismissingDialogs | grep for postDismissOffset usage in tui-control.ts | bun test src/server/claude-pty/tui-control.test.ts |
 | Subscription-billing invariant broken | ANTHROPIC_API_KEY not stripped from child env | buildPtyEnv auth test fails | bun test src/server/claude-pty/auth.test.ts |
+| Stale re-spawn handle clobbers the live PTY registry entry | Teardown calls unconditional upsert(chatId,exited)/unregister(sessionId) instead of the pid-scoped guards — a chat re-spawns via --resume so old+new handles share chatId+sessionId | grep for markExitedIfCurrent in cleanupResources and unregister(ownPid in driver.ts; absence = regression | bun test src/server/claude-pty/pty-instance-registry.test.ts src/server/claude-pty/pid-registry.test.ts |
+| Reap no-ops on a non-leader pid or signals the whole app group | Edit reintroduces process.kill(-pid)/killPgroup instead of killProcessTree (PTY child inherits the server pgid under PM2) | grep -rn 'process.kill(-' src/server/claude-pty must be absent outside killProcessTree | bun test src/server/claude-pty/pid-registry.test.ts (non-leader subtree kill) |
 
 ## Derived Materials
 

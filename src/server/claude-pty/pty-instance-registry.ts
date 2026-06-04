@@ -12,6 +12,17 @@ export interface PtyInstanceRegistry {
   snapshot(): PtyInstanceState[]
   subscribe(listener: PtyInstanceListener, options?: PtyInstanceSubscribeOptions): () => void
   upsert(chatId: string, patch: Partial<Omit<PtyInstanceState, "chatId">>): void
+  /**
+   * Apply `patch` to the chat's entry ONLY if its live `pid` still equals
+   * `pid`. Used by the driver's teardown so a stale re-spawn handle (whose
+   * pid was already overwritten by the replacement spawn) cannot flip the
+   * live entry to `exited`. No entry, or a different pid → no-op.
+   */
+  markExitedIfCurrent(
+    chatId: string,
+    pid: number,
+    patch: Partial<Omit<PtyInstanceState, "chatId">>,
+  ): void
   remove(chatId: string): void
 }
 
@@ -157,6 +168,12 @@ export function createPtyInstanceRegistry(
       states.set(chatId, baseline)
       reconcileExitedTimer(chatId, baseline.phase)
       emit({ type: "added", instance: clone(baseline) })
+    },
+
+    markExitedIfCurrent(chatId, pid, patch): void {
+      const existing = states.get(chatId)
+      if (!existing || existing.pid !== pid) return
+      this.upsert(chatId, patch)
     },
 
     remove(chatId): void {

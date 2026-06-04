@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.85.1](https://github.com/cuongtranba/kanna/compare/v0.85.0...v0.85.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **pty:** stop re-spawn from leaking an invisible PTY child ([#375](https://github.com/cuongtranba/kanna/issues/375)) ([a6fdbb0](https://github.com/cuongtranba/kanna/commit/a6fdbb0d54809ea21efd7d33c98b26bcc178e293))
+
 ## [0.85.0](https://github.com/cuongtranba/kanna/compare/v0.84.1...v0.85.0) (2026-06-04)
 
 

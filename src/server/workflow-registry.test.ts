@@ -176,6 +176,121 @@ describe("WorkflowRegistry", () => {
     })
   })
 
+  describe("re-run reuses a runId over a crashed-at-launch sidecar", () => {
+    // A failed sidecar with agentCount 0 + no agents is the no-op crash shape
+    // (script threw at eval before any agent ran). When a later launch reuses
+    // the runId (Claude embeds it in the persisted script filename) and pours
+    // agents into the same live dir, the stale crash sidecar must NOT mask the
+    // live re-run. Discriminator is content-based (agentCount 0 vs non-empty
+    // journal), not mtime ordering.
+    const CRASH = { status: "failed", agentCount: 0, taskId: "task_old", workflowName: "sweep" } // workflowProgress omitted -> agents:[]
+    const journal2: import("./workflow-watch-io.adapter").WorkflowJournalEntry[] = [
+      { type: "started", agentId: "a1" },
+      { type: "started", agentId: "a2" },
+    ]
+
+    test("snapshot: crash sidecar + fresh non-empty journal -> running row", () => {
+      const io = fakeIo(new Map([["/d", [{ runId: "wf_x", raw: { runId: "wf_x", ...CRASH } }]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+        readRunJournal: () => journal2,
+      })
+      reg.register("chat1", "/d")
+      const snap = reg.snapshot("chat1")
+      expect(snap).toHaveLength(1)
+      expect(snap[0].status).toBe("running")
+      expect(snap[0].agentCount).toBe(2)
+      // carries the crash sidecar's taskId/workflowName so the launch card can bind
+      expect(snap[0].taskId).toBe("task_old")
+      expect(snap[0].workflowName).toBe("sweep")
+    })
+
+    test("snapshot: crash sidecar + EMPTY journal -> stays failed (true crash, no re-run)", () => {
+      const io = fakeIo(new Map([["/d", [{ runId: "wf_x", raw: { runId: "wf_x", ...CRASH } }]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+        readRunJournal: () => [],
+      })
+      reg.register("chat1", "/d")
+      expect(reg.snapshot("chat1")[0].status).toBe("failed")
+    })
+
+    test("snapshot: crash sidecar but live dir NOT fresh -> stays failed", () => {
+      const io = fakeIo(new Map([["/d", [{ runId: "wf_x", raw: { runId: "wf_x", ...CRASH } }]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: 0 }], // stale
+        readRunJournal: () => journal2,
+      })
+      reg.register("chat1", "/d")
+      expect(reg.snapshot("chat1")[0].status).toBe("failed")
+    })
+
+    test("snapshot: crash sidecar + journal but no readRunJournal dep -> stays failed (cannot confirm re-run)", () => {
+      const io = fakeIo(new Map([["/d", [{ runId: "wf_x", raw: { runId: "wf_x", ...CRASH } }]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+      })
+      reg.register("chat1", "/d")
+      expect(reg.snapshot("chat1")[0].status).toBe("failed")
+    })
+
+    test("snapshot: completed sidecar is NEVER overridden, even with a fresh non-empty journal", () => {
+      const io = fakeIo(new Map([["/d", [
+        { runId: "wf_x", raw: { runId: "wf_x", status: "completed", agentCount: 0 } },
+      ]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+        readRunJournal: () => journal2,
+      })
+      reg.register("chat1", "/d")
+      expect(reg.snapshot("chat1")[0].status).toBe("completed")
+    })
+
+    test("snapshot: failed sidecar WITH agents (not the crash shape) is NOT overridden", () => {
+      const io = fakeIo(new Map([["/d", [
+        { runId: "wf_x", raw: { runId: "wf_x", status: "failed", agentCount: 2, workflowProgress: [{ agentId: "z1" }, { agentId: "z2" }] } },
+      ]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+        readRunJournal: () => journal2,
+      })
+      reg.register("chat1", "/d")
+      expect(reg.snapshot("chat1")[0].status).toBe("failed")
+    })
+
+    test("getRun: crash sidecar + fresh non-empty journal -> running, enriched from journal", () => {
+      const io = fakeIo(new Map([["/d", [{ runId: "wf_x", raw: { runId: "wf_x", ...CRASH } }]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+        readRunJournal: () => journal2,
+      })
+      reg.register("chat1", "/d")
+      const run = reg.getRun("chat1", "wf_x")
+      expect(run?.status).toBe("running")
+      expect(run?.agentCount).toBe(2)
+      expect(run?.agents).toHaveLength(2)
+      expect(run?.taskId).toBe("task_old")
+    })
+
+    test("getRun: crash sidecar + empty journal -> returns the failed sidecar", () => {
+      const io = fakeIo(new Map([["/d", [{ runId: "wf_x", raw: { runId: "wf_x", ...CRASH } }]]]))
+      const reg = createWorkflowRegistry({
+        read: io.read, watch: io.watch,
+        listRunDirs: () => [{ runId: "wf_x", newestMtimeMs: Date.now() }],
+        readRunJournal: () => [],
+      })
+      reg.register("chat1", "/d")
+      expect(reg.getRun("chat1", "wf_x")?.status).toBe("failed")
+    })
+  })
+
   describe("hasActiveRun", () => {
     const NOW = 1_000_000
     const FRESH = 600_000

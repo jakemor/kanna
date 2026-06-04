@@ -482,7 +482,21 @@ subagent files). See `adr-20260603-workflow-disk-watch-read-model`.
 - **Registry** `src/server/workflow-registry.ts` — per-chat watch + parse
   (one defensive choke-point `parseWorkflowRunFile`) + `snapshot()` (light,
   heavy fields stripped) + `getRun()` (full) + `subscribe()`. Mirrors
-  `PtyInstanceRegistry`. IO injected (side-effect seal).
+  `PtyInstanceRegistry`. IO injected (side-effect seal). **Re-run masking
+  (adr-20260604-workflow-rerun-masking):** Claude embeds the `runId` in the
+  persisted workflow script filename, so a fix-and-relaunch via `scriptPath`
+  reuses the same `runId` (new `taskId`) and pours agents into the same live
+  dir WITHOUT rewriting the prior sidecar. A no-op **crash sidecar**
+  (`isStaleCrashSidecar`: `status=failed && agentCount===0 && agents:[]`) is
+  therefore the ONLY terminal status `snapshot()`/`getRun()` will override —
+  and only when the live `journal.jsonl` proves a re-run (≥1 agent), surfacing
+  a synthetic `running` row that carries the crash sidecar's `taskId`/
+  `workflowName` so the launch card binds. The discriminator is content-based
+  (agentCount 0 vs non-empty journal), NOT mtime ordering (clock-racy, fails
+  under concurrency). `completed`/`killed`/`failed-with-agents` sidecars win
+  unconditionally; a true crash (empty journal) stays `failed`. Re-run over a
+  completed/killed run is out of scope (the synthetic row has no `taskId` from
+  disk, and reading the transcript taskId would breach the c3-225 invariant).
 - **Driver** registers `<projectDir>/<claude-uuid>/workflows` derived from the
   resolved `transcriptStream.filePath` basename (Claude mints its OWN session
   UUID and ignores `--session-id` on new sessions, so kanna's `sessionId` is

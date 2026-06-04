@@ -59,6 +59,20 @@ function synthRunningRun(runId: string, startTime: number): WorkflowRun {
   return { runId, status: "running", startTime, phases: [], agents: [] }
 }
 
+// The no-op crash shape: a workflow whose script threw at eval before any
+// agent ran (`status=failed`, `agentCount=0`, no agents). Claude embeds the
+// runId in the persisted script filename, so a fix-and-relaunch via scriptPath
+// reuses this same runId and pours its agents into the same live dir WITHOUT
+// rewriting this sidecar until it terminates. A crash sidecar is therefore the
+// only terminal status that may be overridden by a fresh, non-empty live
+// journal (see adr-20260604-workflow-rerun-masking). Because agentCount is 0,
+// any live-journal agent can ONLY belong to a later run — a monotonic,
+// clock-independent signal, unlike mtime ordering. Every other terminal
+// status (completed / killed / failed-with-agents) wins unconditionally.
+function isStaleCrashSidecar(run: WorkflowRun): boolean {
+  return run.status === "failed" && (run.agentCount ?? 0) === 0 && run.agents.length === 0
+}
+
 function basenameAfterSlash(p: string | undefined): string | undefined {
   if (!p) return undefined
   // Strip trailing slash so "/repo/pkg/x/" still yields "x", not "".
@@ -128,14 +142,31 @@ export function createWorkflowRegistry(deps: WorkflowRegistryDeps): WorkflowRegi
       const entry = entries.get(chatId)
       if (!entry) return []
       // Sidecar runs (terminal/authoritative) + synthetic running rows for live
-      // run dirs that have no sidecar yet. A sidecar always wins over a synthetic
-      // row (it carries the real terminal status + counts).
+      // run dirs that have no sidecar yet. A real terminal sidecar wins over a
+      // synthetic row; the sole exception is a no-op crash sidecar overridden by
+      // a fresh non-empty live journal (a re-run reused the runId — see below).
       const merged = new Map(entry.runs)
       if (deps.listRunDirs) {
         const floor = Date.now() - SNAPSHOT_LIVE_WINDOW_MS
         for (const { runId, newestMtimeMs } of deps.listRunDirs(entry.dir)) {
-          if (merged.has(runId) || newestMtimeMs < floor) continue
-          merged.set(runId, synthRunningRun(runId, newestMtimeMs))
+          if (newestMtimeMs < floor) continue
+          const existing = merged.get(runId)
+          // No sidecar yet: surface the live run as a synthetic running row.
+          if (!existing) { merged.set(runId, synthRunningRun(runId, newestMtimeMs)); continue }
+          // A real terminal sidecar wins. Only a crash sidecar (no-op shape)
+          // may be overridden, and only when the live journal proves a re-run
+          // reused the runId (≥1 agent). Journal is read solely in this rare
+          // case, keeping the common no-sidecar path journal-free.
+          if (!isStaleCrashSidecar(existing) || !deps.readRunJournal) continue
+          const agents = buildAgentsFromJournal(deps.readRunJournal(entry.dir, runId))
+          if (agents.length === 0) continue // true crash, no re-run → keep failed
+          // Carry the crash sidecar's taskId/workflowName so the launch card
+          // (joined by taskId) binds to the live re-run that reused the runId.
+          merged.set(runId, {
+            ...synthRunningRun(runId, newestMtimeMs),
+            taskId: existing.taskId, workflowName: existing.workflowName,
+            agentCount: agents.length, agents,
+          })
         }
       }
       return [...merged.values()].sort(byNewest).map(toRunSummary)
@@ -144,7 +175,11 @@ export function createWorkflowRegistry(deps: WorkflowRegistryDeps): WorkflowRegi
       const entry = entries.get(chatId)
       if (!entry) return null
       const sidecar = entry.runs.get(runId)
-      if (sidecar) return sidecar
+      // A real terminal sidecar wins. A crash sidecar (no-op shape) falls
+      // through to live synthesis so a re-run that reused the runId surfaces
+      // as running; it falls BACK to the failed sidecar if the live dir proves
+      // no re-run (empty/missing journal). See adr-20260604-workflow-rerun-masking.
+      if (sidecar && !isStaleCrashSidecar(sidecar)) return sidecar
       // Synthesize a running run from the live dir, enriched from the journal.
       if (deps.listRunDirs) {
         const floor = Date.now() - SNAPSHOT_LIVE_WINDOW_MS
@@ -153,12 +188,17 @@ export function createWorkflowRegistry(deps: WorkflowRegistryDeps): WorkflowRegi
           const base = synthRunningRun(runId, live.newestMtimeMs)
           if (deps.readRunJournal) {
             const agents = buildAgentsFromJournal(deps.readRunJournal(entry.dir, runId))
-            return { ...base, agentCount: agents.length, agents }
+            // A crash sidecar with no live agents is a true crash → keep failed.
+            // When overriding, carry the crash sidecar's taskId/workflowName.
+            if (agents.length > 0 || !sidecar) {
+              return { ...base, taskId: sidecar?.taskId, workflowName: sidecar?.workflowName, agentCount: agents.length, agents }
+            }
+          } else if (!sidecar) {
+            return base
           }
-          return base
         }
       }
-      return null
+      return sidecar ?? null
     },
     hasActiveRun(chatId, freshnessMs, now) {
       const entry = entries.get(chatId)

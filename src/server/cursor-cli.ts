@@ -2,10 +2,12 @@ import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
-import type { ContextWindowUsageSnapshot, TranscriptEntry } from "../shared/types"
+import type { ContextWindowUsageSnapshot } from "../shared/types"
+import { asNumber, asRecord, asString } from "../shared/json"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
 import { AsyncQueue } from "./async-queue"
+import { timestamped } from "./transcript"
 
 /**
  * Adapter for the Cursor CLI (`cursor-agent` binary).
@@ -28,17 +30,6 @@ import { AsyncQueue } from "./async-queue"
  *   - { type: "result", subtype: "success", is_error, duration_ms, result, session_id, usage }
  */
 
-function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
-  entry: T,
-  createdAt = Date.now()
-): TranscriptEntry {
-  return {
-    _id: randomUUID(),
-    createdAt,
-    ...entry,
-  } as TranscriptEntry
-}
-
 // Minimal child-process surface so tests can inject a fake without rebuilding ChildProcess.
 export interface CursorChildProcess {
   readonly stdin: Writable | null
@@ -58,19 +49,6 @@ export interface StartCursorTurnArgs {
   model: string
   /** Previous Cursor session id to resume, if any. */
   sessionToken: string | null
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 /**
@@ -113,74 +91,24 @@ function translateCursorTool(
   rawName: string,
   args: Record<string, unknown>
 ): { toolName: string; input: Record<string, unknown> } {
-  const key = rawName.toLowerCase().replace(/[^a-z]/g, "")
-  switch (key) {
+  // Tool keys and argument names are taken from observed `cursor-agent` stream
+  // output. Anything unmapped falls through to `unknown_tool`, which still renders.
+  switch (rawName.toLowerCase().replace(/[^a-z]/g, "")) {
     case "shell":
-    case "bash":
-    case "terminal":
-      return {
-        toolName: "Bash",
-        input: { command: args.command ?? args.cmd ?? "", description: args.description },
-      }
+      return { toolName: "Bash", input: { command: args.command ?? "", description: args.description } }
     case "read":
-    case "readfile":
-      return {
-        toolName: "Read",
-        input: { file_path: args.path ?? args.file_path ?? args.target_file ?? "" },
-      }
-    case "write":
-    case "writefile":
-    case "createfile":
-      return {
-        toolName: "Write",
-        input: { file_path: args.path ?? args.file_path ?? "", content: args.contents ?? args.content ?? "" },
-      }
+      return { toolName: "Read", input: { file_path: args.path ?? "" } }
     case "edit":
-    case "editfile":
-    case "searchreplace":
-    case "multiedit":
-      return {
-        toolName: "Edit",
-        input: {
-          file_path: args.path ?? args.file_path ?? args.target_file ?? "",
-          old_string: args.old_string ?? args.oldString ?? args.old ?? "",
-          new_string: args.new_string ?? args.newString ?? args.new ?? "",
-        },
-      }
-    case "ls":
+      // Cursor's edit emits the full new file content (`streamContent`) rather than
+      // an old/new diff, so it maps cleanly onto Write.
+      return { toolName: "Write", input: { file_path: args.path ?? "", content: args.streamContent ?? "" } }
     case "glob":
-    case "listdir":
-    case "list":
-      return {
-        toolName: "Glob",
-        input: { pattern: args.globPattern ?? args.pattern ?? args.path ?? args.target_directory ?? "" },
-      }
+      return { toolName: "Glob", input: { pattern: args.globPattern ?? "" } }
     case "grep":
-    case "ripgrep":
-    case "search":
-    case "codebasesearch":
-      return {
-        toolName: "Grep",
-        input: {
-          pattern: args.pattern ?? args.query ?? "",
-          output_mode: args.outputMode ?? args.output_mode,
-        },
-      }
-    case "web":
-    case "websearch":
-      return {
-        toolName: "WebSearch",
-        input: { query: args.query ?? args.search_term ?? "" },
-      }
-    case "todo":
-    case "todowrite":
+      return { toolName: "Grep", input: { pattern: args.pattern ?? "" } }
     case "updatetodos":
-      return {
-        toolName: "TodoWrite",
-        input: { todos: Array.isArray(args.todos) ? args.todos : [] },
-      }
+      return { toolName: "TodoWrite", input: { todos: Array.isArray(args.todos) ? args.todos : [] } }
     default:
-      // Unknown tool — pass the raw name through; normalizeToolCall returns unknown_tool.
       return { toolName: rawName, input: args }
   }
 }

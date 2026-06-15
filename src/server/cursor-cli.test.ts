@@ -52,6 +52,42 @@ describe("parseCursorLine", () => {
     }
   })
 
+  test("started edit tool call maps Cursor's path/streamContent onto Write", () => {
+    const line = `{"type":"tool_call","subtype":"started","call_id":"c-3","tool_call":{"editToolCall":{"args":{"path":"/repo/calc.py","streamContent":"def add(a, b):\\n    return a + b\\n"}}},"session_id":"sess-1"}`
+    const [entry] = transcriptEntries(parseCursorLine(line, "composer-2.5"))
+    expect(entry.kind).toBe("tool_call")
+    if (entry.kind === "tool_call" && entry.tool.toolKind === "write_file") {
+      expect(entry.tool.input.filePath).toBe("/repo/calc.py")
+      expect(entry.tool.input.content).toContain("def add")
+    }
+  })
+
+  test("started glob/grep/updateTodos tool calls map onto Glob/Grep/TodoWrite", () => {
+    const glob = transcriptEntries(parseCursorLine(
+      `{"type":"tool_call","subtype":"started","call_id":"g-1","tool_call":{"globToolCall":{"args":{"targetDirectory":"/repo","globPattern":"**/*.py"}}},"session_id":"s"}`,
+      "composer-2.5",
+    ))[0]
+    if (glob.kind === "tool_call" && glob.tool.toolKind === "glob") {
+      expect(glob.tool.input.pattern).toBe("**/*.py")
+    }
+
+    const grep = transcriptEntries(parseCursorLine(
+      `{"type":"tool_call","subtype":"started","call_id":"g-2","tool_call":{"grepToolCall":{"args":{"pattern":"def add","path":"/repo"}}},"session_id":"s"}`,
+      "composer-2.5",
+    ))[0]
+    if (grep.kind === "tool_call" && grep.tool.toolKind === "grep") {
+      expect(grep.tool.input.pattern).toBe("def add")
+    }
+
+    const todo = transcriptEntries(parseCursorLine(
+      `{"type":"tool_call","subtype":"started","call_id":"t-1","tool_call":{"updateTodosToolCall":{"args":{"todos":[{"content":"step","status":"pending"}]}}},"session_id":"s"}`,
+      "composer-2.5",
+    ))[0]
+    if (todo.kind === "tool_call" && todo.tool.toolKind === "todo_write") {
+      expect(Array.isArray(todo.tool.input.todos)).toBe(true)
+    }
+  })
+
   test("completed tool call becomes a tool_result keyed by call id", () => {
     const line = `{"type":"tool_call","subtype":"completed","call_id":"c-2","tool_call":{"readToolCall":{"args":{"path":"/repo/note.txt"},"result":{"success":{"content":"hello world\\n","isEmpty":false}}}},"session_id":"sess-1"}`
     const [entry] = transcriptEntries(parseCursorLine(line, "composer-2.5"))

@@ -12,6 +12,8 @@ import type {
 } from "../shared/types"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import { AsyncQueue } from "./async-queue"
+import { asNumber, asRecord } from "../shared/json"
+import { timestamped } from "./transcript"
 import {
   type CollabAgentToolCallItem,
   type ContextCompactedNotification,
@@ -143,17 +145,6 @@ export interface GenerateStructuredArgs {
   serviceTier?: ServiceTier
 }
 
-function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
-  entry: T,
-  createdAt = Date.now()
-): TranscriptEntry {
-  return {
-    _id: randomUUID(),
-    createdAt,
-    ...entry,
-  } as TranscriptEntry
-}
-
 function codexSystemInitEntry(model: string): TranscriptEntry {
   return timestamped({
     kind: "system_init",
@@ -236,15 +227,6 @@ function contentFromMcpResult(item: McpToolCallItem): unknown {
     return { error: item.error.message }
   }
   return item.result?.structuredContent ?? item.result?.content ?? null
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function normalizeCodexTokenUsage(

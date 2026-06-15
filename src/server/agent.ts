@@ -33,6 +33,8 @@ import {
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
+import { asNumber, asRecord } from "../shared/json"
+import { timestamped } from "./transcript"
 
 const CLAUDE_TOOLSET = [
   "Skill",
@@ -151,17 +153,6 @@ interface SendMessageOptions {
   planMode?: boolean
 }
 
-function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
-  entry: T,
-  createdAt = Date.now()
-): TranscriptEntry {
-  return {
-    _id: crypto.randomUUID(),
-    createdAt,
-    ...entry,
-  } as TranscriptEntry
-}
-
 function stringFromUnknown(value: unknown) {
   if (typeof value === "string") return value
   try {
@@ -175,14 +166,6 @@ function buildSteeredMessageContent(content: string) {
   return content.trim().length > 0
     ? `${STEERED_MESSAGE_PREFIX}\n\n${content}`
     : STEERED_MESSAGE_PREFIX
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function escapeXmlAttribute(value: string) {

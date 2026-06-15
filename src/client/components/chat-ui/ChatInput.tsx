@@ -11,6 +11,7 @@ import {
   normalizeClaudeContextWindow,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
+import { assertNever } from "../../../shared/assert"
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
@@ -155,29 +156,30 @@ function getEffectiveComposerState(
     return composerState
   }
 
-  if (activeProvider === "claude") {
-    return {
-      provider: "claude",
-      model: providerDefaults.claude.model,
-      modelOptions: { ...providerDefaults.claude.modelOptions },
-      planMode: composerState.planMode,
-    }
-  }
-
-  if (activeProvider === "cursor") {
-    return {
-      provider: "cursor",
-      model: providerDefaults.cursor.model,
-      modelOptions: { ...providerDefaults.cursor.modelOptions },
-      planMode: composerState.planMode,
-    }
-  }
-
-  return {
-    provider: "codex",
-    model: providerDefaults.codex.model,
-    modelOptions: { ...providerDefaults.codex.modelOptions },
-    planMode: composerState.planMode,
+  switch (activeProvider) {
+    case "claude":
+      return {
+        provider: "claude",
+        model: providerDefaults.claude.model,
+        modelOptions: { ...providerDefaults.claude.modelOptions },
+        planMode: composerState.planMode,
+      }
+    case "codex":
+      return {
+        provider: "codex",
+        model: providerDefaults.codex.model,
+        modelOptions: { ...providerDefaults.codex.modelOptions },
+        planMode: composerState.planMode,
+      }
+    case "cursor":
+      return {
+        provider: "cursor",
+        model: providerDefaults.cursor.model,
+        modelOptions: { ...providerDefaults.cursor.modelOptions },
+        planMode: composerState.planMode,
+      }
+    default:
+      return assertNever(activeProvider)
   }
 }
 

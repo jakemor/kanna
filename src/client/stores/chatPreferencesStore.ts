@@ -19,6 +19,7 @@ import {
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
 } from "../../shared/types"
+import { assertNever } from "../../shared/assert"
 
 export type { ChatProviderPreferences, DefaultProviderPreference, ProviderPreference }
 
@@ -110,10 +111,19 @@ export function normalizeDefaultProvider(value?: string): DefaultProviderPrefere
   return "last_used"
 }
 
+// Loose model-options shape accepted by the provider preference normalizers. Each
+// normalizer validates the fields it cares about, so options from any provider (or
+// raw persisted data) are accepted and coerced.
+type ProviderModelOptionsInput = {
+  reasoningEffort?: ClaudeModelOptions["reasoningEffort"] | CodexModelOptions["reasoningEffort"]
+  contextWindow?: ClaudeModelOptions["contextWindow"]
+  fastMode?: boolean
+}
+
 export function normalizeClaudePreference(value?: {
   model?: string
   effort?: string
-  modelOptions?: Partial<ClaudeModelOptions>
+  modelOptions?: ProviderModelOptionsInput
   planMode?: boolean
 }): ProviderPreference<ClaudeModelOptions> {
   const reasoningEffort = value?.modelOptions?.reasoningEffort
@@ -138,7 +148,7 @@ export function normalizeClaudePreference(value?: {
 export function normalizeCodexPreference(value?: {
   model?: string
   effort?: string
-  modelOptions?: Partial<CodexModelOptions>
+  modelOptions?: ProviderModelOptionsInput
   planMode?: boolean
 }): ProviderPreference<CodexModelOptions> {
   const reasoningEffort = value?.modelOptions?.reasoningEffort
@@ -160,7 +170,7 @@ export function normalizeCodexPreference(value?: {
 
 export function normalizeCursorPreference(value?: {
   model?: string
-  modelOptions?: Partial<CursorModelOptions>
+  modelOptions?: ProviderModelOptionsInput
   planMode?: boolean
 }): ProviderPreference<CursorModelOptions> {
   return {
@@ -171,6 +181,44 @@ export function normalizeCursorPreference(value?: {
         : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
     },
     planMode: false,
+  }
+}
+
+type ProviderPreferenceInput = {
+  model?: string
+  effort?: string
+  modelOptions?: ProviderModelOptionsInput
+  planMode?: boolean
+}
+
+// Exhaustive provider dispatch: adding a provider to AgentProvider forces a new case
+// here (via assertNever) instead of silently falling through to one provider's branch.
+export function normalizeProviderPreference(
+  provider: AgentProvider,
+  value?: ProviderPreferenceInput
+): ChatProviderPreferences[AgentProvider] {
+  switch (provider) {
+    case "claude":
+      return normalizeClaudePreference(value)
+    case "codex":
+      return normalizeCodexPreference(value)
+    case "cursor":
+      return normalizeCursorPreference(value)
+    default:
+      return assertNever(provider)
+  }
+}
+
+function composerStateForProvider(provider: AgentProvider, value?: ProviderPreferenceInput): ComposerState {
+  switch (provider) {
+    case "claude":
+      return { provider, ...normalizeClaudePreference(value) }
+    case "codex":
+      return { provider, ...normalizeCodexPreference(value) }
+    case "cursor":
+      return { provider, ...normalizeCursorPreference(value) }
+    default:
+      return assertNever(provider)
   }
 }
 
@@ -267,33 +315,7 @@ function composerFromProviderDefaults(
   provider: AgentProvider,
   providerDefaults: ChatProviderPreferences
 ): ComposerState {
-  if (provider === "claude") {
-    const preference = providerDefaults.claude
-    return {
-      provider: "claude",
-      model: preference.model,
-      modelOptions: { ...preference.modelOptions },
-      planMode: preference.planMode,
-    }
-  }
-
-  if (provider === "cursor") {
-    const preference = providerDefaults.cursor
-    return {
-      provider: "cursor",
-      model: preference.model,
-      modelOptions: { ...preference.modelOptions },
-      planMode: preference.planMode,
-    }
-  }
-
-  const preference = providerDefaults.codex
-  return {
-    provider: "codex",
-    model: preference.model,
-    modelOptions: { ...preference.modelOptions },
-    planMode: preference.planMode,
-  }
+  return composerStateForProvider(provider, providerDefaults[provider])
 }
 
 function cloneComposerState(state: ComposerState): ComposerState {
@@ -494,7 +516,7 @@ interface ChatPreferencesState {
   setChatComposerModel: (chatId: string, model: string) => void
   setChatComposerModelOptions: (
     chatId: string,
-    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions>
+    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions> | Partial<CursorModelOptions>
   ) => void
   setChatComposerPlanMode: (chatId: string, planMode: boolean) => void
   resetChatComposerFromProvider: (chatId: string, provider: AgentProvider) => void
@@ -567,36 +589,20 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set((state) => ({
           providerDefaults: {
             ...state.providerDefaults,
-            [provider]: provider === "claude"
-              ? normalizeClaudePreference({
-                ...state.providerDefaults.claude,
-                model,
-              })
-              : normalizeCodexPreference({
-                ...state.providerDefaults.codex,
-                model,
-              }),
+            [provider]: normalizeProviderPreference(provider, { ...state.providerDefaults[provider], model }),
           },
         })),
       setProviderDefaultModelOptions: (provider, modelOptions) =>
         set((state) => ({
           providerDefaults: {
             ...state.providerDefaults,
-            [provider]: provider === "claude"
-              ? normalizeClaudePreference({
-                ...state.providerDefaults.claude,
-                modelOptions: {
-                  ...state.providerDefaults.claude.modelOptions,
-                  ...modelOptions as Partial<ClaudeModelOptions>,
-                },
-              })
-              : normalizeCodexPreference({
-                ...state.providerDefaults.codex,
-                modelOptions: {
-                  ...state.providerDefaults.codex.modelOptions,
-                  ...modelOptions as Partial<CodexModelOptions>,
-                },
-              }),
+            [provider]: normalizeProviderPreference(provider, {
+              ...state.providerDefaults[provider],
+              modelOptions: {
+                ...state.providerDefaults[provider].modelOptions,
+                ...modelOptions,
+              } as ProviderModelOptionsInput,
+            }),
           },
         })),
       setProviderDefaultPlanMode: (provider, planMode) =>
@@ -649,58 +655,16 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       setChatComposerProvider: (chatId, provider) =>
         set((state) => withChatComposerState(state, chatId, () => composerFromProviderDefaults(provider, state.providerDefaults))),
       setChatComposerModel: (chatId, model) =>
-        set((state) => withChatComposerState(state, chatId, (composerState) => (
-          composerState.provider === "claude"
-            ? {
-              provider: "claude",
-              model: normalizeClaudePreference({
-                ...composerState,
-                model,
-              }).model,
-              modelOptions: normalizeClaudePreference({
-                ...composerState,
-                model,
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
-            : {
-              provider: "codex",
-              model,
-              modelOptions: normalizeCodexPreference({
-                ...composerState,
-                model,
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
-        ))),
+        set((state) => withChatComposerState(state, chatId, (composerState) =>
+          composerStateForProvider(composerState.provider, { ...composerState, model })
+        )),
       setChatComposerModelOptions: (chatId, modelOptions) =>
-        set((state) => withChatComposerState(state, chatId, (composerState) => (
-          composerState.provider === "claude"
-            ? {
-              provider: "claude",
-              model: composerState.model,
-              modelOptions: normalizeClaudePreference({
-                ...composerState,
-                modelOptions: {
-                  ...composerState.modelOptions,
-                  ...modelOptions as Partial<ClaudeModelOptions>,
-                },
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
-            : {
-              provider: "codex",
-              model: composerState.model,
-              modelOptions: normalizeCodexPreference({
-                ...composerState,
-                modelOptions: {
-                  ...composerState.modelOptions,
-                  ...modelOptions as Partial<CodexModelOptions>,
-                },
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
-        ))),
+        set((state) => withChatComposerState(state, chatId, (composerState) =>
+          composerStateForProvider(composerState.provider, {
+            ...composerState,
+            modelOptions: { ...composerState.modelOptions, ...modelOptions } as ProviderModelOptionsInput,
+          })
+        )),
       setChatComposerPlanMode: (chatId, planMode) =>
         set((state) => withChatComposerState(state, chatId, (composerState) => ({
           ...composerState,

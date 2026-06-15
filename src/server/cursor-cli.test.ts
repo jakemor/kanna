@@ -86,6 +86,11 @@ describe("parseCursorLine", () => {
     expect(firstEntry(line)).toMatchObject({ kind: "tool_result", toolId: "c-9", isError: true })
   })
 
+  test("a completed tool with no structured result is not a false-positive error", () => {
+    const line = `{"type":"tool_call","subtype":"completed","call_id":"c-7","tool_call":{"shellToolCall":{"args":{"command":"ls"}}},"session_id":"s"}`
+    expect(firstEntry(line)).toMatchObject({ kind: "tool_result", toolId: "c-7", isError: false })
+  })
+
   test("result emits a context-window update followed by a success result", () => {
     const line = `{"type":"result","subtype":"success","duration_ms":15609,"is_error":false,"result":"Done","session_id":"s","usage":{"inputTokens":17640,"outputTokens":138,"cacheReadTokens":27968,"cacheWriteTokens":0}}`
     const entries = transcriptEntries(parseCursorLine(line, "composer-2.5"))

@@ -219,12 +219,11 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
       }
 
       if (subtype === "completed") {
+        // Only flag an error when Cursor explicitly reports one. A missing/non-object
+        // result (e.g. a bare string) is treated as success rather than a false error.
         const resultRecord = asRecord(result)
-        const success = resultRecord && "success" in resultRecord
         const isError = Boolean(resultRecord && ("error" in resultRecord || "failure" in resultRecord))
-        const content = resultRecord
-          ? (resultRecord.success ?? resultRecord.error ?? resultRecord.failure ?? result)
-          : result
+        const content = resultRecord?.success ?? resultRecord?.error ?? resultRecord?.failure ?? result
         return [
           {
             type: "transcript",
@@ -232,7 +231,7 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
               kind: "tool_result",
               toolId: callId,
               content,
-              isError: isError || !success,
+              isError,
               debugRaw,
             }),
           },

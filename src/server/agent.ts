@@ -962,15 +962,13 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
+      // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
         content: buildPromptText(args.content, args.attachments),
         model: args.model,
-        sessionToken: chat.pendingForkSessionToken ? null : chat.sessionToken,
+        sessionToken: chat.sessionToken,
       })
-      if (chat.pendingForkSessionToken) {
-        await this.store.setPendingForkSessionToken(args.chatId, null)
-      }
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,
         provider: args.provider,

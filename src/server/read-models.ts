@@ -31,6 +31,8 @@ function canForkChat(
   drainingChatIds: Set<string>,
 ) {
   if (!chat.provider) return false
+  // Cursor has no fork/branch primitive, so forking would silently start a fresh session.
+  if (chat.provider === "cursor") return false
   if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
   if (activeStatuses.has(chat.id)) return false
   if (drainingChatIds.has(chat.id)) return false

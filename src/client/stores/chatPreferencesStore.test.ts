@@ -259,6 +259,34 @@ describe("chat preference store", () => {
     })
   })
 
+  test("changing the model or options of a Cursor chat keeps it on Cursor", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.setComposerState("chat-a", {
+      provider: "cursor",
+      model: "composer-2.5",
+      modelOptions: { fastMode: true },
+      planMode: false,
+    })
+
+    // Selecting the model must not silently convert the composer to Codex.
+    store.setChatComposerModel("chat-a", "composer-2.5")
+    expect(store.getComposerState("chat-a")).toEqual({
+      provider: "cursor",
+      model: "composer-2.5",
+      modelOptions: { fastMode: true },
+      planMode: false,
+    })
+
+    store.setChatComposerModelOptions("chat-a", { fastMode: false })
+    expect(store.getComposerState("chat-a")).toEqual({
+      provider: "cursor",
+      model: "composer-2.5",
+      modelOptions: { fastMode: false },
+      planMode: false,
+    })
+  })
+
   test("resetChatComposerFromProvider copies provider defaults into the target chat", () => {
     useChatPreferencesStore.setState({
       ...INITIAL_STATE,

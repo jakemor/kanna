@@ -454,6 +454,7 @@ export function createWsRouter({
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,
@@ -625,6 +626,7 @@ export function createWsRouter({
     const data = deriveSidebarData(store.state, agent.getActiveStatuses(), {
       sidebarProjectOrder: getSidebarProjectOrder(store),
       drainingChatIds: agent.getDrainingChatIds(),
+      pendingUserInputPreviews: agent.getPendingToolPreviews(),
     })
     if (isSendToStartingProfilingEnabled()) {
       const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)

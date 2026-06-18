@@ -65,6 +65,7 @@ export function deriveSidebarData(
     nowMs?: number
     sidebarProjectOrder?: string[]
     drainingChatIds?: Set<string>
+    pendingUserInputPreviews?: Map<string, string>
   }
 ): SidebarData {
   const nowMs = options?.nowMs ?? Date.now()
@@ -99,19 +100,26 @@ export function deriveSidebarData(
   function toSidebarChatRows(project: NonNullable<typeof projects[number]>, projectChats: ChatRecord[]) {
     return projectChats
       .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
-      .map((chat) => ({
-        _id: chat.id,
-        _creationTime: chat.createdAt,
-        chatId: chat.id,
-        title: chat.title,
-        status: deriveStatus(chat, activeStatuses.get(chat.id)),
-        unread: chat.unread,
-        localPath: project.localPath,
-        provider: chat.provider,
-        lastMessageAt: chat.lastMessageAt,
-        hasAutomation: false,
-        canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
-      }))
+      .map((chat) => {
+        const status = deriveStatus(chat, activeStatuses.get(chat.id))
+        return {
+          _id: chat.id,
+          _creationTime: chat.createdAt,
+          chatId: chat.id,
+          title: chat.title,
+          status,
+          unread: chat.unread,
+          localPath: project.localPath,
+          provider: chat.provider,
+          lastMessageAt: chat.lastMessageAt,
+          lastAssistantResponsePreview: chat.lastAssistantResponsePreview,
+          pendingUserInputPreview: status === "waiting_for_user"
+            ? options?.pendingUserInputPreviews?.get(chat.id)
+            : undefined,
+          hasAutomation: false,
+          canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
+        }
+      })
   }
 
   const projectGroups: SidebarProjectGroup[] = projects.map((project) => {

@@ -21,6 +21,7 @@ import { resolveLocalPath } from "./paths"
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
 const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
 const SIDEBAR_PROJECT_ORDER_FILE = "sidebar-order.json"
+const LAST_ASSISTANT_RESPONSE_PREVIEW_MAX_LENGTH = 220
 
 function normalizeSidebarProjectOrder(value: unknown) {
   if (!Array.isArray(value)) {
@@ -53,6 +54,12 @@ function logSendToStartingProfile(stage: string, details?: Record<string, unknow
     stage,
     ...details,
   }))
+}
+
+function createAssistantResponsePreview(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (normalized.length <= LAST_ASSISTANT_RESPONSE_PREVIEW_MAX_LENGTH) return normalized
+  return `${normalized.slice(0, LAST_ASSISTANT_RESPONSE_PREVIEW_MAX_LENGTH - 3)}...`
 }
 
 interface LegacyTranscriptStats {
@@ -609,6 +616,11 @@ export class EventStore {
     chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
+    } else if (entry.kind === "assistant_text") {
+      const preview = createAssistantResponsePreview(entry.text)
+      if (preview) {
+        chat.lastAssistantResponsePreview = preview
+      }
     }
     chat.updatedAt = Math.max(chat.updatedAt, entry.createdAt)
   }
@@ -1225,6 +1237,33 @@ export class EventStore {
     }
   }
 
+  private recomputeTranscriptMetadata(chatId: string, entries: TranscriptEntry[]) {
+    const chat = this.state.chatsById.get(chatId)
+    if (!chat) return
+
+    let lastMessageAt: number | undefined
+    let lastAssistantResponsePreview: string | undefined
+    let latestEntryAt = 0
+    for (const entry of entries) {
+      latestEntryAt = Math.max(latestEntryAt, entry.createdAt)
+      if (entry.kind === "user_prompt") {
+        lastMessageAt = Math.max(lastMessageAt ?? 0, entry.createdAt)
+      } else if (entry.kind === "assistant_text") {
+        const preview = createAssistantResponsePreview(entry.text)
+        if (preview) {
+          lastAssistantResponsePreview = preview
+        }
+      }
+    }
+
+    chat.lastMessageAt = lastMessageAt ?? chat.lastMessageAt
+    chat.lastAssistantResponsePreview = lastAssistantResponsePreview
+    chat.hasMessages = entries.length > 0
+    if (latestEntryAt > 0) {
+      chat.updatedAt = Math.max(chat.updatedAt, latestEntryAt)
+    }
+  }
+
   async compact() {
     const snapshot = this.createSnapshot()
     await Bun.write(this.snapshotPath, JSON.stringify(snapshot, null, 2))
@@ -1256,6 +1295,7 @@ export class EventStore {
       const payload = entries.map((entry) => JSON.stringify(entry)).join("\n")
       await writeFile(tempPath, payload ? `${payload}\n` : "", "utf8")
       await rename(tempPath, transcriptPath)
+      this.recomputeTranscriptMetadata(chatId, entries)
       if (logEveryChat || (index + 1) % 25 === 0 || index === messageSets.length - 1) {
         onProgress?.(`${LOG_PREFIX} transcript migration: ${index + 1}/${messageSets.length} chats`)
       }

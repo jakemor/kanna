@@ -7,11 +7,13 @@ import { getSettingsFilePath, LOG_PREFIX } from "../shared/branding"
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_CURSOR_MODEL_OPTIONS,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCursorModelId,
   supportsClaudeMaxReasoningEffort,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
@@ -21,6 +23,7 @@ import {
   type ChatSoundPreference,
   type ClaudeModelOptions,
   type CodexModelOptions,
+  type CursorModelOptions,
   type DefaultProviderPreference,
   type EditorPreset,
   type ProviderPreference,
@@ -45,6 +48,7 @@ interface AppSettingsFile {
   providerDefaults?: {
     claude?: Partial<ProviderPreference<Partial<ClaudeModelOptions>>> & { effort?: unknown }
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
+    cursor?: Partial<ProviderPreference<Partial<CursorModelOptions>>>
   }
 }
 
@@ -108,6 +112,11 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
       planMode: false,
     },
+    cursor: {
+      model: "composer-2.5",
+      modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
+      planMode: false,
+    },
   }
 }
 
@@ -143,7 +152,7 @@ function normalizeChatSoundId(value: unknown): ChatSoundId {
 }
 
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
-  return value === "claude" || value === "codex" || value === "last_used" ? value : "last_used"
+  return value === "claude" || value === "codex" || value === "cursor" || value === "last_used" ? value : "last_used"
 }
 
 function normalizeEditorPreset(value: unknown): EditorPreset {
@@ -204,11 +213,28 @@ function normalizeCodexPreference(value?: {
   }
 }
 
+function normalizeCursorPreference(value?: {
+  model?: unknown
+  modelOptions?: Partial<Record<keyof CursorModelOptions, unknown>>
+  planMode?: unknown
+}): ProviderPreference<CursorModelOptions> {
+  return {
+    model: normalizeCursorModelId(typeof value?.model === "string" ? value.model : undefined),
+    modelOptions: {
+      fastMode: typeof value?.modelOptions?.fastMode === "boolean"
+        ? value.modelOptions.fastMode
+        : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
+    },
+    planMode: false,
+  }
+}
+
 function normalizeProviderDefaults(value: AppSettingsFile["providerDefaults"] | undefined): ChatProviderPreferences {
   const defaults = createDefaultProviderDefaults()
   return {
     claude: normalizeClaudePreference(value?.claude ?? defaults.claude),
     codex: normalizeCodexPreference(value?.codex ?? defaults.codex),
+    cursor: normalizeCursorPreference(value?.cursor ?? defaults.cursor),
   }
 }
 
@@ -346,6 +372,14 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
         modelOptions: {
           ...state.providerDefaults.codex.modelOptions,
           ...patch.providerDefaults?.codex?.modelOptions,
+        },
+      },
+      cursor: {
+        ...state.providerDefaults.cursor,
+        ...patch.providerDefaults?.cursor,
+        modelOptions: {
+          ...state.providerDefaults.cursor.modelOptions,
+          ...patch.providerDefaults?.cursor?.modelOptions,
         },
       },
     },

@@ -9,14 +9,7 @@ import {
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
-
-function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
-  return {
-    _id: crypto.randomUUID(),
-    createdAt: Date.now(),
-    ...entry,
-  } as TranscriptEntry
-}
+import { timestamped } from "./transcript"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()

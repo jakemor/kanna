@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex"
+export type AgentProvider = "claude" | "codex" | "cursor"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -181,9 +181,14 @@ export interface CodexModelOptions {
   fastMode: boolean
 }
 
+export interface CursorModelOptions {
+  fastMode: boolean
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
+  cursor: CursorModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -195,6 +200,7 @@ export interface ProviderPreference<TModelOptions> {
 export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
+  cursor: ProviderPreference<CursorModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -210,6 +216,10 @@ export const DEFAULT_CODEX_MODEL_OPTIONS = {
   reasoningEffort: "high",
   fastMode: false,
 } as const satisfies CodexModelOptions
+
+export const DEFAULT_CURSOR_MODEL_OPTIONS = {
+  fastMode: false,
+} as const satisfies CursorModelOptions
 
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
@@ -298,6 +308,16 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     ],
     efforts: [],
   },
+  {
+    id: "cursor",
+    label: "Cursor",
+    defaultModel: "composer-2.5",
+    supportsPlanMode: false,
+    models: [
+      { id: "composer-2.5", label: "Composer 2.5", supportsEffort: false },
+    ],
+    efforts: [],
+  },
 ]
 
 export function getProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
@@ -332,6 +352,10 @@ export function normalizeClaudeModelId(modelId?: string, fallbackModelId = "clau
 
 export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.5"): string {
   return normalizeProviderModelId("codex", modelId, fallbackModelId)
+}
+
+export function normalizeCursorModelId(modelId?: string, fallbackModelId = "composer-2.5"): string {
+  return normalizeProviderModelId("cursor", modelId, fallbackModelId)
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -468,6 +492,7 @@ export interface AppSettingsPatch {
   providerDefaults?: {
     claude?: Partial<ProviderPreference<ClaudeModelOptions>>
     codex?: Partial<ProviderPreference<CodexModelOptions>>
+    cursor?: Partial<ProviderPreference<CursorModelOptions>>
   }
 }
 

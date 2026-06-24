@@ -2,6 +2,7 @@ import type {
   AgentProvider,
   ClaudeModelOptions,
   CodexModelOptions,
+  CursorModelOptions,
   ClaudeContextWindow,
   ModelOptions,
   ProviderCatalogEntry,
@@ -11,6 +12,7 @@ import type {
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_CURSOR_MODEL_OPTIONS,
   PROVIDERS,
   normalizeClaudeContextWindow,
   normalizeProviderModelId,
@@ -153,4 +155,19 @@ export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEf
 
 export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions): ServiceTier | undefined {
   return modelOptions.fastMode ? "fast" : undefined
+}
+
+export function normalizeCursorModelOptions(modelOptions?: ModelOptions): CursorModelOptions {
+  return {
+    fastMode: typeof modelOptions?.cursor?.fastMode === "boolean"
+      ? modelOptions.cursor.fastMode
+      : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
+  }
+}
+
+// Cursor encodes "fast" in the model id itself (composer-2.5 vs composer-2.5-fast),
+// so we apply the suffix at spawn time rather than tracking a separate service tier.
+export function cursorModelIdForOptions(baseModel: string, modelOptions: CursorModelOptions): string {
+  if (!modelOptions.fastMode) return baseModel
+  return baseModel.endsWith("-fast") ? baseModel : `${baseModel}-fast`
 }

@@ -43,6 +43,14 @@ export function mergeAppSettingsPatch(
           ...patch.providerDefaults?.codex?.modelOptions,
         },
       },
+      cursor: {
+        ...settings.providerDefaults.cursor,
+        ...patch.providerDefaults?.cursor,
+        modelOptions: {
+          ...settings.providerDefaults.cursor.modelOptions,
+          ...patch.providerDefaults?.cursor?.modelOptions,
+        },
+      },
     },
   }
 }

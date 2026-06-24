@@ -11,6 +11,7 @@ import {
   normalizeClaudeContextWindow,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
+import { assertNever } from "../../../shared/assert"
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
@@ -155,19 +156,31 @@ function getEffectiveComposerState(
     return composerState
   }
 
-  return activeProvider === "claude"
-    ? {
-      provider: "claude",
-      model: providerDefaults.claude.model,
-      modelOptions: { ...providerDefaults.claude.modelOptions },
-      planMode: composerState.planMode,
-    }
-    : {
-      provider: "codex",
-      model: providerDefaults.codex.model,
-      modelOptions: { ...providerDefaults.codex.modelOptions },
-      planMode: composerState.planMode,
-    }
+  switch (activeProvider) {
+    case "claude":
+      return {
+        provider: "claude",
+        model: providerDefaults.claude.model,
+        modelOptions: { ...providerDefaults.claude.modelOptions },
+        planMode: composerState.planMode,
+      }
+    case "codex":
+      return {
+        provider: "codex",
+        model: providerDefaults.codex.model,
+        modelOptions: { ...providerDefaults.codex.modelOptions },
+        planMode: composerState.planMode,
+      }
+    case "cursor":
+      return {
+        provider: "cursor",
+        model: providerDefaults.cursor.model,
+        modelOptions: { ...providerDefaults.cursor.modelOptions },
+        planMode: composerState.planMode,
+      }
+    default:
+      return assertNever(activeProvider)
+  }
 }
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
@@ -521,6 +534,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "cursor") {
+      modelOptions = { cursor: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -796,7 +811,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   updateComposerState(
                     (state) => state.provider === "claude"
                       ? state
-                      : { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
+                      : ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
                   )
                   break
               }

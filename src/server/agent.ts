@@ -17,19 +17,24 @@ import { EventStore } from "./event-store"
 import type { AnalyticsReporter } from "./analytics"
 import { NoopAnalyticsReporter } from "./analytics"
 import { CodexAppServerManager } from "./codex-app-server"
+import { CursorCliManager } from "./cursor-cli"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   applyClaudeSdkModels,
   type ClaudeSdkModelInfo,
   codexServiceTierFromModelOptions,
+  cursorModelIdForOptions,
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeCursorModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
+import { asNumber, asRecord } from "../shared/json"
+import { timestamped } from "./transcript"
 
 const CLAUDE_TOOLSET = [
   "Skill",
@@ -106,6 +111,7 @@ interface AgentCoordinatorArgs {
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
+  cursorManager?: CursorCliManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
     localPath: string
@@ -147,17 +153,6 @@ interface SendMessageOptions {
   planMode?: boolean
 }
 
-function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
-  entry: T,
-  createdAt = Date.now()
-): TranscriptEntry {
-  return {
-    _id: crypto.randomUUID(),
-    createdAt,
-    ...entry,
-  } as TranscriptEntry
-}
-
 function stringFromUnknown(value: unknown) {
   if (typeof value === "string") return value
   try {
@@ -171,14 +166,6 @@ function buildSteeredMessageContent(content: string) {
   return content.trim().length > 0
     ? `${STEERED_MESSAGE_PREFIX}\n\n${content}`
     : STEERED_MESSAGE_PREFIX
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function escapeXmlAttribute(value: string) {
@@ -680,6 +667,7 @@ export class AgentCoordinator {
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly analytics: AnalyticsReporter
   private readonly codexManager: CodexAppServerManager
+  private readonly cursorManager: CursorCliManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private reportBackgroundError: ((message: string) => void) | null = null
@@ -692,6 +680,7 @@ export class AgentCoordinator {
     this.onStateChange = args.onStateChange
     this.analytics = args.analytics ?? NoopAnalyticsReporter
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.cursorManager = args.cursorManager ?? new CursorCliManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
   }
@@ -781,6 +770,16 @@ export class AgentCoordinator {
         effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
+      }
+    }
+
+    if (provider === "cursor") {
+      const modelOptions = normalizeCursorModelOptions(options.modelOptions)
+      return {
+        model: cursorModelIdForOptions(normalizeServerModel(provider, options.model), modelOptions),
+        effort: undefined,
+        serviceTier: undefined,
+        planMode: false,
       }
     }
 
@@ -951,6 +950,24 @@ export class AgentCoordinator {
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
         onToolRequest,
+      })
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+    } else if (args.provider === "cursor") {
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+      // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
+      turn = await this.cursorManager.startTurn({
+        cwd: project.localPath,
+        content: buildPromptText(args.content, args.attachments),
+        model: args.model,
+        sessionToken: chat.sessionToken,
       })
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,

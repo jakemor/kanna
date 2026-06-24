@@ -480,6 +480,13 @@ export function createWsRouter({
         },
         planMode: false,
       },
+      cursor: {
+        model: "composer-2.5",
+        modelOptions: {
+          fastMode: false,
+        },
+        planMode: false,
+      },
     },
     warning: null,
     filePathDisplay: "~/.kanna/data/settings.json",
@@ -510,6 +517,14 @@ export function createWsRouter({
         modelOptions: {
           ...snapshot.providerDefaults.codex.modelOptions,
           ...patch.providerDefaults?.codex?.modelOptions,
+        },
+      },
+      cursor: {
+        ...snapshot.providerDefaults.cursor,
+        ...patch.providerDefaults?.cursor,
+        modelOptions: {
+          ...snapshot.providerDefaults.cursor.modelOptions,
+          ...patch.providerDefaults?.cursor?.modelOptions,
         },
       },
     },

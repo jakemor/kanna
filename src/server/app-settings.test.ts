@@ -51,6 +51,13 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         },
         planMode: false,
       },
+      cursor: {
+        model: "composer-2.5",
+        modelOptions: {
+          fastMode: false,
+        },
+        planMode: false,
+      },
     },
     warning: null,
     filePathDisplay: filePath,

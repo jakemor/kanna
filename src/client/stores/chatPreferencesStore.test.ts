@@ -67,6 +67,11 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { reasoningEffort: "minimal", fastMode: true },
           planMode: false,
         },
+        cursor: {
+          model: "composer-2.5",
+          modelOptions: { fastMode: false },
+          planMode: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {
@@ -250,6 +255,34 @@ describe("chat preference store", () => {
       provider: "claude",
       model: "claude-haiku-4-5-20251001",
       modelOptions: { reasoningEffort: "high", contextWindow: "200k" },
+      planMode: false,
+    })
+  })
+
+  test("changing the model or options of a Cursor chat keeps it on Cursor", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.setComposerState("chat-a", {
+      provider: "cursor",
+      model: "composer-2.5",
+      modelOptions: { fastMode: true },
+      planMode: false,
+    })
+
+    // Selecting the model must not silently convert the composer to Codex.
+    store.setChatComposerModel("chat-a", "composer-2.5")
+    expect(store.getComposerState("chat-a")).toEqual({
+      provider: "cursor",
+      model: "composer-2.5",
+      modelOptions: { fastMode: true },
+      planMode: false,
+    })
+
+    store.setChatComposerModelOptions("chat-a", { fastMode: false })
+    expect(store.getComposerState("chat-a")).toEqual({
+      provider: "cursor",
+      model: "composer-2.5",
+      modelOptions: { fastMode: false },
       planMode: false,
     })
   })

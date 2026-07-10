@@ -13,17 +13,11 @@ import {
   DEFAULT_CODEX_MODEL_OPTIONS,
   PROVIDERS,
   normalizeClaudeContextWindow,
+  normalizeCodexReasoningEffort,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
 } from "../shared/types"
-
-const HARD_CODED_CODEX_MODELS: ProviderModelOption[] = [
-  { id: "gpt-5.5", label: "GPT-5.5", supportsEffort: false },
-  { id: "gpt-5.4", label: "GPT-5.4", supportsEffort: false },
-  { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: false },
-  { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", supportsEffort: false },
-]
 
 export interface ClaudeSdkModelInfo {
   value: string
@@ -35,15 +29,7 @@ export interface ClaudeSdkModelInfo {
 }
 
 function createServerProviders(): ProviderCatalogEntry[] {
-  return PROVIDERS.map((provider) =>
-    provider.id === "codex"
-      ? {
-          ...provider,
-          defaultModel: "gpt-5.5",
-          models: HARD_CODED_CODEX_MODELS,
-        }
-      : provider
-  )
+  return structuredClone(PROVIDERS)
 }
 
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
@@ -137,14 +123,17 @@ export function normalizeClaudeModelOptions(
   }
 }
 
-export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEffort?: string): CodexModelOptions {
+export function normalizeCodexModelOptions(
+  model: string,
+  modelOptions?: ModelOptions,
+  legacyEffort?: string,
+): CodexModelOptions {
   const reasoningEffort = modelOptions?.codex?.reasoningEffort
   return {
-    reasoningEffort: isCodexReasoningEffort(reasoningEffort)
-      ? reasoningEffort
-      : isCodexReasoningEffort(legacyEffort)
-        ? legacyEffort
-        : DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort,
+    reasoningEffort: normalizeCodexReasoningEffort(
+      model,
+      isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
+    ),
     fastMode: typeof modelOptions?.codex?.fastMode === "boolean"
       ? modelOptions.codex.fastMode
       : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,

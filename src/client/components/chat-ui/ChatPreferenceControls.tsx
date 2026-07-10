@@ -143,7 +143,6 @@ interface ChatPreferenceControlsProps {
   selectedProvider: AgentProvider
   showProviderPicker?: boolean
   providerLocked?: boolean
-  showCodexCliRequirementHints?: boolean
   model: string
   modelOptions: ClaudeModelOptions | CodexModelOptions
   onProviderChange?: (provider: AgentProvider) => void
@@ -160,7 +159,6 @@ export function ChatPreferenceControls({
   selectedProvider,
   showProviderPicker = true,
   providerLocked = false,
-  showCodexCliRequirementHints = false,
   model,
   modelOptions,
   onProviderChange,
@@ -222,7 +220,6 @@ export function ChatPreferenceControls({
       >
         {(close) => providerConfig.models.map((candidate) => {
           const Icon = Box
-          const isGpt56Model = selectedProvider === "codex" && candidate.id.startsWith("gpt-5.6-")
           const downgradesUltraToMax = candidate.id === "gpt-5.6-luna"
             && modelOptions.reasoningEffort === "ultra"
           return (
@@ -235,15 +232,12 @@ export function ChatPreferenceControls({
               selected={model === candidate.id}
               icon={<Icon className="h-4 w-4 text-muted-foreground" />}
               label={
-                (showCodexCliRequirementHints && isGpt56Model) || downgradesUltraToMax
+                downgradesUltraToMax
                   ? (
                     <>
                       {candidate.label}{" "}
                       <span className="text-xs font-normal text-muted-foreground">
-                        {[
-                          showCodexCliRequirementHints && isGpt56Model ? "requires GPT-5.6 access" : null,
-                          downgradesUltraToMax ? "Ultra → Max" : null,
-                        ].filter(Boolean).join(" · ")}
+                        Ultra → Max
                       </span>
                     </>
                   )

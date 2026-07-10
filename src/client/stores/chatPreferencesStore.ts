@@ -5,6 +5,7 @@ import {
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCodexReasoningEffort,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   supportsClaudeMaxReasoningEffort,
@@ -126,55 +127,21 @@ export function normalizeCodexPreference(value?: {
   modelOptions?: Partial<CodexModelOptions>
   planMode?: boolean
 }): ProviderPreference<CodexModelOptions> {
+  const model = normalizeCodexModelId(value?.model)
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   return {
-    model: normalizeCodexModelId(value?.model),
+    model,
     modelOptions: {
-      reasoningEffort: isCodexReasoningEffort(reasoningEffort)
-        ? reasoningEffort
-        : isCodexReasoningEffort(value?.effort)
-          ? value.effort
-          : DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort,
+      reasoningEffort: normalizeCodexReasoningEffort(
+        model,
+        isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
+      ),
       fastMode: typeof value?.modelOptions?.fastMode === "boolean"
         ? value.modelOptions.fastMode
         : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,
     },
     planMode: Boolean(value?.planMode),
   }
-}
-
-function forcePersistedCodexPreference<T extends {
-  model?: string
-  effort?: string
-  modelOptions?: Partial<CodexModelOptions>
-  planMode?: boolean
-}>(value?: T): T | undefined {
-  if (!value) return value
-  return {
-    ...value,
-    model: "gpt-5.5",
-  }
-}
-
-function forcePersistedCodexComposerState<T extends PersistedComposerState | ComposerState>(value?: T): T | undefined {
-  if (!value || value.provider !== "codex") return value
-  return {
-    ...value,
-    model: "gpt-5.5",
-  }
-}
-
-function forcePersistedCodexChatStates(
-  value?: Record<string, PersistedComposerState | ComposerState>
-): Record<string, PersistedComposerState | ComposerState> | undefined {
-  if (!value) return value
-
-  return Object.fromEntries(
-    Object.entries(value).map(([chatId, composerState]) => [
-      chatId,
-      forcePersistedCodexComposerState(composerState) ?? composerState,
-    ])
-  )
 }
 
 export function createDefaultProviderDefaults(): ChatProviderPreferences {
@@ -185,7 +152,7 @@ export function createDefaultProviderDefaults(): ChatProviderPreferences {
       planMode: false,
     },
     codex: {
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
       planMode: false,
     },
@@ -428,12 +395,9 @@ interface ChatPreferencesState {
 export function migrateChatPreferencesState(
   persistedState: Partial<PersistedChatPreferencesState> | undefined
 ): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "chatStates" | "legacyComposerState"> {
-  const providerDefaults = normalizeProviderDefaults({
-    ...persistedState?.providerDefaults,
-    codex: forcePersistedCodexPreference(persistedState?.providerDefaults?.codex),
-  })
+  const providerDefaults = normalizeProviderDefaults(persistedState?.providerDefaults)
   const legacyComposerState = normalizePersistedComposerState(
-    forcePersistedCodexComposerState(persistedState?.legacyComposerState ?? persistedState?.composerState),
+    persistedState?.legacyComposerState ?? persistedState?.composerState,
     providerDefaults
   )
   const legacyLiveComposerState = persistedState?.liveProvider
@@ -441,17 +405,14 @@ export function migrateChatPreferencesState(
       undefined,
       providerDefaults,
       persistedState.liveProvider,
-      {
-        ...persistedState?.livePreferences,
-        codex: forcePersistedCodexPreference(persistedState?.livePreferences?.codex),
-      }
+      persistedState?.livePreferences
     )
     : null
 
   return {
     defaultProvider: normalizeDefaultProvider(persistedState?.defaultProvider),
     providerDefaults,
-    chatStates: normalizeChatStates(forcePersistedCodexChatStates(persistedState?.chatStates), providerDefaults),
+    chatStates: normalizeChatStates(persistedState?.chatStates, providerDefaults),
     legacyComposerState: legacyComposerState ?? legacyLiveComposerState,
   }
 }
@@ -568,7 +529,12 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                 modelOptions: normalizeClaudePreference(composerState).modelOptions,
                 planMode: composerState.planMode,
               }
-              : cloneComposerState(composerState),
+              : {
+                provider: "codex",
+                model: normalizeCodexPreference(composerState).model,
+                modelOptions: normalizeCodexPreference(composerState).modelOptions,
+                planMode: composerState.planMode,
+              },
           },
         })),
       setChatComposerProvider: (chatId, provider) =>
@@ -590,7 +556,10 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             }
             : {
               provider: "codex",
-              model,
+              model: normalizeCodexPreference({
+                ...composerState,
+                model,
+              }).model,
               modelOptions: normalizeCodexPreference({
                 ...composerState,
                 model,

@@ -63,7 +63,7 @@ describe("migrateChatPreferencesState", () => {
           planMode: true,
         },
         codex: {
-          model: "gpt-5.5",
+          model: "gpt-5.3-codex",
           modelOptions: { reasoningEffort: "minimal", fastMode: true },
           planMode: false,
         },
@@ -107,7 +107,7 @@ describe("migrateChatPreferencesState", () => {
     })
   })
 
-  test("rewrites persisted Codex defaults to gpt-5.5 during migration", () => {
+  test("preserves persisted legacy Codex defaults during migration", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
@@ -120,13 +120,13 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.codex).toEqual({
-      model: "gpt-5.5",
+      model: "gpt-5.3-codex",
       modelOptions: { reasoningEffort: "low", fastMode: true },
       planMode: false,
     })
   })
 
-  test("rewrites persisted Codex composer state to gpt-5.5 during migration", () => {
+  test("preserves supported persisted Codex composer models during migration", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "codex",
       providerDefaults: {
@@ -153,31 +153,87 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.codex).toEqual({
-      model: "gpt-5.5",
+      model: "gpt-5.3-codex-spark",
       modelOptions: { reasoningEffort: "low", fastMode: true },
       planMode: true,
     })
     expect(migrated.chatStates.chatA).toEqual({
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.4",
       modelOptions: { reasoningEffort: "medium", fastMode: false },
       planMode: false,
     })
     expect(migrated.legacyComposerState).toEqual({
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.3-codex",
       modelOptions: { reasoningEffort: "xhigh", fastMode: true },
+      planMode: true,
+    })
+  })
+
+  test("preserves persisted GPT-5.6 defaults and Ultra during migration", () => {
+    const migrated = migrateChatPreferencesState({
+      defaultProvider: "codex",
+      providerDefaults: {
+        codex: {
+          model: "gpt-5.6-terra",
+          modelOptions: { reasoningEffort: "ultra", fastMode: true },
+          planMode: true,
+        },
+      },
+    })
+
+    expect(migrated.providerDefaults.codex).toEqual({
+      model: "gpt-5.6-terra",
+      modelOptions: { reasoningEffort: "ultra", fastMode: true },
       planMode: true,
     })
   })
 })
 
 describe("chat preference store", () => {
-  test("starts with gpt-5.5 as the default Codex model", () => {
+  test("starts with GPT-5.6 Sol and Medium as the default Codex configuration", () => {
     expect(INITIAL_STATE.providerDefaults.codex).toEqual({
-      model: "gpt-5.5",
-      modelOptions: { reasoningEffort: "high", fastMode: false },
+      model: "gpt-5.6-sol",
+      modelOptions: { reasoningEffort: "medium", fastMode: false },
       planMode: false,
+    })
+  })
+
+  test("normalizes legacy and unsupported GPT-5.6 reasoning levels", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.setComposerState("sol", {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      modelOptions: { reasoningEffort: "minimal", fastMode: false },
+      planMode: false,
+    })
+    store.setComposerState("luna", {
+      provider: "codex",
+      model: "gpt-5.6-luna",
+      modelOptions: { reasoningEffort: "ultra", fastMode: false },
+      planMode: false,
+    })
+
+    expect(useChatPreferencesStore.getState().getComposerState("sol").modelOptions.reasoningEffort).toBe("low")
+    expect(useChatPreferencesStore.getState().getComposerState("luna").modelOptions.reasoningEffort).toBe("max")
+  })
+
+  test("downgrades Ultra to Max when switching from Sol to Luna", () => {
+    const store = useChatPreferencesStore.getState()
+    store.setComposerState("chat-a", {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      modelOptions: { reasoningEffort: "ultra", fastMode: false },
+      planMode: false,
+    })
+
+    store.setChatComposerModel("chat-a", "gpt-5.6-luna")
+
+    expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toMatchObject({
+      model: "gpt-5.6-luna",
+      modelOptions: { reasoningEffort: "max" },
     })
   })
 

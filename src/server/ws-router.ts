@@ -473,9 +473,9 @@ export function createWsRouter({
         planMode: false,
       },
       codex: {
-        model: "gpt-5.5",
+        model: "gpt-5.6-sol",
         modelOptions: {
-          reasoningEffort: "high",
+          reasoningEffort: "medium",
           fastMode: false,
         },
         planMode: false,

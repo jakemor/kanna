@@ -12,6 +12,7 @@ import {
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCodexReasoningEffort,
   supportsClaudeMaxReasoningEffort,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
@@ -104,7 +105,7 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
       planMode: false,
     },
     codex: {
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
       planMode: false,
     },
@@ -187,15 +188,15 @@ function normalizeCodexPreference(value?: {
   modelOptions?: Partial<Record<keyof CodexModelOptions, unknown>>
   planMode?: unknown
 }): ProviderPreference<CodexModelOptions> {
+  const model = normalizeCodexModelId(typeof value?.model === "string" ? value.model : undefined)
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   return {
-    model: normalizeCodexModelId(typeof value?.model === "string" ? value.model : undefined),
+    model,
     modelOptions: {
-      reasoningEffort: isCodexReasoningEffort(reasoningEffort)
-        ? reasoningEffort
-        : isCodexReasoningEffort(value?.effort)
-          ? value.effort
-          : DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort,
+      reasoningEffort: normalizeCodexReasoningEffort(
+        model,
+        isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
+      ),
       fastMode: typeof value?.modelOptions?.fastMode === "boolean"
         ? value.modelOptions.fastMode
         : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,

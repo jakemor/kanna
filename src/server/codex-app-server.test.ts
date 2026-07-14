@@ -210,7 +210,76 @@ describe("CodexAppServerManager", () => {
     expect(threadStart?.params.serviceTier).toBe("fast")
     expect(turnStart?.params.effort).toBe("xhigh")
     expect(turnStart?.params.serviceTier).toBe("fast")
-    expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBeNull()
+    expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBe("xhigh")
+  })
+
+  test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
+    const combinations = [
+      ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)
+        .map((effort) => ({ model: "gpt-5.6-sol", effort })),
+      ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)
+        .map((effort) => ({ model: "gpt-5.6-terra", effort })),
+      ...(["low", "medium", "high", "xhigh", "max"] as const)
+        .map((effort) => ({ model: "gpt-5.6-luna", effort })),
+    ]
+
+    expect(combinations).toHaveLength(17)
+
+    for (const [index, combination] of combinations.entries()) {
+      const threadId = `thread-matrix-${index}`
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") {
+          child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+        } else if (message.method === "thread/start") {
+          child.writeServerMessage({
+            id: message.id,
+            result: { thread: { id: threadId }, model: combination.model, reasoningEffort: combination.effort },
+          })
+        } else if (message.method === "turn/start") {
+          child.writeServerMessage({
+            id: message.id,
+            result: { turn: { id: `turn-matrix-${index}`, status: "completed", error: null } },
+          })
+          child.writeServerMessage({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: `turn-matrix-${index}`, status: "completed", error: null },
+            },
+          })
+        }
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      const chatId = `chat-matrix-${index}`
+
+      await manager.startSession({
+        chatId,
+        cwd: "/tmp/project",
+        model: combination.model,
+        sessionToken: null,
+      })
+      const turn = await manager.startTurn({
+        chatId,
+        model: combination.model,
+        effort: combination.effort,
+        content: "matrix test",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      await collectStream(turn.stream)
+
+      const threadStart = process.messages.find((message: any) => message.method === "thread/start") as any
+      const turnStart = process.messages.find((message: any) => message.method === "turn/start") as any
+      expect(threadStart.params.model).toBe(combination.model)
+      expect(turnStart.params.model).toBe(combination.model)
+      expect(turnStart.params.effort).toBe(combination.effort)
+      expect(turnStart.params.collaborationMode.settings).toMatchObject({
+        model: combination.model,
+        reasoning_effort: combination.effort,
+      })
+
+      manager.stopSession(chatId)
+    }
   })
 
   test("maps thread token usage updates into context window transcript entries", async () => {

@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import {
   deriveClaudeModelLabel,
+  getCodexReasoningOptions,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCodexReasoningEffort,
+  isCodexReasoningEffort,
   supportsClaudeMaxReasoningEffort,
 } from "./types"
 
@@ -21,8 +24,54 @@ describe("shared model normalization", () => {
   })
 
   test("normalizes legacy Codex aliases and defaults to the latest catalog model", () => {
-    expect(normalizeCodexModelId()).toBe("gpt-5.5")
+    expect(normalizeCodexModelId()).toBe("gpt-5.6-sol")
+    expect(normalizeCodexModelId("gpt-5.6")).toBe("gpt-5.6-sol")
+    expect(normalizeCodexModelId("gpt-5.6-terra")).toBe("gpt-5.6-terra")
+    expect(normalizeCodexModelId("gpt-5.6-luna")).toBe("gpt-5.6-luna")
     expect(normalizeCodexModelId("gpt-5-codex")).toBe("gpt-5.3-codex")
+    expect(normalizeCodexModelId("not-a-real-model")).toBe("gpt-5.6-sol")
+  })
+
+  test("exposes model-specific GPT-5.6 reasoning efforts", () => {
+    expect(getCodexReasoningOptions("gpt-5.6-sol").map((option) => option.id)).toEqual([
+      "low", "medium", "high", "xhigh", "max", "ultra",
+    ])
+    expect(getCodexReasoningOptions("gpt-5.6-terra").map((option) => option.id)).toEqual([
+      "low", "medium", "high", "xhigh", "max", "ultra",
+    ])
+    expect(getCodexReasoningOptions("gpt-5.6-luna").map((option) => option.id)).toEqual([
+      "low", "medium", "high", "xhigh", "max",
+    ])
+  })
+
+  test("preserves all 17 supported GPT-5.6 model and reasoning combinations", () => {
+    const combinations = [
+      ["gpt-5.6-sol", ["low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["gpt-5.6-terra", ["low", "medium", "high", "xhigh", "max", "ultra"]],
+      ["gpt-5.6-luna", ["low", "medium", "high", "xhigh", "max"]],
+    ] as const
+
+    expect(combinations.reduce((count, [, efforts]) => count + efforts.length, 0)).toBe(17)
+    for (const [model, efforts] of combinations) {
+      for (const effort of efforts) {
+        expect(normalizeCodexReasoningEffort(model, effort)).toBe(effort)
+      }
+    }
+  })
+
+  test("normalizes unsupported GPT-5.6 reasoning efforts", () => {
+    expect(normalizeCodexReasoningEffort("gpt-5.6-sol", "minimal")).toBe("low")
+    expect(normalizeCodexReasoningEffort("gpt-5.6-luna", "ultra")).toBe("max")
+    expect(normalizeCodexReasoningEffort("gpt-5.6-terra", "ultra")).toBe("ultra")
+    expect(normalizeCodexReasoningEffort("gpt-5.6-sol", "unknown")).toBe("medium")
+  })
+
+  test("recognizes public and legacy Codex reasoning values", () => {
+    expect(isCodexReasoningEffort("max")).toBe(true)
+    expect(isCodexReasoningEffort("ultra")).toBe(true)
+    expect(isCodexReasoningEffort("minimal")).toBe(true)
+    expect(getCodexReasoningOptions("gpt-5.6-sol").find((option) => option.id === "xhigh")?.label).toBe("Extra High")
+    expect(getCodexReasoningOptions("gpt-5.6-sol").find((option) => option.id === "ultra")?.description).toContain("subagents")
   })
 
   test("uses declarative metadata for Claude max-effort support", () => {

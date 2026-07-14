@@ -20,9 +20,27 @@ describe("ChatPreferenceControls", () => {
 
     expect(html).toContain("Codex")
     expect(html).toContain("GPT-5.3 Codex")
-    expect(html).toContain("XHigh")
+    expect(html).toContain("Extra High")
     expect(html).toContain("Fast Mode")
     expect(html).not.toContain("Plan Mode")
+  })
+
+  test("renders Ultra as a reasoning level for supported GPT-5.6 models", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="codex"
+        model="gpt-5.6-sol"
+        modelOptions={{ reasoningEffort: "ultra", fastMode: false }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onModelOptionChange={() => {}}
+        includePlanMode={false}
+      />
+    )
+
+    expect(html).toContain("GPT-5.6 Sol")
+    expect(html).toContain("Ultra")
   })
 
   test("renders claude plan mode controls when enabled", () => {

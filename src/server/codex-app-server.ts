@@ -822,7 +822,7 @@ export class CodexAppServerManager {
           mode: args.planMode ? "plan" : "default",
           settings: {
             model: args.model,
-            reasoning_effort: null,
+            reasoning_effort: args.effort ?? null,
             developer_instructions: null,
           },
         },

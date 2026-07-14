@@ -44,9 +44,9 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         planMode: false,
       },
       codex: {
-        model: "gpt-5.5",
+        model: "gpt-5.6-sol",
         modelOptions: {
-          reasoningEffort: "high",
+          reasoningEffort: "medium",
           fastMode: false,
         },
         planMode: false,
@@ -163,6 +163,45 @@ describe("AppSettingsManager", () => {
     expect(nextPayload.analyticsUserId).toBe(initialPayload.analyticsUserId)
     expect(nextPayload.theme).toBe("dark")
     expect(nextPayload.chatSoundId).toBe("glass")
+
+    manager.dispose()
+  })
+
+  test("normalizes GPT-5.6 reasoning levels when settings are written", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    const sol = await manager.writePatch({
+      providerDefaults: {
+        codex: { model: "gpt-5.6-sol", modelOptions: { reasoningEffort: "ultra" } },
+      },
+    })
+    expect(sol.providerDefaults.codex.modelOptions.reasoningEffort).toBe("ultra")
+
+    const terra = await manager.writePatch({
+      providerDefaults: {
+        codex: { model: "gpt-5.6-terra", modelOptions: { reasoningEffort: "max" } },
+      },
+    })
+    expect(terra.providerDefaults.codex.modelOptions.reasoningEffort).toBe("max")
+
+    const luna = await manager.writePatch({
+      providerDefaults: {
+        codex: { model: "gpt-5.6-luna", modelOptions: { reasoningEffort: "ultra" } },
+      },
+    })
+    expect(luna.providerDefaults.codex.modelOptions.reasoningEffort).toBe("max")
+
+    const legacy = await manager.writePatch({
+      providerDefaults: {
+        codex: { model: "gpt-5.5", modelOptions: { reasoningEffort: "xhigh" } },
+      },
+    })
+    expect(legacy.providerDefaults.codex).toMatchObject({
+      model: "gpt-5.5",
+      modelOptions: { reasoningEffort: "xhigh", fastMode: false },
+    })
 
     manager.dispose()
   })

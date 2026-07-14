@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import type {
   AgentProvider,
   ChatAttachment,
+  CodexReasoningEffort,
   ContextWindowUsageSnapshot,
   ModelOptions,
   NormalizedToolCall,
@@ -783,9 +784,10 @@ export class AgentCoordinator {
       }
     }
 
-    const modelOptions = normalizeCodexModelOptions(options.modelOptions, options.effort)
+    const model = normalizeServerModel(provider, options.model)
+    const modelOptions = normalizeCodexModelOptions(model, options.modelOptions, options.effort)
     return {
-      model: normalizeServerModel(provider, options.model),
+      model,
       effort: modelOptions.reasoningEffort,
       serviceTier: codexServiceTierFromModelOptions(modelOptions),
       planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
@@ -1000,7 +1002,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         content: buildPromptText(args.content, args.attachments),
         model: args.model,
-        effort: args.effort as any,
+        effort: args.effort as CodexReasoningEffort | undefined,
         serviceTier: args.serviceTier,
         planMode: args.planMode,
         onToolRequest,

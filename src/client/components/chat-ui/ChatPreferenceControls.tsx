@@ -3,7 +3,7 @@ import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
-  CODEX_REASONING_OPTIONS,
+  getCodexReasoningOptions,
   type AgentProvider,
   type ClaudeContextWindow,
   type ClaudeModelOptions,
@@ -161,7 +161,6 @@ interface ChatPreferenceControlsProps {
   selectedProvider: AgentProvider
   showProviderPicker?: boolean
   providerLocked?: boolean
-  showCodexCliRequirementHints?: boolean
   model: string
   modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions
   onProviderChange?: (provider: AgentProvider) => void
@@ -178,7 +177,6 @@ export function ChatPreferenceControls({
   selectedProvider,
   showProviderPicker = true,
   providerLocked = false,
-  showCodexCliRequirementHints = false,
   model,
   modelOptions,
   onProviderChange,
@@ -196,6 +194,7 @@ export function ChatPreferenceControls({
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   const cursorModelOptions = selectedProvider === "cursor" ? modelOptions as CursorModelOptions : null
+  const codexReasoningOptions = getCodexReasoningOptions(model)
   const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === model)?.contextWindowOptions ?? []
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
@@ -240,6 +239,8 @@ export function ChatPreferenceControls({
       >
         {(close) => providerConfig.models.map((candidate) => {
           const Icon = Box
+          const downgradesUltraToMax = candidate.id === "gpt-5.6-luna"
+            && codexModelOptions?.reasoningEffort === "ultra"
           return (
             <PopoverMenuItem
               key={candidate.id}
@@ -250,12 +251,12 @@ export function ChatPreferenceControls({
               selected={model === candidate.id}
               icon={<Icon className="h-4 w-4 text-muted-foreground" />}
               label={
-                showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
+                downgradesUltraToMax
                   ? (
                     <>
                       {candidate.label}{" "}
                       <span className="text-xs font-normal text-muted-foreground">
-                        codex-cli &gt;= 0.124
+                        Ultra → Max
                       </span>
                     </>
                   )
@@ -274,7 +275,7 @@ export function ChatPreferenceControls({
               <span>{
                 selectedProvider === "claude"
                   ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === claudeModelOptions?.reasoningEffort)?.label ?? claudeModelOptions?.reasoningEffort
-                  : CODEX_REASONING_OPTIONS.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
+                  : codexReasoningOptions.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
               }</span>
             </>
           )}
@@ -294,7 +295,7 @@ export function ChatPreferenceControls({
                   disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
                 />
               ))
-              : CODEX_REASONING_OPTIONS.map((effort) => (
+              : codexReasoningOptions.map((effort) => (
                 <PopoverMenuItem
                   key={effort.id}
                   onClick={() => {
@@ -304,6 +305,7 @@ export function ChatPreferenceControls({
                   selected={codexModelOptions?.reasoningEffort === effort.id}
                   icon={<Brain className="h-4 w-4 text-muted-foreground" />}
                   label={effort.label}
+                  description={effort.description}
                 />
               ))
           )}

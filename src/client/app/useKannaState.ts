@@ -504,7 +504,7 @@ function composerStateFromSendOptions(options?: {
       provider: "codex",
       model: options.model,
       modelOptions: {
-        reasoningEffort: options.modelOptions.codex.reasoningEffort ?? "high",
+        reasoningEffort: options.modelOptions.codex.reasoningEffort ?? "medium",
         fastMode: options.modelOptions.codex.fastMode ?? false,
       },
       planMode: Boolean(options.planMode),

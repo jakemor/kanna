@@ -9,6 +9,8 @@ import {
   type ModelOptions,
   type ProviderCatalogEntry,
   normalizeClaudeContextWindow,
+  normalizeCodexModelId,
+  normalizeCodexReasoningEffort,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
 import { assertNever } from "../../../shared/assert"
@@ -136,6 +138,17 @@ function withNormalizedContextWindow(
   state: ComposerState,
   model: string
 ): ComposerState {
+  if (state.provider === "codex") {
+    const normalizedModel = normalizeCodexModelId(model)
+    return {
+      ...state,
+      model: normalizedModel,
+      modelOptions: {
+        ...state.modelOptions,
+        reasoningEffort: normalizeCodexReasoningEffort(normalizedModel, state.modelOptions.reasoningEffort),
+      },
+    }
+  }
   if (state.provider !== "claude") return { ...state, model }
   return {
     ...state,
@@ -782,7 +795,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}
             providerLocked={providerLocked}
-            showCodexCliRequirementHints
             model={providerPrefs.model}
             modelOptions={providerPrefs.modelOptions}
             onProviderChange={(provider) => {

@@ -1316,6 +1316,12 @@ export function createWsRouter({
           break
         }
         case "chat.send": {
+          if (command.chatId && command.content?.trim() === "/sessionEnd") {
+            await agent.sessionEndCommand(command.chatId)
+            await broadcastChatStateImmediately(command.chatId)
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: command.chatId } })
+            return
+          }
           const result = await agent.send(command)
           const profile = command.clientTraceId && result.chatId
             ? agent.getActiveTurnProfile(result.chatId)

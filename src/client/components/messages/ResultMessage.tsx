@@ -35,6 +35,16 @@ export function ResultMessage({ message }: Props) {
     )
   }
 
+  if (message.durationMs === 0 && message.result) {
+    return (
+      <MetaRow className="px-0.5 text-xs tracking-wide">
+        <div className="w-full h-[1px] bg-border"></div>
+        <MetaLabel className="whitespace-nowrap text-[11px] tracking-widest text-muted-foreground/60 uppercase flex-shrink-0">{message.result}</MetaLabel>
+        <div className="w-full h-[1px] bg-border"></div>
+      </MetaRow>
+    )
+  }
+
   return (
     <MetaRow className={`px-0.5 text-xs tracking-wide ${message.durationMs > 60000 ? '' : 'hidden'}`}>
       <div className="w-full h-[1px] bg-border"></div>

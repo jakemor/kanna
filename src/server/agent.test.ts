@@ -1511,6 +1511,68 @@ describe("AgentCoordinator claude integration", () => {
     events.close()
   })
 
+  test("escape mid-turn does not surface the SDK's interrupt error result", async () => {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async () => {},
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "do something slow",
+      model: "claude-opus-4-1",
+    })
+
+    await coordinator.cancel("chat-1")
+    expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(true)
+
+    // The SDK reports the interrupt as an error result with no text.
+    events.push({
+      type: "transcript" as const,
+      entry: timestamped({
+        kind: "result",
+        subtype: "error",
+        isError: true,
+        durationMs: 0,
+        result: "",
+      }),
+    })
+    // A later, genuine error result (after the cancel settled) still surfaces.
+    events.push({
+      type: "transcript" as const,
+      entry: timestamped({
+        kind: "result",
+        subtype: "error",
+        isError: true,
+        durationMs: 0,
+        result: "real failure",
+      }),
+    })
+
+    await waitFor(() =>
+      store.messages.some((entry) => entry.kind === "result" && entry.result === "real failure")
+    )
+    const errorResults = store.messages.filter((entry) => entry.kind === "result" && entry.isError)
+    expect(errorResults).toHaveLength(1)
+
+    events.close()
+  })
+
   test("uses Claude forkSession when starting a forked chat", async () => {
     const startSessionCalls: Array<{ sessionToken: string | null; forkSession: boolean }> = []
     const events = new AsyncEventQueue<any>()

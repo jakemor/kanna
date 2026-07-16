@@ -1346,7 +1346,16 @@ export class AgentCoordinator {
         }
 
         if (!event.entry) continue
-        await this.store.appendMessage(session.chatId, event.entry)
+
+        // After an escape/cancel, the SDK ends the turn with a result of
+        // subtype error_during_execution (is_error, usually no text). The
+        // cancel already appended an "interrupted" entry, so persisting this
+        // would render a spurious "An unknown error occurred." in the UI.
+        const isCancelSettlingErrorResult =
+          session.suppressResume && event.entry.kind === "result" && event.entry.isError
+        if (!isCancelSettlingErrorResult) {
+          await this.store.appendMessage(session.chatId, event.entry)
+        }
 
         // Background wakeups (Monitor, Cron*, ScheduleWakeup, RemoteTrigger)
         // emit new activity after the previous turn completed. Re-register an

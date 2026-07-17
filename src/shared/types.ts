@@ -177,7 +177,7 @@ export const CODEX_REASONING_OPTIONS = [
   {
     id: "ultra",
     label: "Ultra",
-    description: "Uses subagents to delegate parts of complex tasks",
+    description: "Delegates to subagents more",
   },
 ] as const satisfies readonly CodexReasoningEffortOption[]
 
@@ -188,6 +188,7 @@ export type ServiceTier = "fast"
 export interface ClaudeModelOptions {
   reasoningEffort: ClaudeReasoningEffort
   contextWindow: ClaudeContextWindow
+  fastMode: boolean
 }
 
 export interface CodexModelOptions {
@@ -223,7 +224,8 @@ export type ModelOptions = Partial<{
 
 export const DEFAULT_CLAUDE_MODEL_OPTIONS = {
   reasoningEffort: "high",
-  contextWindow: "200k",
+  contextWindow: "1m",
+  fastMode: false,
 } as const satisfies ClaudeModelOptions
 
 export const DEFAULT_CODEX_MODEL_OPTIONS = {
@@ -252,8 +254,8 @@ const GPT_5_6_REASONING_OPTIONS = [...CODEX_REASONING_OPTIONS]
 const GPT_5_6_LUNA_REASONING_OPTIONS = CODEX_REASONING_OPTIONS.filter((option) => option.id !== "ultra")
 
 export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
-  { id: "200k", label: "200k" },
   { id: "1m", label: "1M" },
+  { id: "200k", label: "200k" },
 ] as const satisfies readonly ProviderContextWindowOption[]
 
 export function isClaudeContextWindow(value: unknown): value is ClaudeContextWindow {
@@ -300,6 +302,10 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         aliases: ["opus"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
         supportsMaxReasoningEffort: true,
+        // Fast mode is available on Opus 4.6/4.7/4.8 — Opus is the only
+        // catalog model in that family. The SDK confirms this at runtime via
+        // supportedModels() (see applyClaudeSdkModels).
+        supportsFastMode: true,
       },
       {
         id: "claude-sonnet-4-6",
@@ -372,7 +378,8 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         aliases: ["gpt-5-codex"],
         supportedReasoningEfforts: LEGACY_CODEX_REASONING_OPTIONS,
         defaultReasoningEffort: "high",
-        supportsFastMode: true,
+        // Fast mode supports GPT-5.6/5.5/5.4 only (docs: /codex/speed).
+        supportsFastMode: false,
       },
       {
         id: "gpt-5.3-codex-spark",
@@ -477,10 +484,26 @@ export function supportsClaudeMaxReasoningEffort(modelId: string): boolean {
   return Boolean(getClaudeModelOption(modelId)?.supportsMaxReasoningEffort)
 }
 
+export function supportsProviderFastMode(provider: AgentProvider, modelId: string): boolean {
+  return Boolean(getProviderModelOption(provider, modelId)?.supportsFastMode)
+}
+
+export function supportsClaudeFastMode(modelId: string): boolean {
+  return supportsProviderFastMode("claude", modelId)
+}
+
+export function normalizeClaudeFastMode(modelId: string, fastMode?: unknown): boolean {
+  return supportsClaudeFastMode(modelId) && fastMode === true
+}
+
 export function getClaudeContextWindowOptions(modelId: string): readonly ProviderContextWindowOption[] {
   return getClaudeModelOption(modelId)?.contextWindowOptions ?? []
 }
 
+// Preference normalization: models without a context window selector keep the
+// default *preference* instead of a clamped value, so switching to a model
+// that does support selection starts from the default rather than a stale
+// clamp. The effective window is resolved at usage time below.
 export function normalizeClaudeContextWindow(modelId: string, contextWindow?: unknown): ClaudeContextWindow {
   const options = getClaudeContextWindowOptions(modelId)
   if (options.length === 0) return DEFAULT_CLAUDE_MODEL_OPTIONS.contextWindow
@@ -489,8 +512,16 @@ export function normalizeClaudeContextWindow(modelId: string, contextWindow?: un
     : DEFAULT_CLAUDE_MODEL_OPTIONS.contextWindow
 }
 
+// Usage-time resolution: models without a 1m option always run at the
+// standard window regardless of the stored preference.
+export function resolveClaudeContextWindow(modelId: string, contextWindow?: unknown): ClaudeContextWindow {
+  const options = getClaudeContextWindowOptions(modelId)
+  if (!options.some((option) => option.id === "1m")) return "200k"
+  return normalizeClaudeContextWindow(modelId, contextWindow)
+}
+
 export function resolveClaudeApiModelId(modelId: string, contextWindow?: ClaudeContextWindow): string {
-  return contextWindow === "1m" ? `${modelId}[1m]` : modelId
+  return resolveClaudeContextWindow(modelId, contextWindow) === "1m" ? `${modelId}[1m]` : modelId
 }
 
 export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWindow): number {
@@ -525,9 +556,17 @@ export interface SidebarChatRow {
   title: string
   status: KannaStatus
   unread: boolean
+  /** User marked the chat done (board Done column). Cleared when a new turn starts. */
+  done?: boolean
   localPath: string
   provider: AgentProvider | null
   lastMessageAt?: number
+  /** One-line preview of the latest user prompt. */
+  lastUserMessagePreview?: string
+  /** One-line preview of the latest agent text message. */
+  lastAgentMessagePreview?: string
+  /** Tool kind the chat is waiting on when status is waiting_for_user (e.g. "ask_user_question"). */
+  pendingToolKind?: string
   hasAutomation: boolean
   canFork?: boolean
 }
@@ -554,6 +593,7 @@ export interface LocalProjectSummary {
   title: string
   source: "saved" | "discovered"
   lastOpenedAt?: number
+  folderModifiedAt?: number
   chatCount: number
 }
 
@@ -582,6 +622,8 @@ export interface AppSettingsSnapshot {
   }
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
+  /** Return to the board when a chat opened from it starts running. Off by default. */
+  boardAutoReturn: boolean
   warning: string | null
   filePathDisplay: string
 }
@@ -592,6 +634,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
+  boardAutoReturn?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference
@@ -957,6 +1000,8 @@ export interface UpstreamStatus {
 
 export interface ChatDiffSnapshot extends BranchMetadata, UpstreamStatus {
   status: "unknown" | "ready" | "no_repo"
+  /** Set when the checked-out branch is a pull request checked out through Kanna. */
+  checkedOutPrNumber?: number
   files: ChatDiffFile[]
   branchHistory?: ChatBranchHistorySnapshot
 }

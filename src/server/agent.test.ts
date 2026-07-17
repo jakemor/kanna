@@ -4,6 +4,7 @@ import {
   buildAttachmentHintText,
   buildPromptText,
   maxClaudeContextWindowFromModelUsage,
+  normalizeClaudeContextUsage,
   normalizeClaudeStreamMessage,
   normalizeClaudeUsageSnapshot,
 } from "./agent"
@@ -124,6 +125,24 @@ describe("normalizeClaudeStreamMessage", () => {
       maxTokens: 200_000,
       compactsAutomatically: false,
     })
+  })
+
+  test("normalizes Claude getContextUsage responses", () => {
+    expect(normalizeClaudeContextUsage({
+      totalTokens: 87_312,
+      maxTokens: 200_000,
+      rawMaxTokens: 200_000,
+      percentage: 43.7,
+      categories: [],
+    })).toEqual({
+      usedTokens: 87_312,
+      maxTokens: 200_000,
+    })
+
+    expect(normalizeClaudeContextUsage({ totalTokens: 12_345 })).toEqual({ usedTokens: 12_345 })
+    expect(normalizeClaudeContextUsage({ totalTokens: 0, maxTokens: 200_000 })).toBeNull()
+    expect(normalizeClaudeContextUsage(null)).toBeNull()
+    expect(normalizeClaudeContextUsage("nope")).toBeNull()
   })
 
   test("reads the max Claude context window from modelUsage", () => {
@@ -1390,6 +1409,71 @@ describe("AgentCoordinator claude integration", () => {
     events.close()
   })
 
+  test("passes Claude fast mode as a service tier and toggles it mid-session", async () => {
+    const events = new AsyncEventQueue<any>()
+    const startSessionCalls: Array<{ serviceTier?: string }> = []
+    const fastModeCalls: boolean[] = []
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        startSessionCalls.push({ serviceTier: args.serviceTier })
+
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          setFastMode: async (fastMode: boolean) => {
+            fastModeCalls.push(fastMode)
+          },
+          sendPrompt: async () => {
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "result",
+                subtype: "success",
+                isError: false,
+                durationMs: 0,
+                result: "done",
+              }),
+            })
+          },
+        }
+      },
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "go fast",
+      model: "claude-opus-4-8",
+      modelOptions: { claude: { fastMode: true } },
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "back to standard",
+      model: "claude-opus-4-8",
+      modelOptions: { claude: { fastMode: false } },
+    })
+    await waitFor(() => store.turnFinishedCount === 2)
+
+    expect(startSessionCalls).toEqual([{ serviceTier: "fast" }])
+    expect(fastModeCalls).toEqual([false])
+
+    events.close()
+  })
+
   test("Claude final results clear running state without using draining mode", async () => {
     const events = new AsyncEventQueue<any>()
 
@@ -1569,6 +1653,79 @@ describe("AgentCoordinator claude integration", () => {
     )
     const errorResults = store.messages.filter((entry) => entry.kind === "result" && entry.isError)
     expect(errorResults).toHaveLength(1)
+
+    events.close()
+  })
+
+  test("force-sending a queued message does not surface the cancelled prompt's error result", async () => {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    await store.enqueueMessage("chat-1", {
+      id: "queued-1",
+      content: "queued follow up",
+      attachments: [],
+      provider: "claude",
+      model: "claude-opus-4-1",
+      planMode: false,
+    })
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async () => {},
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first prompt",
+      model: "claude-opus-4-1",
+    })
+
+    // Force send: cancels the active prompt and immediately sends the queued
+    // one, which clears suppressResume before the interrupt error lands.
+    await coordinator.steer({
+      type: "message.steer",
+      chatId: "chat-1",
+      queuedMessageId: "queued-1",
+    })
+
+    // SDK reports the interrupt of prompt 1 as an empty error result.
+    events.push({
+      type: "transcript" as const,
+      entry: timestamped({
+        kind: "result",
+        subtype: "error",
+        isError: true,
+        durationMs: 0,
+        result: "",
+      }),
+    })
+    // The steered prompt (seq 2) then completes normally.
+    events.push({
+      type: "transcript" as const,
+      entry: timestamped({
+        kind: "result",
+        subtype: "success",
+        isError: false,
+        durationMs: 0,
+        result: "done",
+      }),
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+    expect(store.messages.some((entry) => entry.kind === "result" && entry.isError)).toBe(false)
+    expect(store.messages.some((entry) => entry.kind === "result" && entry.result === "done")).toBe(true)
 
     events.close()
   })

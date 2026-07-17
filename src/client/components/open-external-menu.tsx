@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react"
 import { ChevronDown } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../shared/protocol"
 import { getDefaultEditorCommandTemplate } from "../stores/terminalPreferencesStore"
@@ -15,6 +15,19 @@ const OPEN_APP_MENU_ITEM_CLASS_NAME = "py-2 pl-2 pr-8"
 const OPEN_APP_CONTEXT_MENU_ITEM_CLASS_NAME = "rounded-md text-sm font-normal focus:bg-accent focus:text-accent-foreground hover:bg-accent hover:text-accent-foreground"
 const OPEN_APP_MENU_ROW_CLASS_NAME = "flex items-center gap-3"
 const OPEN_APP_MENU_ICON_CLASS_NAME = "h-5 w-5 shrink-0"
+
+export function openContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = event.currentTarget.getBoundingClientRect()
+  event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
+    bubbles: true,
+    cancelable: true,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.bottom,
+    view: window,
+  }))
+}
 
 function OpenAppMenuItemContent({
   value,

@@ -2,13 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
-  codexServiceTierFromModelOptions,
   cursorModelIdForOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeCursorModelOptions,
   normalizeServerModel,
   resetServerProvidersForTests,
+  serviceTierFromModelOptions,
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
 
@@ -20,8 +20,24 @@ describe("provider catalog normalization", () => {
   test("maps legacy Claude effort into shared model options", () => {
     expect(normalizeClaudeModelOptions("claude-opus-4-8", undefined, "max")).toEqual({
       reasoningEffort: "max",
-      contextWindow: "200k",
+      contextWindow: "1m",
+      fastMode: false,
     })
+  })
+
+  test("normalizes Claude fast mode only for supported models", () => {
+    const opus = normalizeClaudeModelOptions("claude-opus-4-8", {
+      claude: { reasoningEffort: "high", fastMode: true },
+    })
+    expect(opus.fastMode).toBe(true)
+    expect(serviceTierFromModelOptions(opus)).toBe("fast")
+
+    // Sonnet does not support fast mode — the flag is dropped.
+    expect(normalizeClaudeModelOptions("claude-sonnet-4-6", {
+      claude: { reasoningEffort: "high", fastMode: true },
+    }).fastMode).toBe(false)
+
+    expect(serviceTierFromModelOptions(normalizeClaudeModelOptions("claude-opus-4-8", undefined))).toBeUndefined()
   })
 
   test("normalizes Claude context window only for supported models", () => {
@@ -33,6 +49,7 @@ describe("provider catalog normalization", () => {
     })).toEqual({
       reasoningEffort: "medium",
       contextWindow: "1m",
+      fastMode: false,
     })
 
     expect(normalizeClaudeModelOptions("claude-haiku-4-5-20251001", {
@@ -62,7 +79,16 @@ describe("provider catalog normalization", () => {
       reasoningEffort: "xhigh",
       fastMode: true,
     })
-    expect(codexServiceTierFromModelOptions(normalized)).toBe("fast")
+    expect(serviceTierFromModelOptions(normalized)).toBe("fast")
+
+    // Fast mode is stripped at spawn time for models the Codex docs don't
+    // list as supported (GPT-5.3 Codex, Codex Spark).
+    expect(normalizeCodexModelOptions("gpt-5.3-codex", {
+      codex: { reasoningEffort: "high", fastMode: true },
+    }).fastMode).toBe(false)
+    expect(normalizeCodexModelOptions("gpt-5.3-codex-spark", {
+      codex: { reasoningEffort: "high", fastMode: true },
+    }).fastMode).toBe(false)
 
     expect(normalizeCodexModelOptions("gpt-5.6-sol", {
       codex: { reasoningEffort: "ultra" },
@@ -101,6 +127,11 @@ describe("provider catalog normalization", () => {
     expect(resolveClaudeApiModelId("claude-opus-4-8", "1m")).toBe("claude-opus-4-8[1m]")
     expect(resolveClaudeApiModelId("fable", "200k")).toBe("fable")
     expect(resolveClaudeApiModelId("claude-sonnet-4-6", "200k")).toBe("claude-sonnet-4-6")
+
+    // A stored "1m" preference never leaks a [1m] suffix onto models without
+    // context window options — it's clamped at resolution time.
+    expect(resolveClaudeApiModelId("fable", "1m")).toBe("fable")
+    expect(resolveClaudeApiModelId("claude-haiku-4-5-20251001", "1m")).toBe("claude-haiku-4-5-20251001")
   })
 
   test("overlays Claude model labels from the Agent SDK model catalog", () => {

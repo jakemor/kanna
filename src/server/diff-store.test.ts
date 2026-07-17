@@ -270,6 +270,139 @@ describe("DiffStore", () => {
     })
   })
 
+  test("counts added lines for untracked files and reuses cached counts across refreshes", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "notes.md"), "one\ntwo\nthree", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const first = store.getProjectSnapshot("project-1")
+    expect(first.files).toHaveLength(1)
+    expect(first.files[0]?.additions).toBe(3)
+    const firstDigest = first.files[0]?.patchDigest
+
+    // No changes: refresh reports no snapshot change and digest is stable.
+    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(false)
+    expect(store.getProjectSnapshot("project-1").files[0]?.patchDigest).toBe(firstDigest)
+
+    // Content change: line count and digest both update.
+    await writeFile(path.join(repoRoot, "notes.md"), "one\ntwo\nthree\nfour\n", "utf8")
+    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
+    const second = store.getProjectSnapshot("project-1")
+    expect(second.files[0]?.additions).toBe(4)
+    expect(second.files[0]?.patchDigest).not.toBe(firstDigest)
+  })
+
+  test("getSnapshotVersion increments only when the snapshot changes", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    expect(store.getSnapshotVersion("project-1")).toBe(0)
+
+    await store.refreshSnapshot("project-1", repoRoot)
+    const versionAfterFirstRefresh = store.getSnapshotVersion("project-1")
+    expect(versionAfterFirstRefresh).toBe(1)
+
+    await store.refreshSnapshot("project-1", repoRoot)
+    expect(store.getSnapshotVersion("project-1")).toBe(versionAfterFirstRefresh)
+
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+    await store.refreshSnapshot("project-1", repoRoot)
+    expect(store.getSnapshotVersion("project-1")).toBe(versionAfterFirstRefresh + 1)
+  })
+
+  test("coalesces concurrent refreshSnapshot calls", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => store.refreshSnapshot("project-1", repoRoot))
+    )
+    expect(results.some((changed) => changed)).toBe(true)
+    // At most two runs happen (the active one plus a single queued follow-up),
+    // so the version can advance at most once for identical repository state.
+    expect(store.getSnapshotVersion("project-1")).toBe(1)
+    expect(store.getProjectSnapshot("project-1").files).toHaveLength(1)
+  })
+
+  test("commits many selected files without exceeding argv limits", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+
+    const dir = path.join(repoRoot, "generated")
+    await mkdir(dir, { recursive: true })
+    const paths: string[] = []
+    for (let index = 0; index < 300; index += 1) {
+      const relativePath = `generated/a-rather-long-file-name-to-inflate-argv-size-${index}.txt`
+      paths.push(relativePath)
+      await writeFile(path.join(repoRoot, relativePath), `content ${index}\n`, "utf8")
+    }
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const result = await store.commitFiles({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      paths,
+      summary: "Add generated files",
+      mode: "commit_only",
+    })
+
+    expect(result).toMatchObject({ ok: true, mode: "commit_only" })
+    expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Add generated files")
+    expect((await run(["git", "status", "--porcelain"], repoRoot)).trim()).toBe("")
+  })
+
+  test("refreshSnapshot tolerates huge untracked files and readPatch refuses to load them", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+
+    // Simulates a large build artifact (e.g. an Xcode compilation cache blob).
+    const hugeBytes = Buffer.alloc(6 * 1024 * 1024, 0x61)
+    await writeFile(path.join(repoRoot, "artifact.data"), hugeBytes)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
+
+    const snapshot = store.getProjectSnapshot("project-1")
+    const artifact = snapshot.files.find((file) => file.path === "artifact.data")
+    expect(artifact).toMatchObject({
+      changeType: "added",
+      isUntracked: true,
+      size: hugeBytes.length,
+    })
+
+    await expect(store.readPatch({ projectPath: repoRoot, path: "artifact.data" }))
+      .rejects.toThrow("too large to preview")
+  })
+
   test("refreshSnapshot tolerates tracked files replaced by directories", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)
@@ -448,7 +581,67 @@ describe("DiffStore", () => {
       projectId: "project-1",
       projectPath: repoRoot,
       path: "app.txt",
-    })).rejects.toThrow("Only untracked files can be ignored from the diff viewer")
+    })).rejects.toThrow("Only new files can be ignored from the diff viewer")
+  })
+
+  test("ignoreFile unstages a staged new file before ignoring it", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "scratch.log"), "tmp\n", "utf8")
+    await run(["git", "add", "scratch.log"], repoRoot)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const beforeIgnore = store.getProjectSnapshot("project-1")
+    expect(beforeIgnore.files.find((file) => file.path === "scratch.log")).toMatchObject({
+      changeType: "added",
+      isUntracked: false,
+    })
+
+    const result = await store.ignoreFile({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      path: "scratch.log",
+    })
+    expect(result.snapshotChanged).toBe(true)
+
+    expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("scratch.log\n")
+    // The file is unstaged but kept on disk, and no longer shows in the diff.
+    expect(await readFile(path.join(repoRoot, "scratch.log"), "utf8")).toBe("tmp\n")
+    expect((await run(["git", "status", "--porcelain", "--", "scratch.log"], repoRoot)).trim()).toBe("")
+    const afterIgnore = store.getProjectSnapshot("project-1")
+    expect(afterIgnore.files.find((file) => file.path === "scratch.log")).toBeUndefined()
+  })
+
+  test("ignoreFile unstages staged new files under an ignored folder", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await mkdir(path.join(repoRoot, "tmp/cache"), { recursive: true })
+    await writeFile(path.join(repoRoot, "tmp/cache/staged.log"), "one\n", "utf8")
+    await writeFile(path.join(repoRoot, "tmp/cache/untracked.log"), "two\n", "utf8")
+    await run(["git", "add", "tmp/cache/staged.log"], repoRoot)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    await store.ignoreFile({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      path: "tmp/cache/",
+    })
+
+    expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("tmp/cache/\n")
+    expect((await run(["git", "status", "--porcelain", "--", "tmp"], repoRoot)).trim()).toBe("")
+    expect(await readFile(path.join(repoRoot, "tmp/cache/staged.log"), "utf8")).toBe("one\n")
   })
 
   test("fetchGitHubPullRequests prefers gh api when available", async () => {

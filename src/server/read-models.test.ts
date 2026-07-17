@@ -1,8 +1,32 @@
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import { createEmptyState } from "./events"
 
 describe("read models", () => {
+  test("includes the project folder modification time", () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "kanna-project-mtime-"))
+    const projectDir = path.join(tempRoot, "project")
+    const modifiedAt = new Date("2026-07-15T14:30:00.000Z")
+
+    try {
+      mkdirSync(projectDir)
+      utimesSync(projectDir, modifiedAt, modifiedAt)
+
+      const snapshot = deriveLocalProjectsSnapshot(createEmptyState(), [{
+        localPath: projectDir,
+        title: "Project",
+        modifiedAt: 1,
+      }], "Machine")
+
+      expect(snapshot.projects[0]?.folderModifiedAt).toBe(modifiedAt.getTime())
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   test("include provider data in sidebar rows", () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
@@ -310,6 +334,51 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual(["chat-1"])
     expect(sidebar.projectGroups[0]?.olderChats.map((chat) => chat.chatId)).toEqual(["chat-2"])
     expect(sidebar.projectGroups[0]?.defaultCollapsed).toBe(false)
+  })
+
+  test("folds done chats below the preview even when they are recent", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Recent",
+      createdAt: 10,
+      updatedAt: 10,
+      unread: false,
+      provider: "claude",
+      planMode: false,
+      sessionToken: null,
+      lastMessageAt: 1_000_000 - 60 * 60 * 1_000,
+      lastTurnOutcome: null,
+    })
+    state.chatsById.set("chat-2", {
+      id: "chat-2",
+      projectId: "project-1",
+      title: "Recent but done",
+      createdAt: 20,
+      updatedAt: 20,
+      doneAt: 1_000_000 - 30 * 60 * 1_000,
+      unread: false,
+      provider: "claude",
+      planMode: false,
+      sessionToken: null,
+      lastMessageAt: 1_000_000 - 30 * 60 * 1_000,
+      lastTurnOutcome: null,
+    })
+
+    const sidebar = deriveSidebarData(state, new Map(), { nowMs: 1_000_000 })
+
+    expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual(["chat-1"])
+    expect(sidebar.projectGroups[0]?.olderChats.map((chat) => chat.chatId)).toEqual(["chat-2"])
+    expect(sidebar.projectGroups[0]?.olderChats[0]?.done).toBe(true)
   })
 
   test("shows all recent chats in the preview before folding older chats", () => {

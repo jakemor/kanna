@@ -89,7 +89,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
 
   const name = useMemo(() => {
     if (message.toolKind === "skill") {
-      return message.input.skill
+      return message.input.skill ? `Read Skill – ${message.input.skill}` : "Read Skill"
     }
     if (message.toolKind === "glob") {
       return `Search files ${message.input.pattern === "**/*" ? "in all directories" : `matching ${message.input.pattern}`}`
@@ -133,12 +133,6 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   }, [message.input, message.toolName, localPath])
 
   const isAgent = useMemo(() => message.toolKind === "subagent_task", [message.toolKind])
-  const description = useMemo(() => {
-    if (message.toolKind === "skill") {
-      return message.input.skill
-    }
-  }, [message.input, message.toolKind])
-
   const isBashTool = message.toolKind === "bash"
   const isWriteTool = message.toolKind === "write_file"
   const isEditTool = message.toolKind === "edit_file"
@@ -264,9 +258,9 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
         <MetaLabel className="text-left transition-opacity duration-200 truncate">
           <AnimatedShinyText
             animate={showLoadingState}
-            shimmerWidth={Math.max(20, ((description || name)?.length ?? 33) * 3)}
+            shimmerWidth={Math.max(20, (name?.length ?? 33) * 3)}
           >
-            {description || name}
+            {name}
           </AnimatedShinyText>
         </MetaLabel>
 

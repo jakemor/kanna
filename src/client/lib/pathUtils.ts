@@ -90,6 +90,19 @@ export function parseLocalFileLink(target: string | undefined | null): ParsedLoc
   return parseAbsoluteFileTarget(trimmed)
 }
 
+/**
+ * Contract the home directory prefix to "~" for display.
+ * e.g., "/Users/jake/Projects/my-app" → "~/Projects/my-app"
+ * e.g., "/home/jake" → "~"
+ */
+export function formatPathWithTilde(path: string) {
+  const homeMatch = path.match(/^\/(?:Users|home)\/[^/]+(?=\/|$)/)
+  const homePrefix = homeMatch?.[0]
+  if (homePrefix && path === homePrefix) return "~"
+  if (homePrefix && path.startsWith(`${homePrefix}/`)) return `~/${path.slice(homePrefix.length + 1)}`
+  return path
+}
+
 export function shouldOpenLocalFileLinkInEditor(filePath: string) {
   const fileName = filePath.split(/[\\/]/).pop() ?? filePath
   if (EDITOR_OPEN_FILENAMES.has(fileName)) return true

@@ -7,9 +7,9 @@ import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
 import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../../components/messages/shared"
 import { ProcessingMessage } from "../../components/messages/ProcessingMessage"
 import { ContextMenu, ContextMenuTrigger } from "../../components/ui/context-menu"
-import { OpenExternalContextMenuContent } from "../../components/open-external-menu"
+import { OpenExternalContextMenuContent, openContextMenuFromButton } from "../../components/open-external-menu"
 import { cn } from "../../lib/utils"
-import { shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
+import { formatPathWithTilde, shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
 import {
   buildResolvedTranscriptRows,
   KannaTranscriptRow,
@@ -21,7 +21,7 @@ import {
   CHAT_NAVBAR_OFFSET_PX,
   EMPTY_STATE_TEXT,
 } from "./utils"
-import type { EditorPreset } from "../../../shared/protocol"
+import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 
 interface ChatTranscriptViewportProps {
   activeChatId: string | null
@@ -51,6 +51,8 @@ interface ChatTranscriptViewportProps {
   isEmptyStateTypingComplete: boolean
   isPageFileDragActive: boolean
   showEmptyState: boolean
+  emptyStateProjectPath?: string | null
+  onOpenProjectExternal?: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
   editorPreset?: EditorPreset
   editorCommandTemplate?: string
   platform?: NodeJS.Platform
@@ -85,6 +87,8 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   isEmptyStateTypingComplete,
   isPageFileDragActive,
   showEmptyState,
+  emptyStateProjectPath,
+  onOpenProjectExternal,
   editorPreset = "cursor",
   editorCommandTemplate,
   platform = "darwin",
@@ -347,6 +351,33 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                   </span>
                 </span>
               </div>
+              {emptyStateProjectPath && onOpenProjectExternal ? (
+                <ContextMenu>
+                  <ContextMenuTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={openContextMenuFromButton}
+                      title={emptyStateProjectPath}
+                      className={cn(
+                        "max-w-xs truncate rounded-md px-2 py-1 font-mono text-xs text-muted-foreground/80 transition-all duration-300 hover:bg-muted hover:text-foreground",
+                        isEmptyStateTypingComplete
+                          ? "pointer-events-auto opacity-100"
+                          : "pointer-events-none opacity-0",
+                      )}
+                    >
+                      {formatPathWithTilde(emptyStateProjectPath)}
+                    </button>
+                  </ContextMenuTrigger>
+                  <OpenExternalContextMenuContent
+                    isMac={isMac}
+                    editorPreset={editorPreset}
+                    editorCommandTemplate={editorCommandTemplate}
+                    includeFinder
+                    includeTerminal
+                    onOpenExternal={onOpenProjectExternal}
+                  />
+                </ContextMenu>
+              ) : null}
             </div>
           </div>
         </div>

@@ -11,6 +11,7 @@ import {
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   normalizeClaudeContextWindow,
+  normalizeClaudeFastMode,
   normalizeClaudeModelId,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
@@ -51,6 +52,7 @@ interface AppSettingsFile {
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
     cursor?: Partial<ProviderPreference<Partial<CursorModelOptions>>>
   }
+  boardAutoReturn?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -186,6 +188,7 @@ function normalizeClaudePreference(value?: {
     modelOptions: {
       reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
       contextWindow: normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow),
+      fastMode: normalizeClaudeFastMode(model, value?.modelOptions?.fastMode),
     },
     planMode: value?.planMode === true,
   }
@@ -251,6 +254,7 @@ function toFilePayload(state: AppSettingsState) {
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
+    boardAutoReturn: state.boardAutoReturn,
   }
 }
 
@@ -265,6 +269,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
+    boardAutoReturn: state.boardAutoReturn,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -297,6 +302,11 @@ function normalizeAppSettings(
     warnings.push("analyticsUserId must be a non-empty string")
   }
 
+  const boardAutoReturn = source?.boardAutoReturn === true
+  if (source?.boardAutoReturn !== undefined && typeof source.boardAutoReturn !== "boolean") {
+    warnings.push("boardAutoReturn must be a boolean")
+  }
+
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
   const state: AppSettingsState = {
     analyticsEnabled,
@@ -315,6 +325,7 @@ function normalizeAppSettings(
     },
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
+    boardAutoReturn,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -343,6 +354,7 @@ function toComparablePayload(source: AppSettingsFile) {
     editor: source.editor,
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
+    boardAutoReturn: source.boardAutoReturn,
   }
 }
 

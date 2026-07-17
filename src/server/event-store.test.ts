@@ -602,4 +602,55 @@ describe("EventStore", () => {
     expect(store.getChat(chat.id)?.archivedAt).toBeUndefined()
     expect(store.listChatsByProject(project.id).map((entry) => entry.id)).toEqual([chat.id])
   })
+
+  test("rehydrates message metadata from transcripts after a restart without compaction", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("user_prompt", 1_000, { content: "  Fix the   login bug  " }))
+    await store.appendMessage(chat.id, entry("assistant_text", 2_000, { text: "Done, the fix is in auth.ts" }))
+
+    // No compact() — a restart between compactions must not lose transcript-derived metadata.
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+
+    const reloadedChat = reloaded.getChat(chat.id)
+    expect(reloadedChat?.hasMessages).toBe(true)
+    expect(reloadedChat?.lastMessageAt).toBe(1_000)
+    expect(reloadedChat?.lastUserMessagePreview).toBe("Fix the login bug")
+    expect(reloadedChat?.lastAgentMessagePreview).toBe("Done, the fix is in auth.ts")
+  })
+
+  test("marks chats done until a new turn starts, surviving reads and reloads", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordTurnFinished(chat.id)
+    await store.setChatDoneState(chat.id, true)
+    expect(store.getChat(chat.id)?.doneAt).toBeNumber()
+
+    // Reading only clears unread; done state is untouched.
+    await store.setChatReadState(chat.id, false)
+    expect(store.getChat(chat.id)?.unread).toBe(false)
+    expect(store.getChat(chat.id)?.doneAt).toBeNumber()
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getChat(chat.id)?.doneAt).toBeNumber()
+
+    // A new turn means the user re-engaged, clearing the done state.
+    await reloaded.recordTurnStarted(chat.id)
+    expect(reloaded.getChat(chat.id)?.doneAt).toBeUndefined()
+
+    await reloaded.setChatDoneState(chat.id, true)
+    await reloaded.setChatDoneState(chat.id, false)
+    expect(reloaded.getChat(chat.id)?.doneAt).toBeUndefined()
+  })
 })

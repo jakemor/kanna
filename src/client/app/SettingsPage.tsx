@@ -91,7 +91,7 @@ const sidebarItems = [
     id: "providers",
     label: "Providers",
     icon: MessageSquareQuote,
-    subtitle: "Manage the default chat provider and saved model defaults for Claude Code and Codex.",
+    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, and Cursor.",
   },
   {
     id: "keybindings",
@@ -1071,6 +1071,15 @@ export function SettingsPage() {
     }
   }
 
+  async function handleBoardAutoReturnChange(nextValue: "enabled" | "disabled") {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ boardAutoReturn: nextValue === "enabled" })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save board settings.")
+    }
+  }
+
   function handleDefaultProviderChange(nextValue: "last_used" | AgentProvider) {
     setDefaultProvider(nextValue)
     void handleWriteAppSettings({ defaultProvider: nextValue }).catch((error) => {
@@ -1186,6 +1195,7 @@ export function SettingsPage() {
     .replaceAll("{column}", "1")
   const analyticsDisclosureEvents = ANALYTICS_STATIC_EVENT_NAMES
   const analyticsSettingValue = appSettings?.analyticsEnabled === false ? "disabled" : "enabled"
+  const boardAutoReturnValue = appSettings?.boardAutoReturn === true ? "enabled" : "disabled"
   const selectedSection = sidebarItems.find((item) => item.id === selectedPage) ?? sidebarItems[0]
   const selectedSectionSubtitle =
     selectedPage === "keybindings"
@@ -1470,6 +1480,20 @@ export function SettingsPage() {
                       </SettingsRow>
 
                       <SettingsRow
+                        title="Jump Back to Board"
+                        description="After opening a chat from the board, return to the board automatically once the conversation starts running"
+                      >
+                        <SegmentedControl
+                          value={boardAutoReturnValue}
+                          onValueChange={(value) => {
+                            void handleBoardAutoReturnChange(value)
+                          }}
+                          options={analyticsOptions}
+                          size="sm"
+                        />
+                      </SettingsRow>
+
+                      <SettingsRow
                         title="Default Editor"
                         description="Used when opening transcript links or files from the git diff menu"
                         alignStart
@@ -1653,6 +1677,8 @@ export function SettingsPage() {
                               handleProviderDefaultModelOptionsChange("claude", { reasoningEffort: change.effort })
                             } else if (change.type === "contextWindow") {
                               handleProviderDefaultModelOptionsChange("claude", { contextWindow: change.contextWindow })
+                            } else if (change.type === "fastMode") {
+                              handleProviderDefaultModelOptionsChange("claude", { fastMode: change.fastMode })
                             }
                           }}
                           planMode={providerDefaults.claude.planMode}
@@ -1689,6 +1715,33 @@ export function SettingsPage() {
                           planMode={providerDefaults.codex.planMode}
                           onPlanModeChange={(planMode) => handleProviderDefaultPlanModeChange("codex", planMode)}
                           includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Cursor Defaults"
+                      description="Saved defaults when using Cursor."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="cursor"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.cursor.model}
+                          modelOptions={providerDefaults.cursor.modelOptions}
+                          onModelChange={(_, model) => {
+                            handleProviderDefaultModelChange("cursor", model)
+                          }}
+                          onModelOptionChange={(change) => {
+                            if (change.type === "fastMode") {
+                              handleProviderDefaultModelOptionsChange("cursor", { fastMode: change.fastMode })
+                            }
+                          }}
+                          planMode={providerDefaults.cursor.planMode}
                           className="justify-start flex-wrap"
                         />
                       </div>

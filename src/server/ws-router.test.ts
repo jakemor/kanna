@@ -90,7 +90,8 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       model: "claude-opus-4-8",
       modelOptions: {
         reasoningEffort: "high",
-        contextWindow: "200k",
+        contextWindow: "1m",
+        fastMode: false,
       },
       planMode: false,
     },
@@ -110,6 +111,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
     },
   },
+  boardAutoReturn: false,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

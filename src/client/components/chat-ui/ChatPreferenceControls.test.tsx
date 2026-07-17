@@ -9,7 +9,7 @@ describe("ChatPreferenceControls", () => {
       <ChatPreferenceControls
         availableProviders={PROVIDERS}
         selectedProvider="codex"
-        model="gpt-5.3-codex"
+        model="gpt-5.5"
         modelOptions={{ reasoningEffort: "xhigh", fastMode: true }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
@@ -19,10 +19,28 @@ describe("ChatPreferenceControls", () => {
     )
 
     expect(html).toContain("Codex")
-    expect(html).toContain("GPT-5.3 Codex")
+    expect(html).toContain("GPT-5.5")
     expect(html).toContain("Extra High")
     expect(html).toContain("Fast Mode")
     expect(html).not.toContain("Plan Mode")
+  })
+
+  test("hides the fast mode toggle for codex models without fast mode support", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="codex"
+        model="gpt-5.3-codex"
+        modelOptions={{ reasoningEffort: "xhigh", fastMode: false }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onModelOptionChange={() => {}}
+        includePlanMode={false}
+      />
+    )
+
+    expect(html).toContain("GPT-5.3 Codex")
+    expect(html).not.toContain("Fast Mode")
   })
 
   test("renders Ultra as a reasoning level for supported GPT-5.6 models", () => {

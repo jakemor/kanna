@@ -13,6 +13,8 @@ export interface ChatRecord {
   updatedAt: number
   deletedAt?: number
   archivedAt?: number
+  /** Set when the user marks the chat done (e.g. drags it to the board's Done column). Cleared when a new turn starts. */
+  doneAt?: number
   unread: boolean
   provider: AgentProvider | null
   planMode: boolean
@@ -20,6 +22,8 @@ export interface ChatRecord {
   pendingForkSessionToken?: string | null
   hasMessages?: boolean
   lastMessageAt?: number
+  lastUserMessagePreview?: string
+  lastAgentMessagePreview?: string
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
 }
 
@@ -114,6 +118,13 @@ export type ChatEvent =
       timestamp: number
       chatId: string
       unread: boolean
+    }
+  | {
+      v: 2
+      type: "chat_done_state_set"
+      timestamp: number
+      chatId: string
+      done: boolean
     }
 
 export type MessageEvent = {

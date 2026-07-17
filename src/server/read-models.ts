@@ -1,3 +1,4 @@
+import { statSync } from "node:fs"
 import process from "node:process"
 import type {
   ChatRuntime,
@@ -14,6 +15,14 @@ import { SERVER_PROVIDERS } from "./provider-catalog"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
+
+function getFolderModifiedAt(localPath: string) {
+  try {
+    return statSync(resolveLocalPath(localPath)).mtimeMs
+  } catch {
+    return undefined
+  }
+}
 
 export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): KannaStatus {
   if (activeStatus) return activeStatus
@@ -47,8 +56,13 @@ function isSidebarChatRecent(chat: Pick<SidebarChatRow, "lastMessageAt" | "_crea
   return Math.max(0, nowMs - getSidebarChatTimestamp(chat)) < SIDEBAR_RECENT_WINDOW_MS
 }
 
+function isSidebarChatPreviewed(chat: SidebarChatRow, nowMs: number) {
+  // Done chats always collapse below "Show more", regardless of recency.
+  return !chat.done && isSidebarChatRecent(chat, nowMs)
+}
+
 function getSidebarChatBuckets(chats: SidebarChatRow[], nowMs: number) {
-  const recentChats = chats.filter((chat) => isSidebarChatRecent(chat, nowMs))
+  const recentChats = chats.filter((chat) => isSidebarChatPreviewed(chat, nowMs))
   const previewChats = recentChats.length > 0
     ? recentChats
     : chats.slice(0, Math.min(SIDEBAR_FALLBACK_PREVIEW_LIMIT, chats.length))
@@ -67,6 +81,7 @@ export function deriveSidebarData(
     nowMs?: number
     sidebarProjectOrder?: string[]
     drainingChatIds?: Set<string>
+    pendingToolKinds?: Map<string, string>
   }
 ): SidebarData {
   const nowMs = options?.nowMs ?? Date.now()
@@ -101,19 +116,26 @@ export function deriveSidebarData(
   function toSidebarChatRows(project: NonNullable<typeof projects[number]>, projectChats: ChatRecord[]) {
     return projectChats
       .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
-      .map((chat) => ({
-        _id: chat.id,
-        _creationTime: chat.createdAt,
-        chatId: chat.id,
-        title: chat.title,
-        status: deriveStatus(chat, activeStatuses.get(chat.id)),
-        unread: chat.unread,
-        localPath: project.localPath,
-        provider: chat.provider,
-        lastMessageAt: chat.lastMessageAt,
-        hasAutomation: false,
-        canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
-      }))
+      .map((chat) => {
+        const pendingToolKind = options?.pendingToolKinds?.get(chat.id)
+        return {
+          _id: chat.id,
+          _creationTime: chat.createdAt,
+          chatId: chat.id,
+          title: chat.title,
+          status: deriveStatus(chat, activeStatuses.get(chat.id)),
+          unread: chat.unread,
+          ...(chat.doneAt ? { done: true } : {}),
+          localPath: project.localPath,
+          provider: chat.provider,
+          lastMessageAt: chat.lastMessageAt,
+          ...(chat.lastUserMessagePreview ? { lastUserMessagePreview: chat.lastUserMessagePreview } : {}),
+          ...(chat.lastAgentMessagePreview ? { lastAgentMessagePreview: chat.lastAgentMessagePreview } : {}),
+          ...(pendingToolKind ? { pendingToolKind } : {}),
+          hasAutomation: false,
+          canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
+        }
+      })
   }
 
   const projectGroups: SidebarProjectGroup[] = projects.map((project) => {
@@ -131,7 +153,7 @@ export function deriveSidebarData(
       previewChats,
       olderChats,
       ...(archivedChats.length ? { archivedChats } : {}),
-      defaultCollapsed: chats.every((chat) => !isSidebarChatRecent(chat, nowMs)),
+      defaultCollapsed: chats.every((chat) => !isSidebarChatPreviewed(chat, nowMs)),
     }
   })
 
@@ -152,6 +174,7 @@ export function deriveLocalProjectsSnapshot(
       title: project.title,
       source: "discovered",
       lastOpenedAt: project.modifiedAt,
+      folderModifiedAt: getFolderModifiedAt(normalizedPath),
       chatCount: 0,
     })
   }
@@ -168,6 +191,7 @@ export function deriveLocalProjectsSnapshot(
       title: project.title,
       source: "saved",
       lastOpenedAt,
+      folderModifiedAt: getFolderModifiedAt(project.localPath),
       chatCount: chats.length,
     })
   }

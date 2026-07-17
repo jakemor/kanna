@@ -36,6 +36,11 @@ type DiffFile = ChatDiffSnapshot["files"][number]
 type SidebarViewMode = "changes" | "history"
 const EMPTY_CHECKED_PATHS: Record<string, boolean> = {}
 
+// Rendering thousands of file cards at once makes the whole app sluggish, so
+// the changes list is paginated and expanded on demand.
+export const INITIAL_VISIBLE_DIFF_FILE_COUNT = 200
+export const VISIBLE_DIFF_FILE_INCREMENT = 300
+
 export function shouldLoadDiffPatchNow(args: {
   isCollapsed: boolean
   hasPreviewAttachment: boolean
@@ -106,7 +111,10 @@ interface GitPanelProps extends DiffFileActions {
 }
 
 export function canIgnoreDiffFile(file: DiffFile) {
-  return file.isUntracked
+  // New files are ignorable whether they are untracked or already staged (the
+  // server unstages staged new files before adding the .gitignore entry).
+  // Tracked files stay disabled: .gitignore has no effect on tracked files.
+  return file.isUntracked || file.changeType === "added"
 }
 
 export function canIgnoreDiffFolder(file: DiffFile) {
@@ -1492,6 +1500,7 @@ function GitPanelImpl({
   const [loadingPatchPaths, setLoadingPatchPaths] = useState<Record<string, boolean>>({})
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const patchDigestsByPathRef = useRef<Record<string, string>>({})
+  const [visibleFileCount, setVisibleFileCount] = useState(INITIAL_VISIBLE_DIFF_FILE_COUNT)
   const filePaths = useMemo(() => diffs.files.map((file) => file.path), [diffs.files])
   const filePathsKey = useMemo(() => filePaths.join("\u0000"), [filePaths])
   const viewMode = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.viewMode ?? (hasChanges ? "changes" : "history")) : (hasChanges ? "changes" : "history")))
@@ -1510,18 +1519,23 @@ function GitPanelImpl({
   const previousHasChangesRef = useRef(hasChanges)
 
   useEffect(() => {
+    setVisibleFileCount(INITIAL_VISIBLE_DIFF_FILE_COUNT)
+  }, [projectId])
+
+  useEffect(() => {
     if (!projectId) return
     reconcileCollapsedPaths(projectId, filePaths)
   }, [filePaths, filePathsKey, projectId, reconcileCollapsedPaths])
 
   useEffect(() => {
     const nextDigestsByPath = Object.fromEntries(diffs.files.map((file) => [file.path, file.patchDigest]))
+    const filePathSet = new Set(filePaths)
     const isCurrentDigest = (path: string) => patchDigestsByPathRef.current[path] === nextDigestsByPath[path]
     setPatchesByPath((current) => Object.fromEntries(
-      Object.entries(current).filter(([path]) => filePaths.includes(path) && isCurrentDigest(path))
+      Object.entries(current).filter(([path]) => filePathSet.has(path) && isCurrentDigest(path))
     ))
-    setPatchErrorsByPath((current) => Object.fromEntries(Object.entries(current).filter(([path]) => filePaths.includes(path) && isCurrentDigest(path))))
-    setLoadingPatchPaths((current) => Object.fromEntries(Object.entries(current).filter(([path]) => filePaths.includes(path) && isCurrentDigest(path))))
+    setPatchErrorsByPath((current) => Object.fromEntries(Object.entries(current).filter(([path]) => filePathSet.has(path) && isCurrentDigest(path))))
+    setLoadingPatchPaths((current) => Object.fromEntries(Object.entries(current).filter(([path]) => filePathSet.has(path) && isCurrentDigest(path))))
     patchDigestsByPathRef.current = nextDigestsByPath
   }, [diffs.files, filePaths, filePathsKey])
 
@@ -1921,7 +1935,7 @@ function GitPanelImpl({
               </div>
             ) : (
               <div className="space-y-1.5 p-1.5 pb-10">
-                {diffs.files.map((file) => {
+                {(visibleFileCount < diffs.files.length ? diffs.files.slice(0, visibleFileCount) : diffs.files).map((file) => {
                   const isCollapsed = collapsedPaths[file.path] ?? true
                   const isChecked = isDiffPathChecked(diffCommitSelection, file.path)
 
@@ -1952,6 +1966,15 @@ function GitPanelImpl({
                     />
                   )
                 })}
+                {visibleFileCount < diffs.files.length ? (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleFileCount((count) => count + VISIBLE_DIFF_FILE_INCREMENT)}
+                    className="flex w-full items-center justify-center rounded-lg border border-dashed border-border px-3 py-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    Show {Math.min(VISIBLE_DIFF_FILE_INCREMENT, diffs.files.length - visibleFileCount)} more of {(diffs.files.length - visibleFileCount).toLocaleString()} remaining files
+                  </button>
+                ) : null}
 
                 {viewMode === "changes" ? (
                   <div className="pointer-events-none sticky inset-x-0 bottom-11 py-1 pb-6 z-30 overflow-y-auto">

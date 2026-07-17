@@ -13,14 +13,78 @@ import {
   Terminal,
 } from "lucide-react"
 import { APP_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
-import type { LocalProjectsSnapshot } from "../../shared/types"
+import type { LocalProjectSummary, LocalProjectsSnapshot } from "../../shared/types"
 import type { SocketStatus } from "../app/socket"
 import { PageHeader } from "../app/PageHeader"
 import { getPathBasename } from "../lib/formatters"
 import { cn } from "../lib/utils"
 import { NewProjectModal } from "./NewProjectModal"
 import { Button } from "./ui/button"
+import { Input } from "./ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip"
+
+const DAY_MS = 24 * 60 * 60 * 1_000
+
+export interface ProjectRecencyGroup {
+  key: "recent" | "last-30-days" | "last-90-days" | "older"
+  title: string
+  projects: LocalProjectSummary[]
+}
+
+function compareProjectsAlphabetically(a: LocalProjectSummary, b: LocalProjectSummary) {
+  return getPathBasename(a.localPath).localeCompare(getPathBasename(b.localPath), undefined, {
+    sensitivity: "base",
+  })
+}
+
+function compareProjectsByModifiedAt(a: LocalProjectSummary, b: LocalProjectSummary) {
+  return (b.folderModifiedAt ?? 0) - (a.folderModifiedAt ?? 0)
+}
+
+export function filterProjects(projects: LocalProjectSummary[], search: string) {
+  const query = search.trim().toLocaleLowerCase()
+  if (!query) return projects
+
+  return projects.filter((project) => (
+    project.title.toLocaleLowerCase().includes(query)
+    || project.localPath.toLocaleLowerCase().includes(query)
+  ))
+}
+
+export function groupProjectsByRecency(
+  projects: LocalProjectSummary[],
+  nowMs: number = Date.now()
+): ProjectRecencyGroup[] {
+  const groups: ProjectRecencyGroup[] = [
+    { key: "recent", title: "Recent", projects: [] },
+    { key: "last-30-days", title: "Last 30 days", projects: [] },
+    { key: "last-90-days", title: "Last 90 days", projects: [] },
+    { key: "older", title: "Older", projects: [] },
+  ]
+
+  for (const project of projects) {
+    const ageMs = project.folderModifiedAt === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, nowMs - project.folderModifiedAt)
+
+    if (ageMs < 7 * DAY_MS) {
+      groups[0].projects.push(project)
+    } else if (ageMs < 30 * DAY_MS) {
+      groups[1].projects.push(project)
+    } else if (ageMs < 90 * DAY_MS) {
+      groups[2].projects.push(project)
+    } else {
+      groups[3].projects.push(project)
+    }
+  }
+
+  groups[0].projects.sort(compareProjectsByModifiedAt)
+  groups[1].projects.sort(compareProjectsByModifiedAt)
+  groups[2].projects.sort(compareProjectsAlphabetically)
+  groups[3].projects.sort(compareProjectsAlphabetically)
+
+  return groups.filter((group) => group.projects.length > 0)
+}
 
 interface LocalDevProps {
   connectionStatus: SocketStatus
@@ -177,6 +241,9 @@ export function LocalDev({
   onCreateProject,
 }: LocalDevProps) {
   const projects = useMemo(() => snapshot?.projects ?? [], [snapshot?.projects])
+  const [projectSearch, setProjectSearch] = useState("")
+  const visibleProjects = useMemo(() => filterProjects(projects, projectSearch), [projectSearch, projects])
+  const projectGroups = useMemo(() => groupProjectsByRecency(visibleProjects), [visibleProjects])
   const isConnecting = connectionStatus === "connecting" || !ready
   const isConnected = connectionStatus === "connected" && ready
 
@@ -268,25 +335,53 @@ export function LocalDev({
           />
 
           <div className="w-full px-6 mb-10">
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-[13px] font-medium text-muted-foreground uppercase tracking-wider">Projects</h2>
-              <Button variant="default" size="sm" onClick={() => onNewProjectOpenChange(true)}>
-                <Plus className="h-4 w-4 mr-1.5" />
-                Add Project
+            <div className="mb-8 flex items-center gap-2">
+              <Input
+                type="search"
+                aria-label="Search projects"
+                placeholder="Search projects..."
+                value={projectSearch}
+                onChange={(event) => setProjectSearch(event.target.value)}
+                className="min-w-0 flex-1"
+              />
+              <Button
+                variant="default"
+                size="sm"
+                className="rounded-lg"
+                onClick={() => onNewProjectOpenChange(true)}
+              >
+                <Plus className="size-3.5" data-icon="inline-start" />
+                Project
               </Button>
             </div>
             {projects.length > 0 ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-4 3xl:grid-cols-5 gap-2">
-                {projects.map((project) => (
-                  <ProjectCard
-                    key={project.localPath}
-                    localPath={project.localPath}
-                    loading={startingLocalPath === project.localPath}
-                    onClick={() => {
-                      void onOpenProject(project.localPath)
-                    }}
-                  />
-                ))}
+              <div className="flex flex-col gap-8">
+                {projectGroups.length > 0 ? projectGroups.map((group) => (
+                  <section key={group.key} aria-labelledby={`project-group-${group.key}`}>
+                    <h3
+                      id={`project-group-${group.key}`}
+                      className="mb-3 text-[13px] font-medium uppercase tracking-wider text-muted-foreground"
+                    >
+                      {group.title}
+                    </h3>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-4 3xl:grid-cols-5">
+                      {group.projects.map((project) => (
+                        <ProjectCard
+                          key={project.localPath}
+                          localPath={project.localPath}
+                          loading={startingLocalPath === project.localPath}
+                          onClick={() => {
+                            void onOpenProject(project.localPath)
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )) : (
+                  <InfoCard>
+                    <p className="text-sm text-muted-foreground">No projects match your search.</p>
+                  </InfoCard>
+                )}
               </div>
             ) : (
               <InfoCard>

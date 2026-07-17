@@ -9,8 +9,10 @@ import {
   type ModelOptions,
   type ProviderCatalogEntry,
   normalizeClaudeContextWindow,
+  normalizeClaudeFastMode,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
+  resolveClaudeContextWindow,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
 import { assertNever } from "../../../shared/assert"
@@ -156,6 +158,7 @@ function withNormalizedContextWindow(
     modelOptions: {
       ...state.modelOptions,
       contextWindow: normalizeClaudeContextWindow(model, state.modelOptions.contextWindow),
+      fastMode: normalizeClaudeFastMode(model, state.modelOptions.fastMode),
     },
   }
 }
@@ -255,7 +258,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
     const claudeModelOptions = providerPrefs.modelOptions as Extract<ComposerState, { provider: "claude" }>["modelOptions"]
     const stagedMaxTokens = resolveClaudeContextWindowTokens(
-      normalizeClaudeContextWindow(providerPrefs.model, claudeModelOptions.contextWindow),
+      resolveClaudeContextWindow(providerPrefs.model, claudeModelOptions.contextWindow),
     )
     return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
   }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
@@ -821,9 +824,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   break
                 case "fastMode":
                   updateComposerState(
-                    (state) => state.provider === "claude"
-                      ? state
-                      : ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
+                    (state) => ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
                   )
                   break
               }

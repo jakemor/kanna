@@ -124,6 +124,7 @@ export type ClientCommand =
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
+  | { type: "chat.setDone"; chatId: string; done: boolean }
   | {
       type: "chat.send"
       chatId?: string

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { createReadStream } from "node:fs"
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -28,6 +29,7 @@ import { inferProjectFileContentType } from "./uploads"
 
 interface StoredChatDiffState extends BranchMetadata, UpstreamStatus {
   status: ChatDiffSnapshot["status"]
+  checkedOutPrNumber?: number
   files: ChatDiffFile[]
   branchHistory: ChatBranchHistorySnapshot
 }
@@ -43,6 +45,7 @@ function createEmptyState(): StoredChatDiffState {
     aheadCount: undefined,
     behindCount: undefined,
     lastFetchedAt: undefined,
+    checkedOutPrNumber: undefined,
     files: [],
     branchHistory: { entries: [] },
   }
@@ -83,6 +86,7 @@ function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChat
     return right.status === "unknown" && right.files.length === 0
   }
   if (left.status !== right.status) return false
+  if (left.checkedOutPrNumber !== right.checkedOutPrNumber) return false
   if (!branchMetadataEqual(left, right)) return false
   if (!upstreamStatusEqual(left, right)) return false
   if (left.files.length !== right.files.length) return false
@@ -121,8 +125,9 @@ type SelectedBranch =
       remoteRef?: string
     }
 
-async function runGit(args: string[], cwd: string) {
+async function runGit(args: string[], cwd: string, options?: { stdin?: string }) {
   const process = Bun.spawn(["git", "-C", cwd, ...args], {
+    stdin: options?.stdin === undefined ? undefined : Buffer.from(options.stdin),
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -904,12 +909,13 @@ async function createPatch(beforePathLabel: string, afterPathLabel: string, befo
   }
 }
 
-function getContentDigest(args: {
+function getMetadataDigest(args: {
   changeType: ChatDiffFile["changeType"]
   beforePath: string
   afterPath: string
-  beforeText: string | null
-  afterText: string | null
+  baseCommit: string | null
+  size: number | undefined
+  mtimeMs: number | undefined
 }) {
   return createHash("sha1")
     .update(args.changeType)
@@ -918,9 +924,11 @@ function getContentDigest(args: {
     .update("\u0000")
     .update(args.afterPath)
     .update("\u0000")
-    .update(args.beforeText ?? "")
+    .update(args.baseCommit ?? "")
     .update("\u0000")
-    .update(args.afterText ?? "")
+    .update(String(args.size ?? -1))
+    .update("\u0000")
+    .update(String(args.mtimeMs ?? -1))
     .digest("hex")
 }
 
@@ -930,13 +938,111 @@ function parseNumstatValue(value: string) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function countTextLines(text: string | null) {
-  if (!text) return 0
-  const lines = text.split(/\r?\n/u)
-  if (lines.at(-1) === "") {
-    lines.pop()
+const FILE_SCAN_CONCURRENCY = 32
+const MAX_LINE_COUNT_BYTES = 10 * 1024 * 1024
+const MAX_COMMIT_MESSAGE_PATCH_FILES = 25
+// Reading whole files to build a text patch is only reasonable up to a point;
+// huge build artifacts (e.g. multi-GB Xcode compilation caches) previously
+// caused ENOMEM when read into a single string.
+const MAX_PATCH_SOURCE_BYTES = 5 * 1024 * 1024
+
+interface LineCountCacheEntry {
+  size: number
+  mtimeMs: number
+  lineCount: number
+}
+
+type LineCountCache = Map<string, LineCountCacheEntry>
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, async () => {
+    while (true) {
+      const index = nextIndex
+      nextIndex += 1
+      if (index >= items.length) return
+      results[index] = await fn(items[index]!, index)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+async function countFileLines(absolutePath: string, size: number): Promise<number> {
+  if (size <= 0 || size > MAX_LINE_COUNT_BYTES) {
+    return 0
   }
-  return lines.length
+
+  let lineCount = 0
+  let lastByte = 0
+  try {
+    for await (const chunk of createReadStream(absolutePath)) {
+      const bytes = chunk as Buffer
+      let index = bytes.indexOf(10)
+      while (index !== -1) {
+        lineCount += 1
+        index = bytes.indexOf(10, index + 1)
+      }
+      if (bytes.length > 0) {
+        lastByte = bytes[bytes.length - 1]!
+      }
+    }
+  } catch {
+    return 0
+  }
+
+  if (lastByte !== 10) {
+    lineCount += 1
+  }
+  return lineCount
+}
+
+async function getCachedLineCount(args: {
+  cache: LineCountCache
+  nextCache: LineCountCache
+  absolutePath: string
+  size: number
+  mtimeMs: number
+}): Promise<number> {
+  const cached = args.cache.get(args.absolutePath)
+  if (cached && cached.size === args.size && cached.mtimeMs === args.mtimeMs) {
+    args.nextCache.set(args.absolutePath, cached)
+    return cached.lineCount
+  }
+
+  const lineCount = await countFileLines(args.absolutePath, args.size)
+  args.nextCache.set(args.absolutePath, { size: args.size, mtimeMs: args.mtimeMs, lineCount })
+  return lineCount
+}
+
+async function getWorktreeFileSize(repoRoot: string, relativePath: string): Promise<number> {
+  const fileInfo = await stat(path.join(repoRoot, relativePath)).catch(() => null)
+  return fileInfo?.isFile() ? fileInfo.size : 0
+}
+
+async function getBaseBlobSize(repoRoot: string, baseCommit: string | null, relativePath: string): Promise<number> {
+  if (!baseCommit) {
+    return 0
+  }
+  const result = await runGit(["cat-file", "-s", `${baseCommit}:${relativePath}`], repoRoot)
+  if (result.exitCode !== 0) {
+    return 0
+  }
+  const parsed = Number.parseInt(result.stdout.trim(), 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+async function isPatchSourceTooLarge(repoRoot: string, baseCommit: string | null, beforePath: string, afterPath: string) {
+  const [worktreeSize, baseSize] = await Promise.all([
+    getWorktreeFileSize(repoRoot, afterPath),
+    getBaseBlobSize(repoRoot, baseCommit, beforePath),
+  ])
+  return worktreeSize > MAX_PATCH_SOURCE_BYTES || baseSize > MAX_PATCH_SOURCE_BYTES
 }
 
 async function getTrackedDiffStats(repoRoot: string, baseCommit: string | null) {
@@ -978,48 +1084,66 @@ async function getTrackedDiffStats(repoRoot: string, baseCommit: string | null) 
   return statsByPath
 }
 
-async function computeCurrentFiles(repoRoot: string, baseCommit: string | null): Promise<ChatDiffFile[]> {
+async function computeCurrentFiles(
+  repoRoot: string,
+  baseCommit: string | null,
+  lineCounts?: { cache: LineCountCache; nextCache: LineCountCache }
+): Promise<ChatDiffFile[]> {
   const currentDirtyPaths = await listDirtyPaths(repoRoot)
   const trackedStatsByPath = await getTrackedDiffStats(repoRoot, baseCommit)
-  const files: ChatDiffFile[] = []
+  const lineCountCache = lineCounts?.cache ?? new Map<string, LineCountCacheEntry>()
+  const nextLineCountCache = lineCounts?.nextCache ?? new Map<string, LineCountCacheEntry>()
 
-  for (const entry of currentDirtyPaths) {
+  const files = await mapWithConcurrency(currentDirtyPaths, FILE_SCAN_CONCURRENCY, async (entry): Promise<ChatDiffFile | null> => {
     const relativePath = entry.path
     const beforePath = entry.previousPath ?? relativePath
-    const beforeText = await readBaseFile(repoRoot, baseCommit, beforePath)
-    const afterText = await readWorktreeFile(repoRoot, relativePath)
     const absolutePath = path.join(repoRoot, relativePath)
     const fileInfo = await stat(absolutePath).catch(() => null)
-    const file = fileInfo?.isFile() ? Bun.file(absolutePath) : null
-    const mimeType = file ? inferProjectFileContentType(relativePath, file.type) : undefined
-    const size = fileInfo?.isFile() ? fileInfo.size : undefined
+    const isFile = fileInfo?.isFile() ?? false
 
-    if (beforeText === afterText && entry.changeType !== "renamed") {
-      continue
+    if (!isFile && entry.isUntracked) {
+      // The untracked file vanished between `git status` and this scan.
+      return null
     }
 
+    const mimeType = isFile ? inferProjectFileContentType(relativePath, Bun.file(absolutePath).type) : undefined
+    const size = isFile ? fileInfo!.size : undefined
+    const mtimeMs = isFile ? fileInfo!.mtimeMs : undefined
+
     const trackedStats = trackedStatsByPath.get(relativePath)
-    const additions = trackedStats?.additions ?? countTextLines(afterText)
+    const additions = trackedStats
+      ? trackedStats.additions
+      : isFile
+        ? await getCachedLineCount({
+            cache: lineCountCache,
+            nextCache: nextLineCountCache,
+            absolutePath,
+            size: size ?? 0,
+            mtimeMs: mtimeMs ?? 0,
+          })
+        : 0
     const deletions = trackedStats?.deletions ?? 0
-    files.push({
+
+    return {
       path: relativePath,
       changeType: entry.changeType,
       isUntracked: entry.isUntracked,
       additions,
       deletions,
-      patchDigest: getContentDigest({
+      patchDigest: getMetadataDigest({
         changeType: entry.changeType,
         beforePath,
         afterPath: relativePath,
-        beforeText,
-        afterText,
+        baseCommit,
+        size,
+        mtimeMs,
       }),
       mimeType,
       size,
-    })
-  }
+    }
+  })
 
-  return files
+  return files.filter((file): file is ChatDiffFile => file !== null)
 }
 
 function normalizeRepoRelativePath(inputPath: string) {
@@ -1090,6 +1214,16 @@ export function appendGitIgnoreEntry(currentContents: string | null, entry: stri
 
 export class DiffStore {
   private readonly states = new Map<string, StoredChatDiffState>()
+  private readonly snapshotVersions = new Map<string, number>()
+  private readonly lineCountCaches = new Map<string, LineCountCache>()
+  private readonly activeRefreshes = new Map<string, Promise<boolean>>()
+  private readonly queuedRefreshes = new Map<string, Promise<boolean>>()
+  /** PR numbers by "repoRoot\nlocalBranchName", recorded when a PR is checked out through Kanna. */
+  private readonly prNumbersByBranch = new Map<string, number>()
+
+  private getPrBranchKey(repoRoot: string, branchName: string) {
+    return `${repoRoot}\n${branchName}`
+  }
 
   constructor(_: string) {}
 
@@ -1309,6 +1443,10 @@ export class DiffStore {
     }
 
     const beforePath = entry.previousPath ?? relativePath
+    if (await isPatchSourceTooLarge(repo.repoRoot, repo.baseCommit, beforePath, relativePath)) {
+      throw new Error("This file is too large to preview as a diff.")
+    }
+
     const beforeText = await readBaseFile(repo.repoRoot, repo.baseCommit, beforePath)
     const afterText = await readWorktreeFile(repo.repoRoot, relativePath)
     const patch = await createPatch(beforePath, relativePath, beforeText, afterText)
@@ -1328,6 +1466,7 @@ export class DiffStore {
       aheadCount: state.aheadCount,
       behindCount: state.behindCount,
       lastFetchedAt: state.lastFetchedAt,
+      checkedOutPrNumber: state.checkedOutPrNumber,
       files: [...state.files],
       branchHistory: {
         entries: state.branchHistory.entries.map((entry) => ({
@@ -1338,9 +1477,59 @@ export class DiffStore {
     }
   }
 
-  async refreshSnapshot(projectId: string, projectPath: string) {
+  getSnapshotVersion(projectId: string) {
+    return this.snapshotVersions.get(projectId) ?? 0
+  }
+
+  private commitState(projectId: string, nextState: StoredChatDiffState) {
+    const changed = !snapshotsEqual(this.states.get(projectId), nextState)
+    this.states.set(projectId, nextState)
+    if (changed) {
+      this.snapshotVersions.set(projectId, this.getSnapshotVersion(projectId) + 1)
+    }
+    return changed
+  }
+
+  /**
+   * Refreshes the diff snapshot for a project. Concurrent calls are coalesced:
+   * at most one refresh runs at a time per project, with at most one follow-up
+   * queued behind it, so periodic refresh triggers cannot pile up while a slow
+   * scan is in flight. Callers that arrive while a refresh is running share a
+   * follow-up run that starts after the current one, so post-mutation callers
+   * always observe repository state from after their mutation.
+   */
+  async refreshSnapshot(projectId: string, projectPath: string): Promise<boolean> {
+    const active = this.activeRefreshes.get(projectId)
+    if (!active) {
+      const run = (async () => {
+        try {
+          return await this.performRefresh(projectId, projectPath)
+        } finally {
+          this.activeRefreshes.delete(projectId)
+        }
+      })()
+      this.activeRefreshes.set(projectId, run)
+      return run
+    }
+
+    const queued = this.queuedRefreshes.get(projectId)
+    if (queued) {
+      return queued
+    }
+
+    const followUp = (async () => {
+      await active.catch(() => undefined)
+      this.queuedRefreshes.delete(projectId)
+      return this.refreshSnapshot(projectId, projectPath)
+    })()
+    this.queuedRefreshes.set(projectId, followUp)
+    return followUp
+  }
+
+  private async performRefresh(projectId: string, projectPath: string) {
     const repo = await resolveRepo(projectPath)
     if (!repo) {
+      this.lineCountCaches.delete(projectId)
       const nextState = {
         status: "no_repo",
         branchName: undefined,
@@ -1354,12 +1543,16 @@ export class DiffStore {
         files: [],
         branchHistory: { entries: [] },
       } satisfies StoredChatDiffState
-      const changed = !snapshotsEqual(this.states.get(projectId), nextState)
-      this.states.set(projectId, nextState)
-      return changed
+      return this.commitState(projectId, nextState)
     }
 
-    const files = await computeCurrentFiles(repo.repoRoot, repo.baseCommit)
+    const lineCountCache = this.lineCountCaches.get(projectId) ?? new Map<string, LineCountCacheEntry>()
+    const nextLineCountCache = new Map<string, LineCountCacheEntry>()
+    const files = await computeCurrentFiles(repo.repoRoot, repo.baseCommit, {
+      cache: lineCountCache,
+      nextCache: nextLineCountCache,
+    })
+    this.lineCountCaches.set(projectId, nextLineCountCache)
     const branchName = await getBranchName(repo.repoRoot)
     const defaultBranchName = await resolveDefaultBranchName(repo.repoRoot)
     const originRemoteUrl = await getOriginRemoteUrl(repo.repoRoot)
@@ -1387,12 +1580,13 @@ export class DiffStore {
       aheadCount,
       behindCount,
       lastFetchedAt,
+      checkedOutPrNumber: branchName
+        ? this.prNumbersByBranch.get(this.getPrBranchKey(repo.repoRoot, branchName))
+        : undefined,
       files,
       branchHistory,
     } satisfies StoredChatDiffState
-    const changed = !snapshotsEqual(this.states.get(projectId), nextState)
-    this.states.set(projectId, nextState)
-    return changed
+    return this.commitState(projectId, nextState)
   }
 
   async listBranches(args: {
@@ -1750,10 +1944,15 @@ export class DiffStore {
       return createBranchActionFailure("Checkout failed", formatGitFailure(switchResult), "Git could not switch branches.")
     }
 
+    const currentBranchName = await getBranchName(repo.repoRoot)
+    if (args.branch.kind === "pull_request" && currentBranchName) {
+      this.prNumbersByBranch.set(this.getPrBranchKey(repo.repoRoot, currentBranchName), args.branch.prNumber)
+    }
+
     const snapshotChanged = await this.refreshSnapshot(args.projectId, args.projectPath)
     return {
       ok: true,
-      branchName: await getBranchName(repo.repoRoot),
+      branchName: currentBranchName,
       snapshotChanged,
     }
   }
@@ -1959,23 +2158,47 @@ export class DiffStore {
     }
 
     const currentDirtyPaths = await listDirtyPaths(repo.repoRoot)
-    const selectedFiles = await Promise.all(normalizedPaths.map(async (selectedPath) => {
-      const entry = currentDirtyPaths.find((candidate) => candidate.path === selectedPath)
+    const dirtyPathsByPath = new Map(currentDirtyPaths.map((entry) => [entry.path, entry]))
+    const selectedEntries = normalizedPaths.map((selectedPath) => {
+      const entry = dirtyPathsByPath.get(selectedPath)
       if (!entry) {
         throw new Error(`File is no longer changed: ${selectedPath}`)
       }
+      return entry
+    })
 
-      const beforePath = entry.previousPath ?? selectedPath
+    // The prompt truncates patch content anyway, so only build patches for the
+    // first few files. This keeps "select all + generate" cheap when thousands
+    // of files are selected.
+    const selectedFiles = await mapWithConcurrency(selectedEntries, 8, async (entry, index) => {
+      if (index >= MAX_COMMIT_MESSAGE_PATCH_FILES) {
+        return {
+          path: entry.path,
+          changeType: entry.changeType,
+          patch: "",
+        }
+      }
+
+      const previousPath = entry.previousPath ?? entry.path
+      if (await isPatchSourceTooLarge(repo.repoRoot, repo.baseCommit, previousPath, entry.path)) {
+        return {
+          path: entry.path,
+          changeType: entry.changeType,
+          patch: "",
+        }
+      }
+
+      const beforePath = entry.previousPath ?? entry.path
       const beforeText = await readBaseFile(repo.repoRoot, repo.baseCommit, beforePath)
-      const afterText = await readWorktreeFile(repo.repoRoot, selectedPath)
-      const patch = await createPatch(beforePath, selectedPath, beforeText, afterText)
+      const afterText = await readWorktreeFile(repo.repoRoot, entry.path)
+      const patch = await createPatch(beforePath, entry.path, beforeText, afterText)
 
       return {
-        path: selectedPath,
+        path: entry.path,
         changeType: entry.changeType,
         patch,
       }
-    }))
+    })
 
     const branchName = await getBranchName(repo.repoRoot)
     return await generateCommitMessageDetailed({
@@ -2021,9 +2244,17 @@ export class DiffStore {
       throw new Error(`File is no longer changed: ${missingPaths[0]}`)
     }
 
+    // Pathspecs are passed over stdin so committing thousands of files does
+    // not overflow the OS argv size limit.
+    const toPathspecStdin = (paths: string[]) => paths.join(String.fromCharCode(0))
+
     const trackedPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.get(relativePath)?.isUntracked)
     if (trackedPaths.length > 0) {
-      const addTrackedResult = await runGit(["add", "-u", "--", ...trackedPaths], repo.repoRoot)
+      const addTrackedResult = await runGit(
+        ["add", "-u", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        repo.repoRoot,
+        { stdin: toPathspecStdin(trackedPaths) }
+      )
       if (addTrackedResult.exitCode !== 0) {
         return createCommitFailure(args.mode, formatGitFailure(addTrackedResult))
       }
@@ -2031,7 +2262,11 @@ export class DiffStore {
 
     const untrackedPaths = normalizedPaths.filter((relativePath) => currentDirtyPathsByPath.get(relativePath)?.isUntracked)
     if (untrackedPaths.length > 0) {
-      const addUntrackedResult = await runGit(["add", "--", ...untrackedPaths], repo.repoRoot)
+      const addUntrackedResult = await runGit(
+        ["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        repo.repoRoot,
+        { stdin: toPathspecStdin(untrackedPaths) }
+      )
       if (addUntrackedResult.exitCode !== 0) {
         return createCommitFailure(args.mode, formatGitFailure(addUntrackedResult))
       }
@@ -2041,9 +2276,9 @@ export class DiffStore {
     if (description) {
       commitArgs.push("-m", description)
     }
-    commitArgs.push("--", ...normalizedPaths)
+    commitArgs.push("--pathspec-from-file=-", "--pathspec-file-nul")
 
-    const commitResult = await runGit(commitArgs, repo.repoRoot)
+    const commitResult = await runGit(commitArgs, repo.repoRoot, { stdin: toPathspecStdin(normalizedPaths) })
     if (commitResult.exitCode !== 0) {
       return createCommitFailure(args.mode, formatGitFailure(commitResult))
     }
@@ -2142,14 +2377,23 @@ export class DiffStore {
     }
 
     const dirtyPaths = await listDirtyPaths(repo.repoRoot)
+    // New files can be ignored whether or not they have been staged yet; a
+    // staged new file just needs to be unstaged first since .gitignore has no
+    // effect on files already in the index.
+    const isNewFile = (candidate: DirtyPathEntry) => candidate.isUntracked || candidate.changeType === "added"
     const exactEntry = dirtyPaths.find((candidate) => candidate.path === ignoreEntry)
-    if (exactEntry && !exactEntry.isUntracked) {
-      throw new Error("Only untracked files can be ignored from the diff viewer")
+    if (exactEntry && !isNewFile(exactEntry)) {
+      throw new Error("Only new files can be ignored from the diff viewer. This file is already tracked by git.")
     }
 
-    const entry = dirtyPaths.find((candidate) => candidate.isUntracked && (candidate.path === ignoreEntry || candidate.path.startsWith(ignoreEntry)))
-    if (!entry) {
+    const matchingEntries = dirtyPaths.filter((candidate) => isNewFile(candidate) && (candidate.path === ignoreEntry || candidate.path.startsWith(ignoreEntry)))
+    if (matchingEntries.length === 0) {
       throw new Error(`File is no longer changed: ${ignoreEntry}`)
+    }
+
+    for (const stagedEntry of matchingEntries) {
+      if (stagedEntry.isUntracked) continue
+      await discardAddedPath(repo.repoRoot, repo.baseCommit !== null, stagedEntry.path)
     }
 
     const gitignorePath = path.join(repo.repoRoot, ".gitignore")

@@ -21,6 +21,18 @@ import { resolveLocalPath } from "./paths"
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
 const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
 const SIDEBAR_PROJECT_ORDER_FILE = "sidebar-order.json"
+const CHAT_MESSAGE_PREVIEW_MAX_LENGTH = 160
+// How much of each transcript tail is scanned at boot to rebuild chat metadata
+// (lastMessageAt, previews) that only lives in snapshots between compactions.
+const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
+
+function buildChatMessagePreview(text: string) {
+  const collapsed = text.replace(/\s+/g, " ").trim()
+  if (!collapsed) return undefined
+  return collapsed.length > CHAT_MESSAGE_PREVIEW_MAX_LENGTH
+    ? `${collapsed.slice(0, CHAT_MESSAGE_PREVIEW_MAX_LENGTH)}…`
+    : collapsed
+}
 
 function normalizeSidebarProjectOrder(value: unknown) {
   if (!Array.isArray(value)) {
@@ -103,6 +115,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "turn_failed":
       return 8
     case "chat_read_state_set":
+    case "chat_done_state_set":
       return 9
     case "chat_deleted":
     case "chat_archived":
@@ -182,10 +195,44 @@ export class EventStore {
     await this.ensureFile(this.turnsLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
+    await this.hydrateChatMetadataFromTranscripts()
     await this.loadSidebarProjectOrder()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
       await this.compact()
     }
+  }
+
+  /**
+   * Chat metadata derived from transcript entries (lastMessageAt, hasMessages,
+   * message previews) is applied in memory on append and only persisted when a
+   * snapshot compaction runs. Rebuild it from the transcript files on boot so
+   * restarts between compactions don't regress it.
+   */
+  private async hydrateChatMetadataFromTranscripts() {
+    const chats = [...this.state.chatsById.values()].filter((chat) => !chat.deletedAt)
+    await Promise.all(chats.map(async (chat) => {
+      try {
+        const file = Bun.file(this.transcriptPath(chat.id))
+        if (!(await file.exists())) return
+        const start = Math.max(0, file.size - TRANSCRIPT_METADATA_TAIL_BYTES)
+        const text = await file.slice(start).text()
+        const lines = text.split("\n")
+        if (start > 0) {
+          // The slice may begin mid-line; drop the partial first line.
+          lines.shift()
+        }
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            this.applyMessageMetadata(chat.id, JSON.parse(line) as TranscriptEntry)
+          } catch {
+            // Skip partial or corrupt lines (e.g. an append cut off by a crash).
+          }
+        }
+      } catch {
+        // Metadata hydration is best-effort; the transcript itself is untouched.
+      }
+    }))
   }
 
   private async ensureFile(filePath: string) {
@@ -523,6 +570,17 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
+      case "chat_done_state_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        if (event.done) {
+          chat.doneAt = event.timestamp
+        } else {
+          delete chat.doneAt
+        }
+        chat.updatedAt = event.timestamp
+        break
+      }
       case "message_appended": {
         this.applyMessageMetadata(event.chatId, event.entry)
         const existing = this.legacyMessagesByChatId.get(event.chatId) ?? []
@@ -561,6 +619,8 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
+        // A new turn means the user re-engaged, so the chat is no longer "done".
+        delete chat.doneAt
         break
       }
       case "turn_finished": {
@@ -609,6 +669,13 @@ export class EventStore {
     chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
+      if (!entry.hidden) {
+        const preview = buildChatMessagePreview(entry.content)
+        if (preview) chat.lastUserMessagePreview = preview
+      }
+    } else if (entry.kind === "assistant_text" && !entry.hidden) {
+      const preview = buildChatMessagePreview(entry.text)
+      if (preview) chat.lastAgentMessagePreview = preview
     }
     chat.updatedAt = Math.max(chat.updatedAt, entry.createdAt)
   }
@@ -913,6 +980,19 @@ export class EventStore {
       timestamp: Date.now(),
       chatId,
       unread,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
+  async setChatDoneState(chatId: string, done: boolean) {
+    const chat = this.requireChat(chatId)
+    if (Boolean(chat.doneAt) === done) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_done_state_set",
+      timestamp: Date.now(),
+      chatId,
+      done,
     }
     await this.append(this.chatsLogPath, event)
   }

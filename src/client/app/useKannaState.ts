@@ -493,7 +493,8 @@ function composerStateFromSendOptions(options?: {
       model: options.model,
       modelOptions: {
         reasoningEffort: options.modelOptions.claude.reasoningEffort ?? "high",
-        contextWindow: options.modelOptions.claude.contextWindow ?? "200k",
+        contextWindow: options.modelOptions.claude.contextWindow ?? "1m",
+        fastMode: options.modelOptions.claude.fastMode ?? false,
       },
       planMode: Boolean(options.planMode),
     }

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
+import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings, SquareKanban } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
@@ -343,8 +343,9 @@ function KannaSidebarImpl({
 
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
+  const isBoardActive = location.pathname === "/board"
   const isSettingsActive = location.pathname.startsWith("/settings")
-  const isUtilityPageActive = isLocalProjectsActive || isSettingsActive
+  const isUtilityPageActive = isLocalProjectsActive || isBoardActive || isSettingsActive
   const isConnecting = connectionStatus === "connecting" || !ready
   const statusLabel = isConnecting ? "Connecting" : connectionStatus === "connected" ? "Connected" : "Disconnected"
   const statusDotClass = connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"
@@ -423,6 +424,18 @@ function KannaSidebarImpl({
               variant="ghost"
               size="icon"
               onClick={() => {
+                navigate("/board")
+                onClose()
+              }}
+              className="size-10 rounded-lg hover:!border-border/0 md:hidden"
+              title="Board"
+            >
+              <SquareKanban className="h-5 w-5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
                 navigate("/")
                 onClose()
               }}
@@ -455,10 +468,22 @@ function KannaSidebarImpl({
               variant="ghost"
               size="icon"
               onClick={() => {
+                navigate("/board")
+                onClose()
+              }}
+              className="hidden md:inline-flex h-10 w-auto rounded-lg pl-3 pr-1.5 hover:!border-border/0"
+              title="Board"
+            >
+              <SquareKanban className="size-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
                 navigate("/")
                 onClose()
               }}
-              className="hidden md:inline-flex size-10 rounded-lg hover:!border-border/0"
+              className="hidden md:inline-flex h-10 w-auto rounded-lg pl-1.5 pr-3 hover:!border-border/0"
               title="New project"
             >
               <Plus className="size-4" />

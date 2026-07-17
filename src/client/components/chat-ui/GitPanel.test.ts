@@ -317,7 +317,7 @@ describe("GitPanel", () => {
     expect(markup).toContain("PR")
   })
 
-  test("ignores only untracked files", () => {
+  test("ignores new files whether untracked or staged, but never tracked files", () => {
     expect(canIgnoreDiffFile({
       path: "tmp.log",
       changeType: "added",
@@ -325,6 +325,17 @@ describe("GitPanel", () => {
       additions: 0,
       deletions: 0,
       patchDigest: "digest-2",
+    })).toBe(true)
+
+    // A new file that has been staged (e.g. by the agent or a failed commit)
+    // is still ignorable — the server unstages it first.
+    expect(canIgnoreDiffFile({
+      path: "tmp.log",
+      changeType: "added",
+      isUntracked: false,
+      additions: 0,
+      deletions: 0,
+      patchDigest: "digest-2b",
     })).toBe(true)
 
     expect(canIgnoreDiffFile({

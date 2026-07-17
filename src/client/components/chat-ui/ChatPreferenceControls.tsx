@@ -89,7 +89,7 @@ export function PopoverMenuItem({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "w-full flex items-center gap-2 p-2 border border-border/0 rounded-lg text-left transition-opacity",
+        "w-full flex items-center gap-2 p-2 border border-border/0 rounded-lg text-left transition-opacity [&>svg]:shrink-0",
         selected ? "bg-muted border-border" : "hover:opacity-60",
         disabled && "opacity-40 cursor-not-allowed"
       )}
@@ -195,7 +195,9 @@ export function ChatPreferenceControls({
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   const cursorModelOptions = selectedProvider === "cursor" ? modelOptions as CursorModelOptions : null
   const codexReasoningOptions = getCodexReasoningOptions(model)
-  const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === model)?.contextWindowOptions ?? []
+  const selectedModelOption = providerConfig.models.find((candidate) => candidate.id === model)
+  const contextWindowOptions = selectedModelOption?.contextWindowOptions ?? []
+  const modelSupportsFastMode = Boolean(selectedModelOption?.supportsFastMode)
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
 
@@ -339,7 +341,45 @@ export function ChatPreferenceControls({
         </InputPopover>
       ) : null}
 
-      {selectedProvider === "codex" ? (
+      {selectedProvider === "claude" && modelSupportsFastMode ? (
+        <InputPopover
+          trigger={(
+            <>
+              {claudeModelOptions?.fastMode
+                ? <Gauge className="h-3.5 w-3.5" />
+                : <Gauge className="h-3.5 w-3.5 -scale-x-100" />}
+              <span>{claudeModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
+            </>
+          )}
+          triggerClassName={claudeModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
+        >
+          {(close) => (
+            <>
+              <PopoverMenuItem
+                onClick={() => {
+                  onModelOptionChange({ type: "fastMode", fastMode: false })
+                  close()
+                }}
+                selected={!claudeModelOptions?.fastMode}
+                icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
+                label="Standard"
+              />
+              <PopoverMenuItem
+                onClick={() => {
+                  onModelOptionChange({ type: "fastMode", fastMode: true })
+                  close()
+                }}
+                selected={Boolean(claudeModelOptions?.fastMode)}
+                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                label="Fast Mode"
+                description="Faster responses, higher usage"
+              />
+            </>
+          )}
+        </InputPopover>
+      ) : null}
+
+      {selectedProvider === "codex" && modelSupportsFastMode ? (
         <InputPopover
           trigger={(
             <>

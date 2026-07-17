@@ -17,9 +17,9 @@ import {
   ListTodo,
   Map,
   MessageCircleQuestion,
+  FileSearchCorner,
   Pencil,
   Search,
-  Sparkles,
   SquareX,
   Terminal,
   ToyBrick,
@@ -81,7 +81,7 @@ export const toolIcons: Record<string, LucideIcon> = {
   WebSearch: Search,
   KillShell: SquareX,
   AskUserQuestion: MessageCircleQuestion,
-  Skill: Sparkles,
+  Skill: FileSearchCorner,
   EnterPlanMode: Map,
 }
 

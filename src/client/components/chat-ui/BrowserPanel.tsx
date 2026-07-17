@@ -1,5 +1,5 @@
 import { CornerDownLeft, Ellipsis, ExternalLink, Globe, Home, Minus, Play, Plus, RefreshCw, SquareArrowOutUpRight, Trash2, Zap } from "lucide-react"
-import { memo, useCallback, useEffect, useRef, useState, type FocusEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react"
+import { memo, useCallback, useEffect, useRef, useState, type FocusEvent, type FormEvent, type ReactNode } from "react"
 import type { LocalHttpServerInfo, ProjectQuickAction } from "../../../shared/protocol"
 import type { KannaSocket } from "../../app/socket"
 import {
@@ -10,32 +10,13 @@ import {
   removeCachedLocalHttpServer,
   writeCachedProjectQuickActions,
 } from "../../lib/browserPanelCache"
+import { formatPathWithTilde } from "../../lib/pathUtils"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
+import { openContextMenuFromButton } from "../open-external-menu"
 import { Button } from "../ui/button"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
 import { Input } from "../ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
-
-function formatOwnerPath(ownerPath: string) {
-  const homeMatch = ownerPath.match(/^\/(?:Users|home)\/[^/]+(?=\/|$)/)
-  const homePrefix = homeMatch?.[0]
-  if (homePrefix && ownerPath === homePrefix) return "~"
-  if (homePrefix && ownerPath.startsWith(`${homePrefix}/`)) return `~/${ownerPath.slice(homePrefix.length + 1)}`
-  return ownerPath
-}
-
-function openContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
-  event.preventDefault()
-  event.stopPropagation()
-  const rect = event.currentTarget.getBoundingClientRect()
-  event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
-    bubbles: true,
-    cancelable: true,
-    clientX: rect.left + rect.width / 2,
-    clientY: rect.bottom,
-    view: window,
-  }))
-}
 
 interface BrowserPanelProps {
   projectId: string
@@ -447,7 +428,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction }: BrowserPanelP
                             <span className="flex w-full min-w-0 items-center gap-3">
                               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{server.address}</span>
                               {server.ownerPath ? (
-                                <span className="max-w-[45%] shrink-0 truncate text-right text-[11px] text-muted-foreground/70">{formatOwnerPath(server.ownerPath)}</span>
+                                <span className="max-w-[45%] shrink-0 truncate text-right text-[11px] text-muted-foreground/70">{formatPathWithTilde(server.ownerPath)}</span>
                               ) : null}
                             </span>
                           </div>

@@ -11,14 +11,15 @@ import type {
 } from "../shared/types"
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
-  DEFAULT_CODEX_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
   PROVIDERS,
   normalizeClaudeContextWindow,
+  normalizeClaudeFastMode,
   normalizeCodexReasoningEffort,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  supportsProviderFastMode,
 } from "../shared/types"
 
 export interface ClaudeSdkModelInfo {
@@ -28,6 +29,7 @@ export interface ClaudeSdkModelInfo {
   supportsEffort?: boolean
   supportedEffortLevels?: readonly string[]
   supportsAdaptiveThinking?: boolean
+  supportsFastMode?: boolean
 }
 
 function createServerProviders(): ProviderCatalogEntry[] {
@@ -78,6 +80,7 @@ export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
       ...option,
       label: sdkModel.displayName?.trim() || option.label,
       supportsEffort: sdkModel.supportsEffort ?? option.supportsEffort,
+      supportsFastMode: sdkModel.supportsFastMode ?? option.supportsFastMode,
     }
   })
 
@@ -122,6 +125,7 @@ export function normalizeClaudeModelOptions(
         ? legacyEffort
         : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort,
     contextWindow: normalizeClaudeContextWindow(model, modelOptions?.claude?.contextWindow as ClaudeContextWindow | undefined),
+    fastMode: normalizeClaudeFastMode(model, modelOptions?.claude?.fastMode),
   }
 }
 
@@ -136,13 +140,14 @@ export function normalizeCodexModelOptions(
       model,
       isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
     ),
-    fastMode: typeof modelOptions?.codex?.fastMode === "boolean"
-      ? modelOptions.codex.fastMode
-      : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,
+    // Spawn-time gating: fast mode only reaches models that support it
+    // (per Codex docs: GPT-5.6/5.5/5.4 — not 5.3 Codex or Spark).
+    fastMode: supportsProviderFastMode("codex", model) && modelOptions?.codex?.fastMode === true,
   }
 }
 
-export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions): ServiceTier | undefined {
+// Claude and Codex both express fast mode as a "fast" service tier at spawn time.
+export function serviceTierFromModelOptions(modelOptions: { fastMode: boolean }): ServiceTier | undefined {
   return modelOptions.fastMode ? "fast" : undefined
 }
 

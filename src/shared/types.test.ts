@@ -71,7 +71,7 @@ describe("shared model normalization", () => {
     expect(isCodexReasoningEffort("ultra")).toBe(true)
     expect(isCodexReasoningEffort("minimal")).toBe(true)
     expect(getCodexReasoningOptions("gpt-5.6-sol").find((option) => option.id === "xhigh")?.label).toBe("Extra High")
-    expect(getCodexReasoningOptions("gpt-5.6-sol").find((option) => option.id === "ultra")?.description).toContain("subagents")
+    expect(getCodexReasoningOptions("gpt-5.6-sol").find((option) => option.id === "ultra")?.description).toBe("Delegates to subagents more")
   })
 
   test("uses declarative metadata for Claude max-effort support", () => {

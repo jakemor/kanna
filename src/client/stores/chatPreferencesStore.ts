@@ -4,6 +4,7 @@ import {
   DEFAULT_CODEX_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
   normalizeClaudeContextWindow,
+  normalizeClaudeFastMode,
   normalizeClaudeModelId,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
@@ -141,6 +142,7 @@ export function normalizeClaudePreference(value?: {
     modelOptions: {
       reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
       contextWindow,
+      fastMode: normalizeClaudeFastMode(model, value?.modelOptions?.fastMode),
     },
     planMode: Boolean(value?.planMode),
   }
@@ -317,6 +319,7 @@ function sameComposerState(left: ComposerState | undefined, right: ComposerState
   if (left.provider === "claude" && right.provider === "claude") {
     return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
       && left.modelOptions.contextWindow === right.modelOptions.contextWindow
+      && left.modelOptions.fastMode === right.modelOptions.fastMode
   }
 
   if (left.provider === "codex" && right.provider === "codex") {

@@ -1,25 +1,11 @@
-import { type MouseEvent as ReactMouseEvent } from "react"
 import { Check, Flower, GitBranch, Globe, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
 import { cn } from "../../lib/utils"
-import { OpenExternalSelect } from "../open-external-menu"
+import { OpenExternalSelect, openContextMenuFromButton } from "../open-external-menu"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
-
-function openContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
-  event.preventDefault()
-  event.stopPropagation()
-  const rect = event.currentTarget.getBoundingClientRect()
-  event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
-    bubbles: true,
-    cancelable: true,
-    clientX: rect.left + rect.width / 2,
-    clientY: rect.bottom,
-    view: window,
-  }))
-}
 
 function NavbarOverflowMenu({
   showOnDesktop,

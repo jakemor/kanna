@@ -117,7 +117,7 @@ export interface ClientState {
 
 interface CreateWsRouterArgs {
   store: EventStore
-  diffStore?: Pick<DiffStore, "getProjectSnapshot" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
+  diffStore?: Pick<DiffStore, "getProjectSnapshot" | "getSnapshotVersion" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
@@ -393,6 +393,7 @@ export function createWsRouter({
   const pendingBroadcastChatIds = new Set<string>()
   const resolvedDiffStore = diffStore ?? {
     getProjectSnapshot: () => ({ status: "unknown", branchName: undefined, defaultBranchName: undefined, hasOriginRemote: undefined, originRepoSlug: undefined, hasUpstream: undefined, aheadCount: undefined, behindCount: undefined, lastFetchedAt: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
+    getSnapshotVersion: () => 0,
     refreshSnapshot: async () => false,
     initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
     getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "my-repo" }),
@@ -468,7 +469,8 @@ export function createWsRouter({
         model: "claude-opus-4-8",
         modelOptions: {
           reasoningEffort: "high",
-          contextWindow: "200k",
+          contextWindow: "1m",
+          fastMode: false,
         },
         planMode: false,
       },
@@ -488,6 +490,7 @@ export function createWsRouter({
         planMode: false,
       },
     },
+    boardAutoReturn: false,
     warning: null,
     filePathDisplay: "~/.kanna/data/settings.json",
   }
@@ -637,9 +640,17 @@ export function createWsRouter({
     }
 
     const startedAt = performance.now()
-    const data = deriveSidebarData(store.state, agent.getActiveStatuses(), {
+    const activeStatuses = agent.getActiveStatuses()
+    const pendingToolKinds = new Map<string, string>()
+    for (const [chatId, status] of activeStatuses) {
+      if (status !== "waiting_for_user") continue
+      const pendingTool = agent.getPendingTool(chatId)
+      if (pendingTool) pendingToolKinds.set(chatId, pendingTool.toolKind)
+    }
+    const data = deriveSidebarData(store.state, activeStatuses, {
       sidebarProjectOrder: getSidebarProjectOrder(store),
       drainingChatIds: agent.getDrainingChatIds(),
+      pendingToolKinds,
     })
     if (isSendToStartingProfilingEnabled()) {
       const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
@@ -666,6 +677,17 @@ export function createWsRouter({
     }
 
     return sidebar
+  }
+
+  function getProjectGitSignature(projectId: string): string | null {
+    const getSnapshotVersion = (resolvedDiffStore as Partial<Pick<DiffStore, "getSnapshotVersion">>).getSnapshotVersion
+    if (typeof getSnapshotVersion !== "function") {
+      // Test doubles may omit getSnapshotVersion; fall back to the payload signature.
+      return null
+    }
+    return store.getProject(projectId)
+      ? `project-git:${projectId}:v${getSnapshotVersion.call(resolvedDiffStore, projectId)}`
+      : `project-git:${projectId}:none`
   }
 
   function createEnvelope(id: string, topic: SubscriptionTopic, cache?: SnapshotComputationCache): ServerEnvelope {
@@ -800,14 +822,24 @@ export function createWsRouter({
       if (!shouldIncludeTopic(topic, options?.filter)) {
         continue
       }
+      // Cheap signatures (computed without building the snapshot payload) let
+      // us skip serializing large snapshots — e.g. a project-git snapshot with
+      // thousands of changed files — when nothing changed since the last push.
+      const precomputedSignature = topic.type === "sidebar"
+        ? getSidebarSnapshotCacheEntry(options?.cache).signature
+        : topic.type === "project-git"
+          ? getProjectGitSignature(topic.projectId)
+          : null
+      if (precomputedSignature !== null && snapshotSignatures.get(id) === precomputedSignature) {
+        skippedCount += 1
+        continue
+      }
       const envelopeStartedAt = performance.now()
       const envelope = createEnvelope(id, topic, options?.cache)
       const createdAt = performance.now()
       if (envelope.type !== "snapshot") continue
-      const signature = topic.type === "sidebar"
-        ? getSidebarSnapshotCacheEntry(options?.cache).signature
-        : JSON.stringify(envelope.snapshot)
-      const signatureReadyAt = topic.type === "sidebar" ? createdAt : performance.now()
+      const signature = precomputedSignature ?? JSON.stringify(envelope.snapshot)
+      const signatureReadyAt = precomputedSignature !== null ? createdAt : performance.now()
       if (snapshotSignatures.get(id) === signature) {
         skippedCount += 1
         continue
@@ -1291,6 +1323,10 @@ export function createWsRouter({
         }
         case "chat.unarchive": {
           await store.unarchiveChat(command.chatId)
+          // Unarchiving happens when the user opens an archived chat to view it.
+          // Mark it done so viewing alone doesn't resurface it as needing review;
+          // sending a message clears the done state and brings it back to running.
+          await store.setChatDoneState(command.chatId, true)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
           return
@@ -1306,6 +1342,12 @@ export function createWsRouter({
         }
         case "chat.markRead": {
           await store.setChatReadState(command.chatId, false)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "chat.setDone": {
+          await store.setChatDoneState(command.chatId, command.done)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
           return

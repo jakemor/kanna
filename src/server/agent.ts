@@ -24,13 +24,13 @@ import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-ty
 import {
   applyClaudeSdkModels,
   type ClaudeSdkModelInfo,
-  codexServiceTierFromModelOptions,
   cursorModelIdForOptions,
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeCursorModelOptions,
   normalizeServerModel,
+  serviceTierFromModelOptions,
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
@@ -98,6 +98,7 @@ interface ClaudeSessionHandle {
   sendPrompt: (content: string) => Promise<void>
   setModel: (model: string) => Promise<void>
   setPermissionMode: (planMode: boolean) => Promise<void>
+  setFastMode?: (fastMode: boolean) => Promise<void>
   supportedModels?: () => Promise<ClaudeSdkModelInfo[]>
 }
 
@@ -108,6 +109,7 @@ interface ClaudeSessionState {
   localPath: string
   model: string
   effort?: string
+  serviceTier?: "fast"
   planMode: boolean
   sessionToken: string | null
   accountInfoLoaded: boolean
@@ -120,6 +122,15 @@ interface ClaudeSessionState {
    * interrupted entry, and whenever a new prompt is sent.
    */
   suppressResume: boolean
+  /**
+   * Prompt seqs whose turn was cancelled by the user (escape or steer).
+   * The SDK reports an interrupt as an error result (subtype
+   * error_during_execution, usually no text); results attributed to these
+   * seqs are dropped instead of persisted, since cancel already appended an
+   * "interrupted" entry. Unlike suppressResume, this survives a new prompt
+   * being sent immediately after the cancel (the steer path).
+   */
+  cancelledPromptSeqs: Set<number>
 }
 
 interface AgentCoordinatorArgs {
@@ -133,6 +144,7 @@ interface AgentCoordinatorArgs {
     localPath: string
     model: string
     effort?: string
+    serviceTier?: "fast"
     planMode: boolean
     sessionToken: string | null
     forkSession: boolean
@@ -315,6 +327,20 @@ export function maxClaudeContextWindowFromModelUsage(modelUsage: unknown): numbe
   return maxContextWindow
 }
 
+export function normalizeClaudeContextUsage(value: unknown): { usedTokens: number; maxTokens?: number } | null {
+  const record = asRecord(value)
+  if (!record) return null
+
+  const usedTokens = asNumber(record.totalTokens)
+  if (usedTokens === undefined || usedTokens <= 0) return null
+
+  const maxTokens = asNumber(record.maxTokens)
+  return {
+    usedTokens,
+    ...(maxTokens !== undefined && maxTokens > 0 ? { maxTokens } : {}),
+  }
+}
+
 function getClaudeAssistantMessageUsageId(message: any): string | null {
   if (typeof message?.message?.id === "string" && message.message.id) {
     return message.message.id
@@ -452,9 +478,16 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
       yield { type: "session_token", sessionToken }
     }
 
-    if (sdkMessage?.type === "assistant") {
+    // Per-step usage lives on the nested API message (`sdkMessage.message.usage`);
+    // SDKAssistantMessage has no top-level `usage`. Skip sidechain/subagent
+    // messages (`parent_tool_use_id` set) — their usage reflects the subagent's
+    // own context window, not the main thread's.
+    if (sdkMessage?.type === "assistant" && sdkMessage.parent_tool_use_id == null) {
       const usageId = getClaudeAssistantMessageUsageId(sdkMessage)
-      const usageSnapshot = normalizeClaudeUsageSnapshot(sdkMessage.usage, lastKnownContextWindow)
+      const usageSnapshot = normalizeClaudeUsageSnapshot(
+        sdkMessage.message?.usage ?? sdkMessage.usage,
+        lastKnownContextWindow,
+      )
       if (usageId && usageSnapshot && !seenAssistantUsageIds.has(usageId)) {
         seenAssistantUsageIds.add(usageId)
         latestUsageSnapshot = usageSnapshot
@@ -474,21 +507,46 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
         lastKnownContextWindow = resultContextWindow
       }
 
+      // The result message's `usage` is *cumulative* across every step of the
+      // query() call (each step re-counts the whole cached context), so it is
+      // never the current context length. Only surface it as
+      // `totalProcessedTokens`.
       const accumulatedUsage = normalizeClaudeUsageSnapshot(
         sdkMessage.usage,
         resultContextWindow ?? lastKnownContextWindow,
       )
-      const finalUsage = latestUsageSnapshot
+
+      // Exact /context parity: ask the CLI for the authoritative breakdown of
+      // the current context window. Falls back to the last main-thread
+      // per-step snapshot when the control request is unavailable (old CLI,
+      // closed transport, timeout).
+      const contextUsage = normalizeClaudeContextUsage(
+        await Promise.race([
+          q.getContextUsage().catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000)),
+        ]),
+      )
+
+      const baseUsage: ContextWindowUsageSnapshot | null = contextUsage
         ? {
-            ...latestUsageSnapshot,
-            ...(typeof (resultContextWindow ?? lastKnownContextWindow) === "number"
+            ...(latestUsageSnapshot ?? { compactsAutomatically: false }),
+            usedTokens: contextUsage.usedTokens,
+            ...(contextUsage.maxTokens !== undefined ? { maxTokens: contextUsage.maxTokens } : {}),
+          }
+        : latestUsageSnapshot
+
+      const finalUsage = baseUsage
+        ? {
+            ...baseUsage,
+            ...(baseUsage.maxTokens === undefined
+              && typeof (resultContextWindow ?? lastKnownContextWindow) === "number"
               ? { maxTokens: resultContextWindow ?? lastKnownContextWindow }
               : {}),
-            ...(accumulatedUsage && accumulatedUsage.usedTokens > latestUsageSnapshot.usedTokens
+            ...(accumulatedUsage && accumulatedUsage.usedTokens > baseUsage.usedTokens
               ? { totalProcessedTokens: accumulatedUsage.usedTokens }
               : {}),
           }
-        : accumulatedUsage
+        : null
 
       if (finalUsage) {
         yield {
@@ -561,6 +619,7 @@ async function startClaudeSession(args: {
   localPath: string
   model: string
   effort?: string
+  serviceTier?: "fast"
   planMode: boolean
   sessionToken: string | null
   forkSession: boolean
@@ -635,7 +694,11 @@ async function startClaudeSession(args: {
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
       settingSources: ["user", "project", "local"],
-      settings: { enableWorkflows: true },
+      // fastMode must go through the flag-settings layer: the CLI only allows
+      // fast mode in Agent SDK sessions when flagSettings.fastMode is true,
+      // and an explicit false keeps a user-level settings.json from silently
+      // enabling it while the UI shows "Standard".
+      settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
       pathToClaudeCodeExecutable: process.env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, homedir()) || undefined,
       env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
@@ -670,6 +733,9 @@ async function startClaudeSession(args: {
     },
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
+    },
+    setFastMode: async (fastMode: boolean) => {
+      await q.applyFlagSettings({ fastMode })
     },
     supportedModels: async () => await q.supportedModels(),
     close: () => {
@@ -785,7 +851,7 @@ export class AgentCoordinator {
       return {
         model: resolveClaudeApiModelId(model, modelOptions.contextWindow),
         effort: modelOptions.reasoningEffort,
-        serviceTier: undefined,
+        serviceTier: serviceTierFromModelOptions(modelOptions),
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
       }
     }
@@ -805,7 +871,7 @@ export class AgentCoordinator {
     return {
       model,
       effort: modelOptions.reasoningEffort,
-      serviceTier: codexServiceTierFromModelOptions(modelOptions),
+      serviceTier: serviceTierFromModelOptions(modelOptions),
       planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
     }
   }
@@ -964,6 +1030,7 @@ export class AgentCoordinator {
         localPath: project.localPath,
         model: args.model,
         effort: args.effort,
+        serviceTier: args.serviceTier,
         planMode: args.planMode,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
@@ -1110,6 +1177,7 @@ export class AgentCoordinator {
     localPath: string
     model: string
     effort?: string
+    serviceTier?: "fast"
     planMode: boolean
     sessionToken: string | null
     forkSession: boolean
@@ -1127,6 +1195,7 @@ export class AgentCoordinator {
         localPath: args.localPath,
         model: args.model,
         effort: args.effort,
+        serviceTier: args.serviceTier,
         planMode: args.planMode,
         sessionToken: args.sessionToken,
         forkSession: args.forkSession,
@@ -1141,12 +1210,14 @@ export class AgentCoordinator {
         localPath: args.localPath,
         model: args.model,
         effort: args.effort,
+        serviceTier: args.serviceTier,
         planMode: args.planMode,
         sessionToken: args.sessionToken,
         accountInfoLoaded: false,
         nextPromptSeq: 0,
         pendingPromptSeqs: [],
         suppressResume: false,
+        cancelledPromptSeqs: new Set(),
       }
       this.claudeSessions.set(args.chatId, session)
       void this.runClaudeSession(session)
@@ -1158,6 +1229,10 @@ export class AgentCoordinator {
       if (session.planMode !== args.planMode) {
         await session.session.setPermissionMode(args.planMode)
         session.planMode = args.planMode
+      }
+      if (session.serviceTier !== args.serviceTier) {
+        await session.session.setFastMode?.(args.serviceTier === "fast")
+        session.serviceTier = args.serviceTier
       }
     }
 
@@ -1347,13 +1422,23 @@ export class AgentCoordinator {
 
         if (!event.entry) continue
 
-        // After an escape/cancel, the SDK ends the turn with a result of
-        // subtype error_during_execution (is_error, usually no text). The
-        // cancel already appended an "interrupted" entry, so persisting this
-        // would render a spurious "An unknown error occurred." in the UI.
-        const isCancelSettlingErrorResult =
-          session.suppressResume && event.entry.kind === "result" && event.entry.isError
-        if (!isCancelSettlingErrorResult) {
+        // After an escape/cancel or steer, the SDK ends the cancelled turn
+        // with a result of subtype error_during_execution (is_error, usually
+        // no text). The cancel already appended an "interrupted" entry, so
+        // persisting this would render a spurious "An unknown error
+        // occurred." in the UI. Attribute the result to the prompt it
+        // completes (pendingPromptSeqs[0]) rather than relying on
+        // suppressResume, which a steered follow-up prompt clears before the
+        // interrupt error lands.
+        const completingPromptSeq = event.entry.kind === "result" || event.entry.kind === "interrupted"
+          ? (session.pendingPromptSeqs[0] ?? null)
+          : null
+        const isCancelledPromptErrorResult =
+          event.entry.kind === "result"
+          && event.entry.isError
+          && completingPromptSeq !== null
+          && session.cancelledPromptSeqs.has(completingPromptSeq)
+        if (!isCancelledPromptErrorResult) {
           await this.store.appendMessage(session.chatId, event.entry)
         }
 
@@ -1398,6 +1483,9 @@ export class AgentCoordinator {
         const completedClaudePromptSeq = event.entry.kind === "result" || event.entry.kind === "interrupted"
           ? (session.pendingPromptSeqs.shift() ?? null)
           : null
+        if (completedClaudePromptSeq !== null) {
+          session.cancelledPromptSeqs.delete(completedClaudePromptSeq)
+        }
 
         logClaudeSteer("claude_event", {
           chatId: session.chatId,
@@ -1625,10 +1713,16 @@ export class AgentCoordinator {
     active.cancelRequested = true
 
     // Keep in-flight stream entries (emitted before the interrupt lands)
-    // from re-registering an active turn via resumeBackgroundTurn.
+    // from re-registering an active turn via resumeBackgroundTurn, and mark
+    // the cancelled prompt so its interrupt error result gets dropped.
     if (active.provider === "claude") {
       const session = this.claudeSessions.get(chatId)
-      if (session) session.suppressResume = true
+      if (session) {
+        session.suppressResume = true
+        if (active.claudePromptSeq != null) {
+          session.cancelledPromptSeqs.add(active.claudePromptSeq)
+        }
+      }
     }
 
     const pendingTool = active.pendingTool

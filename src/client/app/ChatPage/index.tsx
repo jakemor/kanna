@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
 import { type LegendListRef } from "@legendapp/list/react"
 import type { GroupImperativeHandle } from "react-resizable-panels"
-import { useOutletContext } from "react-router-dom"
+import { useLocation, useNavigate, useOutletContext } from "react-router-dom"
 import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../../components/chat-ui/ChatNavbar"
 import { BrowserPanel } from "../../components/chat-ui/BrowserPanel"
@@ -11,7 +11,8 @@ import { Card, CardContent } from "../../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui/resizable"
 import { actionMatchesEvent, getResolvedKeybindings } from "../../lib/keybindings"
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow"
-import { cn } from "../../lib/utils"
+import { isProjectBoardColumnId } from "../../lib/projectBoard"
+import { cn, normalizeChatId } from "../../lib/utils"
 import {
   DEFAULT_RIGHT_SIDEBAR_SIZE,
   DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE,
@@ -466,9 +467,51 @@ function ChatWorkspace({
   )
 }
 
+/**
+ * When a chat was opened from the board, bounce back to the board as soon as
+ * the conversation starts running again (message sent, question answered),
+ * carrying the origin column so the board can animate the card's move.
+ * Opt-in via the "Jump Back to Board" setting (off by default).
+ */
+function useReturnToBoardWhenRunning(state: KannaState) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const boardAutoReturn = state.appSettings?.boardAutoReturn === true
+  const boardOrigin = useMemo(() => {
+    const routeState = location.state
+    if (typeof routeState !== "object" || routeState === null) return null
+    const origin = (routeState as { boardOrigin?: unknown }).boardOrigin
+    return isProjectBoardColumnId(origin) ? origin : null
+  }, [location.state])
+  const activeChatId = state.activeChatId
+  const chatRow = useMemo(() => {
+    if (!activeChatId) return null
+    for (const group of state.sidebarData.projectGroups) {
+      for (const chat of group.chats) {
+        if (normalizeChatId(chat.chatId) === normalizeChatId(activeChatId)) return chat
+      }
+    }
+    return null
+  }, [activeChatId, state.sidebarData])
+  const status = chatRow?.status ?? null
+  const previousStatusRef = useRef(status)
+
+  useEffect(() => {
+    const previous = previousStatusRef.current
+    previousStatusRef.current = status
+    if (!boardAutoReturn || !boardOrigin || !chatRow || status === null || previous === null) return
+    const isRunning = status === "starting" || status === "running"
+    const wasRunning = previous === "starting" || previous === "running"
+    if (isRunning && !wasRunning) {
+      navigate("/board", { state: { boardMove: { chatId: chatRow.chatId, fromColumn: boardOrigin } } })
+    }
+  }, [boardAutoReturn, boardOrigin, chatRow, navigate, status])
+}
+
 export function ChatPage() {
   const state = useOutletContext<KannaState>()
   const dialog = useAppDialog()
+  useReturnToBoardWhenRunning(state)
   const layoutRootRef = useRef<HTMLDivElement>(null)
   const transcriptListRef = useRef<LegendListRef | null>(null)
   const isAtEndRef = useRef(true)
@@ -974,6 +1017,8 @@ export function ChatPage() {
           isEmptyStateTypingComplete={isEmptyStateTypingComplete}
           isPageFileDragActive={isPageFileDragActive}
           showEmptyState={showEmptyState}
+          emptyStateProjectPath={state.navbarLocalPath}
+          onOpenProjectExternal={handleOpenExternal}
         />
       </CardContent>
 

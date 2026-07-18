@@ -2068,23 +2068,20 @@ export function SettingsPage() {
             <p className="text-sm text-muted-foreground">
               Shown in Pi's model picker. Each entry has a display label and the model id sent to the Model Registry endpoint.
             </p>
-            <div className="flex max-h-[55vh] flex-col gap-2 overflow-y-auto pr-1">
-              {/*
-                The modal edits a local draft only — nothing commits until Done
-                or dismissal. Mid-edit commits would echo a snapshot back that
-                resets the draft (normalization drops id-less rows), wiping a
-                row while it's being filled in.
+            {/*
+              The modal edits a local draft only — nothing commits until Done
+              or dismissal. Mid-edit commits would echo a snapshot back that
+              resets the draft (normalization drops id-less rows), wiping a
+              row while it's being filled in.
 
-                A blank row is always rendered at the bottom; typing into it
-                appends a real entry (and a fresh blank row appears below).
-              */}
+              A blank row is always rendered at the bottom; typing into it
+              appends a real entry (and a fresh blank row appears below).
+            */}
+            <div className="max-h-[55vh] divide-y divide-border/60 overflow-y-auto rounded-lg border border-border bg-background">
               {[...llmProviderDraft.faveModels, { label: "", id: "" }].map((fave, index) => {
                 const isNewRow = index === llmProviderDraft.faveModels.length
                 return (
-                  <div
-                    key={index}
-                    className="flex items-center overflow-hidden rounded-lg border border-border bg-background focus-within:border-ring"
-                  >
+                  <div key={index} className="flex items-center">
                     <input
                       value={fave.label}
                       onChange={(event) => setFaveModelField(index, "label", event.target.value)}
@@ -2092,7 +2089,6 @@ export function SettingsPage() {
                       spellCheck={false}
                       className="w-[160px] shrink-0 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/60"
                     />
-                    <div className="h-5 w-px shrink-0 bg-border" />
                     <input
                       value={fave.id}
                       onChange={(event) => setFaveModelField(index, "id", event.target.value)}

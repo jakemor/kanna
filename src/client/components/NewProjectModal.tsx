@@ -553,41 +553,59 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
 
                 {/* Entries */}
                 <div ref={listRef} className="h-56 overflow-y-auto overscroll-contain p-1">
-                  {creatingFolder && dir ? (
-                    <div className="flex items-center gap-2 px-2 py-1">
-                      <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                      <Input
-                        ref={folderInputRef}
-                        type="text"
-                        value={folderName}
-                        onChange={(e) => setFolderName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && canCreateFolder) {
-                            void createFolder(joinDirPath(dir.path, trimmedFolderName))
-                          }
-                          if (e.key === "Escape") {
-                            e.stopPropagation()
-                            setCreatingFolder(false)
-                            setFolderName("")
-                            inputRef.current?.focus()
+                  {/* One create affordance at the top: a typed-but-missing path wins, otherwise plain New Folder */}
+                  {dir && !dirError ? (
+                    creatingFolder ? (
+                      <div className="flex items-center gap-2 px-2 py-1">
+                        <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                        <Input
+                          ref={folderInputRef}
+                          type="text"
+                          value={folderName}
+                          onChange={(e) => setFolderName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && canCreateFolder) {
+                              void createFolder(joinDirPath(dir.path, trimmedFolderName))
+                            }
+                            if (e.key === "Escape") {
+                              e.stopPropagation()
+                              setCreatingFolder(false)
+                              setFolderName("")
+                              inputRef.current?.focus()
+                            }
+                          }}
+                          placeholder="Folder name"
+                          spellCheck={false}
+                          autoComplete="off"
+                          className="h-7 text-sm"
+                        />
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-foreground hover:bg-muted/60"
+                        onClick={() => {
+                          if (dir.missingSuffix) {
+                            void createFolder(joinDirPath(dir.path, dir.missingSuffix))
+                          } else {
+                            setCreatingFolder(true)
                           }
                         }}
-                        placeholder="Folder name"
-                        spellCheck={false}
-                        autoComplete="off"
-                        className="h-7 text-sm"
-                      />
-                    </div>
+                      >
+                        <Plus className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                        <span className="truncate">
+                          {dir.missingSuffix ? <>Create "{dir.missingSuffix}"</> : "New Folder"}
+                        </span>
+                      </button>
+                    )
                   ) : null}
                   {dirError ? null : !dir && dirLoading ? (
                     <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" /> Loading&hellip;
                     </div>
-                  ) : visibleEntries.length === 0 && !dir?.missingSuffix ? (
-                    !creatingFolder ? (
-                      <div className="px-2 py-3 text-sm text-muted-foreground">
-                        {input && inputMode === "filter" ? "No matches" : "Empty folder"}
-                      </div>
+                  ) : visibleEntries.length === 0 ? (
+                    input && inputMode === "filter" ? (
+                      <div className="px-2 py-3 text-sm text-muted-foreground">No matches</div>
                     ) : null
                   ) : (
                     <>
@@ -620,16 +638,6 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                           Showing the first {dir.entries.length.toLocaleString()} entries
                         </div>
                       ) : null}
-                      {dir?.missingSuffix ? (
-                        <button
-                          type="button"
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-foreground hover:bg-muted/60"
-                          onClick={() => void createFolder(joinDirPath(dir.path, dir.missingSuffix!))}
-                        >
-                          <Plus className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                          <span className="truncate">Create "{dir.missingSuffix}"</span>
-                        </button>
-                      ) : null}
                     </>
                   )}
                 </div>
@@ -648,29 +656,18 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
           )}
         </DialogBody>
         {!isBusy && (
-          <DialogFooter className="justify-between">
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!dir || dirLoading || creatingFolder}
-              onClick={() => setCreatingFolder(true)}
-            >
-              <Plus className="size-3.5 mr-1.5" />
-              New Folder
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+              Cancel
             </Button>
-            <div className="flex gap-2">
-              <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => void handleSubmit()}
-                disabled={!canSubmit}
-              >
-                {inputMode === "repo" ? "Clone" : dir ? `Add "${dirBasename}"` : "Add"}
-              </Button>
-            </div>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleSubmit()}
+              disabled={!canSubmit}
+            >
+              {inputMode === "repo" ? "Clone" : dir ? `Add "${dirBasename}"` : "Add"}
+            </Button>
           </DialogFooter>
         )}
       </DialogContent>

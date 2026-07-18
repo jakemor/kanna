@@ -392,7 +392,8 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
                   >
                     <ArrowLeft className="h-4 w-4" />
                   </Button>
-                  <span className="flex-1 min-w-0 truncate px-1 font-mono text-xs text-muted-foreground" title={dir?.path}>
+                  {/* The mono font renders its glyphs ~1px above the geometric center; nudge to optically align with the back arrow */}
+                  <span className="flex-1 min-w-0 truncate px-1 font-mono text-xs text-muted-foreground translate-y-[0.5px]" title={dir?.path}>
                     {dir ? abbreviateHomePath(dir.path, dir.homePath) : " "}
                   </span>
                   {dir?.isGitRepo ? (

@@ -702,7 +702,6 @@ describe("ws-router", () => {
           trackLaunch: () => {},
         },
         terminals: {
-          closeByCwd: () => {},
           getSnapshot: () => null,
           onEvent: () => () => {},
         } as never,
@@ -722,8 +721,8 @@ describe("ws-router", () => {
         JSON.stringify({
           v: 1,
           type: "command",
-          id: "project-create-1",
-          command: { type: "project.create", localPath: projectPath, title: "Project" },
+          id: "project-open-analytics-1",
+          command: { type: "project.open", localPath: projectPath },
         })
       )
 
@@ -739,7 +738,6 @@ describe("ws-router", () => {
 
       expect(analyticsEvents).toEqual([
         "project_opened",
-        "project_created",
         "project_removed",
       ])
     } finally {

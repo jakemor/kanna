@@ -67,10 +67,6 @@ export function parseLsofListeningEntries(output: string) {
   return [...entriesByPort.values()].sort((a, b) => a.port - b.port)
 }
 
-export function parseLsofListeningPorts(output: string) {
-  return parseLsofListeningEntries(output).map((entry) => entry.port)
-}
-
 export function isPathWithin(parentPath: string | undefined, childPath: string | undefined) {
   if (!parentPath || !childPath) return false
   const normalizedParent = path.resolve(parentPath)

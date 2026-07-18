@@ -13,7 +13,6 @@ const UNUSED_PUBLIC_ENTRIES = [
   "icon-192.png",
   "icon-512.png",
   "icon-maskable-512.png",
-  "icon.svg",
   "manifest.webmanifest",
   "screenshot-light.png",
   "screenshot.png",

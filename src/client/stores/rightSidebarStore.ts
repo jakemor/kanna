@@ -28,8 +28,6 @@ interface RightSidebarState {
   hidePanel: (projectId: string) => void
   setSize: (size: number) => void
   navigateBrowser: (projectId: string, address: string) => void
-  goBrowserBack: (projectId: string) => void
-  goBrowserForward: (projectId: string) => void
   setBrowserZoom: (projectId: string, zoom: number) => void
   reconcileCollapsedPaths: (projectId: string, paths: string[]) => void
   toggleCollapsedPath: (projectId: string, path: string) => void
@@ -195,36 +193,6 @@ export const useRightSidebarStore = create<RightSidebarState>()(
               address: nextAddress,
               history,
               historyIndex: history.length - 1,
-            },
-          },
-        }
-      }),
-      goBrowserBack: (projectId) => set((state) => {
-        const current = getProjectBrowserState(state.projectBrowser, projectId)
-        const historyIndex = Math.max(0, current.historyIndex - 1)
-        if (historyIndex === current.historyIndex || !current.history[historyIndex]) return state
-        return {
-          projectBrowser: {
-            ...state.projectBrowser,
-            [projectId]: {
-              ...current,
-              address: current.history[historyIndex],
-              historyIndex,
-            },
-          },
-        }
-      }),
-      goBrowserForward: (projectId) => set((state) => {
-        const current = getProjectBrowserState(state.projectBrowser, projectId)
-        const historyIndex = Math.min(current.history.length - 1, current.historyIndex + 1)
-        if (historyIndex === current.historyIndex || !current.history[historyIndex]) return state
-        return {
-          projectBrowser: {
-            ...state.projectBrowser,
-            [projectId]: {
-              ...current,
-              address: current.history[historyIndex],
-              historyIndex,
             },
           },
         }

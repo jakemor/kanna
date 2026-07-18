@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import OpenAI from "openai"
 import { getLlmProviderFilePath } from "../shared/branding"
+import { formatDisplayPath } from "./paths"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
@@ -18,15 +19,6 @@ export const OPENAI_BASE_URL = "https://api.openai.com/v1"
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 const DEFAULT_PROVIDER: LlmProviderKind = "openai"
-
-function formatDisplayPath(filePath: string) {
-  const homePath = homedir()
-  if (filePath === homePath) return "~"
-  if (filePath.startsWith(`${homePath}${path.sep}`)) {
-    return `~${filePath.slice(homePath.length)}`
-  }
-  return filePath
-}
 
 function resolveProvider(value: unknown) {
   if (value === "openai" || value === "openrouter" || value === "custom") {

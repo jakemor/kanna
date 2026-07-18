@@ -126,12 +126,6 @@ export interface QueuedChatMessage {
   planMode?: boolean
 }
 
-export interface InternalUserAttachmentsData {
-  userText: string
-  attachments: ChatAttachment[]
-  llmHintText: string
-}
-
 export interface ProviderModelOption {
   id: string
   label: string
@@ -297,10 +291,6 @@ export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
   { id: "1m", label: "1M" },
   { id: "200k", label: "200k" },
 ] as const satisfies readonly ProviderContextWindowOption[]
-
-export function isClaudeContextWindow(value: unknown): value is ClaudeContextWindow {
-  return CLAUDE_CONTEXT_WINDOW_OPTIONS.some((option) => option.id === value)
-}
 
 function titleCaseWord(value: string) {
   return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`
@@ -1072,6 +1062,20 @@ export interface ChatBranchHistorySnapshot {
 
 export type ChatBranchListEntryKind = "local" | "remote" | "pull_request"
 
+/** A branch chosen in the UI, as sent to branch preview/merge/checkout commands. */
+export type SelectedBranch =
+  | { kind: "local"; name: string }
+  | { kind: "remote"; name: string; remoteRef: string }
+  | {
+      kind: "pull_request"
+      name: string
+      prNumber: number
+      headRefName: string
+      headRepoCloneUrl?: string
+      isCrossRepository?: boolean
+      remoteRef?: string
+    }
+
 export interface ChatBranchListEntry {
   id: string
   kind: ChatBranchListEntryKind
@@ -1388,11 +1392,6 @@ export interface ChatHistoryPage {
   messages: TranscriptEntry[]
   hasOlder: boolean
   olderCursor: string | null
-}
-
-export interface KannaSnapshot {
-  sidebar: SidebarData
-  chat?: ChatSnapshot | null
 }
 
 export interface PendingToolSnapshot {

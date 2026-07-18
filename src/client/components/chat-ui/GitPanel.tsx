@@ -15,6 +15,7 @@ import type {
   GitHubRepoAvailabilityResult,
 } from "../../../shared/types"
 import { useStickyState } from "../../hooks/useStickyState"
+import { formatRelativeTime } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
 import { isDiffPathChecked, useDiffCommitStore } from "../../stores/diffCommitStore"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
@@ -213,41 +214,6 @@ function StageCheckbox({
           : null}
     </button>
   )
-}
-
-function formatRelativeTime(isoTimestamp: string) {
-  const timestamp = Date.parse(isoTimestamp)
-  if (!Number.isFinite(timestamp)) {
-    return ""
-  }
-
-  const diffMs = Date.now() - timestamp
-  const minute = 60_000
-  const hour = 60 * minute
-  const day = 24 * hour
-  const week = 7 * day
-  const month = 30 * day
-  const year = 365 * day
-
-  if (diffMs < minute) {
-    return "just now"
-  }
-  if (diffMs < hour) {
-    return `${Math.round(diffMs / minute)}m ago`
-  }
-  if (diffMs < day) {
-    return `${Math.round(diffMs / hour)}hr ago`
-  }
-  if (diffMs < week) {
-    return `${Math.round(diffMs / day)}d ago`
-  }
-  if (diffMs < month) {
-    return `${Math.round(diffMs / week)}wk ago`
-  }
-  if (diffMs < year) {
-    return `${Math.round(diffMs / month)}mo ago`
-  }
-  return `${Math.round(diffMs / year)}yr ago`
 }
 
 function formatFetchTooltip(isoTimestamp?: string) {

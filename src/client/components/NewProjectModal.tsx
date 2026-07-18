@@ -13,7 +13,7 @@ import {
 } from "./ui/dialog"
 import { Input } from "./ui/input"
 
-export type ProjectMode = "new" | "existing" | "clone"
+export type ProjectMode = "existing" | "clone"
 
 export interface NewProjectResult {
   mode: ProjectMode
@@ -210,6 +210,9 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
 
     const cached = target !== undefined ? dirCacheRef.current.get(target) : undefined
     if (cached) {
+      // This navigation superseded any in-flight request (seq bumped above),
+      // whose finally block will no longer clear the loading flag.
+      setDirLoading(false)
       arriveAt(cached, opts?.fromBack)
       return
     }
@@ -391,8 +394,12 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
       }
     } else {
       const folderName = dir.path.split(/[\\/]/).pop() || dir.path
-      onConfirm({ mode: "existing", localPath: dir.path, title: folderName })
-      onOpenChange(false)
+      try {
+        await onConfirm({ mode: "existing", localPath: dir.path, title: folderName })
+        onOpenChange(false)
+      } catch (error) {
+        setDirError(error instanceof Error ? error.message : String(error))
+      }
     }
   }, [canSubmit, dir, parsedRepo, cloneDestination, onConfirm, onOpenChange])
 

@@ -1276,19 +1276,6 @@ export function createWsRouter({
           }
           break
         }
-        case "project.create": {
-          await ensureProjectDirectory(command.localPath)
-          const normalizedPath = resolveLocalPath(command.localPath)
-          const existingProjectId = store.state.projectIdsByPath.get(normalizedPath)
-          const project = await store.openProject(command.localPath, command.title)
-          await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
-          if (!existingProjectId) {
-            resolvedAnalytics.track("project_opened")
-            resolvedAnalytics.track("project_created")
-          }
-          break
-        }
         case "project.rename": {
           await store.renameProjectSidebarTitle(command.projectId, command.title)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })

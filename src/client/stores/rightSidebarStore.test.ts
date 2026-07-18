@@ -125,14 +125,13 @@ describe("rightSidebarStore", () => {
     useRightSidebarStore.getState().navigateBrowser(PROJECT_ID, "localhost:3000")
     useRightSidebarStore.getState().navigateBrowser(PROJECT_ID, "http://localhost:3001")
     useRightSidebarStore.getState().setBrowserZoom(PROJECT_ID, 1.25)
-    useRightSidebarStore.getState().goBrowserBack(PROJECT_ID)
 
     useRightSidebarStore.getState().navigateBrowser("project-2", "localhost:4000")
 
     expect(useRightSidebarStore.getState().projectBrowser[PROJECT_ID]).toEqual({
-      address: "http://localhost:3000",
+      address: "http://localhost:3001",
       history: ["http://localhost:3000", "http://localhost:3001"],
-      historyIndex: 0,
+      historyIndex: 1,
       zoom: 1.3,
     })
     expect(useRightSidebarStore.getState().projectBrowser["project-2"]).toEqual({

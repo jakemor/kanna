@@ -4,6 +4,16 @@ import { homedir } from "node:os"
 import path from "node:path"
 import type { FsDirEntry, FsListResult } from "../shared/types"
 
+/** Render an absolute path with the home directory abbreviated to `~`. */
+export function formatDisplayPath(filePath: string) {
+  const homePath = homedir()
+  if (filePath === homePath) return "~"
+  if (filePath.startsWith(`${homePath}${path.sep}`)) {
+    return `~${filePath.slice(homePath.length)}`
+  }
+  return filePath
+}
+
 export function resolveLocalPath(localPath: string) {
   const trimmed = localPath.trim()
   if (!trimmed) {

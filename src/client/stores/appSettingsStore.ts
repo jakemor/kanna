@@ -1,12 +1,8 @@
 import { create } from "zustand"
 import type { AppSettingsPatch, AppSettingsSnapshot } from "../../shared/types"
 
-type AppSettingsHydrationStatus = "idle" | "loading" | "ready" | "error"
-
 interface AppSettingsStoreState {
   settings: AppSettingsSnapshot | null
-  hydrationStatus: AppSettingsHydrationStatus
-  setHydrationStatus: (status: AppSettingsHydrationStatus) => void
   setFromServer: (settings: AppSettingsSnapshot) => void
   applyOptimisticPatch: (patch: AppSettingsPatch) => void
 }
@@ -65,9 +61,7 @@ export function mergeAppSettingsPatch(
 
 export const useAppSettingsStore = create<AppSettingsStoreState>()((set) => ({
   settings: null,
-  hydrationStatus: "idle",
-  setHydrationStatus: (hydrationStatus) => set({ hydrationStatus }),
-  setFromServer: (settings) => set({ settings, hydrationStatus: "ready" }),
+  setFromServer: (settings) => set({ settings }),
   applyOptimisticPatch: (patch) =>
     set((state) => ({
       settings: state.settings ? mergeAppSettingsPatch(state.settings, patch) : state.settings,

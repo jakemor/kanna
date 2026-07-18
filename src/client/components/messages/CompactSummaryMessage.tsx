@@ -1,8 +1,6 @@
 import {  Minimize } from "lucide-react"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import type { ProcessedCompactSummaryMessage } from "./types"
-import { MetaRow, MetaLabel, ExpandableRow, VerticalLineContainer, createMarkdownComponents } from "./shared"
+import { MetaRow, MetaLabel, ExpandableRow, VerticalLineContainer, TranscriptMarkdown } from "./shared"
 
 interface Props {
   message: ProcessedCompactSummaryMessage
@@ -15,9 +13,7 @@ export function CompactSummaryMessage({ message }: Props) {
         expandedContent={
           <VerticalLineContainer className="my-4 text-xs">
             <div className="prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>
-                {message.summary}
-              </ReactMarkdown>
+              <TranscriptMarkdown text={message.summary} />
             </div>
           </VerticalLineContainer>
         }

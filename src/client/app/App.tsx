@@ -235,7 +235,7 @@ function KannaLayout() {
   }, [state.handleOpenArchivedChat])
   const handleOpenAddProjectModal = useCallback(() => {
     state.openAddProjectModal()
-  }, [state])
+  }, [state.openAddProjectModal])
   const handleSidebarDeleteChat = useCallback((chat: Parameters<typeof state.handleDeleteChat>[0]) => {
     void state.handleDeleteChat(chat)
   }, [state.handleDeleteChat])

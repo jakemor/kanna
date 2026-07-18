@@ -11,6 +11,7 @@ import type {
   LlmProviderSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
+  SelectedBranch,
   SidebarData,
   StandaloneTranscriptAttachmentMode,
   StandaloneTranscriptExportResult,
@@ -71,7 +72,6 @@ export type TerminalEvent =
 
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
-  | { type: "project.create"; localPath: string; title: string }
   | { type: "project.rename"; projectId: string; title: string }
   | { type: "project.clone"; cloneUrl: string; localPath: string; fallbackPath?: string; title: string }
   | { type: "project.remove"; projectId: string }
@@ -157,51 +157,18 @@ export type ClientCommand =
   | {
       type: "chat.previewMergeBranch"
       chatId: string
-      branch:
-      | { kind: "local"; name: string }
-      | { kind: "remote"; name: string; remoteRef: string }
-      | {
-          kind: "pull_request"
-          name: string
-          prNumber: number
-          headRefName: string
-          headRepoCloneUrl?: string
-          isCrossRepository?: boolean
-          remoteRef?: string
-        }
+      branch: SelectedBranch
     }
   | {
       type: "chat.mergeBranch"
       chatId: string
-      branch:
-      | { kind: "local"; name: string }
-      | { kind: "remote"; name: string; remoteRef: string }
-      | {
-          kind: "pull_request"
-          name: string
-          prNumber: number
-          headRefName: string
-          headRepoCloneUrl?: string
-          isCrossRepository?: boolean
-          remoteRef?: string
-        }
+      branch: SelectedBranch
     }
   | { type: "chat.syncBranch"; chatId: string; action: "fetch" | "pull" | "push" | "publish" }
   | {
       type: "chat.checkoutBranch"
       chatId: string
-      branch:
-      | { kind: "local"; name: string }
-      | { kind: "remote"; name: string; remoteRef: string }
-      | {
-          kind: "pull_request"
-          name: string
-          prNumber: number
-          headRefName: string
-          headRepoCloneUrl?: string
-          isCrossRepository?: boolean
-          remoteRef?: string
-        }
+      branch: SelectedBranch
       bringChanges?: boolean
     }
   | { type: "chat.createBranch"; chatId: string; name: string; baseBranchName?: string }

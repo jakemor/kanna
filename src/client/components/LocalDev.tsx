@@ -1,10 +1,8 @@
 import { useMemo, useState, type ComponentType, type ReactNode } from "react"
 import {
   ArrowLeftRight,
-  Check,
   ChevronRight,
   CodeXml,
-  Copy,
   Folder,
   Loader2,
   Monitor,
@@ -20,6 +18,7 @@ import { getPathBasename } from "../lib/formatters"
 import { cn } from "../lib/utils"
 import { NewProjectModal } from "./NewProjectModal"
 import { Button } from "./ui/button"
+import { CopyButton } from "./ui/copy-button"
 import { Input } from "./ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip"
 
@@ -95,30 +94,9 @@ interface LocalDevProps {
   newProjectOpen: boolean
   onNewProjectOpenChange: (open: boolean) => void
   onOpenProject: (localPath: string) => Promise<void>
-  onCreateProject: (project: { mode: "new" | "existing" | "clone"; localPath: string; fallbackPath?: string; title: string; cloneUrl?: string }) => Promise<void>
+  onCreateProject: (project: { mode: "existing" | "clone"; localPath: string; fallbackPath?: string; title: string; cloneUrl?: string }) => Promise<void>
   onListDirectory: (path?: string, nearest?: boolean) => Promise<FsListResult>
   onMakeDirectory: (path: string) => Promise<FsListResult>
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-
-  async function handleCopy() {
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="h-8 w-8 text-muted-foreground hover:text-foreground"
-      onClick={() => void handleCopy()}
-    >
-      {copied ? <Check className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4" />}
-    </Button>
-  )
 }
 
 function CodeBlock({ children }: { children: string }) {
@@ -128,7 +106,11 @@ function CodeBlock({ children }: { children: string }) {
         <ChevronRight className="inline h-4 w-4 opacity-40" />
         <code>{children}</code>
       </pre>
-      <CopyButton text={children} />
+      <CopyButton
+        text={children}
+        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+        copiedHoverReset={false}
+      />
     </div>
   )
 }

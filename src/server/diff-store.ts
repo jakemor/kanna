@@ -22,6 +22,7 @@ import type {
   ChatSyncResult,
   DiffCommitMode,
   DiffCommitResult,
+  SelectedBranch,
   UpstreamStatus,
 } from "../shared/types"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
@@ -112,18 +113,6 @@ interface DirtyPathEntry {
   isUntracked: boolean
 }
 
-type SelectedBranch =
-  | { kind: "local"; name: string }
-  | { kind: "remote"; name: string; remoteRef: string }
-  | {
-      kind: "pull_request"
-      name: string
-      prNumber: number
-      headRefName: string
-      headRepoCloneUrl?: string
-      isCrossRepository?: boolean
-      remoteRef?: string
-    }
 
 async function runGit(args: string[], cwd: string, options?: { stdin?: string }) {
   const process = Bun.spawn(["git", "-C", cwd, ...args], {
@@ -194,10 +183,10 @@ function createCommitFailure(mode: DiffCommitMode, detail: string): DiffCommitRe
   }
 }
 
-function createPushFailure(mode: DiffCommitMode, detail: string, snapshotChanged: boolean): DiffCommitResult {
+function classifyPushFailure(detail: string, fallbackMessage: string) {
   const normalized = detail.toLowerCase()
   let title = "Push failed"
-  let message = summarizeGitFailure(detail, "Git could not push the commit.")
+  let message = summarizeGitFailure(detail, fallbackMessage)
 
   if (normalized.includes("non-fast-forward") || normalized.includes("fetch first")) {
     title = "Branch is not up to date"
@@ -216,6 +205,11 @@ function createPushFailure(mode: DiffCommitMode, detail: string, snapshotChanged
     message = "Git could not authenticate with the remote repository."
   }
 
+  return { title, message }
+}
+
+function createPushFailure(mode: DiffCommitMode, detail: string, snapshotChanged: boolean): DiffCommitResult {
+  const { title, message } = classifyPushFailure(detail, "Git could not push the commit.")
   return {
     ok: false,
     mode,
@@ -229,24 +223,7 @@ function createPushFailure(mode: DiffCommitMode, detail: string, snapshotChanged
 }
 
 function createSyncPushFailure(detail: string, snapshotChanged: boolean): ChatSyncResult {
-  const normalized = detail.toLowerCase()
-  let title = "Push failed"
-  let message = summarizeGitFailure(detail, "Git could not push this branch.")
-
-  if (normalized.includes("non-fast-forward") || normalized.includes("fetch first")) {
-    title = "Branch is not up to date"
-    message = "Your branch is behind its remote. Pull or rebase, then try pushing again."
-  } else if (normalized.includes("has no upstream branch") || normalized.includes("set-upstream")) {
-    title = "No upstream branch configured"
-    message = "This branch does not have an upstream remote branch configured yet."
-  } else if (normalized.includes("merge conflict") || normalized.includes("resolve conflicts")) {
-    title = "Merge conflicts need resolution"
-    message = "Git reported conflicts while preparing the push. Resolve them, then try again."
-  } else if (normalized.includes("permission denied") || normalized.includes("authentication failed") || normalized.includes("could not read from remote repository")) {
-    title = "Remote authentication failed"
-    message = "Git could not authenticate with the remote repository."
-  }
-
+  const { title, message } = classifyPushFailure(detail, "Git could not push this branch.")
   return {
     ok: false,
     action: "push",

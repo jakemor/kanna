@@ -1255,10 +1255,6 @@ export class EventStore {
       .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))
   }
 
-  getChatCount(projectId: string) {
-    return this.listChatsByProject(projectId).length
-  }
-
   async getLegacyTranscriptStats(): Promise<LegacyTranscriptStats> {
     const messagesLogSize = await Bun.file(this.messagesLogPath).size
     const sources: LegacyTranscriptStats["sources"] = []

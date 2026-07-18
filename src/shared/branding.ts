@@ -52,10 +52,6 @@ export function getSettingsFilePath(homeDir: string, env: RuntimeEnv = getRuntim
   return `${getDataDir(homeDir, env)}/settings.json`
 }
 
-export function getSettingsFilePathDisplay(env: RuntimeEnv = getRuntimeEnv()) {
-  return `${getDataDirDisplay(env)}/settings.json`
-}
-
 export function getKeybindingsFilePath(homeDir: string, env: RuntimeEnv = getRuntimeEnv()) {
   return `${getDataRootDir(homeDir, env)}/keybindings.json`
 }
@@ -66,10 +62,6 @@ export function getKeybindingsFilePathDisplay(env: RuntimeEnv = getRuntimeEnv())
 
 export function getLlmProviderFilePath(homeDir: string, env: RuntimeEnv = getRuntimeEnv()) {
   return `${getDataRootDir(homeDir, env)}/llm-provider.json`
-}
-
-export function getLlmProviderFilePathDisplay(env: RuntimeEnv = getRuntimeEnv()) {
-  return `${getDataRootDirDisplay(env)}/llm-provider.json`
 }
 
 export function getCliInvocation(arg?: string) {

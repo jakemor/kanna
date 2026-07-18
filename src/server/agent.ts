@@ -14,6 +14,7 @@ import type {
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
+import { AsyncQueue } from "./async-queue"
 import { EventStore } from "./event-store"
 import type { AnalyticsReporter } from "./analytics"
 import { NoopAnalyticsReporter } from "./analytics"
@@ -572,52 +573,6 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
   }
 }
 
-class AsyncMessageQueue<T> implements AsyncIterable<T> {
-  private readonly values: T[] = []
-  private readonly waiters: Array<(result: IteratorResult<T>) => void> = []
-  private closed = false
-
-  push(value: T) {
-    if (this.closed) {
-      throw new Error("Cannot push to a closed queue")
-    }
-
-    const waiter = this.waiters.shift()
-    if (waiter) {
-      waiter({ done: false, value })
-      return
-    }
-
-    this.values.push(value)
-  }
-
-  close() {
-    if (this.closed) return
-    this.closed = true
-    while (this.waiters.length > 0) {
-      const waiter = this.waiters.shift()
-      waiter?.({ done: true, value: undefined as never })
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: async () => {
-        if (this.values.length > 0) {
-          return { done: false, value: this.values.shift() as T }
-        }
-
-        if (this.closed) {
-          return { done: true, value: undefined as never }
-        }
-
-        return await new Promise<IteratorResult<T>>((resolve) => {
-          this.waiters.push(resolve)
-        })
-      },
-    }
-  }
-}
 
 async function startClaudeSession(args: {
   localPath: string
@@ -684,7 +639,8 @@ async function startClaudeSession(args: {
     } satisfies PermissionResult
   }
 
-  const promptQueue = new AsyncMessageQueue<SDKUserMessage>()
+  const promptQueue = new AsyncQueue<SDKUserMessage>()
+  let promptQueueClosed = false
 
   const q = query({
     prompt: promptQueue,
@@ -722,6 +678,9 @@ async function startClaudeSession(args: {
       await q.interrupt()
     },
     sendPrompt: async (content: string) => {
+      if (promptQueueClosed) {
+        throw new Error("Cannot push to a closed queue")
+      }
       promptQueue.push({
         type: "user",
         message: {
@@ -743,7 +702,8 @@ async function startClaudeSession(args: {
     },
     supportedModels: async () => await q.supportedModels(),
     close: () => {
-      promptQueue.close()
+      promptQueueClosed = true
+      promptQueue.finish()
       q.close()
     },
   }

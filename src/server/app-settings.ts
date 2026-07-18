@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getSettingsFilePath, LOG_PREFIX } from "../shared/branding"
+import { formatDisplayPath } from "./paths"
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
@@ -81,15 +82,6 @@ const MAX_TERMINAL_MIN_COLUMN_WIDTH = 900
 const DEFAULT_EDITOR_PRESET: EditorPreset = "cursor"
 const DEFAULT_CHAT_SOUND_PREFERENCE: ChatSoundPreference = "always"
 const DEFAULT_CHAT_SOUND_ID: ChatSoundId = "funk"
-
-function formatDisplayPath(filePath: string) {
-  const homePath = homedir()
-  if (filePath === homePath) return "~"
-  if (filePath.startsWith(`${homePath}${path.sep}`)) {
-    return `~${filePath.slice(homePath.length)}`
-  }
-  return filePath
-}
 
 function createAnalyticsUserId() {
   return `anon_${randomUUID()}`

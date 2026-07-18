@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { fallbackTitleFromMessage, generateTitleForChat, generateTitleForChatDetailed } from "./generate-title"
+import { fallbackTitleFromMessage, generateTitleForChatDetailed } from "./generate-title"
 import { getQuickResponseWorkspace, QuickResponseAdapter } from "./quick-response"
 
 describe("QuickResponseAdapter", () => {
@@ -303,7 +303,7 @@ describe("QuickResponseAdapter", () => {
 
 describe("generateTitleForChat", () => {
   test("sanitizes generated titles", async () => {
-    const title = await generateTitleForChat(
+    const { title } = await generateTitleForChatDetailed(
       "hello",
       "/tmp/project",
       new QuickResponseAdapter({
@@ -326,7 +326,7 @@ describe("generateTitleForChat", () => {
   })
 
   test("rejects invalid generated titles", async () => {
-    const title = await generateTitleForChat(
+    const { title } = await generateTitleForChatDetailed(
       "hello",
       "/tmp/project",
       new QuickResponseAdapter({
@@ -350,7 +350,7 @@ describe("generateTitleForChat", () => {
   })
 
   test("falls back to the first 35 characters of the message with ellipsis", async () => {
-    const title = await generateTitleForChat(
+    const { title } = await generateTitleForChatDetailed(
       "This message is definitely longer than thirty five characters",
       "/tmp/project",
       new QuickResponseAdapter({

@@ -17,7 +17,7 @@ import { getDataRootDir } from "../shared/branding"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
 import { AsyncQueue } from "./async-queue"
-import { readLlmProviderSnapshot } from "./llm-provider"
+import { OPENROUTER_BASE_URL, readLlmProviderSnapshot } from "./llm-provider"
 import { timestamped } from "./transcript"
 
 /**
@@ -45,7 +45,6 @@ import { timestamped } from "./transcript"
  * (Read, Bash, Edit, Write, Grep, Glob), so everything renders natively.
  */
 
-export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 export const PI_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const
 
@@ -409,6 +408,12 @@ export class PiAgentManager {
       return failedPiTurn(error instanceof Error ? error.message : String(error))
     }
     const session = chatSession.session
+    // A previous turn on this reused session may still be streaming (its turn
+    // was closed without an interrupt); pi throws on concurrent prompt() calls,
+    // so stop the old run before starting the new one.
+    if (session.isStreaming) {
+      await session.abort()
+    }
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 
@@ -552,8 +557,13 @@ export class PiAgentManager {
         await session.abort()
       },
       // The AgentSession stays alive across turns (it's reused by the next
-      // startTurn and torn down in closeChat); close only ends this turn's stream.
+      // startTurn and torn down in closeChat); close ends this turn's stream
+      // and stops any still-running prompt so it can't keep executing tools
+      // invisibly after the turn is discarded.
       close: () => {
+        if (session.isStreaming) {
+          void session.abort().catch(() => {})
+        }
         finalize({ isError: false, message: "", cancelled: true })
       },
     }

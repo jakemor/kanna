@@ -801,7 +801,7 @@ export function ChatPage() {
   ) => {
     await scrollToTranscriptEnd(false)
     await state.handleSend(content, options)
-  }, [scrollToTranscriptEnd, state])
+  }, [scrollToTranscriptEnd, state.handleSend])
 
   useEffect(() => {
     return () => clearShowScrollTimeout()

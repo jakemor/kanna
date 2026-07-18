@@ -3,13 +3,13 @@ import {
   cloneElement,
   createContext,
   isValidElement,
-  useCallback,
   useContext,
   useState,
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react"
-import { Button } from "../ui/button"
+import Markdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import {
   ArrowDownToLine,
   CheckLine,
@@ -28,9 +28,8 @@ import {
   FilePen,
   FilePlusCorner,
   FileX,
-  Copy,
-  Check,
 } from "lucide-react"
+import { CopyButton } from "../ui/copy-button"
 import { cn } from "../../lib/utils"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useTranscriptRenderOptions } from "./render-context"
@@ -113,11 +112,6 @@ export function MetaContent({ children, className }: { children: ReactNode; clas
   )
 }
 
-// Separator pipe
-export function MetaSeparator() {
-  return <span className="text-muted-foreground">|</span>
-}
-
 // Bold label text
 export function MetaLabel({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={cn("font-medium text-foreground/80", className)}>{children}</span>
@@ -159,14 +153,7 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
 
 // Code block for expanded content
 export function MetaCodeBlock({ label, children, copyText }: { label: ReactNode; children: ReactNode; copyText?: string }) {
-  const [copied, setCopied] = useState(false)
   const textContent = copyText ?? extractText(children)
-
-  const handleCopy = useCallback(async () => {
-    await navigator.clipboard.writeText(textContent)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [textContent])
 
   return (
     <div>
@@ -175,18 +162,11 @@ export function MetaCodeBlock({ label, children, copyText }: { label: ReactNode;
         <pre className="my-1 text-xs font-mono whitespace-no-wrap break-all bg-muted border border-border  rounded-lg p-2 max-h-64 overflow-auto w-full">
           {children}
         </pre>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn(
-            "absolute top-[4px] right-[4px] z-10 h-6.5 w-6.5 rounded-sm text-muted-foreground opacity-0 group-hover/codeblock:opacity-100 transition-opacity",
-            !copied && "hover:text-foreground",
-            copied && "hover:!bg-transparent hover:!border-transparent"
-          )}
-          onClick={handleCopy}
-        >
-          {copied ? <Check className="h-3.5 w-3.5 text-green-400" /> : <Copy className="h-4 w-4" />}
-        </Button>
+        <CopyButton
+          text={textContent}
+          className="absolute top-[4px] right-[4px] z-10 h-6.5 w-6.5 rounded-sm text-muted-foreground opacity-0 group-hover/codeblock:opacity-100 transition-opacity"
+          checkClassName="h-3.5 w-3.5 text-green-400"
+        />
       </div>
     </div>
   )
@@ -268,30 +248,15 @@ export const markdownComponents = {
   ),
 
   pre: ({ children, ...props }: ComponentPropsWithoutRef<"pre">) => {
-    const [copied, setCopied] = useState(false)
     const textContent = extractText(children)
-
-    const handleCopy = async () => {
-      await navigator.clipboard.writeText(textContent)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
 
     return (
       <div className="relative overflow-x-auto max-w-full min-w-0 no-code-highlight group/pre">
         <pre className="min-w-0 rounded-xl py-2.5 px-3.5 [.no-pre-highlight_&]:bg-background" {...props}>{children}</pre>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn(
-            "absolute top-[35px] -translate-y-[50%] -translate-x-[1px] rounded-md right-1.5 h-8 w-8 text-muted-foreground opacity-0 group-hover/pre:opacity-100 transition-opacity",
-            !copied && "hover:text-foreground",
-            copied && "hover:!bg-transparent hover:!border-transparent"
-          )}
-          onClick={handleCopy}
-        >
-          {copied ? <Check className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4" />}
-        </Button>
+        <CopyButton
+          text={textContent}
+          className="absolute top-[35px] -translate-y-[50%] -translate-x-[1px] rounded-md right-1.5 h-8 w-8 text-muted-foreground opacity-0 group-hover/pre:opacity-100 transition-opacity"
+        />
       </div>
     )
   },
@@ -373,7 +338,8 @@ export function createMarkdownComponents(options?: {
   return {
     ...markdownComponents,
     a: ({ children, href, onClick, ...props }: ComponentPropsWithoutRef<"a">) => {
-      const onOpenLocalLink = options?.onOpenLocalLink ?? useContext(OpenLocalLinkContext)
+      const contextOpenLocalLink = useContext(OpenLocalLinkContext)
+      const onOpenLocalLink = options?.onOpenLocalLink ?? contextOpenLocalLink
       const renderOptions = useTranscriptRenderOptions()
       const parsedLocalLink = parseLocalFileLink(href)
 
@@ -421,6 +387,16 @@ export function createMarkdownComponents(options?: {
   }
 }
 
-export const markdownWithHeadingsComponents = {
-  ...markdownComponents,
+const REMARK_PLUGINS = [remarkGfm]
+const transcriptMarkdownComponents = createMarkdownComponents()
+
+// Markdown renderer for transcript content, with the components object and
+// plugin array hoisted to module scope so streaming rerenders reuse the same
+// component types instead of remounting the rendered tree.
+export function TranscriptMarkdown({ text }: { text: string }) {
+  return (
+    <Markdown remarkPlugins={REMARK_PLUGINS} components={transcriptMarkdownComponents}>
+      {text}
+    </Markdown>
+  )
 }

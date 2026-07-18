@@ -17,6 +17,7 @@ import { useTheme } from "../hooks/useTheme"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
+import { sameAttachmentArray } from "./KannaTranscript"
 import { KannaSocket, type SocketStatus } from "./socket"
 import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
 
@@ -79,23 +80,6 @@ function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
     && left.planMode === right.planMode
     && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
     && sameAttachmentArray(left.attachments, right.attachments)
-}
-
-function sameAttachmentArray(left: ChatAttachment[], right: ChatAttachment[]) {
-  if (left === right) return true
-  if (left.length !== right.length) return false
-  return left.every((attachment, index) => {
-    const other = right[index]
-    return Boolean(other)
-      && attachment.id === other.id
-      && attachment.kind === other.kind
-      && attachment.displayName === other.displayName
-      && attachment.absolutePath === other.absolutePath
-      && attachment.relativePath === other.relativePath
-      && attachment.contentUrl === other.contentUrl
-      && attachment.mimeType === other.mimeType
-      && attachment.size === other.size
-  })
 }
 
 function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefined, right: ChatSnapshot["queuedMessages"] | null | undefined) {
@@ -605,7 +589,7 @@ async function isServerReady(fetchImpl: typeof fetch = fetch) {
 }
 
 export interface ProjectRequest {
-  mode: "new" | "existing" | "clone"
+  mode: "existing" | "clone"
   localPath: string
   fallbackPath?: string
   title: string
@@ -940,13 +924,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   const handleReadAppSettings = useCallback(async () => {
     try {
-      useAppSettingsStore.getState().setHydrationStatus("loading")
       const snapshot = await socket.command<AppSettingsSnapshot>({ type: "settings.readAppSettings" })
       setAppSettings(snapshot)
       syncRuntimeStoresFromAppSettings(snapshot)
       setCommandError(null)
     } catch (error) {
-      useAppSettingsStore.getState().setHydrationStatus("error")
       setCommandError(error instanceof Error ? error.message : String(error))
     }
   }, [socket])
@@ -1403,14 +1385,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return { projectId: result.projectId, localPath: intent.localPath }
     }
 
-    let command: Parameters<typeof socket.command>[0]
-    if (intent.project.mode === "clone" && intent.project.cloneUrl) {
-      command = { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
-    } else if (intent.project.mode === "new") {
-      command = { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
-    } else {
-      command = { type: "project.open", localPath: intent.project.localPath }
-    }
+    const command: Parameters<typeof socket.command>[0] = intent.project.mode === "clone" && intent.project.cloneUrl
+      ? { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
+      : { type: "project.open", localPath: intent.project.localPath }
     const result = await socket.command<{ projectId: string; localPath?: string }>(command)
     return { projectId: result.projectId, localPath: result.localPath ?? intent.project.localPath }
   }, [socket])
@@ -1528,10 +1505,31 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [])
 
+  // Snapshot-derived values read inside handleSend live behind a ref so the
+  // callback identity stays stable across streaming updates; otherwise every
+  // transcript entry would invalidate the composer's memo barrier.
+  const sendContextRef = useRef({
+    isProcessing,
+    optimisticUserPrompts,
+    serverTranscriptEntries,
+    sidebarProjectGroups,
+    selectedProjectId,
+    fallbackLocalProjectPath,
+  })
+  sendContextRef.current = {
+    isProcessing,
+    optimisticUserPrompts,
+    serverTranscriptEntries,
+    sidebarProjectGroups,
+    selectedProjectId,
+    fallbackLocalProjectPath,
+  }
+
   const handleSend = useCallback(async (
     content: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
   ) => {
+    const { isProcessing, optimisticUserPrompts, serverTranscriptEntries, sidebarProjectGroups, selectedProjectId, fallbackLocalProjectPath } = sendContextRef.current
     const attachments = options?.attachments ?? []
     if (activeChatId && isProcessing) {
       try {
@@ -1662,7 +1660,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket])
+  }, [activeChatId, navigate, socket])
 
   const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
     if (!activeChatId) return

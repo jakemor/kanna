@@ -72,6 +72,11 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { fastMode: false },
           planMode: false,
         },
+        pi: {
+          model: "moonshotai/kimi-k2.6",
+          modelOptions: { reasoningEffort: "medium" },
+          planMode: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {

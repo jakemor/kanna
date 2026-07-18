@@ -12,6 +12,7 @@ import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
 import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
+import { applyPiFaveModels } from "./provider-catalog"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
@@ -156,6 +157,16 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     machineDisplayName,
     updateManager,
   })
+  // Seed the pi provider's model picker from saved fave models before the
+  // first snapshots go out.
+  void readLlmProviderSnapshot()
+    .then((snapshot) => {
+      if (applyPiFaveModels(snapshot.faveModels)) {
+        return router.broadcastSnapshots()
+      }
+    })
+    .catch(() => undefined)
+
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()
       .then(() => router.broadcastSnapshots())

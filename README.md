@@ -46,7 +46,8 @@ That's it. Kanna opens in your browser at [`localhost:3210`](http://localhost:32
 
 ## Features
 
-- **Multi-provider support** — switch between Claude and Codex (OpenAI) from the chat input, with per-provider model selection, reasoning effort controls, and Codex fast mode
+- **Multi-provider support** — switch between Claude, Codex (OpenAI), Cursor, and Pi from the chat input, with per-provider model selection, reasoning effort controls, and Codex fast mode
+- **Bundled Pi agent** — the [pi coding agent](https://github.com/badlogic/pi-mono) ships as a dependency and runs in-process through the Model Registry (Settings): point it at OpenRouter, OpenAI, or any custom OpenAI-compatible endpoint, pin fave models to the picker, and use any model id with standardized reasoning efforts — no local pi installation involved
 - **Project-first sidebar** — chats grouped under projects, with live status indicators (idle, running, waiting, failed)
 - **Drag-and-drop project ordering** — reorder project groups in the sidebar with persistent ordering
 - **Local project discovery** — auto-discovers projects from both Claude and Codex local history

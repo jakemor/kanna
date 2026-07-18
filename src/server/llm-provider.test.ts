@@ -47,6 +47,7 @@ describe("normalizeLlmProviderSnapshot", () => {
       model: "gpt-test",
       baseUrl: "https://example.com/v1",
       resolvedBaseUrl: "https://example.com/v1",
+      faveModels: [],
       enabled: true,
       warning: null,
       filePathDisplay: TEST_FILE_PATH,
@@ -75,6 +76,7 @@ describe("readLlmProviderSnapshot", () => {
       model: DEFAULT_OPENAI_SDK_MODEL,
       baseUrl: "",
       resolvedBaseUrl: OPENAI_BASE_URL,
+      faveModels: [],
       enabled: false,
       warning: null,
       filePathDisplay: filePath,
@@ -120,6 +122,7 @@ describe("writeLlmProviderSnapshot", () => {
       model: "openrouter/model",
       baseUrl: "ignored",
       resolvedBaseUrl: OPENROUTER_BASE_URL,
+      faveModels: [],
       enabled: true,
       warning: null,
       filePathDisplay: filePath,
@@ -129,6 +132,31 @@ describe("writeLlmProviderSnapshot", () => {
       apiKey: "test-key",
       model: "openrouter/model",
       baseUrl: null,
+      faveModels: [],
     })
+  })
+
+  test("round-trips fave models", async () => {
+    const filePath = await createTempFilePath()
+    const snapshot = await writeLlmProviderSnapshot({
+      provider: "openrouter",
+      apiKey: "test-key",
+      model: "openrouter/model",
+      baseUrl: "",
+      faveModels: [
+        { label: "Kimi", id: "moonshotai/kimi-k2.6" },
+        { label: "", id: "openai/gpt-5.5" },
+        { label: "no id", id: "" },
+      ],
+    }, filePath)
+
+    // Labels fall back to a name derived from the id; entries without an id are dropped.
+    expect(snapshot.faveModels).toEqual([
+      { label: "Kimi", id: "moonshotai/kimi-k2.6" },
+      { label: "GPT 5.5", id: "openai/gpt-5.5" },
+    ])
+
+    const reread = await readLlmProviderSnapshot(filePath)
+    expect(reread.faveModels).toEqual(snapshot.faveModels)
   })
 })

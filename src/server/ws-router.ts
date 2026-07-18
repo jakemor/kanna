@@ -16,6 +16,7 @@ import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import { cloneRepository, createDirectory, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
@@ -125,7 +126,7 @@ interface CreateWsRouterArgs {
   analytics?: AnalyticsReporter
   llmProvider?: {
     read: () => Promise<LlmProviderSnapshot>
-    write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
+    write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>) => Promise<LlmProviderSnapshot>
     validate: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   }
   refreshDiscovery: () => Promise<DiscoveredProject[]>
@@ -418,15 +419,17 @@ export function createWsRouter({
       model: "gpt-5.4-mini",
       baseUrl: "",
       resolvedBaseUrl: "https://api.openai.com/v1",
+      faveModels: [],
       enabled: false,
       warning: null,
       filePathDisplay: "~/.kanna/llm-provider.json",
     }),
-    write: async ({ provider, apiKey, model, baseUrl }: {
+    write: async ({ provider, apiKey, model, baseUrl, faveModels }: {
       provider: "openai" | "openrouter" | "custom"
       apiKey: string
       model: string
       baseUrl: string
+      faveModels?: LlmProviderSnapshot["faveModels"]
     }) => ({
       provider,
       apiKey,
@@ -437,6 +440,7 @@ export function createWsRouter({
         : provider === "custom"
           ? baseUrl
           : "https://api.openai.com/v1",
+      faveModels: faveModels ?? [],
       enabled: false,
       warning: null,
       filePathDisplay: "~/.kanna/llm-provider.json",
@@ -445,7 +449,7 @@ export function createWsRouter({
       ok: false,
       error: {
         type: "config_error",
-        message: "LLM provider validation unavailable.",
+        message: "Model Registry validation unavailable.",
       },
     }),
   }
@@ -489,6 +493,13 @@ export function createWsRouter({
         },
         planMode: false,
       },
+      pi: {
+        model: "moonshotai/kimi-k2.6",
+        modelOptions: {
+          reasoningEffort: "medium",
+        },
+        planMode: false,
+      },
     },
     boardAutoReturn: false,
     warning: null,
@@ -528,6 +539,14 @@ export function createWsRouter({
         modelOptions: {
           ...snapshot.providerDefaults.cursor.modelOptions,
           ...patch.providerDefaults?.cursor?.modelOptions,
+        },
+      },
+      pi: {
+        ...snapshot.providerDefaults.pi,
+        ...patch.providerDefaults?.pi,
+        modelOptions: {
+          ...snapshot.providerDefaults.pi.modelOptions,
+          ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
     },
@@ -1204,7 +1223,14 @@ export function createWsRouter({
             apiKey: command.apiKey,
             model: command.model,
             baseUrl: command.baseUrl,
+            // Writers that don't manage faves must not wipe the saved list.
+            faveModels: command.faveModels ?? (await resolvedLlmProvider.read()).faveModels,
           })
+          // Fave models feed the pi provider's model picker, which clients read
+          // from chat snapshots — refresh them when the catalog changes.
+          if (applyPiFaveModels(snapshot.faveModels)) {
+            void broadcastSnapshots()
+          }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }

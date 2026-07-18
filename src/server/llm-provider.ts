@@ -6,6 +6,8 @@ import { getLlmProviderFilePath } from "../shared/branding"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
+  deriveModelLabel,
+  type FaveModel,
   type LlmProviderFile,
   type LlmProviderKind,
   type LlmProviderSnapshot,
@@ -35,6 +37,23 @@ function resolveProvider(value: unknown) {
 
 function normalizeString(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
+}
+
+export const MAX_FAVE_MODELS = 30
+
+/** Drop malformed/empty entries; a fave needs an id, its label falls back to a name derived from the id. */
+export function normalizeFaveModels(value: unknown): FaveModel[] {
+  if (!Array.isArray(value)) return []
+  const faves: FaveModel[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue
+    const id = normalizeString((entry as Record<string, unknown>).id)
+    if (!id) continue
+    const label = normalizeString((entry as Record<string, unknown>).label)
+    faves.push({ id, label: label || deriveModelLabel(id) })
+    if (faves.length >= MAX_FAVE_MODELS) break
+  }
+  return faves
 }
 
 export function resolveLlmProviderBaseUrl(provider: LlmProviderKind, baseUrl: string) {
@@ -97,8 +116,9 @@ export function normalizeLlmProviderSnapshot(
     model: resolvedModel,
     baseUrl,
     resolvedBaseUrl,
+    faveModels: normalizeFaveModels(source.faveModels),
     enabled,
-    warning: warnings.length > 0 ? `Some LLM provider settings are invalid: ${warnings.join("; ")}` : null,
+    warning: warnings.length > 0 ? `Some Model Registry settings are invalid: ${warnings.join("; ")}` : null,
     filePathDisplay: formatDisplayPath(filePath),
   }
 }
@@ -110,6 +130,7 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
     model: DEFAULT_OPENAI_SDK_MODEL,
     baseUrl: "",
     resolvedBaseUrl: OPENAI_BASE_URL,
+    faveModels: [],
     enabled: false,
     warning,
     filePathDisplay: formatDisplayPath(filePath),
@@ -135,7 +156,7 @@ export async function readLlmProviderSnapshot(filePath = getLlmProviderFilePath(
 }
 
 export async function writeLlmProviderSnapshot(
-  value: Pick<LlmProviderFile, "provider" | "apiKey" | "model"> & { baseUrl: string },
+  value: Pick<LlmProviderFile, "provider" | "apiKey" | "model" | "faveModels"> & { baseUrl: string },
   filePath = getLlmProviderFilePath(homedir())
 ) {
   const snapshot = normalizeLlmProviderSnapshot(value, filePath)
@@ -144,6 +165,7 @@ export async function writeLlmProviderSnapshot(
     apiKey: snapshot.apiKey,
     model: snapshot.model,
     baseUrl: snapshot.provider === "custom" ? snapshot.baseUrl : null,
+    faveModels: snapshot.faveModels,
   }
   await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")

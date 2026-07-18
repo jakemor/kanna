@@ -51,6 +51,14 @@ export function mergeAppSettingsPatch(
           ...patch.providerDefaults?.cursor?.modelOptions,
         },
       },
+      pi: {
+        ...settings.providerDefaults.pi,
+        ...patch.providerDefaults?.pi,
+        modelOptions: {
+          ...settings.providerDefaults.pi.modelOptions,
+          ...patch.providerDefaults?.pi?.modelOptions,
+        },
+      },
     },
   }
 }

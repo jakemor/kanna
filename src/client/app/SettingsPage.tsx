@@ -31,6 +31,7 @@ import {
   type AgentProvider,
   type InstalledSkillSummary,
   type KeybindingAction,
+  type FaveModel,
   type LlmProviderKind,
   type InstalledSkillsSnapshot,
   type SkillInstallResult,
@@ -91,7 +92,7 @@ const sidebarItems = [
     id: "providers",
     label: "Providers",
     icon: MessageSquareQuote,
-    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, and Cursor.",
+    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, Cursor, and Pi.",
   },
   {
     id: "keybindings",
@@ -852,11 +853,13 @@ export function SettingsPage() {
     apiKey: "",
     model: "",
     baseUrl: "",
+    faveModels: [] as FaveModel[],
   })
   const [llmProviderError, setLlmProviderError] = useState<string | null>(null)
   const [llmValidationStatus, setLlmValidationStatus] = useState<"idle" | "valid" | "invalid">("idle")
   const [llmValidationError, setLlmValidationError] = useState<unknown | null>(null)
   const [llmValidationDialogOpen, setLlmValidationDialogOpen] = useState(false)
+  const [defaultModelsDialogOpen, setDefaultModelsDialogOpen] = useState(false)
   const updateSnapshot = state.updateSnapshot
   const handleWriteAppSettings = state.handleWriteAppSettings
   const handleReadLlmProvider = state.handleReadLlmProvider
@@ -904,6 +907,7 @@ export function SettingsPage() {
       apiKey: llmProvider.apiKey,
       model: llmProvider.model,
       baseUrl: llmProvider.baseUrl,
+      faveModels: llmProvider.faveModels.map((fave) => ({ ...fave })),
     })
   }, [llmProvider])
 
@@ -1154,9 +1158,40 @@ export function SettingsPage() {
         : error
       setLlmValidationStatus("invalid")
       setLlmValidationError(fallbackError)
-      setLlmProviderError(error instanceof Error ? error.message : "Unable to save quick response provider settings.")
+      setLlmProviderError(error instanceof Error ? error.message : "Unable to save Model Registry settings.")
     }
   }
+
+  // Functional updates: row edits arrive per keystroke, and computing the next
+  // array from a render-scope draft corrupts neighbors when events outpace
+  // re-renders (stale closures). Mutations always apply to the current state.
+  function updateFaveModels(mutate: (faves: FaveModel[]) => FaveModel[]) {
+    setLlmProviderDraft((current) => ({ ...current, faveModels: mutate(current.faveModels) }))
+  }
+
+  function setFaveModelField(index: number, field: "label" | "id", value: string) {
+    updateFaveModels((faves) => {
+      // An index past the end targets the always-present blank bottom row —
+      // typing there appends a real entry.
+      if (index >= faves.length) {
+        return [...faves, { label: "", id: "", [field]: value }]
+      }
+      return faves.map((entry, entryIndex) => (entryIndex === index ? { ...entry, [field]: value } : entry))
+    })
+  }
+
+  function closeDefaultModelsDialog() {
+    setDefaultModelsDialogOpen(false)
+    // Drop rows that never got a model id and save the rest.
+    const cleanedDraft = {
+      ...llmProviderDraft,
+      faveModels: llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0),
+    }
+    setLlmProviderDraft(cleanedDraft)
+    void commitLlmProvider(cleanedDraft)
+  }
+
+  const selectedDefaultModelCount = llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0).length
 
   function handleLlmProviderSelection(nextProvider: LlmProviderKind) {
     const nextDraft = {
@@ -1206,7 +1241,7 @@ export function SettingsPage() {
   const llmValidationDescription = (
     <>
       <span>
-        Use an OpenAI-compatible API for title and commit message generation before Claude and Codex. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
+        OpenAI-compatible API for Pi, naming chats & more. Works with OpenRouter, OpenAI, or any custom endpoint. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
       </span>
       <span
         className={cn(
@@ -1748,7 +1783,34 @@ export function SettingsPage() {
                     </SettingsRow>
 
                     <SettingsRow
-                      title="Quick Response SDK"
+                      title="Pi Defaults"
+                      description="Saved defaults when using Pi (connects through the Model Registry). Any model id can be entered in the model picker."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="pi"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.pi.model}
+                          modelOptions={providerDefaults.pi.modelOptions}
+                          onModelChange={(_, model) => {
+                            handleProviderDefaultModelChange("pi", model)
+                          }}
+                          onModelOptionChange={(change) => {
+                            if (change.type === "piReasoningEffort") {
+                              handleProviderDefaultModelOptionsChange("pi", { reasoningEffort: change.effort })
+                            }
+                          }}
+                          planMode={providerDefaults.pi.planMode}
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Model Registry"
                       description={llmValidationDescription}
                       alignStart
                     >
@@ -1799,9 +1861,22 @@ export function SettingsPage() {
                           onChange={(event) => setLlmProviderDraft((current) => ({ ...current, model: event.target.value }))}
                           onBlur={() => void commitLlmProvider()}
                           onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
-                          placeholder="Model id"
+                          placeholder="Quick response model id (naming chats, commits)"
                         />
                       </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Default Models"
+                      description="Models shown in Pi's model picker, with a display label and the model id sent to the Model Registry endpoint."
+                    >
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDefaultModelsDialogOpen(true)}
+                      >
+                        {selectedDefaultModelCount} selected
+                      </Button>
                     </SettingsRow>
                   </div>
                 ) : selectedPage === "keybindings" ? (
@@ -1973,6 +2048,78 @@ export function SettingsPage() {
           <DialogFooter>
             <Button variant="secondary" size="sm" onClick={() => setLlmValidationDialogOpen(false)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={defaultModelsDialogOpen}
+        onOpenChange={(open) => {
+          if (open) {
+            setDefaultModelsDialogOpen(true)
+          } else {
+            closeDefaultModelsDialog()
+          }
+        }}
+      >
+        <DialogContent size="lg">
+          <DialogBody className="space-y-4">
+            <DialogTitle>Default Models</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Shown in Pi's model picker. Each entry has a display label and the model id sent to the Model Registry endpoint.
+            </p>
+            {/*
+              The modal edits a local draft only — nothing commits until Done
+              or dismissal. Mid-edit commits would echo a snapshot back that
+              resets the draft (normalization drops id-less rows), wiping a
+              row while it's being filled in.
+
+              A blank row is always rendered at the bottom; typing into it
+              appends a real entry (and a fresh blank row appears below).
+            */}
+            <div className="max-h-[55vh] divide-y divide-border/60 overflow-y-auto rounded-lg border border-border bg-background">
+              {[...llmProviderDraft.faveModels, { label: "", id: "" }].map((fave, index) => {
+                const isNewRow = index === llmProviderDraft.faveModels.length
+                return (
+                  <div key={index} className="flex items-center">
+                    <input
+                      value={fave.label}
+                      onChange={(event) => setFaveModelField(index, "label", event.target.value)}
+                      placeholder="Name"
+                      spellCheck={false}
+                      className="w-[160px] shrink-0 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/60"
+                    />
+                    <input
+                      value={fave.id}
+                      onChange={(event) => setFaveModelField(index, "id", event.target.value)}
+                      placeholder="Model id"
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      className="min-w-0 flex-1 bg-transparent px-3 py-2 font-mono text-sm outline-none placeholder:text-muted-foreground/60"
+                    />
+                    {isNewRow ? (
+                      <div className="w-9 shrink-0" />
+                    ) : (
+                      <button
+                        type="button"
+                        aria-label="Remove default model"
+                        onClick={() => {
+                          updateFaveModels((faves) => faves.filter((_, entryIndex) => entryIndex !== index))
+                        }}
+                        className="flex w-9 shrink-0 items-center justify-center self-stretch text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" size="sm" onClick={closeDefaultModelsDialog}>
+              Done
             </Button>
           </DialogFooter>
         </DialogContent>

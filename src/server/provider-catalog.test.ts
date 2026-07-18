@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
+  applyPiFaveModels,
   cursorModelIdForOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
@@ -15,6 +16,39 @@ import { resolveClaudeApiModelId } from "../shared/types"
 describe("provider catalog normalization", () => {
   afterEach(() => {
     resetServerProvidersForTests()
+  })
+
+  test("applyPiFaveModels replaces the pi picker and default model", () => {
+    const changed = applyPiFaveModels([
+      { label: "Fast Kimi", id: "moonshotai/kimi-k2.5:nitro" },
+      { label: "Sonnet", id: "anthropic/claude-sonnet-5" },
+    ])
+    expect(changed).toBe(true)
+
+    const pi = SERVER_PROVIDERS.find((provider) => provider.id === "pi")
+    expect(pi?.defaultModel).toBe("moonshotai/kimi-k2.5:nitro")
+    expect(pi?.models.map((model) => [model.id, model.label])).toEqual([
+      ["moonshotai/kimi-k2.5:nitro", "Fast Kimi"],
+      ["anthropic/claude-sonnet-5", "Sonnet"],
+    ])
+
+    // Arbitrary ids still pass through the server model normalizer.
+    expect(normalizeServerModel("pi", "someone/else")).toBe("someone/else")
+    // Re-applying the same faves reports no change.
+    expect(applyPiFaveModels([
+      { label: "Fast Kimi", id: "moonshotai/kimi-k2.5:nitro" },
+      { label: "Sonnet", id: "anthropic/claude-sonnet-5" },
+    ])).toBe(false)
+  })
+
+  test("applyPiFaveModels with an empty list restores the built-in suggestions", () => {
+    applyPiFaveModels([{ label: "Only", id: "x/y" }])
+    const changed = applyPiFaveModels([])
+    expect(changed).toBe(true)
+
+    const pi = SERVER_PROVIDERS.find((provider) => provider.id === "pi")
+    expect(pi?.defaultModel).toBe("moonshotai/kimi-k2.6")
+    expect(pi?.models.some((model) => model.id === "moonshotai/kimi-k2.6")).toBe(true)
   })
 
   test("maps legacy Claude effort into shared model options", () => {

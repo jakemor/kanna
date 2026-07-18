@@ -110,6 +110,13 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       },
       planMode: false,
     },
+    pi: {
+      model: "moonshotai/kimi-k2.6",
+      modelOptions: {
+        reasoningEffort: "medium",
+      },
+      planMode: false,
+    },
   },
   boardAutoReturn: false,
   warning: null,
@@ -226,6 +233,7 @@ const DEFAULT_LLM_PROVIDER_SNAPSHOT: LlmProviderSnapshot = {
   model: "",
   baseUrl: "",
   resolvedBaseUrl: "https://api.openai.com/v1",
+  faveModels: [],
   enabled: false,
   warning: null,
   filePathDisplay: "~/.kanna/llm-provider.json",
@@ -273,7 +281,7 @@ describe("ws-router", () => {
   })
 
   test("reads and writes llm provider settings via commands", async () => {
-    const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">> = []
+    const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>> = []
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -293,6 +301,7 @@ describe("ws-router", () => {
             ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
             ...value,
             resolvedBaseUrl: value.provider === "custom" ? value.baseUrl : "https://api.openai.com/v1",
+            faveModels: [],
             enabled: Boolean(value.apiKey && value.model),
           }
         },
@@ -353,6 +362,7 @@ describe("ws-router", () => {
           model: "gpt-test",
           baseUrl: "https://example.com/v1",
           resolvedBaseUrl: "https://example.com/v1",
+          faveModels: [],
           enabled: true,
         },
       },
@@ -362,6 +372,9 @@ describe("ws-router", () => {
       apiKey: "test-key",
       model: "gpt-test",
       baseUrl: "https://example.com/v1",
+      // The command omitted faveModels, so the handler carried over the saved
+      // list (empty here) instead of wiping it.
+      faveModels: [],
     }])
   })
 

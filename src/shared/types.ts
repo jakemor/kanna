@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex" | "cursor"
+export type AgentProvider = "claude" | "codex" | "cursor" | "pi"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -181,6 +181,19 @@ export const CODEX_REASONING_OPTIONS = [
   },
 ] as const satisfies readonly CodexReasoningEffortOption[]
 
+// Pi's standardized thinking levels (mapped by pi-ai to each provider's native
+// reasoning parameter — for OpenRouter that's `reasoning: { effort }`).
+export const PI_REASONING_OPTIONS = [
+  { id: "off", label: "Off" },
+  { id: "minimal", label: "Minimal" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra High" },
+] as const satisfies readonly ProviderEffortOption[]
+
+export type PiReasoningEffort = (typeof PI_REASONING_OPTIONS)[number]["id"]
+
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
 export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
@@ -200,10 +213,15 @@ export interface CursorModelOptions {
   fastMode: boolean
 }
 
+export interface PiModelOptions {
+  reasoningEffort: PiReasoningEffort
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
   cursor: CursorModelOptions
+  pi: PiModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -216,6 +234,7 @@ export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
   cursor: ProviderPreference<CursorModelOptions>
+  pi: ProviderPreference<PiModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -237,8 +256,29 @@ export const DEFAULT_CURSOR_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CursorModelOptions
 
+export const DEFAULT_PI_MODEL = "moonshotai/kimi-k2.6"
+
+export const DEFAULT_PI_MODEL_OPTIONS = {
+  reasoningEffort: "medium",
+} as const satisfies PiModelOptions
+
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function isPiReasoningEffort(value: unknown): value is PiReasoningEffort {
+  return PI_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function normalizePiReasoningEffort(effort?: unknown): PiReasoningEffort {
+  return isPiReasoningEffort(effort) ? effort : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort
+}
+
+// Pi accepts any OpenRouter model id verbatim — unlike the other providers there
+// is no catalog clamp, the catalog entries are just suggestions.
+export function normalizePiModelId(modelId?: unknown, fallbackModelId = DEFAULT_PI_MODEL): string {
+  const trimmed = typeof modelId === "string" ? modelId.trim() : ""
+  return trimmed || fallbackModelId
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
@@ -270,6 +310,28 @@ export function deriveClaudeModelLabel(modelId: string): string {
   const parts = modelId.replace(/^claude-/, "").split("-").filter(Boolean)
   if (parts.length === 0) return modelId
   return titleCaseWord(parts[0] ?? modelId)
+}
+
+// Well-known acronyms kept fully uppercase when deriving labels from model ids.
+const MODEL_LABEL_ACRONYMS = new Set(["gpt", "glm"])
+
+/**
+ * Derive a display label from a bare model id when no catalog or fave record
+ * names it: strip the vendor prefix and any `:variant` suffix, then title-case
+ * the dash-separated words.
+ *
+ *   lab/kimi-k2.5:nitro → Kimi K2.5
+ *   gpt-5.6-sol         → GPT 5.6 Sol
+ *   openai/gpt-5.6      → GPT 5.6
+ */
+export function deriveModelLabel(modelId: string): string {
+  const base = modelId.split("/").pop() ?? modelId
+  const withoutVariant = base.split(":")[0] ?? base
+  const words = withoutVariant.split("-").filter(Boolean)
+  if (words.length === 0) return modelId
+  return words
+    .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
+    .join(" ")
 }
 
 export interface ProviderCatalogEntry {
@@ -402,6 +464,29 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     ],
     efforts: [],
   },
+  {
+    // Pi (badlogic's pi-coding-agent) runs in-process against OpenRouter. The
+    // model list is a curated starting point — any OpenRouter model id can be
+    // typed in via the custom model input (see normalizePiModelId).
+    id: "pi",
+    label: "Pi",
+    defaultModel: DEFAULT_PI_MODEL,
+    defaultEffort: "medium",
+    supportsPlanMode: false,
+    models: [
+      { id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", supportsEffort: true },
+      { id: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6", supportsEffort: true },
+      { id: "anthropic/claude-opus-4.7", label: "Claude Opus 4.7", supportsEffort: true },
+      { id: "openai/gpt-5.5", label: "GPT-5.5", supportsEffort: true },
+      { id: "openai/gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: true },
+      { id: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", supportsEffort: true },
+      { id: "x-ai/grok-4.1-fast", label: "Grok 4.1 Fast", supportsEffort: true },
+      { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2", supportsEffort: true },
+      { id: "minimax/minimax-m2.7", label: "MiniMax M2.7", supportsEffort: true },
+      { id: "qwen/qwen3-coder-plus", label: "Qwen3 Coder Plus", supportsEffort: false },
+    ],
+    efforts: [...PI_REASONING_OPTIONS],
+  },
 ]
 
 export function getProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
@@ -425,6 +510,9 @@ export function normalizeProviderModelId(
   modelId?: string,
   fallbackModelId?: string
 ): string {
+  if (provider === "pi") {
+    return normalizePiModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
+  }
   return getProviderModelMatch(provider, modelId)?.id
     ?? fallbackModelId
     ?? getProviderCatalog(provider).defaultModel
@@ -671,14 +759,28 @@ export interface AppSettingsPatch {
       modelOptions?: Partial<CodexModelOptions>
     }
     cursor?: Partial<ProviderPreference<CursorModelOptions>>
+    pi?: Partial<Omit<ProviderPreference<PiModelOptions>, "modelOptions">> & {
+      modelOptions?: Partial<PiModelOptions>
+    }
   }
 }
 
+/** A user-curated model shortcut shown in Pi's model picker. */
+export interface FaveModel {
+  label: string
+  id: string
+}
+
+// The Model Registry: one OpenAI-compatible connection (OpenRouter, OpenAI, or
+// a custom base URL) used by Pi and for background quick responses (chat
+// naming, commit messages). Kept as "LlmProvider" internally / on disk for
+// backwards compatibility with existing ~/.kanna/llm-provider.json files.
 export interface LlmProviderFile {
   provider?: LlmProviderKind
   apiKey?: string
   model?: string
   baseUrl?: string | null
+  faveModels?: FaveModel[]
 }
 
 export interface LlmProviderSnapshot {
@@ -687,6 +789,7 @@ export interface LlmProviderSnapshot {
   model: string
   baseUrl: string
   resolvedBaseUrl: string
+  faveModels: FaveModel[]
   enabled: boolean
   warning: string | null
   filePathDisplay: string

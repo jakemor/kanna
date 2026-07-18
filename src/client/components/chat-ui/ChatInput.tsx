@@ -194,6 +194,13 @@ function getEffectiveComposerState(
         modelOptions: { ...providerDefaults.cursor.modelOptions },
         planMode: composerState.planMode,
       }
+    case "pi":
+      return {
+        provider: "pi",
+        model: providerDefaults.pi.model,
+        modelOptions: { ...providerDefaults.pi.modelOptions },
+        planMode: composerState.planMode,
+      }
     default:
       return assertNever(activeProvider)
   }
@@ -552,6 +559,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "cursor") {
       modelOptions = { cursor: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "pi") {
+      modelOptions = { pi: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -817,6 +826,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   setReasoningEffort(change.effort)
                   break
                 case "codexReasoningEffort":
+                  setReasoningEffort(change.effort)
+                  break
+                case "piReasoningEffort":
                   setReasoningEffort(change.effort)
                   break
                 case "contextWindow":

@@ -979,7 +979,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [socket])
 
   const handleWriteLlmProvider = useCallback(async (
-    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
+    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>
   ) => {
     try {
       const snapshot = await socket.command<LlmProviderSnapshot>({
@@ -988,6 +988,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
         apiKey: value.apiKey,
         model: value.model,
         baseUrl: value.baseUrl,
+        faveModels: value.faveModels,
       })
       setLlmProvider(snapshot)
       setCommandError(null)

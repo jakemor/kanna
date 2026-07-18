@@ -3,14 +3,19 @@ import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
+  DEFAULT_PI_MODEL,
+  DEFAULT_PI_MODEL_OPTIONS,
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeClaudeModelId,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
   normalizeCursorModelId,
+  normalizePiModelId,
+  normalizePiReasoningEffort,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isPiReasoningEffort,
   supportsClaudeMaxReasoningEffort,
   type AgentProvider,
   type ChatProviderPreferences,
@@ -18,6 +23,7 @@ import {
   type CodexModelOptions,
   type CursorModelOptions,
   type DefaultProviderPreference,
+  type PiModelOptions,
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
 } from "../../shared/types"
@@ -42,6 +48,12 @@ export type ComposerState =
     provider: "cursor"
     model: string
     modelOptions: CursorModelOptions
+    planMode: boolean
+  }
+  | {
+    provider: "pi"
+    model: string
+    modelOptions: PiModelOptions
     planMode: boolean
   }
 
@@ -102,6 +114,13 @@ type PersistedComposerState =
     modelOptions?: Partial<CursorModelOptions>
     planMode?: boolean
   }
+  | {
+    provider: "pi"
+    model?: string
+    effort?: string
+    modelOptions?: Partial<PiModelOptions>
+    planMode?: boolean
+  }
 
 type PersistedChatPreferencesState = Pick<
   ChatPreferencesState,
@@ -109,7 +128,7 @@ type PersistedChatPreferencesState = Pick<
 > & LegacyPersistedChatPreferencesState
 
 export function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
-  if (value === "claude" || value === "codex" || value === "cursor") return value
+  if (value === "claude" || value === "codex" || value === "cursor" || value === "pi") return value
   return "last_used"
 }
 
@@ -117,7 +136,10 @@ export function normalizeDefaultProvider(value?: string): DefaultProviderPrefere
 // normalizer validates the fields it cares about, so options from any provider (or
 // raw persisted data) are accepted and coerced.
 type ProviderModelOptionsInput = {
-  reasoningEffort?: ClaudeModelOptions["reasoningEffort"] | CodexModelOptions["reasoningEffort"]
+  reasoningEffort?:
+    | ClaudeModelOptions["reasoningEffort"]
+    | CodexModelOptions["reasoningEffort"]
+    | PiModelOptions["reasoningEffort"]
   contextWindow?: ClaudeModelOptions["contextWindow"]
   fastMode?: boolean
 }
@@ -187,6 +209,24 @@ export function normalizeCursorPreference(value?: {
   }
 }
 
+export function normalizePiPreference(value?: {
+  model?: string
+  effort?: string
+  modelOptions?: ProviderModelOptionsInput
+  planMode?: boolean
+}): ProviderPreference<PiModelOptions> {
+  const reasoningEffort = value?.modelOptions?.reasoningEffort
+  return {
+    model: normalizePiModelId(value?.model),
+    modelOptions: {
+      reasoningEffort: normalizePiReasoningEffort(
+        isPiReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
+      ),
+    },
+    planMode: false,
+  }
+}
+
 type ProviderPreferenceInput = {
   model?: string
   effort?: string
@@ -207,6 +247,8 @@ export function normalizeProviderPreference(
       return normalizeCodexPreference(value)
     case "cursor":
       return normalizeCursorPreference(value)
+    case "pi":
+      return normalizePiPreference(value)
     default:
       return assertNever(provider)
   }
@@ -220,6 +262,8 @@ function composerStateForProvider(provider: AgentProvider, value?: ProviderPrefe
       return { provider, ...normalizeCodexPreference(value) }
     case "cursor":
       return { provider, ...normalizeCursorPreference(value) }
+    case "pi":
+      return { provider, ...normalizePiPreference(value) }
     default:
       return assertNever(provider)
   }
@@ -240,6 +284,11 @@ export function createDefaultProviderDefaults(): ChatProviderPreferences {
     cursor: {
       model: "composer-2.5",
       modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
+      planMode: false,
+    },
+    pi: {
+      model: DEFAULT_PI_MODEL,
+      modelOptions: { ...DEFAULT_PI_MODEL_OPTIONS },
       planMode: false,
     },
   }
@@ -263,11 +312,18 @@ export function normalizeProviderDefaults(value?: {
     modelOptions?: Partial<CursorModelOptions>
     planMode?: boolean
   }
+  pi?: {
+    model?: string
+    effort?: string
+    modelOptions?: Partial<PiModelOptions>
+    planMode?: boolean
+  }
 }): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
     cursor: normalizeCursorPreference(value?.cursor),
+    pi: normalizePiPreference(value?.pi),
   }
 }
 
@@ -304,6 +360,14 @@ function cloneComposerState(state: ComposerState): ComposerState {
       planMode: state.planMode,
     }
   }
+  if (state.provider === "pi") {
+    return {
+      provider: "pi",
+      model: state.model,
+      modelOptions: { ...state.modelOptions },
+      planMode: state.planMode,
+    }
+  }
   return {
     provider: "codex",
     model: state.model,
@@ -329,6 +393,10 @@ function sameComposerState(left: ComposerState | undefined, right: ComposerState
 
   if (left.provider === "cursor" && right.provider === "cursor") {
     return left.modelOptions.fastMode === right.modelOptions.fastMode
+  }
+
+  if (left.provider === "pi" && right.provider === "pi") {
+    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
   }
 
   return false
@@ -364,6 +432,16 @@ function normalizeComposerState(
     const preference = normalizeCursorPreference(value)
     return {
       provider: "cursor",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
+  if (value?.provider === "pi") {
+    const preference = normalizePiPreference(value)
+    return {
+      provider: "pi",
       model: preference.model,
       modelOptions: preference.modelOptions,
       planMode: preference.planMode,
@@ -486,7 +564,7 @@ interface ChatPreferencesState {
   setChatComposerModel: (chatId: string, model: string) => void
   setChatComposerModelOptions: (
     chatId: string,
-    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions> | Partial<CursorModelOptions>
+    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions> | Partial<CursorModelOptions> | Partial<PiModelOptions>
   ) => void
   setChatComposerPlanMode: (chatId: string, planMode: boolean) => void
   resetChatComposerFromProvider: (chatId: string, provider: AgentProvider) => void

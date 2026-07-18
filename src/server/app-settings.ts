@@ -8,14 +8,19 @@ import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
+  DEFAULT_PI_MODEL,
+  DEFAULT_PI_MODEL_OPTIONS,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isPiReasoningEffort,
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeClaudeModelId,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
   normalizeCursorModelId,
+  normalizePiModelId,
+  normalizePiReasoningEffort,
   supportsClaudeMaxReasoningEffort,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
@@ -28,6 +33,7 @@ import {
   type CursorModelOptions,
   type DefaultProviderPreference,
   type EditorPreset,
+  type PiModelOptions,
   type ProviderPreference,
 } from "../shared/types"
 
@@ -51,6 +57,7 @@ interface AppSettingsFile {
     claude?: Partial<ProviderPreference<Partial<ClaudeModelOptions>>> & { effort?: unknown }
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
     cursor?: Partial<ProviderPreference<Partial<CursorModelOptions>>>
+    pi?: Partial<ProviderPreference<Partial<PiModelOptions>>> & { effort?: unknown }
   }
   boardAutoReturn?: unknown
 }
@@ -120,6 +127,11 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
       modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
       planMode: false,
     },
+    pi: {
+      model: DEFAULT_PI_MODEL,
+      modelOptions: { ...DEFAULT_PI_MODEL_OPTIONS },
+      planMode: false,
+    },
   }
 }
 
@@ -155,7 +167,9 @@ function normalizeChatSoundId(value: unknown): ChatSoundId {
 }
 
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
-  return value === "claude" || value === "codex" || value === "cursor" || value === "last_used" ? value : "last_used"
+  return value === "claude" || value === "codex" || value === "cursor" || value === "pi" || value === "last_used"
+    ? value
+    : "last_used"
 }
 
 function normalizeEditorPreset(value: unknown): EditorPreset {
@@ -233,12 +247,31 @@ function normalizeCursorPreference(value?: {
   }
 }
 
+function normalizePiPreference(value?: {
+  model?: unknown
+  effort?: unknown
+  modelOptions?: Partial<Record<keyof PiModelOptions, unknown>>
+  planMode?: unknown
+}): ProviderPreference<PiModelOptions> {
+  const reasoningEffort = value?.modelOptions?.reasoningEffort
+  return {
+    model: normalizePiModelId(value?.model),
+    modelOptions: {
+      reasoningEffort: normalizePiReasoningEffort(
+        isPiReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
+      ),
+    },
+    planMode: false,
+  }
+}
+
 function normalizeProviderDefaults(value: AppSettingsFile["providerDefaults"] | undefined): ChatProviderPreferences {
   const defaults = createDefaultProviderDefaults()
   return {
     claude: normalizeClaudePreference(value?.claude ?? defaults.claude),
     codex: normalizeCodexPreference(value?.codex ?? defaults.codex),
     cursor: normalizeCursorPreference(value?.cursor ?? defaults.cursor),
+    pi: normalizePiPreference(value?.pi ?? defaults.pi),
   }
 }
 
@@ -393,6 +426,14 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
         modelOptions: {
           ...state.providerDefaults.cursor.modelOptions,
           ...patch.providerDefaults?.cursor?.modelOptions,
+        },
+      },
+      pi: {
+        ...state.providerDefaults.pi,
+        ...patch.providerDefaults?.pi,
+        modelOptions: {
+          ...state.providerDefaults.pi.modelOptions,
+          ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
     },

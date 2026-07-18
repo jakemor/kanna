@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { ArrowLeft, Check, Circle, File, Folder, FolderPlus, GitBranch, Loader2, Star } from "lucide-react"
+import { ArrowLeft, Check, Circle, File, Folder, FolderPlus, GitBranch, Loader2, Plus, Star } from "lucide-react"
 import { parseGitRepoUrl } from "../../shared/git-url"
 import type { FsDirEntry, FsListResult } from "../../shared/types"
 import { cn } from "../lib/utils"
@@ -660,7 +660,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
               disabled={!dir || dirLoading || creatingFolder}
               onClick={() => setCreatingFolder(true)}
             >
-              <FolderPlus className="size-3.5" data-icon="inline-start" />
+              <Plus className="size-3.5 mr-1.5" />
               New Folder
             </Button>
             <div className="flex gap-2">

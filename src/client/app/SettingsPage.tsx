@@ -91,7 +91,7 @@ const sidebarItems = [
     id: "providers",
     label: "Providers",
     icon: MessageSquareQuote,
-    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, and Cursor.",
+    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, Cursor, and Pi.",
   },
   {
     id: "keybindings",

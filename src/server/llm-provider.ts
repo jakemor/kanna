@@ -6,6 +6,7 @@ import { getLlmProviderFilePath } from "../shared/branding"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
+  deriveModelLabel,
   type FaveModel,
   type LlmProviderFile,
   type LlmProviderKind,
@@ -40,7 +41,7 @@ function normalizeString(value: unknown) {
 
 export const MAX_FAVE_MODELS = 30
 
-/** Drop malformed/empty entries; a fave needs an id, its label falls back to the id. */
+/** Drop malformed/empty entries; a fave needs an id, its label falls back to a name derived from the id. */
 export function normalizeFaveModels(value: unknown): FaveModel[] {
   if (!Array.isArray(value)) return []
   const faves: FaveModel[] = []
@@ -49,7 +50,7 @@ export function normalizeFaveModels(value: unknown): FaveModel[] {
     const id = normalizeString((entry as Record<string, unknown>).id)
     if (!id) continue
     const label = normalizeString((entry as Record<string, unknown>).label)
-    faves.push({ id, label: label || id })
+    faves.push({ id, label: label || deriveModelLabel(id) })
     if (faves.length >= MAX_FAVE_MODELS) break
   }
   return faves

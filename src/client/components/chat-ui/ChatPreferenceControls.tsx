@@ -4,6 +4,7 @@ import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   PI_REASONING_OPTIONS,
+  deriveModelLabel,
   getCodexReasoningOptions,
   type AgentProvider,
   type ClaudeContextWindow,
@@ -99,6 +100,7 @@ export function PopoverMenuItem({
   label,
   description,
   disabled,
+  flush = false,
 }: {
   onClick: () => void
   selected: boolean
@@ -106,14 +108,24 @@ export function PopoverMenuItem({
   label: React.ReactNode
   description?: string
   disabled?: boolean
+  /** Table-like row inside a flush list popover: no per-row surface, flat edges. */
+  flush?: boolean
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "w-full flex items-center gap-2 p-2 border border-border/0 rounded-lg text-left transition-opacity [&>svg]:shrink-0",
-        selected ? "bg-muted border-border" : "hover:opacity-60",
+        "w-full flex items-center gap-2 text-left [&>svg]:shrink-0",
+        flush
+          ? cn(
+            "px-3 py-2 transition-colors",
+            selected ? "bg-muted" : "hover:bg-muted/50",
+          )
+          : cn(
+            "p-2 border border-border/0 rounded-lg transition-opacity",
+            selected ? "bg-muted border-border" : "hover:opacity-60",
+          ),
         disabled && "opacity-40 cursor-not-allowed"
       )}
     >
@@ -130,11 +142,14 @@ export function InputPopover({
   trigger,
   triggerClassName,
   disabled = false,
+  flush = false,
   children,
 }: {
   trigger: React.ReactNode
   triggerClassName?: string
   disabled?: boolean
+  /** Render children as a flush table-like list (horizontal dividers only) instead of padded rows. */
+  flush?: boolean
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
 }) {
   const [open, setOpen] = useState(false)
@@ -166,8 +181,10 @@ export function InputPopover({
           {trigger}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="w-64 p-1">
-        <div className="space-y-1">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
+      <PopoverContent align="center" className={cn("w-64", flush ? "overflow-hidden p-0" : "p-1")}>
+        <div className={flush ? "divide-y divide-border/60" : "space-y-1"}>
+          {typeof children === "function" ? children(() => setOpen(false)) : children}
+        </div>
       </PopoverContent>
     </Popover>
   )
@@ -200,7 +217,7 @@ function CustomModelInput({
   }
 
   return (
-    <div className="flex items-center gap-2 p-2 border-t border-border/50">
+    <div className="flex items-center gap-2 px-3 py-2">
       <PencilLine className="h-4 w-4 shrink-0 text-muted-foreground" />
       <input
         value={value}
@@ -299,10 +316,11 @@ export function ChatPreferenceControls({
       ) : null}
 
       <InputPopover
+        flush
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
-            <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model}</span>
+            <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? deriveModelLabel(model)}</span>
           </>
         )}
       >
@@ -315,6 +333,7 @@ export function ChatPreferenceControls({
               return (
                 <PopoverMenuItem
                   key={candidate.id}
+                  flush
                   onClick={() => {
                     onModelChange(selectedProvider, candidate.id)
                     close()

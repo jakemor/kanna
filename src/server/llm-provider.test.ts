@@ -150,10 +150,10 @@ describe("writeLlmProviderSnapshot", () => {
       ],
     }, filePath)
 
-    // Labels fall back to the id; entries without an id are dropped.
+    // Labels fall back to a name derived from the id; entries without an id are dropped.
     expect(snapshot.faveModels).toEqual([
       { label: "Kimi", id: "moonshotai/kimi-k2.6" },
-      { label: "openai/gpt-5.5", id: "openai/gpt-5.5" },
+      { label: "GPT 5.5", id: "openai/gpt-5.5" },
     ])
 
     const reread = await readLlmProviderSnapshot(filePath)

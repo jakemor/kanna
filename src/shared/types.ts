@@ -312,6 +312,28 @@ export function deriveClaudeModelLabel(modelId: string): string {
   return titleCaseWord(parts[0] ?? modelId)
 }
 
+// Well-known acronyms kept fully uppercase when deriving labels from model ids.
+const MODEL_LABEL_ACRONYMS = new Set(["gpt", "glm"])
+
+/**
+ * Derive a display label from a bare model id when no catalog or fave record
+ * names it: strip the vendor prefix and any `:variant` suffix, then title-case
+ * the dash-separated words.
+ *
+ *   lab/kimi-k2.5:nitro → Kimi K2.5
+ *   gpt-5.6-sol         → GPT 5.6 Sol
+ *   openai/gpt-5.6      → GPT 5.6
+ */
+export function deriveModelLabel(modelId: string): string {
+  const base = modelId.split("/").pop() ?? modelId
+  const withoutVariant = base.split(":")[0] ?? base
+  const words = withoutVariant.split("-").filter(Boolean)
+  if (words.length === 0) return modelId
+  return words
+    .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
+    .join(" ")
+}
+
 export interface ProviderCatalogEntry {
   id: AgentProvider
   label: string

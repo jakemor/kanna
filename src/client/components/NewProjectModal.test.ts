@@ -5,6 +5,8 @@ import {
   classifyExistingInput,
   filterDirEntries,
   joinDirPath,
+  parseRepoRef,
+  pathBasename,
 } from "./NewProjectModal"
 
 describe("classifyExistingInput", () => {
@@ -65,6 +67,50 @@ describe("abbreviateHomePath", () => {
   test("leaves non-home paths alone", () => {
     expect(abbreviateHomePath("/var/tmp", "/Users/jake")).toBe("/var/tmp")
     expect(abbreviateHomePath("/Users/jakester", "/Users/jake")).toBe("/Users/jakester")
+  })
+})
+
+describe("parseRepoRef", () => {
+  test("parses full URLs", () => {
+    expect(parseRepoRef("https://github.com/jakemor/kanna")).toEqual({
+      host: "github.com",
+      owner: "jakemor",
+      repo: "kanna",
+      cloneUrl: "https://github.com/jakemor/kanna.git",
+    })
+    expect(parseRepoRef("git@gitlab.com:acme/widgets.git")?.host).toBe("gitlab.com")
+  })
+
+  test("parses owner/repo shorthand as GitHub", () => {
+    expect(parseRepoRef("jakemor/kanna")).toEqual({
+      host: "github.com",
+      owner: "jakemor",
+      repo: "kanna",
+      cloneUrl: "https://github.com/jakemor/kanna.git",
+    })
+    expect(parseRepoRef("jakemor/kanna.git")?.repo).toBe("kanna")
+  })
+
+  test("rejects non-repo input", () => {
+    expect(parseRepoRef("")).toBeNull()
+    expect(parseRepoRef("kanna")).toBeNull()
+    expect(parseRepoRef("a/b/c")).toBeNull()
+    expect(parseRepoRef("https://example.com/owner/repo")).toBeNull()
+  })
+})
+
+describe("pathBasename", () => {
+  test("returns the last path segment", () => {
+    expect(pathBasename("~/Kanna/my-project")).toBe("my-project")
+    expect(pathBasename("/var/tmp/app/")).toBe("app")
+    expect(pathBasename("C:\\Projects\\demo")).toBe("demo")
+  })
+
+  test("returns empty for root-ish paths", () => {
+    expect(pathBasename("~/")).toBe("")
+    expect(pathBasename("~")).toBe("")
+    expect(pathBasename("")).toBe("")
+    expect(pathBasename("/")).toBe("")
   })
 })
 

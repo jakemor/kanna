@@ -64,7 +64,7 @@ Use `[x]` when an item is complete. Add any follow-up notes directly under the i
   Expected impact: major type boilerplate reduction; moderate refactor risk.
 
 - [x] chatPreferencesStore normalization reduction
-  Status: completed on 2026-07-18 — generic `PROVIDER_NORMALIZERS` record replaces the per-provider clone/normalize/compare copies (730 → 484 lines, tests unchanged). Server-side duplicates in `app-settings.ts`/`ws-router.ts` remain a follow-up.
+  Status: completed on 2026-07-18 — generic `PROVIDER_NORMALIZERS` record replaces the per-provider clone/normalize/compare copies (730 → 484 lines, tests unchanged). Follow-up also completed 2026-07-18: normalizers and the providerDefaults deep-merge moved to `src/shared/provider-preferences.ts`, shared by `app-settings.ts` (server), `chatPreferencesStore.ts`, and `appSettingsStore.ts` — the server-side duplicates are gone.
   Commit: `db77356`
   Scope: `src/client/stores/chatPreferencesStore.ts`
   Goals:

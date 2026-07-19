@@ -1,4 +1,4 @@
-import { useCallback, useRef, type Dispatch, type SetStateAction } from "react"
+import { useCallback, useLayoutEffect, useRef, type Dispatch, type SetStateAction } from "react"
 import type { NavigateFunction } from "react-router-dom"
 import type { AgentProvider, ChatAttachment, ModelOptions, SidebarData, TranscriptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../stores/chatPreferencesStore"
@@ -48,9 +48,14 @@ export function useSendMessage(params: {
 
   // Snapshot-derived values read inside handleSend live behind a ref so the
   // callback identity stays stable across streaming updates; otherwise every
-  // transcript entry would invalidate the composer's memo barrier.
+  // transcript entry would invalidate the composer's memo barrier. The ref is
+  // written in a layout effect (not during render) so it stays pure under
+  // concurrent rendering; handleSend only fires from event handlers, which
+  // always run after the commit.
   const sendContextRef = useRef(params.sendContext)
-  sendContextRef.current = params.sendContext
+  useLayoutEffect(() => {
+    sendContextRef.current = params.sendContext
+  })
 
   const handleSend = useCallback(async (
     content: string,

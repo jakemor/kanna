@@ -1,20 +1,5 @@
 import { create } from "zustand"
 import {
-  DEFAULT_CLAUDE_MODEL_OPTIONS,
-  DEFAULT_CODEX_MODEL_OPTIONS,
-  DEFAULT_CURSOR_MODEL_OPTIONS,
-  normalizeClaudeContextWindow,
-  normalizeClaudeFastMode,
-  normalizeClaudeModelId,
-  normalizeCodexModelId,
-  normalizeCodexReasoningEffort,
-  normalizeCursorModelId,
-  normalizePiModelId,
-  normalizePiReasoningEffort,
-  isClaudeReasoningEffort,
-  isCodexReasoningEffort,
-  isPiReasoningEffort,
-  supportsClaudeMaxReasoningEffort,
   type AgentProvider,
   type ChatProviderPreferences,
   type ClaudeModelOptions,
@@ -25,8 +10,31 @@ import {
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
 } from "../../shared/types"
+import {
+  createDefaultProviderDefaults,
+  normalizeClaudePreference,
+  normalizeCodexPreference,
+  normalizeCursorPreference,
+  normalizePiPreference,
+  normalizeProviderDefaults,
+  normalizeProviderPreference,
+  PROVIDER_NORMALIZERS,
+  type ProviderModelOptionsInput,
+  type ProviderPreferenceInput,
+} from "../../shared/provider-preferences"
 
 export type { ChatProviderPreferences, DefaultProviderPreference, ProviderPreference }
+// The normalizers live in shared/provider-preferences (also used by the server's
+// settings-file normalization); re-exported here for existing importers/tests.
+export {
+  createDefaultProviderDefaults,
+  normalizeClaudePreference,
+  normalizeCodexPreference,
+  normalizeCursorPreference,
+  normalizePiPreference,
+  normalizeProviderDefaults,
+  normalizeProviderPreference,
+}
 
 export type ComposerState = {
   [TProvider in AgentProvider]: {
@@ -44,131 +52,10 @@ export function normalizeDefaultProvider(value?: string): DefaultProviderPrefere
   return "last_used"
 }
 
-// Loose model-options shape accepted by the provider preference normalizers. Each
-// normalizer validates the fields it cares about, so options from any provider (or
-// raw persisted data) are accepted and coerced.
-type ProviderModelOptionsInput = {
-  reasoningEffort?:
-    | ClaudeModelOptions["reasoningEffort"]
-    | CodexModelOptions["reasoningEffort"]
-    | PiModelOptions["reasoningEffort"]
-  contextWindow?: ClaudeModelOptions["contextWindow"]
-  fastMode?: boolean
-}
-
-// Loose provider preference shape accepted by the normalizers: current
-// ProviderPreference values, persisted composer states, and legacy persisted
-// shapes (with a top-level `effort`) are all assignable to it.
-type ProviderPreferenceInput = {
-  model?: string
-  effort?: string
-  modelOptions?: ProviderModelOptionsInput
-  planMode?: boolean
-}
-
-export function normalizeClaudePreference(value?: ProviderPreferenceInput): ProviderPreference<ClaudeModelOptions> {
-  const reasoningEffort = value?.modelOptions?.reasoningEffort
-  const normalizedEffort = isClaudeReasoningEffort(reasoningEffort)
-    ? reasoningEffort
-    : isClaudeReasoningEffort(value?.effort)
-      ? value.effort
-      : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort
-  const model = normalizeClaudeModelId(value?.model)
-  const contextWindow = normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow)
-
-  return {
-    model,
-    modelOptions: {
-      reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
-      contextWindow,
-      fastMode: normalizeClaudeFastMode(model, value?.modelOptions?.fastMode),
-    },
-    planMode: Boolean(value?.planMode),
-  }
-}
-
-export function normalizeCodexPreference(value?: ProviderPreferenceInput): ProviderPreference<CodexModelOptions> {
-  const model = normalizeCodexModelId(value?.model)
-  const reasoningEffort = value?.modelOptions?.reasoningEffort
-  return {
-    model,
-    modelOptions: {
-      reasoningEffort: normalizeCodexReasoningEffort(
-        model,
-        isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
-      ),
-      fastMode: typeof value?.modelOptions?.fastMode === "boolean"
-        ? value.modelOptions.fastMode
-        : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,
-    },
-    planMode: Boolean(value?.planMode),
-  }
-}
-
-export function normalizeCursorPreference(value?: ProviderPreferenceInput): ProviderPreference<CursorModelOptions> {
-  return {
-    model: normalizeCursorModelId(value?.model),
-    modelOptions: {
-      fastMode: typeof value?.modelOptions?.fastMode === "boolean"
-        ? value.modelOptions.fastMode
-        : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
-    },
-    planMode: false,
-  }
-}
-
-export function normalizePiPreference(value?: ProviderPreferenceInput): ProviderPreference<PiModelOptions> {
-  const reasoningEffort = value?.modelOptions?.reasoningEffort
-  return {
-    model: normalizePiModelId(value?.model),
-    modelOptions: {
-      reasoningEffort: normalizePiReasoningEffort(
-        isPiReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
-      ),
-    },
-    planMode: false,
-  }
-}
-
-// Exhaustive provider dispatch: the record is keyed by AgentProvider, so adding a
-// provider to AgentProvider forces a new entry here instead of silently falling
-// through to one provider's branch.
-const PROVIDER_NORMALIZERS: {
-  [TProvider in AgentProvider]: (value?: ProviderPreferenceInput) => ChatProviderPreferences[TProvider]
-} = {
-  claude: normalizeClaudePreference,
-  codex: normalizeCodexPreference,
-  cursor: normalizeCursorPreference,
-  pi: normalizePiPreference,
-}
-
-export function normalizeProviderPreference<TProvider extends AgentProvider>(
-  provider: TProvider,
-  value?: ProviderPreferenceInput
-): ChatProviderPreferences[TProvider] {
-  return PROVIDER_NORMALIZERS[provider](value)
-}
-
 function composerStateForProvider(provider: AgentProvider, value?: ProviderPreferenceInput): ComposerState {
   // The normalizer record is keyed by provider, so the provider tag always matches
   // its normalized modelOptions shape; TS can't prove that across the union.
   return { provider, ...normalizeProviderPreference(provider, value) } as ComposerState
-}
-
-export function createDefaultProviderDefaults(): ChatProviderPreferences {
-  // Normalizing an empty preference yields each provider's default model/options.
-  return normalizeProviderDefaults()
-}
-
-export function normalizeProviderDefaults(
-  value?: Partial<Record<AgentProvider, ProviderPreferenceInput | undefined>>
-): ChatProviderPreferences {
-  return {
-    claude: normalizeClaudePreference(value?.claude),
-    codex: normalizeCodexPreference(value?.codex),
-    cursor: normalizeCursorPreference(value?.cursor),
-    pi: normalizePiPreference(value?.pi),
-  }
 }
 
 type PersistedComposerState = ProviderPreferenceInput & { provider: AgentProvider }

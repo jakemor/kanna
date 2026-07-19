@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import { mergeProviderDefaultsPatch } from "../../shared/provider-preferences"
 import type { AppSettingsPatch, AppSettingsSnapshot } from "../../shared/types"
 
 interface AppSettingsStoreState {
@@ -22,40 +23,9 @@ export function mergeAppSettingsPatch(
       ...settings.editor,
       ...patch.editor,
     },
-    providerDefaults: {
-      claude: {
-        ...settings.providerDefaults.claude,
-        ...patch.providerDefaults?.claude,
-        modelOptions: {
-          ...settings.providerDefaults.claude.modelOptions,
-          ...patch.providerDefaults?.claude?.modelOptions,
-        },
-      },
-      codex: {
-        ...settings.providerDefaults.codex,
-        ...patch.providerDefaults?.codex,
-        modelOptions: {
-          ...settings.providerDefaults.codex.modelOptions,
-          ...patch.providerDefaults?.codex?.modelOptions,
-        },
-      },
-      cursor: {
-        ...settings.providerDefaults.cursor,
-        ...patch.providerDefaults?.cursor,
-        modelOptions: {
-          ...settings.providerDefaults.cursor.modelOptions,
-          ...patch.providerDefaults?.cursor?.modelOptions,
-        },
-      },
-      pi: {
-        ...settings.providerDefaults.pi,
-        ...patch.providerDefaults?.pi,
-        modelOptions: {
-          ...settings.providerDefaults.pi.modelOptions,
-          ...patch.providerDefaults?.pi?.modelOptions,
-        },
-      },
-    },
+    // Same deep-merge the server applies in app-settings.ts applyPatch, so the
+    // optimistic snapshot matches what the ack will confirm.
+    providerDefaults: mergeProviderDefaultsPatch(settings.providerDefaults, patch.providerDefaults),
   }
 }
 

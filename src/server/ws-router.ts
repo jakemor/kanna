@@ -832,13 +832,18 @@ export function createWsRouter({
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
           resolvedAnalytics.track("chat_created")
-          await broadcastChatAndSidebar(chat.id)
+          // Adding a chat changes local-projects too (chatCount/lastOpenedAt).
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([chat.id]),
+          })
           return
         }
         case "chat.fork": {
           const result = await agent.forkChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "chat.rename": {
@@ -850,7 +855,8 @@ export function createWsRouter({
         case "chat.archive": {
           await store.archiveChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          // Archiving removes the chat from local-projects' chat counts.
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "chat.unarchive": {
@@ -860,7 +866,11 @@ export function createWsRouter({
           // sending a message clears the done state and brings it back to running.
           await store.setChatDoneState(command.chatId, true)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastChatAndSidebar(command.chatId)
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([command.chatId]),
+          })
           return
         }
         case "chat.delete": {
@@ -869,7 +879,13 @@ export function createWsRouter({
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           resolvedAnalytics.track("chat_deleted")
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          // The deleted chat's own topic must refresh (to null) so another tab
+          // viewing it learns it's gone, and local-projects loses the chat.
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([command.chatId]),
+          })
           return
         }
         case "chat.markRead": {

@@ -333,8 +333,8 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
   // Raw SDK JSON is kept only where the client actually consumes it: the
   // system_init raw view and tool_use_result extraction on tool_result
   // entries. Stamping it on every entry doubled transcript size on disk
-  // and on every snapshot push.
-  const debugRaw = JSON.stringify(message)
+  // and on every snapshot push — so serialize lazily, inside only the
+  // branches that keep it, never on streaming deltas.
   const messageId = typeof message.uuid === "string" ? message.uuid : undefined
 
   if (message.type === "system" && message.subtype === "init") {
@@ -350,7 +350,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           ? message.slash_commands.filter((entry: string) => !entry.startsWith("._"))
           : [],
         mcpServers: Array.isArray(message.mcp_servers) ? message.mcp_servers : [],
-        debugRaw,
+        debugRaw: JSON.stringify(message),
       }),
     ]
   }
@@ -382,8 +382,10 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
   if (message.type === "user" && Array.isArray(message.message?.content)) {
     const entries: TranscriptEntry[] = []
+    let debugRaw: string | undefined
     for (const content of message.message.content) {
       if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
+        debugRaw ??= JSON.stringify(message)
         entries.push(timestamped({
           kind: "tool_result",
           messageId,

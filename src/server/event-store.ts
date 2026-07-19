@@ -1031,7 +1031,10 @@ export class EventStore {
       await this.ensureTranscriptsDir()
       await appendFile(transcriptPath, payload, "utf8")
       this.applyMessageMetadata(chatId, entry)
-      this.transcriptCache.get(chatId)?.push({ ...entry })
+      // Deep clone via the already-serialized payload: the cached entry is
+      // byte-identical to what a cold disk read would produce, and callers
+      // that keep mutating their entry can't alias into the cache.
+      this.transcriptCache.get(chatId)?.push(JSON.parse(payload) as TranscriptEntry)
     })
     return this.writeChain
   }

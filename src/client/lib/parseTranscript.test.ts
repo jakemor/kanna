@@ -169,6 +169,97 @@ describe("processTranscriptMessages", () => {
     if (messages[0]?.kind !== "tool") throw new Error("unexpected message")
     expect(messages[0].result).toEqual({ answers: { "Provider?": ["Codex"] } })
   })
+
+  // debugRaw format compatibility: the server now stamps debugRaw only on
+  // system_init and tool_result entries (agent.ts), but transcripts written
+  // before that trim stamp it on every entry. Both must hydrate identically.
+  test("hydrates trimmed-format and legacy fully-stamped transcripts identically", () => {
+    const stripIds = (messages: ReturnType<typeof processTranscriptMessages>) =>
+      messages.map(({ id, timestamp, ...rest }) => rest)
+
+    const baseEntries: Array<Omit<TranscriptEntry, "_id" | "createdAt">> = [
+      {
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        tools: ["Bash"],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        debugRaw: JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-4-8" }),
+      },
+      { kind: "assistant_text", text: "On it." },
+      {
+        kind: "tool_call",
+        tool: {
+          kind: "tool",
+          toolKind: "exit_plan_mode",
+          toolName: "ExitPlanMode",
+          toolId: "tool-9",
+          input: { plan: "## Plan" },
+        },
+      },
+      {
+        kind: "tool_result",
+        toolId: "tool-9",
+        content: "User approved the plan.",
+        debugRaw: JSON.stringify({
+          type: "user",
+          tool_use_result: { plan: "## Plan", isAgent: false },
+        }),
+      },
+      { kind: "result", subtype: "success", isError: false, durationMs: 12, result: "done" },
+    ] as never
+
+    // Legacy format: every entry carries debugRaw (the full raw SDK message).
+    const legacyEntries = baseEntries.map((partial) => entry({
+      ...partial,
+      debugRaw: (partial as { debugRaw?: string }).debugRaw ?? JSON.stringify({ type: "legacy-noise", kind: partial.kind }),
+    } as never))
+    // Trimmed format: only system_init and tool_result carry debugRaw.
+    const trimmedEntries = baseEntries.map((partial) => entry(partial))
+
+    const legacyMessages = processTranscriptMessages(legacyEntries)
+    const trimmedMessages = processTranscriptMessages(trimmedEntries)
+
+    expect(stripIds(trimmedMessages)).toEqual(stripIds(legacyMessages))
+
+    // The exit-plan tool result must be extracted from debugRaw's
+    // tool_use_result in both formats.
+    const toolMessage = trimmedMessages.find((message) => message.kind === "tool")
+    if (toolMessage?.kind !== "tool") throw new Error("unexpected message")
+    expect(toolMessage.rawResult).toEqual({ plan: "## Plan", isAgent: false })
+
+    // The first system message keeps its raw JSON view in both formats.
+    const systemMessage = trimmedMessages.find((message) => message.kind === "system_init")
+    if (systemMessage?.kind !== "system_init") throw new Error("unexpected message")
+    expect(systemMessage.debugRaw).toBe(JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-4-8" }))
+  })
+
+  test("falls back to the tool result content when debugRaw is absent or unparseable", () => {
+    const messages = processTranscriptMessages([
+      entry({
+        kind: "tool_call",
+        tool: {
+          kind: "tool",
+          toolKind: "ask_user_question",
+          toolName: "AskUserQuestion",
+          toolId: "tool-4",
+          input: { questions: [{ question: "Provider?" }] },
+        },
+      }),
+      entry({
+        kind: "tool_result",
+        toolId: "tool-4",
+        content: { answers: { "Provider?": ["Claude"] } },
+        debugRaw: "{not json",
+      }),
+    ])
+
+    expect(messages[0]?.kind).toBe("tool")
+    if (messages[0]?.kind !== "tool") throw new Error("unexpected message")
+    expect(messages[0].result).toEqual({ answers: { "Provider?": ["Claude"] } })
+  })
 })
 
 describe("getLatestToolIds", () => {

@@ -1,12 +1,9 @@
 import { create } from "zustand"
+import { mergeProviderDefaultsPatch } from "../../shared/provider-preferences"
 import type { AppSettingsPatch, AppSettingsSnapshot } from "../../shared/types"
-
-type AppSettingsHydrationStatus = "idle" | "loading" | "ready" | "error"
 
 interface AppSettingsStoreState {
   settings: AppSettingsSnapshot | null
-  hydrationStatus: AppSettingsHydrationStatus
-  setHydrationStatus: (status: AppSettingsHydrationStatus) => void
   setFromServer: (settings: AppSettingsSnapshot) => void
   applyOptimisticPatch: (patch: AppSettingsPatch) => void
 }
@@ -26,40 +23,15 @@ export function mergeAppSettingsPatch(
       ...settings.editor,
       ...patch.editor,
     },
-    providerDefaults: {
-      claude: {
-        ...settings.providerDefaults.claude,
-        ...patch.providerDefaults?.claude,
-        modelOptions: {
-          ...settings.providerDefaults.claude.modelOptions,
-          ...patch.providerDefaults?.claude?.modelOptions,
-        },
-      },
-      codex: {
-        ...settings.providerDefaults.codex,
-        ...patch.providerDefaults?.codex,
-        modelOptions: {
-          ...settings.providerDefaults.codex.modelOptions,
-          ...patch.providerDefaults?.codex?.modelOptions,
-        },
-      },
-      cursor: {
-        ...settings.providerDefaults.cursor,
-        ...patch.providerDefaults?.cursor,
-        modelOptions: {
-          ...settings.providerDefaults.cursor.modelOptions,
-          ...patch.providerDefaults?.cursor?.modelOptions,
-        },
-      },
-    },
+    // Same deep-merge the server applies in app-settings.ts applyPatch, so the
+    // optimistic snapshot matches what the ack will confirm.
+    providerDefaults: mergeProviderDefaultsPatch(settings.providerDefaults, patch.providerDefaults),
   }
 }
 
 export const useAppSettingsStore = create<AppSettingsStoreState>()((set) => ({
   settings: null,
-  hydrationStatus: "idle",
-  setHydrationStatus: (hydrationStatus) => set({ hydrationStatus }),
-  setFromServer: (settings) => set({ settings, hydrationStatus: "ready" }),
+  setFromServer: (settings) => set({ settings }),
   applyOptimisticPatch: (patch) =>
     set((state) => ({
       settings: state.settings ? mergeAppSettingsPatch(state.settings, patch) : state.settings,

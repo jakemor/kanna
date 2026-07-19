@@ -17,14 +17,6 @@ export interface ParsedGitUrl {
 }
 
 /**
- * Check if a string looks like a GitHub or GitLab repository URL.
- */
-export function isGitRepoUrl(input: string): boolean {
-  const trimmed = input.trim()
-  return GIT_URL_PATTERNS.some((pattern) => pattern.test(trimmed))
-}
-
-/**
  * Parse a GitHub/GitLab URL into its components.
  * Returns null if the input isn't a valid git repo URL.
  */

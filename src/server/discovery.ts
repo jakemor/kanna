@@ -1,6 +1,24 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
+
+/**
+ * Read only the first few KB of a file. Codex session logs run to many MB and
+ * only their first line (session_meta) matters here — reading whole files made
+ * discovery block the event loop for seconds on large Codex histories.
+ */
+const FILE_HEAD_BYTES = 64 * 1024
+
+function readFileHead(filePath: string): string {
+  const fd = openSync(filePath, "r")
+  try {
+    const buffer = Buffer.alloc(FILE_HEAD_BYTES)
+    const bytesRead = readSync(fd, buffer, 0, FILE_HEAD_BYTES, 0)
+    return buffer.toString("utf8", 0, bytesRead)
+  } finally {
+    closeSync(fd)
+  }
+}
 import type { AgentProvider } from "../shared/types"
 import { resolveLocalPath } from "./paths"
 
@@ -198,7 +216,7 @@ function readCodexSessionMetadata(sessionsDir: string) {
 
   for (const sessionFile of collectCodexSessionFiles(sessionsDir)) {
     const fileStat = statSync(sessionFile)
-    const firstLine = readFileSync(sessionFile, "utf8").split("\n", 1)[0]
+    const firstLine = readFileHead(sessionFile).split("\n", 1)[0]
     if (!firstLine?.trim()) continue
 
     const record = parseJsonRecord(firstLine)

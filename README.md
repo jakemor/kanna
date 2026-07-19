@@ -46,7 +46,8 @@ That's it. Kanna opens in your browser at [`localhost:3210`](http://localhost:32
 
 ## Features
 
-- **Multi-provider support** — switch between Claude and Codex (OpenAI) from the chat input, with per-provider model selection, reasoning effort controls, and Codex fast mode
+- **Multi-provider support** — switch between Claude, Codex (OpenAI), Cursor, and Pi from the chat input, with per-provider model selection, reasoning effort controls, and Codex fast mode
+- **Bundled Pi agent** — the [pi coding agent](https://github.com/badlogic/pi-mono) ships as a dependency and runs in-process through the Model Registry (Settings): point it at OpenRouter, OpenAI, or any custom OpenAI-compatible endpoint, pin fave models to the picker, and use any model id with standardized reasoning efforts — no local pi installation involved
 - **Project-first sidebar** — chats grouped under projects, with live status indicators (idle, running, waiting, failed)
 - **Drag-and-drop project ordering** — reorder project groups in the sidebar with persistent ordering
 - **Local project discovery** — auto-discovers projects from both Claude and Codex local history
@@ -212,25 +213,32 @@ bun run dev:server   # http://localhost:5175
 | `bun run dev:client` | Vite dev server only         |
 | `bun run dev:server` | Bun backend only             |
 | `bun run start`      | Start production server      |
+| `bun test`           | Unit/integration tests       |
+| `bun run test:e2e`   | Playwright browser smoke suite |
 
 ## Project Structure
 
 ```
 src/
 ├── client/          React UI layer
-│   ├── app/         App router, pages, central state hook, socket client
-│   ├── components/  Messages, chat chrome, dialogs, buttons, inputs
+│   ├── app/         App router, pages, socket client, useKannaState + feature hooks
+│   │                (useChatCommands, useSendMessage, useAppSettingsSync,
+│   │                useUpdateRestart, useShareExport, snapshotEquality)
+│   ├── components/  Messages, chat chrome (incl. chat-ui/git/ panel modules),
+│   │                dialogs, buttons, inputs
 │   ├── hooks/       Theme, standalone mode detection
 │   ├── stores/      Zustand stores (chat input, preferences, project order)
-│   └── lib/         Formatters, path utils, transcript parsing
+│   └── lib/         Formatters, path utils, transcript parsing, storage keys
 ├── server/          Bun backend
 │   ├── cli.ts       CLI entry point & browser launcher
 │   ├── server.ts    HTTP/WS server setup & static serving
 │   ├── agent.ts     AgentCoordinator (multi-provider turn management)
 │   ├── codex-app-server.ts  Codex App Server JSON-RPC client
+│   ├── cursor-cli.ts / pi-agent.ts  Cursor and Pi provider adapters
 │   ├── provider-catalog.ts  Provider/model/effort normalization
 │   ├── quick-response.ts    Structured queries with provider fallback
-│   ├── ws-router.ts WebSocket message routing & subscriptions
+│   ├── ws-router.ts WebSocket command routing & snapshot subscriptions
+│   ├── skills.ts    Skill search/install/uninstall
 │   ├── event-store.ts  JSONL persistence, replay & compaction
 │   ├── discovery.ts Auto-discover projects from Claude and Codex local state
 │   ├── read-models.ts  Derive view models from event state
@@ -241,6 +249,8 @@ src/
     ├── protocol.ts  WebSocket message protocol
     ├── ports.ts     Port configuration
     └── branding.ts  App name, data directory paths
+
+e2e/                 Playwright smoke suite (boots the real server)
 ```
 
 ## Data Storage

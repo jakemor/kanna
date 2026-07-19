@@ -1,10 +1,9 @@
 import { useState, useRef, useEffect } from "react"
-import { Check, CheckCheck, Pencil, CornerDownLeft, ChevronDown, Copy, Send } from "lucide-react"
-import Markdown from "react-markdown"
-import remarkGfm from "remark-gfm"
+import { Check, CheckCheck, Pencil, CornerDownLeft, ChevronDown, Send } from "lucide-react"
 import type { ProcessedToolCall } from "./types"
 import { Button } from "../ui/button"
-import { createMarkdownComponents } from "./shared"
+import { CopyButton } from "../ui/copy-button"
+import { TranscriptMarkdown } from "./shared"
 import { cn } from "../../lib/utils"
 import { useTranscriptRenderOptions } from "./render-context"
 
@@ -18,7 +17,6 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
   const renderOptions = useTranscriptRenderOptions()
   const isComplete = !!message.result
   const [expanded, setExpanded] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [showEditInput, setShowEditInput] = useState(false)
   const [editMessage, setEditMessage] = useState("")
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -30,13 +28,6 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
     }
   }, [showEditInput])
 
-  const handleCopy = async () => {
-    if (!input?.plan) return
-    await navigator.clipboard.writeText(input.plan)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
   const result = isComplete ? message.result : null
   const isDiscarded = result?.discarded === true
 
@@ -44,18 +35,10 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
     <div className="flex flex-col gap-3">
       <div className="relative rounded-2xl border border-border overflow-hidden group/plan">
         {input?.plan && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "absolute top-2 right-2 z-10 h-8 w-8 rounded-md text-muted-foreground opacity-0 group-hover/plan:opacity-100 transition-opacity",
-              !copied && "hover:text-foreground",
-              copied && "hover:!bg-transparent hover:!border-transparent"
-            )}
-            onClick={handleCopy}
-          >
-            {copied ? <Check className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4" />}
-          </Button>
+          <CopyButton
+            text={input.plan}
+            className="absolute top-2 right-2 z-10 h-8 w-8 rounded-md text-muted-foreground opacity-0 group-hover/plan:opacity-100 transition-opacity"
+          />
         )}
         <div className={cn(
           "!pt-5 !pb-0 px-4 md:py-4.5 md:px-5.5 bg-muted dark:bg-card overflow-scroll no-pre-highlight transition-all",
@@ -74,9 +57,7 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
           )}
           {input?.plan ? (
             <div className="prose prose-sm dark:prose-invert max-w-none">
-              <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>
-                {input.plan}
-              </Markdown>
+              <TranscriptMarkdown text={input.plan} />
               <div className="mt-5" />
             </div>
           ) : (

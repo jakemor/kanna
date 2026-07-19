@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { extractHtmlTitle, filterLocalHttpServers, isDescendantPid, isPathWithin, parseLsofListeningEntries, parseLsofListeningPorts } from "./local-http-servers"
+import { extractHtmlTitle, filterLocalHttpServers, isDescendantPid, isPathWithin, parseLsofListeningEntries } from "./local-http-servers"
 
 describe("local http servers", () => {
   test("extracts html titles", () => {
@@ -15,7 +15,7 @@ bun     12346 jake   23u  IPv4 123457      0t0  TCP localhost:3210 (LISTEN)
 other   12347 jake   23u  IPv4 123458      0t0  TCP 127.0.0.1:8080 (LISTEN)
     `
 
-    expect(parseLsofListeningPorts(output)).toEqual([3210, 5174, 8080])
+    expect(parseLsofListeningEntries(output).map((entry) => entry.port)).toEqual([3210, 5174, 8080])
     expect(parseLsofListeningEntries(output)).toEqual([
       { port: 3210, owners: [{ command: "bun", pid: 12346 }] },
       { port: 5174, owners: [{ command: "node", pid: 12345 }] },

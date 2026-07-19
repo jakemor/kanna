@@ -3,7 +3,6 @@ import type { SidebarChatRow } from "../../shared/types"
 import {
   getSidebarChatBuckets,
   getSidebarChatTimestamp,
-  shouldDefaultCollapseSidebarProject,
 } from "./sidebarChats"
 
 const nowMs = 1_000_000
@@ -71,30 +70,6 @@ describe("getSidebarChatBuckets", () => {
       collapsedChats: chats,
       remainingChats: [],
     })
-  })
-})
-
-describe("shouldDefaultCollapseSidebarProject", () => {
-  test("returns false when the project has a chat within the last 24 hours", () => {
-    const chats = [
-      createChat("chat-1", nowMs - hourMs),
-      createChat("chat-2", nowMs - 25 * hourMs),
-    ]
-
-    expect(shouldDefaultCollapseSidebarProject(chats, nowMs)).toBe(false)
-  })
-
-  test("returns true when the project has no chats within the last 24 hours", () => {
-    const chats = [
-      createChat("chat-1", nowMs - 25 * hourMs),
-      createChat("chat-2", nowMs - 26 * hourMs),
-    ]
-
-    expect(shouldDefaultCollapseSidebarProject(chats, nowMs)).toBe(true)
-  })
-
-  test("returns false for a newly created chat with no last message", () => {
-    expect(shouldDefaultCollapseSidebarProject([createChat("chat-1")], nowMs)).toBe(false)
   })
 })
 

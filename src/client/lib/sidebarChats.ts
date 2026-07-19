@@ -10,13 +10,6 @@ export function getSidebarChatTimestamp(chat: Pick<SidebarChatRow, "lastMessageA
   return chat.lastMessageAt ?? chat._creationTime
 }
 
-export function shouldDefaultCollapseSidebarProject(
-  chats: SidebarChatRow[],
-  nowMs: number
-) {
-  return chats.every((chat) => !isSidebarChatRecent(getSidebarChatTimestamp(chat), nowMs))
-}
-
 export function getSidebarChatBuckets(
   chats: SidebarChatRow[],
   nowMs: number

@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
 import { ExternalLink, Link2 } from "lucide-react"
-import Markdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import type { ChatAttachment } from "../../../shared/types"
 import { Button } from "../ui/button"
 import {
@@ -14,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog"
-import { createMarkdownComponents } from "./shared"
+import { TranscriptMarkdown } from "./shared"
 import { FileContentView } from "./FileContentView"
 import {
   TABLE_PREVIEW_COLUMN_LIMIT,
@@ -211,9 +209,7 @@ function renderAttachmentPreviewBody(
       <div className="space-y-3">
         {previewState.truncated ? <PreviewNotice message="Preview truncated to 1024 KB." /> : null}
         <div className="prose prose-sm max-w-none overflow-auto rounded-xl border border-border bg-background p-4 prose-invert">
-          <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>
-            {previewState.content}
-          </Markdown>
+          <TranscriptMarkdown text={previewState.content} />
         </div>
       </div>
     )

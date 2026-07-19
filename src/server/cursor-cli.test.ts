@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { PassThrough } from "node:stream"
-import { clarifyCursorAuthError, CursorCliManager, normalizeCursorUsage, parseCursorLine, type CursorChildProcess } from "./cursor-cli"
+import { clarifyCursorAuthError, CursorCliManager, normalizeCursorUsage, parseCursorLine, parseCursorModelList, type CursorChildProcess } from "./cursor-cli"
 import type { HarnessEvent } from "./harness-types"
 
 function transcriptEntries(events: HarnessEvent[]) {
@@ -215,6 +215,65 @@ describe("CursorCliManager.startTurn", () => {
       entry: { kind: "result", isError: true, subtype: "error", result: expect.stringContaining("Cannot use this model") },
     })
     expect((await iter.next()).done).toBe(true)
+  })
+})
+
+describe("parseCursorModelList", () => {
+  test("parses ids, labels, and default/current markers from the ANSI-decorated output", () => {
+    const output = [
+      "[2K[GLoading models…",
+      "[2K[1A[2K[GAvailable models",
+      "",
+      "auto - Auto  (default)",
+      "composer-2.5 - Composer 2.5  (current)",
+      "composer-2.5-fast - Composer 2.5 Fast",
+      "claude-fable-5-thinking-high - Fable 5 1M Thinking (NO ZDR)",
+    ].join("\n")
+
+    expect(parseCursorModelList(output)).toEqual([
+      { id: "auto", label: "Auto", isDefault: true },
+      { id: "composer-2.5", label: "Composer 2.5", isDefault: false },
+      { id: "composer-2.5-fast", label: "Composer 2.5 Fast", isDefault: false },
+      // A trailing parenthetical that isn't (default)/(current) stays in the label.
+      { id: "claude-fable-5-thinking-high", label: "Fable 5 1M Thinking (NO ZDR)", isDefault: false },
+    ])
+  })
+
+  test("returns no entries for empty or error output", () => {
+    expect(parseCursorModelList("")).toEqual([])
+    expect(parseCursorModelList("Error: Authentication required. Please run 'agent login' first.")).toEqual([])
+  })
+})
+
+describe("CursorCliManager.listModels", () => {
+  test("spawns --list-models and resolves the parsed entries", async () => {
+    const fake = makeFakeChild()
+    let captured: { cwd: string; argv: string[] } | undefined
+    const manager = new CursorCliManager({ spawnProcess: (args) => { captured = args; return fake.child } })
+
+    const listing = manager.listModels()
+    fake.stdout.end("auto - Auto  (default)\ncomposer-2.5 - Composer 2.5  (current)\n")
+    await new Promise<void>((resolve) => fake.stdout.once("end", resolve))
+    fake.close(0)
+
+    expect(await listing).toEqual([
+      { id: "auto", label: "Auto", isDefault: true },
+      { id: "composer-2.5", label: "Composer 2.5", isDefault: false },
+    ])
+    expect(captured?.argv).toEqual(["--list-models"])
+  })
+
+  test("rejects with clarified stderr when the CLI exits without models", async () => {
+    const fake = makeFakeChild()
+    const manager = new CursorCliManager({ spawnProcess: () => fake.child })
+
+    const listing = manager.listModels()
+    fake.stderr.end("Error: Authentication required. Please run 'agent login' first.")
+    await new Promise<void>((resolve) => fake.stderr.once("end", resolve))
+    fake.stdout.end()
+    fake.close(1)
+
+    await expect(listing).rejects.toThrow("'cursor-agent login' (or 'agent login')")
   })
 })
 

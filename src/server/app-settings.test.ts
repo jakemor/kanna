@@ -59,6 +59,13 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         },
         planMode: false,
       },
+      pi: {
+        model: "~anthropic/claude-fable-latest",
+        modelOptions: {
+          reasoningEffort: "medium",
+        },
+        planMode: false,
+      },
     },
     boardAutoReturn: false,
     warning: null,

@@ -1,27 +1,46 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
+import { OpenLocalLinkProvider } from "../components/messages/shared"
 import type { HydratedTranscriptMessage } from "../../shared/types"
 import {
   buildResolvedTranscriptRows,
   computeStableResolvedTranscriptRows,
-  KannaTranscript,
+  KannaTranscriptRow,
   type StableResolvedTranscriptRowsState,
 } from "./KannaTranscript"
 
 const ROW_WRAPPER_CLASS = "mx-auto max-w-[800px] pb-5"
 
-function renderTranscript(messages: HydratedTranscriptMessage[]) {
-  return renderToStaticMarkup(
-    <KannaTranscript
-      messages={messages}
-      isLoading={false}
-      latestToolIds={{ AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }}
-      onOpenLocalLink={() => undefined}
-      onAskUserQuestionSubmit={() => undefined}
-      onExitPlanModeConfirm={() => undefined}
-    />
+// Minimal test harness mirroring how ChatTranscriptViewport renders resolved rows.
+function TestTranscript({ messages }: { messages: HydratedTranscriptMessage[] }) {
+  const rows = buildResolvedTranscriptRows(messages, {
+    isLoading: false,
+    latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+  })
+
+  return (
+    <OpenLocalLinkProvider onOpenLocalLink={() => undefined}>
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className={ROW_WRAPPER_CLASS}
+        >
+          <KannaTranscriptRow
+            row={row}
+            toolGroupExpanded={row.kind === "tool-group" ? false : undefined}
+            onToolGroupExpandedChange={() => undefined}
+            onAskUserQuestionSubmit={() => undefined}
+            onExitPlanModeConfirm={() => undefined}
+          />
+        </div>
+      ))}
+    </OpenLocalLinkProvider>
   )
+}
+
+function renderTranscript(messages: HydratedTranscriptMessage[]) {
+  return renderToStaticMarkup(<TestTranscript messages={messages} />)
 }
 
 function countRowWrappers(html: string) {

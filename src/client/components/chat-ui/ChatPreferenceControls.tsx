@@ -1,8 +1,10 @@
-import { useState, type ComponentType, type SVGProps } from "react"
-import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
+import { useMemo, useState, type ComponentType, type ReactNode, type SVGProps } from "react"
+import { Box, Brain, Gauge, ListTodo, LockOpen, Plus, Search, SquareMenu, SquareMinus } from "lucide-react"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
+  PI_REASONING_OPTIONS,
+  deriveModelLabel,
   getCodexReasoningOptions,
   type AgentProvider,
   type ClaudeContextWindow,
@@ -11,7 +13,10 @@ import {
   type CodexModelOptions,
   type CodexReasoningEffort,
   type CursorModelOptions,
+  type PiModelOptions,
+  type PiReasoningEffort,
   type ProviderCatalogEntry,
+  type ProviderModelOption,
   supportsClaudeMaxReasoningEffort,
 } from "../../../shared/types"
 import { cn } from "../../lib/utils"
@@ -63,12 +68,34 @@ function CursorIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="-10 -10 84 84"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M0 0H47.9997V31.9993H31.9993V47.9997H16.0003V64H0V0ZM16.0003 16.0003V31.9993H31.9993V16.0003H16.0003Z"
+      />
+      <path d="M47.9997 31.9993H64V64H47.9997V31.9993Z" />
+    </svg>
+  )
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
   cursor: CursorIcon,
+  pi: PiIcon,
 }
 
+/** Flush table-like row inside an InputPopover: flat edges, divider-separated. */
 export function PopoverMenuItem({
   onClick,
   selected,
@@ -89,8 +116,8 @@ export function PopoverMenuItem({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "w-full flex items-center gap-2 p-2 border border-border/0 rounded-lg text-left transition-opacity [&>svg]:shrink-0",
-        selected ? "bg-muted border-border" : "hover:opacity-60",
+        "w-full flex items-center gap-2 text-left [&>svg]:shrink-0 px-3 py-2 transition-colors",
+        selected ? "bg-muted" : "hover:bg-muted/50",
         disabled && "opacity-40 cursor-not-allowed"
       )}
     >
@@ -143,8 +170,11 @@ export function InputPopover({
           {trigger}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="w-64 p-1">
-        <div className="space-y-1">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
+      <PopoverContent align="center" className="w-64 overflow-hidden p-0">
+        {/* Runtime-discovered model lists (e.g. Cursor) can be long — scroll instead of overflowing the viewport. */}
+        <div className="max-h-80 overflow-y-auto divide-y divide-border/60">
+          {typeof children === "function" ? children(() => setOpen(false)) : children}
+        </div>
       </PopoverContent>
     </Popover>
   )
@@ -154,7 +184,74 @@ export type ModelOptionChange =
   | { type: "claudeReasoningEffort"; effort: ClaudeReasoningEffort }
   | { type: "contextWindow"; contextWindow: ClaudeContextWindow }
   | { type: "codexReasoningEffort"; effort: CodexReasoningEffort }
+  | { type: "piReasoningEffort"; effort: PiReasoningEffort }
   | { type: "fastMode"; fastMode: boolean }
+
+/**
+ * Model picker body with an optional filter box. The box is shown only for long
+ * lists (e.g. the runtime-discovered Cursor catalog) so short provider lists
+ * stay a plain menu. Rendered inside InputPopover's flush `divide-y` list.
+ */
+function ModelPickerList({
+  models,
+  selectedModel,
+  onSelect,
+  renderLabel,
+  footer,
+  searchThreshold = 12,
+}: {
+  models: ProviderModelOption[]
+  selectedModel: string
+  onSelect: (modelId: string) => void
+  renderLabel?: (candidate: ProviderModelOption) => ReactNode
+  footer?: ReactNode
+  searchThreshold?: number
+}) {
+  const [query, setQuery] = useState("")
+  const showSearch = models.length > searchThreshold
+  const trimmed = query.trim().toLowerCase()
+  const filtered = useMemo(() => {
+    if (!trimmed) return models
+    return models.filter(
+      (model) => model.id.toLowerCase().includes(trimmed) || model.label.toLowerCase().includes(trimmed),
+    )
+  }, [models, trimmed])
+
+  return (
+    <>
+      {showSearch ? (
+        <div className="sticky top-0 z-10 flex items-center gap-2 bg-popover px-3 py-2">
+          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => event.stopPropagation()}
+            placeholder="Filter models…"
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+          />
+        </div>
+      ) : null}
+      {filtered.length === 0 ? (
+        <div className="px-3 py-2 text-sm text-muted-foreground">No matching models</div>
+      ) : (
+        filtered.map((candidate) => (
+          <PopoverMenuItem
+            key={candidate.id}
+            onClick={() => onSelect(candidate.id)}
+            selected={selectedModel === candidate.id}
+            icon={<Box className="h-4 w-4 text-muted-foreground" />}
+            label={renderLabel ? renderLabel(candidate) : candidate.label}
+          />
+        ))
+      )}
+      {footer}
+    </>
+  )
+}
 
 interface ChatPreferenceControlsProps {
   availableProviders: ProviderCatalogEntry[]
@@ -162,10 +259,12 @@ interface ChatPreferenceControlsProps {
   showProviderPicker?: boolean
   providerLocked?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void
+  /** Opens the Default Models dialog from the pi model picker's "Add models…" row. */
+  onEditModels?: () => void
   planMode?: boolean
   onPlanModeChange?: (planMode: boolean) => void
   includePlanMode?: boolean
@@ -182,6 +281,7 @@ export function ChatPreferenceControls({
   onProviderChange,
   onModelChange,
   onModelOptionChange,
+  onEditModels,
   planMode = false,
   onPlanModeChange,
   includePlanMode = true,
@@ -194,6 +294,7 @@ export function ChatPreferenceControls({
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   const cursorModelOptions = selectedProvider === "cursor" ? modelOptions as CursorModelOptions : null
+  const piModelOptions = selectedProvider === "pi" ? modelOptions as PiModelOptions : null
   const codexReasoningOptions = getCodexReasoningOptions(model)
   const selectedModelOption = providerConfig.models.find((candidate) => candidate.id === model)
   const contextWindowOptions = selectedModelOption?.contextWindowOptions ?? []
@@ -235,38 +336,41 @@ export function ChatPreferenceControls({
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
-            <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? model}</span>
+            <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? deriveModelLabel(model)}</span>
           </>
         )}
       >
-        {(close) => providerConfig.models.map((candidate) => {
-          const Icon = Box
-          const downgradesUltraToMax = candidate.id === "gpt-5.6-luna"
-            && codexModelOptions?.reasoningEffort === "ultra"
-          return (
-            <PopoverMenuItem
-              key={candidate.id}
-              onClick={() => {
-                onModelChange(selectedProvider, candidate.id)
-                close()
-              }}
-              selected={model === candidate.id}
-              icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-              label={
-                downgradesUltraToMax
-                  ? (
-                    <>
-                      {candidate.label}{" "}
-                      <span className="text-xs font-normal text-muted-foreground">
-                        Ultra → Max
-                      </span>
-                    </>
-                  )
-                  : candidate.label
-              }
-            />
-          )
-        })}
+        {(close) => (
+          <ModelPickerList
+            models={providerConfig.models}
+            selectedModel={model}
+            onSelect={(modelId) => {
+              onModelChange(selectedProvider, modelId)
+              close()
+            }}
+            renderLabel={(candidate) =>
+              candidate.id === "gpt-5.6-luna" && codexModelOptions?.reasoningEffort === "ultra" ? (
+                <>
+                  {candidate.label}{" "}
+                  <span className="text-xs font-normal text-muted-foreground">Ultra → Max</span>
+                </>
+              ) : (
+                candidate.label
+              )
+            }
+            footer={selectedProvider === "pi" && onEditModels ? (
+              <PopoverMenuItem
+                onClick={() => {
+                  close()
+                  onEditModels()
+                }}
+                selected={false}
+                icon={<Plus className="h-4 w-4 text-muted-foreground" />}
+                label="Add models…"
+              />
+            ) : null}
+          />
+        )}
       </InputPopover>
 
       {selectedProvider !== "cursor" ? (
@@ -277,7 +381,9 @@ export function ChatPreferenceControls({
               <span>{
                 selectedProvider === "claude"
                   ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === claudeModelOptions?.reasoningEffort)?.label ?? claudeModelOptions?.reasoningEffort
-                  : codexReasoningOptions.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
+                  : selectedProvider === "pi"
+                    ? PI_REASONING_OPTIONS.find((effort) => effort.id === piModelOptions?.reasoningEffort)?.label ?? piModelOptions?.reasoningEffort
+                    : codexReasoningOptions.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
               }</span>
             </>
           )}
@@ -297,19 +403,32 @@ export function ChatPreferenceControls({
                   disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
                 />
               ))
-              : codexReasoningOptions.map((effort) => (
-                <PopoverMenuItem
-                  key={effort.id}
-                  onClick={() => {
-                    onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
-                    close()
-                  }}
-                  selected={codexModelOptions?.reasoningEffort === effort.id}
-                  icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                  label={effort.label}
-                  description={effort.description}
-                />
-              ))
+              : selectedProvider === "pi"
+                ? PI_REASONING_OPTIONS.map((effort) => (
+                  <PopoverMenuItem
+                    key={effort.id}
+                    onClick={() => {
+                      onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
+                      close()
+                    }}
+                    selected={piModelOptions?.reasoningEffort === effort.id}
+                    icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                    label={effort.label}
+                  />
+                ))
+                : codexReasoningOptions.map((effort) => (
+                  <PopoverMenuItem
+                    key={effort.id}
+                    onClick={() => {
+                      onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
+                      close()
+                    }}
+                    selected={codexModelOptions?.reasoningEffort === effort.id}
+                    icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                    label={effort.label}
+                    description={effort.description}
+                  />
+                ))
           )}
         </InputPopover>
       ) : null}
@@ -335,7 +454,6 @@ export function ChatPreferenceControls({
                   ? <SquareMenu className="h-4 w-4 text-muted-foreground" />
                   : <SquareMinus className="h-4 w-4 text-muted-foreground" />}
                 label={option.label}
-                description={option.id === "1m" ? "Expanded context window" : "Standard context window"}
               />
           ))}
         </InputPopover>
@@ -372,7 +490,6 @@ export function ChatPreferenceControls({
                 selected={Boolean(claudeModelOptions?.fastMode)}
                 icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
                 label="Fast Mode"
-                description="Faster responses, higher usage"
               />
             </>
           )}
@@ -416,7 +533,7 @@ export function ChatPreferenceControls({
         </InputPopover>
       ) : null}
 
-      {selectedProvider === "cursor" ? (
+      {selectedProvider === "cursor" && modelSupportsFastMode ? (
         <InputPopover
           trigger={(
             <>
@@ -438,7 +555,6 @@ export function ChatPreferenceControls({
                 selected={!cursorModelOptions?.fastMode}
                 icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
                 label="Standard"
-                description="Composer 2.5"
               />
               <PopoverMenuItem
                 onClick={() => {
@@ -448,7 +564,7 @@ export function ChatPreferenceControls({
                 selected={Boolean(cursorModelOptions?.fastMode)}
                 icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
                 label="Fast"
-                description="Composer 2.5 Fast"
+                description="Faster responses, higher usage"
               />
             </>
           )}

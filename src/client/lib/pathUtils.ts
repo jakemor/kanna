@@ -128,16 +128,3 @@ export function stripWorkspacePath(path: string | undefined, localPath: string |
   // Fallback to sandbox path
   return path.replace(/^\/home\/user\/workspace\//, "")
 }
-
-/**
- * Strip outputs prefix for API paths.
- * e.g., "/home/user/workspace/outputs/foo/bar.csv" → "/foo/bar.csv"
- */
-export function stripOutputsPath(path: string | undefined, localPath: string | undefined | null): string | undefined {
-  if (!path) return undefined
-  if (localPath) {
-    const outputsPrefix = `${localPath}/outputs`
-    if (path.startsWith(outputsPrefix)) return path.slice(outputsPrefix.length)
-  }
-  return path.replace(/^\/home\/user\/workspace\/outputs/, "") || undefined
-}

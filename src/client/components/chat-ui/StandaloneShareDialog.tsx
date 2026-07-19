@@ -1,5 +1,5 @@
-import { Check, Copy, ExternalLink } from "lucide-react"
-import { useEffect, useState } from "react"
+import { ExternalLink } from "lucide-react"
+import { CopyButton } from "../ui/copy-button"
 import {
   Dialog,
   DialogBody,
@@ -26,26 +26,6 @@ export function StandaloneShareDialog({
   onOpenLink,
   onCopyLink,
 }: Props) {
-  const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (!open) {
-      setCopied(false)
-    }
-  }, [open, shareUrl])
-
-  const handleCopyLink = async () => {
-    const didCopy = await onCopyLink()
-    if (!didCopy) {
-      return
-    }
-
-    setCopied(true)
-    window.setTimeout(() => {
-      setCopied(false)
-    }, 2000)
-  }
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="md">
@@ -57,15 +37,14 @@ export function StandaloneShareDialog({
           <div className="flex w-full items-center gap-2 rounded-2xl border border-border bg-muted/40 pl-4 px-3 py-2.5">
             {/* <Globe className="h-4 w-4 flex-shrink-0 text-muted-foreground" /> */}
             <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">{shareUrl}</span>
-            <button
-              type="button"
-              onClick={() => void handleCopyLink()}
-              title={copied ? "Copied" : "Copy link"}
-              aria-label={copied ? "Copied" : "Copy link"}
+            <CopyButton
+              plain
+              onCopy={onCopyLink}
+              title="Copy link"
+              copiedTitle="Copied"
+              checkClassName="h-4 w-4 text-emerald-400"
               className="flex flex-shrink-0 items-center justify-center rounded-lg text-logo hover:text-logo/60 transition-colors hover:bg-background hover:text-foreground"
-            >
-              {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
-            </button>
+            />
           </div>
         </DialogBody>
         <DialogFooter>

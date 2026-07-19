@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useMemo, useRef, useState } from "react"
+import React, { memo, useMemo, useRef } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
 import type { AskUserQuestionAnswerMap, ChatAttachment, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
@@ -16,10 +16,10 @@ import { CompactBoundaryMessage, ContextClearedMessage } from "../components/mes
 import { CompactSummaryMessage } from "../components/messages/CompactSummaryMessage"
 import { StatusMessage } from "../components/messages/StatusMessage"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
-import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../components/messages/shared"
 import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
+import { SPECIAL_TOOL_NAMES } from "./derived"
 
-const SPECIAL_TOOL_NAMES = new Set(["AskUserQuestion", "ExitPlanMode", "TodoWrite"])
+const SPECIAL_TOOL_NAME_SET = new Set<string>(SPECIAL_TOOL_NAMES)
 
 export type TranscriptRenderItem =
   | { type: "single"; message: HydratedTranscriptMessage; index: number }
@@ -69,7 +69,7 @@ interface TranscriptMessageRenderState {
 function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
   if (message.kind !== "tool") return false
   const toolName = (message as ProcessedToolCall).toolName
-  return !SPECIAL_TOOL_NAMES.has(toolName)
+  return !SPECIAL_TOOL_NAME_SET.has(toolName)
 }
 
 function getTranscriptMessageRenderState(
@@ -209,7 +209,7 @@ function sameAttachment(left: ChatAttachment, right: ChatAttachment) {
     && left.size === right.size
 }
 
-function sameAttachmentArray(left: ChatAttachment[] | undefined, right: ChatAttachment[] | undefined) {
+export function sameAttachmentArray(left: ChatAttachment[] | undefined, right: ChatAttachment[] | undefined) {
   if (left === right) return true
   if (!left || !right) return false
   if (left.length !== right.length) return false
@@ -562,20 +562,6 @@ export function buildResolvedTranscriptRows(
   return rows
 }
 
-interface KannaTranscriptProps {
-  messages: HydratedTranscriptMessage[]
-  isLoading: boolean
-  localPath?: string
-  latestToolIds: Record<string, string | null>
-  onOpenLocalLink: (target: OpenLocalLinkTarget) => void
-  onAskUserQuestionSubmit: (
-    toolUseId: string,
-    questions: AskUserQuestionItem[],
-    answers: AskUserQuestionAnswerMap
-  ) => void
-  onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
-}
-
 interface KannaTranscriptRowProps {
   row: ResolvedTranscriptRow
   toolGroupExpanded?: boolean
@@ -660,51 +646,3 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
 
   return false
 })
-
-function KannaTranscriptImpl({
-  messages,
-  isLoading,
-  localPath,
-  latestToolIds,
-  onOpenLocalLink,
-  onAskUserQuestionSubmit,
-  onExitPlanModeConfirm,
-}: KannaTranscriptProps) {
-  const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
-  const rows = useMemo(() => buildResolvedTranscriptRows(messages, {
-    isLoading,
-    localPath,
-    latestToolIds,
-  }), [isLoading, latestToolIds, localPath, messages])
-  const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
-    setToolGroupExpanded((current) => (
-      current[groupId] === next
-        ? current
-        : {
-            ...current,
-            [groupId]: next,
-          }
-    ))
-  }, [])
-
-  return (
-    <OpenLocalLinkProvider onOpenLocalLink={onOpenLocalLink}>
-      {rows.map((row) => (
-        <div
-          key={row.id}
-          className="mx-auto max-w-[800px] pb-5"
-        >
-          <KannaTranscriptRow
-            row={row}
-            toolGroupExpanded={row.kind === "tool-group" ? (toolGroupExpanded[row.id] ?? false) : undefined}
-            onToolGroupExpandedChange={handleToolGroupExpandedChange}
-            onAskUserQuestionSubmit={onAskUserQuestionSubmit}
-            onExitPlanModeConfirm={onExitPlanModeConfirm}
-          />
-        </div>
-      ))}
-    </OpenLocalLinkProvider>
-  )
-}
-
-export const KannaTranscript = memo(KannaTranscriptImpl)

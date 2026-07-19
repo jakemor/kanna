@@ -12,8 +12,7 @@ import {
   normalizeClaudeFastMode,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
-  resolveClaudeContextWindow,
-  resolveClaudeContextWindowTokens,
+  resolveClaudeContextWindowMaxTokens,
 } from "../../../shared/types"
 import { assertNever } from "../../../shared/assert"
 import { Button, buttonVariants } from "../ui/button"
@@ -130,6 +129,7 @@ interface Props {
   availableProviders: ProviderCatalogEntry[]
   contextWindowSnapshot?: ContextWindowSnapshot | null
   previousPrompt?: string | null
+  onEditModels?: () => void
 }
 
 export interface ChatInputHandle {
@@ -194,6 +194,13 @@ function getEffectiveComposerState(
         modelOptions: { ...providerDefaults.cursor.modelOptions },
         planMode: composerState.planMode,
       }
+    case "pi":
+      return {
+        provider: "pi",
+        model: providerDefaults.pi.model,
+        modelOptions: { ...providerDefaults.pi.modelOptions },
+        planMode: composerState.planMode,
+      }
     default:
       return assertNever(activeProvider)
   }
@@ -212,6 +219,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   availableProviders,
   contextWindowSnapshot = null,
   previousPrompt = null,
+  onEditModels,
 }, forwardedRef) {
   const {
     getDraft,
@@ -257,8 +265,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const claudeModelOptions = providerPrefs.modelOptions as Extract<ComposerState, { provider: "claude" }>["modelOptions"]
-    const stagedMaxTokens = resolveClaudeContextWindowTokens(
-      resolveClaudeContextWindow(providerPrefs.model, claudeModelOptions.contextWindow),
+    const stagedMaxTokens = resolveClaudeContextWindowMaxTokens(
+      providerPrefs.model,
+      claudeModelOptions.contextWindow,
     )
     return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
   }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
@@ -552,6 +561,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "cursor") {
       modelOptions = { cursor: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "pi") {
+      modelOptions = { pi: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -819,6 +830,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 case "codexReasoningEffort":
                   setReasoningEffort(change.effort)
                   break
+                case "piReasoningEffort":
+                  setReasoningEffort(change.effort)
+                  break
                 case "contextWindow":
                   setClaudeContextWindow(change.contextWindow)
                   break
@@ -829,6 +843,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   break
               }
             }}
+            onEditModels={onEditModels}
             planMode={providerPrefs.planMode}
             onPlanModeChange={setEffectivePlanMode}
             includePlanMode={showPlanMode}

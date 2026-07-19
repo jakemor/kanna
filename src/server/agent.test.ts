@@ -155,6 +155,73 @@ describe("normalizeClaudeStreamMessage", () => {
       },
     })).toBe(1_000_000)
   })
+
+  // debugRaw contract: raw SDK JSON is stamped ONLY where the client reads it
+  // (KannaTranscript's first-system-message raw view and parseTranscript's
+  // tool_use_result extraction). Stamping more doubles transcript size; stamping
+  // less breaks those two read paths. This test pins the exact set.
+  test("stamps debugRaw on exactly system_init and tool_result entries", () => {
+    const systemInit = {
+      type: "system",
+      subtype: "init",
+      uuid: "sys-1",
+      model: "claude-opus-4-8",
+      tools: ["Bash"],
+      agents: [],
+      slash_commands: [],
+      mcp_servers: [],
+    }
+    const assistant = {
+      type: "assistant",
+      uuid: "msg-1",
+      message: {
+        content: [
+          { type: "text", text: "Running it now." },
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "pwd" } },
+        ],
+      },
+    }
+    const toolResult = {
+      type: "user",
+      uuid: "msg-2",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tool-1", content: "/tmp", is_error: false },
+        ],
+      },
+      tool_use_result: { stdout: "/tmp" },
+    }
+    const result = { type: "result", subtype: "success", is_error: false, duration_ms: 10, result: "done" }
+    const status = { type: "system", subtype: "status", status: "compacting" }
+    const compactBoundary = { type: "system", subtype: "compact_boundary" }
+
+    const stamped = [
+      ...normalizeClaudeStreamMessage(systemInit),
+      ...normalizeClaudeStreamMessage(toolResult),
+    ]
+    const unstamped = [
+      ...normalizeClaudeStreamMessage(assistant),
+      ...normalizeClaudeStreamMessage(result),
+      ...normalizeClaudeStreamMessage(status),
+      ...normalizeClaudeStreamMessage(compactBoundary),
+    ]
+
+    expect(stamped.map((entry) => entry.kind)).toEqual(["system_init", "tool_result"])
+    for (const entry of stamped) {
+      expect((entry as { debugRaw?: string }).debugRaw).toBeString()
+    }
+    // The stamped payload must round-trip to the exact raw SDK message: the
+    // client JSON.parses it to pull tool_use_result.
+    const parsedToolResultRaw = JSON.parse((stamped[1] as { debugRaw: string }).debugRaw)
+    expect(parsedToolResultRaw).toEqual(toolResult)
+    expect(parsedToolResultRaw.tool_use_result).toEqual({ stdout: "/tmp" })
+
+    expect(unstamped.map((entry) => entry.kind)).toEqual(["assistant_text", "tool_call", "result", "status", "compact_boundary"])
+    for (const entry of unstamped) {
+      expect(entry).not.toHaveProperty("debugRaw")
+    }
+  })
 })
 
 describe("attachment prompt helpers", () => {

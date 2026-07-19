@@ -314,13 +314,6 @@ export class TerminalManager {
     session.headless.dispose()
   }
 
-  closeByCwd(cwd: string) {
-    for (const [terminalId, session] of this.sessions.entries()) {
-      if (session.cwd !== cwd) continue
-      this.close(terminalId)
-    }
-  }
-
   closeAll() {
     for (const terminalId of this.sessions.keys()) {
       this.close(terminalId)

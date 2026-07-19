@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import {
   deriveClaudeModelLabel,
+  deriveModelLabel,
   getCodexReasoningOptions,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCursorModelId,
   normalizeCodexReasoningEffort,
   isCodexReasoningEffort,
   supportsClaudeMaxReasoningEffort,
@@ -21,6 +23,16 @@ describe("shared model normalization", () => {
     expect(normalizeClaudeModelId("opus")).toBe("claude-opus-4-8")
     expect(normalizeClaudeModelId("sonnet")).toBe("claude-sonnet-4-6")
     expect(normalizeClaudeModelId("haiku")).toBe("claude-haiku-4-5-20251001")
+  })
+
+  test("passes Cursor model ids through and folds -fast back into the base id", () => {
+    // The real Cursor list is runtime-discovered (cursor-agent --list-models),
+    // so unknown ids are preserved rather than clamped to the static catalog.
+    expect(normalizeCursorModelId()).toBe("composer-2.5")
+    expect(normalizeCursorModelId("  ")).toBe("composer-2.5")
+    expect(normalizeCursorModelId("composer-2.5-fast")).toBe("composer-2.5")
+    expect(normalizeCursorModelId("gpt-5.3-codex-high")).toBe("gpt-5.3-codex-high")
+    expect(normalizeCursorModelId("gpt-5.3-codex-high-fast")).toBe("gpt-5.3-codex-high")
   })
 
   test("normalizes legacy Codex aliases and defaults to the latest catalog model", () => {
@@ -79,5 +91,14 @@ describe("shared model normalization", () => {
     expect(supportsClaudeMaxReasoningEffort("opus")).toBe(true)
     expect(supportsClaudeMaxReasoningEffort("fable")).toBe(false)
     expect(supportsClaudeMaxReasoningEffort("claude-sonnet-4-6")).toBe(false)
+  })
+
+  test("derives display labels from bare model ids", () => {
+    expect(deriveModelLabel("lab/kimi-k2.5:nitro")).toBe("Kimi K2.5")
+    expect(deriveModelLabel("gpt-5.6-sol")).toBe("GPT 5.6 Sol")
+    expect(deriveModelLabel("openai/gpt-5.6")).toBe("GPT 5.6")
+    expect(deriveModelLabel("anthropic/claude-sonnet-5")).toBe("Claude Sonnet 5")
+    expect(deriveModelLabel("deepseek/deepseek-v4-pro")).toBe("Deepseek V4 Pro")
+    expect(deriveModelLabel("z-ai/glm-5.2")).toBe("GLM 5.2")
   })
 })

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
+  applyCursorModels,
+  applyPiFaveModels,
   cursorModelIdForOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
@@ -10,11 +12,44 @@ import {
   resetServerProvidersForTests,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { resolveClaudeApiModelId } from "../shared/types"
+import { DEFAULT_PI_FAVE_MODELS, DEFAULT_PI_MODEL, resolveClaudeApiModelId } from "../shared/types"
 
 describe("provider catalog normalization", () => {
   afterEach(() => {
     resetServerProvidersForTests()
+  })
+
+  test("applyPiFaveModels replaces the pi picker and default model", () => {
+    const changed = applyPiFaveModels([
+      { label: "Fast Kimi", id: "moonshotai/kimi-k2.5:nitro" },
+      { label: "Sonnet", id: "anthropic/claude-sonnet-5" },
+    ])
+    expect(changed).toBe(true)
+
+    const pi = SERVER_PROVIDERS.find((provider) => provider.id === "pi")
+    expect(pi?.defaultModel).toBe("moonshotai/kimi-k2.5:nitro")
+    expect(pi?.models.map((model) => [model.id, model.label])).toEqual([
+      ["moonshotai/kimi-k2.5:nitro", "Fast Kimi"],
+      ["anthropic/claude-sonnet-5", "Sonnet"],
+    ])
+
+    // Arbitrary ids still pass through the server model normalizer.
+    expect(normalizeServerModel("pi", "someone/else")).toBe("someone/else")
+    // Re-applying the same faves reports no change.
+    expect(applyPiFaveModels([
+      { label: "Fast Kimi", id: "moonshotai/kimi-k2.5:nitro" },
+      { label: "Sonnet", id: "anthropic/claude-sonnet-5" },
+    ])).toBe(false)
+  })
+
+  test("applyPiFaveModels with an empty list restores the built-in defaults", () => {
+    applyPiFaveModels([{ label: "Only", id: "x/y" }])
+    const changed = applyPiFaveModels([])
+    expect(changed).toBe(true)
+
+    const pi = SERVER_PROVIDERS.find((provider) => provider.id === "pi")
+    expect(pi?.defaultModel).toBe(DEFAULT_PI_MODEL)
+    expect(pi?.models.map((model) => model.id)).toEqual(DEFAULT_PI_FAVE_MODELS.map((fave) => fave.id))
   })
 
   test("maps legacy Claude effort into shared model options", () => {
@@ -113,6 +148,77 @@ describe("provider catalog normalization", () => {
     // Exercises the catalog lookup + default fallback (throws if "cursor" is unregistered).
     expect(normalizeServerModel("cursor")).toBe("composer-2.5")
     expect(normalizeServerModel("cursor", "composer-2.5-fast")).toBe("composer-2.5")
+    // Runtime-discovered ids (cursor-agent --list-models) pass through even
+    // when the catalog overlay hasn't been applied — the CLI validates them.
+    expect(normalizeServerModel("cursor", "gpt-5.3-codex-high")).toBe("gpt-5.3-codex-high")
+  })
+
+  test("applyCursorModels collapses -fast variants into the fast-mode toggle", () => {
+    const listed = [
+      { id: "auto", label: "Auto", isDefault: true },
+      { id: "composer-2.5", label: "Composer 2.5" },
+      { id: "composer-2.5-fast", label: "Composer 2.5 Fast" },
+      { id: "claude-fable-5-thinking-high", label: "Fable 5 1M Thinking" },
+    ]
+    expect(applyCursorModels(listed)).toBe(true)
+
+    const cursor = SERVER_PROVIDERS.find((provider) => provider.id === "cursor")
+    // Kanna's default survives because the account still has it.
+    expect(cursor?.defaultModel).toBe("composer-2.5")
+    // Sorted by family: composer, then Anthropic, then "others" (auto).
+    expect(cursor?.models.map((model) => [model.id, Boolean(model.supportsFastMode)])).toEqual([
+      ["composer-2.5", true],
+      ["claude-fable-5-thinking-high", false],
+      ["auto", false],
+    ])
+
+    // The fast suffix only applies to models with a listed -fast variant.
+    expect(cursorModelIdForOptions("composer-2.5", { fastMode: true })).toBe("composer-2.5-fast")
+    expect(cursorModelIdForOptions("auto", { fastMode: true })).toBe("auto")
+    // Models missing from the catalog keep the preference (the CLI validates).
+    expect(cursorModelIdForOptions("gpt-5.2", { fastMode: true })).toBe("gpt-5.2-fast")
+
+    // Re-applying the same list reports no change.
+    expect(applyCursorModels(listed)).toBe(false)
+  })
+
+  test("applyCursorModels groups models by family and preserves CLI order within a group", () => {
+    // Intentionally interleaved input across families and generations.
+    applyCursorModels([
+      { id: "gpt-5.6-sol-high", label: "GPT-5.6 Sol High" },
+      { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+      { id: "auto", label: "Auto", isDefault: true },
+      { id: "claude-opus-4-8-max", label: "Opus 4.8 Max" },
+      { id: "cursor-grok-4.5-high", label: "Grok 4.5" },
+      { id: "composer-2.5", label: "Composer 2.5" },
+      { id: "kimi-k2.7-code", label: "Kimi K2.7" },
+      { id: "gpt-5.6-sol-low", label: "GPT-5.6 Sol Low" },
+      { id: "glm-5.2-max", label: "GLM 5.2 Max" },
+    ])
+    const cursor = SERVER_PROVIDERS.find((provider) => provider.id === "cursor")
+    expect(cursor?.models.map((model) => model.id)).toEqual([
+      "composer-2.5",
+      "claude-opus-4-8-max",
+      // GPT family keeps its original relative order (High before Low).
+      "gpt-5.6-sol-high",
+      "gpt-5.6-sol-low",
+      "kimi-k2.7-code",
+      "glm-5.2-max",
+      "cursor-grok-4.5-high",
+      "gemini-3.1-pro",
+      "auto",
+    ])
+  })
+
+  test("applyCursorModels falls back to the CLI-marked default and ignores empty lists", () => {
+    expect(applyCursorModels([])).toBe(false)
+
+    applyCursorModels([
+      { id: "gpt-5.2", label: "GPT-5.2" },
+      { id: "auto", label: "Auto", isDefault: true },
+    ])
+    const cursor = SERVER_PROVIDERS.find((provider) => provider.id === "cursor")
+    expect(cursor?.defaultModel).toBe("auto")
   })
 
   test("normalizes server model ids through the shared alias catalog", () => {

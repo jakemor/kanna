@@ -1,411 +1,74 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
-import { PROVIDERS, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
-import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import { PROVIDERS, withPiFaveModels, type AgentProvider, type AppSettingsPatch, type AskUserQuestionAnswerMap, type AppSettingsSnapshot, type ChatDiffSnapshot, type ChatHistoryPage, type FaveModel, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateSnapshot } from "../../shared/types"
+import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import { useChatInputStore } from "../stores/chatInputStore"
-import { useAppSettingsStore } from "../stores/appSettingsStore"
-import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { useTheme } from "../hooks/useTheme"
 import { processTranscriptMessages } from "../lib/parseTranscript"
-import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
+import {
+  applySidebarProjectOrder,
+  CHAT_HISTORY_PAGE_SIZE,
+  getActiveChatSnapshot,
+  getNewestRemainingChatId,
+  getPreviousPrompt,
+  getProjectIdForChat,
+  INITIAL_CHAT_RECENT_LIMIT,
+  NEW_CHAT_OPTIMISTIC_SCOPE,
+  reconcileOptimisticUserPrompts,
+  resolveComposeIntent,
+  shouldMarkActiveChatRead,
+  type OptimisticProcessingState,
+  type OptimisticUserPrompt,
+  type ProjectRequest,
+  type StartChatIntent,
+} from "./kannaStateHelpers"
+import {
+  mergeTranscriptEntries,
+  sameChatSnapshotCore,
+  sameDiffs,
+  shouldPreserveExistingProjectDiffs,
+} from "./snapshotEquality"
 import { KannaSocket, type SocketStatus } from "./socket"
+import { useAppSettingsSync } from "./useAppSettingsSync"
+import { useChatCommands } from "./useChatCommands"
+import { useSendMessage } from "./useSendMessage"
+import { useShareExport } from "./useShareExport"
+import { useUpdateRestart } from "./useUpdateRestart"
 import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
 
-function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: ChatSnapshot["runtime"] | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  return left.chatId === right.chatId
-    && left.projectId === right.projectId
-    && left.localPath === right.localPath
-    && left.title === right.title
-    && left.status === right.status
-    && left.isDraining === right.isDraining
-    && left.provider === right.provider
-    && left.planMode === right.planMode
-    && left.sessionToken === right.sessionToken
-}
+export {
+  getUiUpdateReadinessPath,
+  getUiUpdateRestartReconnectAction,
+  shouldHandleUiUpdateReloadRequest,
+} from "./useUpdateRestart"
 
-function sameTranscriptEntries(left: ChatSnapshot["messages"] | null | undefined, right: ChatSnapshot["messages"] | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  if (left.length !== right.length) return false
-  return left.every((entry, index) => entry._id === right[index]?._id)
-}
-
-function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: ProviderCatalogEntry[] | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  if (left.length !== right.length) return false
-  return left.every((provider, index) => {
-    const other = right[index]
-    return Boolean(other)
-      && provider.id === other.id
-      && provider.label === other.label
-      && provider.defaultModel === other.defaultModel
-      && provider.models.length === other.models.length
-      && provider.models.every((model, modelIndex) => {
-        const otherModel = other.models[modelIndex]
-        return Boolean(otherModel)
-          && model.id === otherModel.id
-          && model.label === otherModel.label
-          && model.supportsEffort === otherModel.supportsEffort
-      })
-  })
-}
-
-function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: ChatSnapshot["history"] | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  return left.hasOlder === right.hasOlder
-    && left.olderCursor === right.olderCursor
-    && left.recentLimit === right.recentLimit
-}
-
-function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
-  return left.id === right.id
-    && left.content === right.content
-    && left.createdAt === right.createdAt
-    && left.provider === right.provider
-    && left.model === right.model
-    && left.planMode === right.planMode
-    && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
-    && sameAttachmentArray(left.attachments, right.attachments)
-}
-
-function sameAttachmentArray(left: ChatAttachment[], right: ChatAttachment[]) {
-  if (left === right) return true
-  if (left.length !== right.length) return false
-  return left.every((attachment, index) => {
-    const other = right[index]
-    return Boolean(other)
-      && attachment.id === other.id
-      && attachment.kind === other.kind
-      && attachment.displayName === other.displayName
-      && attachment.absolutePath === other.absolutePath
-      && attachment.relativePath === other.relativePath
-      && attachment.contentUrl === other.contentUrl
-      && attachment.mimeType === other.mimeType
-      && attachment.size === other.size
-  })
-}
-
-function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefined, right: ChatSnapshot["queuedMessages"] | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  if (left.length !== right.length) return false
-  return left.every((message, index) => sameQueuedMessage(message, right[index]!))
-}
-
-function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSnapshot | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  if (left.status !== right.status) return false
-  if (left.branchName !== right.branchName) return false
-  if (left.defaultBranchName !== right.defaultBranchName) return false
-  if (left.hasOriginRemote !== right.hasOriginRemote) return false
-  if (left.originRepoSlug !== right.originRepoSlug) return false
-  if (left.hasUpstream !== right.hasUpstream) return false
-  if (left.aheadCount !== right.aheadCount) return false
-  if (left.behindCount !== right.behindCount) return false
-  if (left.lastFetchedAt !== right.lastFetchedAt) return false
-  const leftHistory = left.branchHistory?.entries ?? []
-  const rightHistory = right.branchHistory?.entries ?? []
-  if (leftHistory.length !== rightHistory.length) return false
-  const sameBranchHistory = leftHistory.every((entry, index) => {
-    const other = rightHistory[index]
-    return Boolean(other)
-      && entry.sha === other.sha
-      && entry.summary === other.summary
-      && entry.description === other.description
-      && entry.authorName === other.authorName
-      && entry.authoredAt === other.authoredAt
-      && entry.githubUrl === other.githubUrl
-      && entry.tags.length === other.tags.length
-      && entry.tags.every((tag, tagIndex) => tag === other.tags[tagIndex])
-  })
-  if (!sameBranchHistory) return false
-  if (left.files.length !== right.files.length) return false
-  return left.files.every((file, index) => {
-    const other = right.files[index]
-    return Boolean(other)
-      && file.path === other.path
-      && file.changeType === other.changeType
-      && file.isUntracked === other.isUntracked
-      && file.additions === other.additions
-      && file.deletions === other.deletions
-      && file.patchDigest === other.patchDigest
-      && file.mimeType === other.mimeType
-      && file.size === other.size
-  })
-}
-
-function shouldPreserveExistingProjectDiffs(
-  current: ChatDiffSnapshot | null | undefined,
-  next: ChatDiffSnapshot | null | undefined
-) {
-  return Boolean(
-    current
-    && current.status !== "unknown"
-    && next
-    && next.status === "unknown"
-    && next.files.length === 0
-  )
-}
-
-function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | null) {
-  if (left === right) return true
-  if (!left || !right) return false
-  return sameRuntime(left.runtime, right.runtime)
-    && sameQueuedMessages(left.queuedMessages, right.queuedMessages)
-    && sameTranscriptEntries(left.messages, right.messages)
-    && sameHistory(left.history, right.history)
-    && sameProviders(left.availableProviders, right.availableProviders)
-}
-
-function mergeTranscriptEntries(olderHistoryEntries: TranscriptEntry[], recentEntries: TranscriptEntry[]) {
-  const deduped = new Map<string, TranscriptEntry>()
-  for (const entry of olderHistoryEntries) {
-    deduped.set(entry._id, entry)
-  }
-  for (const entry of recentEntries) {
-    deduped.set(entry._id, entry)
-  }
-  return [...deduped.values()]
-}
-
-export function getPreviousPrompt(messages: ReturnType<typeof processTranscriptMessages>) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message?.kind === "user_prompt" && message.content.trim().length > 0) {
-      return message.content
-    }
-  }
-  return null
-}
-
-const NEW_CHAT_OPTIMISTIC_SCOPE = "__new_chat__"
-const LEGACY_THEME_STORAGE_KEY = "lever-theme"
-const LEGACY_CHAT_SOUND_STORAGE_KEY = "chat-sound-preferences"
-const LEGACY_TERMINAL_STORAGE_KEY = "terminal-preferences"
-const LEGACY_CHAT_PREFERENCES_STORAGE_KEY = "chat-preferences"
-
-export interface OptimisticUserPrompt {
-  id: string
-  scopeId: string
-  signature: string
-  requiredMatchCount: number
-  entry: UserPromptEntry
-}
-
-interface OptimisticProcessingState {
-  scopeId: string
-  ackedAt: number | null
-}
-
-function readPersistedZustandState(key: string): Record<string, unknown> | null {
-  if (typeof window === "undefined") return null
-  const raw = window.localStorage.getItem(key)
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as { state?: unknown }
-    return parsed.state && typeof parsed.state === "object" && !Array.isArray(parsed.state)
-      ? parsed.state as Record<string, unknown>
-      : null
-  } catch {
-    return null
-  }
-}
-
-function readLegacyBrowserSettingsPatch(): AppSettingsPatch | null {
-  if (typeof window === "undefined") return null
-
-  const patch: AppSettingsPatch = {}
-  const theme = window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY)
-  if (theme === "light" || theme === "dark" || theme === "system") {
-    patch.theme = theme
-  }
-
-  const chatSoundState = readPersistedZustandState(LEGACY_CHAT_SOUND_STORAGE_KEY)
-  if (chatSoundState?.chatSoundPreference === "never" || chatSoundState?.chatSoundPreference === "unfocused" || chatSoundState?.chatSoundPreference === "always") {
-    patch.chatSoundPreference = chatSoundState.chatSoundPreference
-  }
-  if (
-    chatSoundState?.chatSoundId === "blow"
-    || chatSoundState?.chatSoundId === "bottle"
-    || chatSoundState?.chatSoundId === "frog"
-    || chatSoundState?.chatSoundId === "funk"
-    || chatSoundState?.chatSoundId === "glass"
-    || chatSoundState?.chatSoundId === "ping"
-    || chatSoundState?.chatSoundId === "pop"
-    || chatSoundState?.chatSoundId === "purr"
-    || chatSoundState?.chatSoundId === "tink"
-  ) {
-    patch.chatSoundId = chatSoundState.chatSoundId
-  }
-
-  const terminalState = readPersistedZustandState(LEGACY_TERMINAL_STORAGE_KEY)
-  if (terminalState) {
-    patch.terminal = {}
-    if (typeof terminalState.scrollbackLines === "number") {
-      patch.terminal.scrollbackLines = terminalState.scrollbackLines
-    }
-    if (typeof terminalState.minColumnWidth === "number") {
-      patch.terminal.minColumnWidth = terminalState.minColumnWidth
-    }
-    const editorPatch: NonNullable<AppSettingsPatch["editor"]> = {}
-    if (
-      terminalState.editorPreset === "cursor"
-      || terminalState.editorPreset === "vscode"
-      || terminalState.editorPreset === "xcode"
-      || terminalState.editorPreset === "windsurf"
-      || terminalState.editorPreset === "custom"
-    ) {
-      editorPatch.preset = terminalState.editorPreset
-    }
-    if (typeof terminalState.editorCommandTemplate === "string") {
-      editorPatch.commandTemplate = terminalState.editorCommandTemplate
-    }
-    if (Object.keys(editorPatch).length > 0) {
-      patch.editor = editorPatch
-    }
-  }
-
-  const chatPreferencesState = readPersistedZustandState(LEGACY_CHAT_PREFERENCES_STORAGE_KEY)
-  if (chatPreferencesState?.defaultProvider === "last_used" || chatPreferencesState?.defaultProvider === "claude" || chatPreferencesState?.defaultProvider === "codex") {
-    patch.defaultProvider = chatPreferencesState.defaultProvider
-  }
-  if (chatPreferencesState?.providerDefaults && typeof chatPreferencesState.providerDefaults === "object") {
-    patch.providerDefaults = chatPreferencesState.providerDefaults as AppSettingsPatch["providerDefaults"]
-  }
-
-  patch.browserSettingsMigrated = true
-  return Object.keys(patch).length > 1 ? patch : null
-}
-
-function clearLegacyBrowserSettings() {
-  if (typeof window === "undefined") return
-  window.localStorage.removeItem(LEGACY_THEME_STORAGE_KEY)
-  window.localStorage.removeItem(LEGACY_CHAT_SOUND_STORAGE_KEY)
-  window.localStorage.removeItem(LEGACY_TERMINAL_STORAGE_KEY)
-  window.localStorage.removeItem(LEGACY_CHAT_PREFERENCES_STORAGE_KEY)
-}
-
-function syncRuntimeStoresFromAppSettings(snapshot: AppSettingsSnapshot) {
-  useAppSettingsStore.getState().setFromServer(snapshot)
-  const terminalPreferences = useTerminalPreferencesStore.getState()
-  terminalPreferences.setScrollbackLines(snapshot.terminal.scrollbackLines)
-  terminalPreferences.setMinColumnWidth(snapshot.terminal.minColumnWidth)
-  terminalPreferences.setEditorPreset(snapshot.editor.preset)
-  terminalPreferences.setEditorCommandTemplate(snapshot.editor.commandTemplate)
-
-  const chatSoundPreferences = useChatSoundPreferencesStore.getState()
-  chatSoundPreferences.setChatSoundPreference(snapshot.chatSoundPreference)
-  chatSoundPreferences.setChatSoundId(snapshot.chatSoundId)
-
-  useChatPreferencesStore.getState().syncProviderDefaults(snapshot.defaultProvider, snapshot.providerDefaults)
-}
-
-function serializeAttachmentSignature(attachment: ChatAttachment) {
-  return JSON.stringify({
-    id: attachment.id,
-    kind: attachment.kind,
-    displayName: attachment.displayName,
-    relativePath: attachment.relativePath,
-    mimeType: attachment.mimeType,
-    size: attachment.size,
-    contentUrl: attachment.contentUrl,
-  })
-}
-
-export function getUserPromptSignature(content: string, attachments: ChatAttachment[] = []) {
-  return JSON.stringify({
-    content,
-    attachments: attachments.map(serializeAttachmentSignature),
-  })
-}
-
-export function countMatchingUserPrompts(entries: TranscriptEntry[], signature: string) {
-  return entries.reduce((count, entry) => {
-    if (entry.kind !== "user_prompt") return count
-    return count + (getUserPromptSignature(entry.content, entry.attachments ?? []) === signature ? 1 : 0)
-  }, 0)
-}
-
-export function reconcileOptimisticUserPrompts(
-  optimisticPrompts: OptimisticUserPrompt[],
-  scopeId: string,
-  serverEntries: TranscriptEntry[],
-) {
-  const matchCounts = new Map<string, number>()
-  for (const entry of serverEntries) {
-    if (entry.kind !== "user_prompt") continue
-    const signature = getUserPromptSignature(entry.content, entry.attachments ?? [])
-    matchCounts.set(signature, (matchCounts.get(signature) ?? 0) + 1)
-  }
-
-  return optimisticPrompts.filter((prompt) => {
-    if (prompt.scopeId !== scopeId) return true
-    return (matchCounts.get(prompt.signature) ?? 0) < prompt.requiredMatchCount
-  })
-}
-
-const INITIAL_CHAT_RECENT_LIMIT = 200
-const CHAT_HISTORY_PAGE_SIZE = 500
-
-export function getNewestRemainingChatId(projectGroups: SidebarData["projectGroups"], activeChatId: string): string | null {
-  const projectGroup = projectGroups.find((group) => group.chats.some((chat) => chat.chatId === activeChatId))
-  if (!projectGroup) return null
-
-  return projectGroup.chats.find((chat) => chat.chatId !== activeChatId)?.chatId ?? null
-}
-
-export function applySidebarProjectOrder(
-  projectGroups: SidebarData["projectGroups"],
-  projectIds: string[] | null | undefined
-) {
-  if (!projectIds?.length || projectGroups.length <= 1) {
-    return projectGroups
-  }
-
-  const indexByProjectId = new Map(projectGroups.map((group, index) => [group.groupKey, index]))
-  const seen = new Set<string>()
-  const orderedGroups = projectIds
-    .map((projectId) => {
-      if (seen.has(projectId)) {
-        return null
-      }
-      seen.add(projectId)
-      const index = indexByProjectId.get(projectId)
-      return index === undefined ? null : projectGroups[index]
-    })
-    .filter((group): group is SidebarData["projectGroups"][number] => Boolean(group))
-
-  if (orderedGroups.length === 0) {
-    return projectGroups
-  }
-
-  const nextProjectGroups = [
-    ...orderedGroups,
-    ...projectGroups.filter((group) => !seen.has(group.groupKey)),
-  ]
-
-  return nextProjectGroups.every((group, index) => group === projectGroups[index])
-    ? projectGroups
-    : nextProjectGroups
-}
-
-export function shouldMarkActiveChatRead(doc: Pick<Document, "visibilityState" | "hasFocus"> = document) {
-  return doc.visibilityState === "visible" && doc.hasFocus()
-}
+export {
+  applySidebarProjectOrder,
+  countMatchingUserPrompts,
+  getActiveChatSnapshot,
+  getNewestRemainingChatId,
+  getNextMeasuredInputHeight,
+  getPreviousPrompt,
+  getTranscriptPaddingBottom,
+  getUserPromptSignature,
+  reconcileOptimisticUserPrompts,
+  resolveComposeIntent,
+  shouldAutoFollowTranscript,
+  shouldMarkActiveChatRead,
+  TRANSCRIPT_PADDING_BOTTOM_OFFSET,
+  type OptimisticUserPrompt,
+  type ProjectRequest,
+  type StartChatIntent,
+} from "./kannaStateHelpers"
 
 function wsUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
@@ -427,225 +90,6 @@ function useKannaSocket() {
   }, [])
 
   return socketRef.current as KannaSocket
-}
-
-function logKannaState(message: string, details?: unknown) {
-  void message
-  void details
-}
-
-const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "kanna:profile-send-to-starting"
-
-interface SendToStartingTrace {
-  traceId: string
-  optimisticId: string
-  startedAt: number
-  serverChatId: string | null
-  routeChatIdAtSend: string | null
-  contentPreview: string
-  ackAt?: number
-  snapshotAt?: number
-  startingStatusAt?: number
-  startingRenderedAt?: number
-}
-
-function isSendToStartingProfilingEnabled() {
-  try {
-    return window.sessionStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
-      || window.localStorage.getItem(SEND_TO_STARTING_PROFILE_STORAGE_KEY) === "1"
-  } catch {
-    return false
-  }
-}
-
-function elapsedTraceMs(startedAt: number) {
-  return Number((performance.now() - startedAt).toFixed(1))
-}
-
-function logSendToStartingTrace(
-  trace: SendToStartingTrace | null | undefined,
-  stage: string,
-  details?: Record<string, unknown>
-) {
-  if (!trace || !isSendToStartingProfilingEnabled()) {
-    return
-  }
-
-  console.debug("[kanna/send->starting][client]", {
-    traceId: trace.traceId,
-    stage,
-    elapsedMs: elapsedTraceMs(trace.startedAt),
-    serverChatId: trace.serverChatId,
-    routeChatIdAtSend: trace.routeChatIdAtSend,
-    ...details,
-  })
-}
-
-function composerStateFromSendOptions(options?: {
-  provider?: AgentProvider
-  model?: string
-  modelOptions?: ModelOptions
-  planMode?: boolean
-}): ComposerState | null {
-  if (options?.provider === "claude" && options.model && options.modelOptions?.claude) {
-    return {
-      provider: "claude",
-      model: options.model,
-      modelOptions: {
-        reasoningEffort: options.modelOptions.claude.reasoningEffort ?? "high",
-        contextWindow: options.modelOptions.claude.contextWindow ?? "1m",
-        fastMode: options.modelOptions.claude.fastMode ?? false,
-      },
-      planMode: Boolean(options.planMode),
-    }
-  }
-
-  if (options?.provider === "codex" && options.model && options.modelOptions?.codex) {
-    return {
-      provider: "codex",
-      model: options.model,
-      modelOptions: {
-        reasoningEffort: options.modelOptions.codex.reasoningEffort ?? "medium",
-        fastMode: options.modelOptions.codex.fastMode ?? false,
-      },
-      planMode: Boolean(options.planMode),
-    }
-  }
-
-  return null
-}
-
-function getProjectIdForChat(projectGroups: SidebarData["projectGroups"], chatId: string | null) {
-  if (!chatId) return null
-  return projectGroups.find((group) => group.chats.some((chat) => chat.chatId === chatId))?.groupKey ?? null
-}
-
-export function shouldAutoFollowTranscript(distanceFromBottom: number) {
-  return distanceFromBottom < 24
-}
-
-export function getUiUpdateRestartReconnectAction(
-  phase: string | null,
-  connectionStatus: SocketStatus
-): "none" | "awaiting_server_ready" {
-  if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
-    return "awaiting_server_ready"
-  }
-
-  return "none"
-}
-
-export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
-const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
-const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "kanna:last-update-reload-request"
-
-export function getTranscriptPaddingBottom(inputHeight: number) {
-  return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
-}
-
-export function getNextMeasuredInputHeight(previousHeight: number, measuredHeight: number) {
-  return measuredHeight > 0 ? measuredHeight : previousHeight
-}
-
-function getUiUpdateRestartPhase() {
-  return window.sessionStorage.getItem(UI_UPDATE_RESTART_STORAGE_KEY)
-}
-
-function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_server_ready") {
-  window.sessionStorage.setItem(UI_UPDATE_RESTART_STORAGE_KEY, phase)
-}
-
-function clearUiUpdateRestartPhase() {
-  window.sessionStorage.removeItem(UI_UPDATE_RESTART_STORAGE_KEY)
-}
-
-export function shouldHandleUiUpdateReloadRequest(
-  reloadRequestedAt: number | null | undefined,
-  lastHandledReloadRequest: string | null
-) {
-  if (!reloadRequestedAt) return false
-  return String(reloadRequestedAt) !== lastHandledReloadRequest
-}
-
-function getLastHandledUiUpdateReloadRequest() {
-  return window.sessionStorage.getItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY)
-}
-
-function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
-  window.sessionStorage.setItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY, String(reloadRequestedAt))
-}
-
-export function getUiUpdateReadinessPath() {
-  return "/auth/status"
-}
-
-function downloadTextFile(fileName: string, contents: string, contentType = "application/json") {
-  const blob = new Blob([contents], { type: `${contentType}; charset=utf-8` })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement("a")
-  anchor.href = url
-  anchor.download = fileName
-  anchor.style.display = "none"
-  document.body.append(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
-}
-
-async function isServerReady(fetchImpl: typeof fetch = fetch) {
-  const response = await fetchImpl(getUiUpdateReadinessPath(), {
-    method: "GET",
-    cache: "no-store",
-    headers: {
-      Accept: "application/json",
-    },
-  })
-
-  return response.ok
-}
-
-export interface ProjectRequest {
-  mode: "new" | "existing" | "clone"
-  localPath: string
-  fallbackPath?: string
-  title: string
-  cloneUrl?: string
-}
-
-export type StartChatIntent =
-  | { kind: "project_id"; projectId: string }
-  | { kind: "local_path"; localPath: string }
-  | { kind: "project_request"; project: ProjectRequest }
-
-export function resolveComposeIntent(params: {
-  selectedProjectId: string | null
-  sidebarProjectId?: string | null
-  fallbackLocalProjectPath?: string | null
-}): StartChatIntent | null {
-  const projectId = params.selectedProjectId ?? params.sidebarProjectId ?? null
-  if (projectId) {
-    return { kind: "project_id", projectId }
-  }
-
-  if (params.fallbackLocalProjectPath) {
-    return { kind: "local_path", localPath: params.fallbackLocalProjectPath }
-  }
-
-  return null
-}
-
-export function getActiveChatSnapshot(chatSnapshot: ChatSnapshot | null, activeChatId: string | null): ChatSnapshot | null {
-  if (!chatSnapshot) return null
-  if (!activeChatId) return null
-  if (chatSnapshot.runtime.chatId !== activeChatId) {
-    logKannaState("stale snapshot masked", {
-      routeChatId: activeChatId,
-      snapshotChatId: chatSnapshot.runtime.chatId,
-      snapshotProvider: chatSnapshot.runtime.provider,
-    })
-    return null
-  }
-  return chatSnapshot
 }
 
 export interface KannaState {
@@ -703,6 +147,7 @@ export interface KannaState {
   handleWriteAppSettings: (patch: AppSettingsPatch) => Promise<void>
   handleReadLlmProvider: () => Promise<void>
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
+  handleWriteFaveModels: (faveModels: FaveModel[]) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
@@ -749,16 +194,12 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarData, setSidebarData] = useState<SidebarData>({ projectGroups: [] })
   const [optimisticSidebarProjectOrder, setOptimisticSidebarProjectOrder] = useState<string[] | null>(null)
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
-  const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
   const [olderHistoryEntries, setOlderHistoryEntries] = useState<TranscriptEntry[]>([])
   const [isHistoryLoading, setIsHistoryLoading] = useState(false)
   const [historyCursor, setHistoryCursor] = useState<string | null>(null)
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
-  const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
-  const [appSettings, setAppSettings] = useState<AppSettingsSnapshot | null>(null)
-  const [llmProvider, setLlmProvider] = useState<LlmProviderSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
   const [sidebarReady, setSidebarReady] = useState(false)
   const [localProjectsReady, setLocalProjectsReady] = useState(false)
@@ -768,21 +209,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
   const [commandError, setCommandError] = useState<string | null>(null)
-  const [isExportingStandalone, setIsExportingStandalone] = useState(false)
-  const [standaloneShareUrl, setStandaloneShareUrl] = useState<string | null>(null)
-  const [standaloneShareComplete, setStandaloneShareComplete] = useState(false)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
   const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
-  const sendToStartingProfilesRef = useRef<Map<string, SendToStartingTrace>>(new Map())
   const draftChatIds = useChatInputStore(useShallow((state) => Object.keys(state.drafts).sort()))
   const attachmentDraftChatIds = useChatInputStore(
     useShallow((state) => Object.keys(state.attachmentDrafts).sort())
   )
-  const chatSubscriptionDebugRef = useRef(0)
-  const lastStartingRenderedTraceIdRef = useRef<string | null>(null)
   const lastActiveProjectDiffRef = useRef<{ projectId: string | null; diffs: ChatDiffSnapshot | null }>({
     projectId: null,
     diffs: null,
@@ -836,198 +271,24 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
   }, [socket])
 
-  useEffect(() => {
-    return socket.subscribe<UpdateSnapshot>({ type: "update" }, (snapshot) => {
-      setUpdateSnapshot(snapshot)
-      setCommandError(null)
-    })
-  }, [socket])
+  const { updateSnapshot, handleCheckForUpdates, handleInstallUpdate } = useUpdateRestart({
+    socket,
+    connectionStatus,
+    dialog,
+    setCommandError,
+  })
 
-  useEffect(() => {
-    if (connectionStatus !== "connected") return
-    void socket.command<UpdateSnapshot>({ type: "update.check", force: true }).catch((error) => {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    })
-  }, [connectionStatus, socket])
-
-  useEffect(() => {
-    const reloadRequestedAt = updateSnapshot?.reloadRequestedAt
-    if (!shouldHandleUiUpdateReloadRequest(reloadRequestedAt, getLastHandledUiUpdateReloadRequest())) {
-      return
-    }
-    if (!reloadRequestedAt) {
-      return
-    }
-
-    setLastHandledUiUpdateReloadRequest(reloadRequestedAt)
-    setUiUpdateRestartPhase("awaiting_disconnect")
-  }, [updateSnapshot?.reloadRequestedAt])
-
-  useEffect(() => {
-    const phase = getUiUpdateRestartPhase()
-    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
-    if (reconnectAction === "awaiting_server_ready") {
-      setUiUpdateRestartPhase("awaiting_server_ready")
-      return
-    }
-  }, [connectionStatus])
-
-  useEffect(() => {
-    if (getUiUpdateRestartPhase() !== "awaiting_server_ready") {
-      return
-    }
-
-    let cancelled = false
-    let timeoutId: number | null = null
-
-    const pollServerReadiness = async () => {
-      try {
-        if (await isServerReady()) {
-          if (cancelled) return
-          clearUiUpdateRestartPhase()
-          window.location.reload()
-          return
-        }
-      } catch {
-        // Keep polling while the process restarts.
-      }
-
-      if (cancelled) return
-      timeoutId = window.setTimeout(() => {
-        void pollServerReadiness()
-      }, 500)
-    }
-
-    void pollServerReadiness()
-
-    return () => {
-      cancelled = true
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId)
-      }
-    }
-  }, [connectionStatus])
-
-  useEffect(() => {
-    function handleWindowFocus() {
-      if (!updateSnapshot?.lastCheckedAt) return
-      if (Date.now() - updateSnapshot.lastCheckedAt <= 60 * 60 * 1000) return
-      void socket.command<UpdateSnapshot>({ type: "update.check" }).catch((error) => {
-        setCommandError(error instanceof Error ? error.message : String(error))
-      })
-    }
-
-    window.addEventListener("focus", handleWindowFocus)
-    return () => {
-      window.removeEventListener("focus", handleWindowFocus)
-    }
-  }, [socket, updateSnapshot?.lastCheckedAt])
-
-  useEffect(() => {
-    return socket.subscribe<KeybindingsSnapshot>({ type: "keybindings" }, (snapshot) => {
-      setKeybindings(snapshot)
-      setCommandError(null)
-    })
-  }, [socket])
-
-  useEffect(() => {
-    return socket.subscribe<AppSettingsSnapshot>({ type: "app-settings" }, (snapshot) => {
-      setAppSettings(snapshot)
-      syncRuntimeStoresFromAppSettings(snapshot)
-      setCommandError(null)
-    })
-  }, [socket])
-
-  const handleReadAppSettings = useCallback(async () => {
-    try {
-      useAppSettingsStore.getState().setHydrationStatus("loading")
-      const snapshot = await socket.command<AppSettingsSnapshot>({ type: "settings.readAppSettings" })
-      setAppSettings(snapshot)
-      syncRuntimeStoresFromAppSettings(snapshot)
-      setCommandError(null)
-    } catch (error) {
-      useAppSettingsStore.getState().setHydrationStatus("error")
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [socket])
-
-  const handleWriteAppSettings = useCallback(async (patch: AppSettingsPatch) => {
-    try {
-      useAppSettingsStore.getState().applyOptimisticPatch(patch)
-      const snapshot = await socket.command<AppSettingsSnapshot>({
-        type: "settings.writeAppSettingsPatch",
-        patch,
-      })
-      setAppSettings(snapshot)
-      syncRuntimeStoresFromAppSettings(snapshot)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-      await handleReadAppSettings()
-      throw error
-    }
-  }, [handleReadAppSettings, socket])
-
-  const handleReadLlmProvider = useCallback(async () => {
-    try {
-      const snapshot = await socket.command<LlmProviderSnapshot>({ type: "settings.readLlmProvider" })
-      setLlmProvider(snapshot)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [socket])
-
-  const handleWriteLlmProvider = useCallback(async (
-    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
-  ) => {
-    try {
-      const snapshot = await socket.command<LlmProviderSnapshot>({
-        type: "settings.writeLlmProvider",
-        provider: value.provider,
-        apiKey: value.apiKey,
-        model: value.model,
-        baseUrl: value.baseUrl,
-      })
-      setLlmProvider(snapshot)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-      throw error
-    }
-  }, [socket])
-
-  const handleValidateLlmProvider = useCallback(async (
-    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
-  ) => {
-    return await socket.command<LlmProviderValidationResult>({
-      type: "settings.validateLlmProvider",
-      provider: value.provider,
-      apiKey: value.apiKey,
-      model: value.model,
-      baseUrl: value.baseUrl,
-    })
-  }, [socket])
-
-  useEffect(() => {
-    if (connectionStatus !== "connected") return
-    void handleReadAppSettings()
-  }, [connectionStatus, handleReadAppSettings])
-
-  useEffect(() => {
-    if (connectionStatus !== "connected") return
-    if (appSettings?.browserSettingsMigrated !== false) return
-    const patch = readLegacyBrowserSettingsPatch()
-    if (!patch) return
-    void handleWriteAppSettings(patch)
-      .then(clearLegacyBrowserSettings)
-      .catch(() => undefined)
-  }, [appSettings?.browserSettingsMigrated, connectionStatus, handleWriteAppSettings])
-
-  useEffect(() => {
-    if (connectionStatus !== "connected") return
-    void handleReadLlmProvider()
-  }, [connectionStatus, handleReadLlmProvider])
+  const {
+    keybindings,
+    appSettings,
+    llmProvider,
+    handleReadAppSettings,
+    handleWriteAppSettings,
+    handleReadLlmProvider,
+    handleWriteLlmProvider,
+    handleWriteFaveModels,
+    handleValidateLlmProvider,
+  } = useAppSettingsSync({ socket, connectionStatus, setCommandError })
 
   useEffect(() => {
     function handleFocusSignal() {
@@ -1045,63 +306,21 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   useEffect(() => {
     if (!activeChatId) {
-      logKannaState("clearing chat snapshot for non-chat route")
       setChatSnapshot(null)
       setChatReady(true)
       return
     }
 
-    const subscriptionId = ++chatSubscriptionDebugRef.current
-    logKannaState("subscribing to chat", {
-      subscriptionId,
-      activeChatId,
-      sidebarProjectGroups: sidebarProjectGroups.length,
-      sidebarChatCount: sidebarProjectGroups.reduce((count, group) => count + group.chats.length, 0),
-    })
     setChatSnapshot(null)
     setChatReady(false)
     const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: INITIAL_CHAT_RECENT_LIMIT }, (snapshot) => {
-      if (snapshot?.runtime.chatId) {
-        const matchingTrace = [...sendToStartingProfilesRef.current.values()]
-          .filter((trace) => trace.serverChatId === snapshot.runtime.chatId)
-          .sort((left, right) => right.startedAt - left.startedAt)[0]
-        if (matchingTrace && matchingTrace.snapshotAt === undefined) {
-          matchingTrace.snapshotAt = performance.now()
-          logSendToStartingTrace(matchingTrace, "chat_snapshot_received", {
-            status: snapshot.runtime.status,
-            messageCount: snapshot.messages.length,
-          })
-        }
-      }
-      setChatSnapshot((current) => {
-        const reused = sameChatSnapshotCore(current, snapshot)
-        logKannaState("chat snapshot received", {
-          subscriptionId,
-          activeChatId,
-          snapshotChatId: snapshot?.runtime.chatId ?? null,
-          snapshotProvider: snapshot?.runtime.provider ?? null,
-          snapshotStatus: snapshot?.runtime.status ?? null,
-          messageCount: snapshot?.messages.length ?? 0,
-          diffStatus: null,
-          diffFileCount: 0,
-          reusedSnapshot: reused,
-        })
-        return reused ? current : snapshot
-      })
+      setChatSnapshot((current) => (sameChatSnapshotCore(current, snapshot) ? current : snapshot))
       setHistoryCursor(snapshot?.history.olderCursor ?? null)
       setHasOlderHistory(snapshot?.history.hasOlder ?? false)
       setChatReady(true)
       setCommandError(null)
     })
-    return () => {
-      logKannaState("unsubscribing from chat", {
-        subscriptionId,
-        activeChatId,
-        sidebarProjectGroups: sidebarProjectGroups.length,
-        sidebarChatCount: sidebarProjectGroups.reduce((count, group) => count + group.chats.length, 0),
-      })
-      unsubscribe()
-    }
+    return unsubscribe
   }, [activeChatId, socket])
 
   useEffect(() => {
@@ -1206,16 +425,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     return unsubscribe
   }, [activeProjectId, socket])
-  useEffect(() => {
-    logKannaState("active snapshot resolved", {
-      routeChatId: activeChatId,
-      rawSnapshotChatId: chatSnapshot?.runtime.chatId ?? null,
-      rawSnapshotProvider: chatSnapshot?.runtime.provider ?? null,
-      activeSnapshotChatId: activeChatSnapshot?.runtime.chatId ?? null,
-      activeSnapshotProvider: activeChatSnapshot?.runtime.provider ?? null,
-      pendingChatId,
-    })
-  }, [activeChatId, activeChatSnapshot, chatSnapshot, pendingChatId])
   const serverTranscriptEntries = useMemo(
     () => mergeTranscriptEntries(olderHistoryEntries, activeChatSnapshot?.messages ?? []),
     [activeChatSnapshot?.messages, olderHistoryEntries]
@@ -1240,7 +449,13 @@ export function useKannaState(activeChatId: string | null): KannaState {
     ? "starting"
     : null
   const effectiveRuntimeStatus = optimisticRuntimeStatus ?? runtime?.status ?? null
-  const availableProviders = activeChatSnapshot?.availableProviders ?? PROVIDERS
+  // Outside a chat snapshot (new-chat composer, settings) the pi catalog is
+  // derived from the same fave models the server applies, so both always match.
+  const fallbackProviders = useMemo(
+    () => withPiFaveModels(PROVIDERS, llmProvider?.faveModels ?? []),
+    [llmProvider?.faveModels]
+  )
+  const availableProviders = activeChatSnapshot?.availableProviders ?? fallbackProviders
   const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
   const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
@@ -1281,67 +496,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }, 300)
     return () => window.clearTimeout(timeoutId)
   }, [optimisticProcessing, optimisticScopeId, runtime?.status])
-
-  useEffect(() => {
-    if (!activeChatId || runtime?.status !== "starting") {
-      return
-    }
-
-    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
-      .filter((trace) => trace.serverChatId === activeChatId)
-      .sort((left, right) => right.startedAt - left.startedAt)[0]
-    if (!matchingTrace || matchingTrace.startingStatusAt !== undefined) {
-      return
-    }
-
-    matchingTrace.startingStatusAt = performance.now()
-    logSendToStartingTrace(matchingTrace, "runtime_status_starting", {
-      status: runtime.status,
-    })
-  }, [activeChatId, runtime?.status])
-
-  useEffect(() => {
-    if (!activeChatId || !runtime || runtime.status === "starting") {
-      return
-    }
-
-    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
-      .filter((trace) => trace.serverChatId === activeChatId)
-      .sort((left, right) => right.startedAt - left.startedAt)[0]
-    if (!matchingTrace || matchingTrace.startingRenderedAt !== undefined) {
-      return
-    }
-
-    logSendToStartingTrace(matchingTrace, "starting_not_observed", {
-      status: runtime.status,
-    })
-    sendToStartingProfilesRef.current.delete(matchingTrace.traceId)
-  }, [activeChatId, runtime])
-
-  useLayoutEffect(() => {
-    if (!activeChatId || runtime?.status !== "starting") {
-      lastStartingRenderedTraceIdRef.current = null
-      return
-    }
-
-    const matchingTrace = [...sendToStartingProfilesRef.current.values()]
-      .filter((trace) => trace.serverChatId === activeChatId)
-      .sort((left, right) => right.startedAt - left.startedAt)[0]
-    if (!matchingTrace) {
-      return
-    }
-
-    if (lastStartingRenderedTraceIdRef.current === matchingTrace.traceId) {
-      return
-    }
-
-    lastStartingRenderedTraceIdRef.current = matchingTrace.traceId
-    matchingTrace.startingRenderedAt = performance.now()
-    logSendToStartingTrace(matchingTrace, "starting_render_committed", {
-      totalMs: elapsedTraceMs(matchingTrace.startedAt),
-    })
-    sendToStartingProfilesRef.current.delete(matchingTrace.traceId)
-  }, [activeChatId, runtime?.status])
 
   useEffect(() => {
     setOptimisticUserPrompts((current) => {
@@ -1402,14 +556,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return { projectId: result.projectId, localPath: intent.localPath }
     }
 
-    let command: Parameters<typeof socket.command>[0]
-    if (intent.project.mode === "clone" && intent.project.cloneUrl) {
-      command = { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
-    } else if (intent.project.mode === "new") {
-      command = { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
-    } else {
-      command = { type: "project.open", localPath: intent.project.localPath }
-    }
+    const command: Parameters<typeof socket.command>[0] = intent.project.mode === "clone" && intent.project.cloneUrl
+      ? { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
+      : { type: "project.open", localPath: intent.project.localPath }
     const result = await socket.command<{ projectId: string; localPath?: string }>(command)
     return { projectId: result.projectId, localPath: result.localPath ?? intent.project.localPath }
   }, [socket])
@@ -1469,44 +618,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_request", project })
   }, [startChatFromIntent])
 
-  const handleCheckForUpdates = useCallback(async (options?: { force?: boolean }) => {
-    try {
-      await socket.command<UpdateSnapshot>({ type: "update.check", force: options?.force })
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [socket])
-
-  const handleInstallUpdate = useCallback(async () => {
-    try {
-      const result = await socket.command<UpdateInstallResult>({ type: "update.install" })
-      if (!result.ok) {
-        clearUiUpdateRestartPhase()
-        setCommandError(null)
-        await dialog.alert({
-          title: result.userTitle ?? "Update failed",
-          description: result.userMessage ?? "Kanna could not install the update. Try again later.",
-          closeLabel: "OK",
-        })
-        return
-      }
-
-      if (result.ok && result.action === "reload") {
-        window.location.reload()
-        return
-      }
-
-      if (result.ok && result.action === "restart") {
-        setUiUpdateRestartPhase("awaiting_disconnect")
-      }
-      setCommandError(null)
-    } catch (error) {
-      clearUiUpdateRestartPhase()
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [dialog, socket])
-
   const handleSignOut = useCallback(async () => {
     try {
       const response = await fetch("/auth/logout", {
@@ -1527,222 +638,24 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [])
 
-  const handleSend = useCallback(async (
-    content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
-  ) => {
-    const attachments = options?.attachments ?? []
-    if (activeChatId && isProcessing) {
-      try {
-        await socket.command<{ queuedMessageId: string }>({
-          type: "message.enqueue",
-          chatId: activeChatId,
-          content,
-          attachments,
-          provider: options?.provider,
-          model: options?.model,
-          modelOptions: options?.modelOptions,
-          planMode: options?.planMode,
-        })
-        setCommandError(null)
-        return
-      } catch (error) {
-        setCommandError(error instanceof Error ? error.message : String(error))
-        throw error
-      }
-    }
-
-    const optimisticId = generateUUID()
-    const clientTraceId = generateUUID()
-    const signature = getUserPromptSignature(content, attachments)
-    const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
-    setOptimisticProcessing({
-      scopeId: optimisticScopeId,
-      ackedAt: null,
-    })
-    const sendTrace: SendToStartingTrace = {
-      traceId: clientTraceId,
-      optimisticId,
-      startedAt: performance.now(),
-      serverChatId: activeChatId,
-      routeChatIdAtSend: activeChatId,
-      contentPreview: content.slice(0, 80),
-    }
-    sendToStartingProfilesRef.current.set(clientTraceId, sendTrace)
-    logSendToStartingTrace(sendTrace, "handle_send_called", {
-      optimisticScopeId,
-      attachments: attachments.length,
-      contentLength: content.length,
-      contentPreview: sendTrace.contentPreview,
-    })
-    const requiredMatchCount = countMatchingUserPrompts(serverTranscriptEntries, signature)
-      + optimisticUserPrompts.filter((prompt) => prompt.scopeId === optimisticScopeId && prompt.signature === signature).length
-      + 1
-
-    setOptimisticUserPrompts((current) => [...current, {
-      id: optimisticId,
-      scopeId: optimisticScopeId,
-      signature,
-      requiredMatchCount,
-      entry: {
-        _id: `optimistic:${optimisticId}`,
-        kind: "user_prompt",
-        content,
-        attachments,
-        createdAt: Date.now(),
-      },
-    }])
-    logSendToStartingTrace(sendTrace, "optimistic_prompt_added", {
-      optimisticId,
-      optimisticScopeId,
-    })
-
-    try {
-      let projectId = selectedProjectId ?? sidebarProjectGroups[0]?.groupKey ?? null
-      if (!activeChatId && !projectId && fallbackLocalProjectPath) {
-        const project = await socket.command<{ projectId: string }>({
-          type: "project.open",
-          localPath: fallbackLocalProjectPath,
-        })
-        projectId = project.projectId
-        setSelectedProjectId(projectId)
-      }
-
-      if (!activeChatId && !projectId) {
-        throw new Error("Open a project first")
-      }
-
-      const result = await socket.command<{ chatId?: string }>({
-        type: "chat.send",
-        chatId: activeChatId ?? undefined,
-        projectId: activeChatId ? undefined : projectId ?? undefined,
-        clientTraceId,
-        provider: options?.provider,
-        content,
-        attachments,
-        model: options?.model,
-        modelOptions: options?.modelOptions,
-        planMode: options?.planMode,
-      })
-      sendTrace.ackAt = performance.now()
-      sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
-      setOptimisticProcessing((current) => {
-        if (!current) return current
-        const nextScopeId = !activeChatId && result.chatId ? result.chatId : current.scopeId
-        return {
-          scopeId: nextScopeId,
-          ackedAt: performance.now(),
-        }
-      })
-      logSendToStartingTrace(sendTrace, "chat_send_ack_received", {
-        resultChatId: result.chatId ?? null,
-      })
-
-      if (!activeChatId && result.chatId) {
-        setOptimisticUserPrompts((current) => current.map((prompt) => (
-          prompt.id === optimisticId ? { ...prompt, scopeId: result.chatId! } : prompt
-        )))
-        const chatPreferences = useChatPreferencesStore.getState()
-        chatPreferences.setComposerState(
-          result.chatId,
-          composerStateFromSendOptions(options) ?? chatPreferences.getComposerState(NEW_CHAT_COMPOSER_ID)
-        )
-        setPendingChatId(result.chatId)
-        navigate(`/chat/${result.chatId}`)
-      }
-      setCommandError(null)
-    } catch (error) {
-      setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
-      setOptimisticProcessing(null)
-      logSendToStartingTrace(sendTrace, "handle_send_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      })
-      sendToStartingProfilesRef.current.delete(clientTraceId)
-      setCommandError(error instanceof Error ? error.message : String(error))
-      throw error
-    }
-  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket])
-
-  const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
-    if (!activeChatId) return
-    try {
-      await socket.command({
-        type: "message.steer",
-        chatId: activeChatId,
-        queuedMessageId,
-      })
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
-
-  const handleRemoveQueuedMessage = useCallback(async (queuedMessageId: string) => {
-    if (!activeChatId) return
-    try {
-      await socket.command({
-        type: "message.dequeue",
-        chatId: activeChatId,
-        queuedMessageId,
-      })
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
-
-  const handleCancel = useCallback(async () => {
-    if (!activeChatId) return
-    try {
-      await socket.command({ type: "chat.cancel", chatId: activeChatId })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
-
-  const handleStopDraining = useCallback(async () => {
-    if (!activeChatId) return
-    try {
-      await socket.command({ type: "chat.stopDraining", chatId: activeChatId })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
-
-  const handleRenameChat = useCallback(async (chat: SidebarChatRow) => {
-    const title = await dialog.prompt({
-      title: "Rename Chat",
-      initialValue: chat.title,
-      confirmLabel: "Rename",
-    })
-    if (!title || title === chat.title) return
-    try {
-      await socket.command({ type: "chat.rename", chatId: chat.chatId, title })
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [dialog, socket])
-
-  const handleRenameProject = useCallback(async (projectId: string, sidebarTitle: string | undefined, realTitle: string) => {
-    const title = await dialog.prompt({
-      title: "Rename Project",
-      description: "This only changes the sidebar name. The folder path on disk stays the same.",
-      initialValue: sidebarTitle ?? "",
-      placeholder: realTitle,
-      allowEmpty: true,
-      resetLabel: "Reset",
-      resetValue: "",
-      confirmLabel: "Rename",
-    })
-    if (title === null || title === (sidebarTitle ?? "")) return
-    try {
-      await socket.command({ type: "project.rename", projectId, title })
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [dialog, socket])
+  const handleSend = useSendMessage({
+    socket,
+    navigate,
+    activeChatId,
+    setCommandError,
+    setSelectedProjectId,
+    setPendingChatId,
+    setOptimisticProcessing,
+    setOptimisticUserPrompts,
+    sendContext: {
+      isProcessing,
+      optimisticUserPrompts,
+      serverTranscriptEntries,
+      sidebarProjectGroups,
+      selectedProjectId,
+      fallbackLocalProjectPath,
+    },
+  })
 
   const handleDeleteChat = useCallback(async (chat: SidebarChatRow) => {
     const confirmed = await dialog.confirm({
@@ -1813,167 +726,37 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [socket])
 
-  const openExternal = useCallback(async (command: {
-    action: OpenExternalAction
-    localPath: string
-    line?: number
-    column?: number
-    editor?: EditorOpenSettings
-  }) => {
-    const preferences = useTerminalPreferencesStore.getState()
-    setCommandError(null)
-    await socket.command({
-      type: "system.openExternal",
-      ...command,
-      editor: command.action === "open_editor"
-        ? command.editor ?? {
-            preset: preferences.editorPreset,
-            commandTemplate: preferences.editorCommandTemplate,
-          }
-        : undefined,
-    })
-  }, [socket])
+  const {
+    handleSteerQueuedMessage,
+    handleRemoveQueuedMessage,
+    handleCancel,
+    handleStopDraining,
+    handleRenameChat,
+    handleRenameProject,
+    handleAskUserQuestion,
+    handleExitPlanMode,
+    handleCopyPath,
+    handleOpenExternal,
+    handleOpenLocalLink,
+    handleOpenExternalPath,
+  } = useChatCommands({
+    socket,
+    dialog,
+    activeChatId,
+    setCommandError,
+    defaultOpenLocalPath: navbarLocalPath,
+  })
 
-  const handleOpenExternal = useCallback(async (action: OpenExternalAction, editor?: EditorOpenSettings) => {
-    const localPath = runtime?.localPath ?? localProjects?.projects[0]?.localPath ?? sidebarProjectGroups[0]?.localPath
-    if (!localPath) return
-    try {
-      await openExternal({
-        action,
-        localPath,
-        editor,
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [localProjects?.projects, openExternal, runtime?.localPath, sidebarProjectGroups])
-
-  const handleCopyPath = useCallback(async (localPath: string) => {
-    try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(localPath)
-      setCommandError(null)
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [])
-
-  const handleOpenLocalLink = useCallback(async (
-    target: OpenLocalLinkTarget,
-    action: OpenExternalAction = "open_editor",
-    editor?: EditorOpenSettings,
-  ) => {
-    try {
-      await openExternal({
-        action,
-        localPath: target.path,
-        line: target.line,
-        column: target.column,
-        editor,
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [openExternal])
-
-  const handleOpenExternalPath = useCallback(async (action: "open_finder" | "open_editor", localPath: string) => {
-    try {
-      await openExternal({
-        action,
-        localPath,
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [openExternal])
-
-  const handleExportStandalone = useCallback(async (chatId: string | null | undefined = activeChatId) => {
-    if (!chatId || isExportingStandalone) {
-      return null
-    }
-
-    setIsExportingStandalone(true)
-    try {
-      const result = await socket.command<StandaloneTranscriptExportCommandResult>({
-        type: "chat.exportStandalone",
-        chatId,
-        theme: resolvedTheme,
-        attachmentMode: "bundle",
-      })
-      setCommandError(null)
-      return result
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-      return null
-    } finally {
-      setIsExportingStandalone(false)
-    }
-  }, [activeChatId, isExportingStandalone, resolvedTheme, socket])
-
-  const handleShareChat = useCallback(async (chatId: string | null | undefined = activeChatId) => {
-    if (!chatId || isExportingStandalone) {
-      return
-    }
-
-    setStandaloneShareComplete(false)
-    const result = await handleExportStandalone(chatId)
-    if (result?.ok && result.shareUrl) {
-      setStandaloneShareUrl(result.shareUrl)
-      setStandaloneShareComplete(true)
-      return
-    }
-
-    if (result && !result.ok) {
-      const shouldDownload = await dialog.confirm({
-        title: "Share failed",
-        description: result.error,
-        confirmLabel: "Download transcript JSON",
-        cancelLabel: "Close",
-        confirmVariant: "secondary",
-      })
-
-      if (shouldDownload) {
-        downloadTextFile(result.transcriptFileName, result.transcriptJson)
-      }
-    }
-  }, [activeChatId, dialog, handleExportStandalone, isExportingStandalone])
-
-  const handleCloseStandaloneShareDialog = useCallback(() => {
-    setStandaloneShareUrl(null)
-    setStandaloneShareComplete(false)
-  }, [])
-
-  const handleCopyStandaloneShareLink = useCallback(async () => {
-    if (!standaloneShareUrl) {
-      return false
-    }
-
-    try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(standaloneShareUrl)
-      return true
-    } catch (error) {
-      await dialog.alert({
-        title: "Copy failed",
-        description: error instanceof Error ? error.message : String(error),
-        closeLabel: "Close",
-      })
-      return false
-    }
-  }, [dialog, standaloneShareUrl])
-
-  const handleOpenStandaloneShareLink = useCallback(() => {
-    if (!standaloneShareUrl) {
-      return
-    }
-
-    window.open(standaloneShareUrl, "_blank", "noopener,noreferrer")
-    setStandaloneShareUrl(null)
-  }, [standaloneShareUrl])
+  const {
+    isExportingStandalone,
+    standaloneShareUrl,
+    standaloneShareComplete,
+    handleExportStandalone,
+    handleShareChat,
+    handleCloseStandaloneShareDialog,
+    handleCopyStandaloneShareLink,
+    handleOpenStandaloneShareLink,
+  } = useShareExport({ socket, activeChatId, resolvedTheme, dialog, setCommandError })
 
   const handleCompose = useCallback(() => {
     const intent = resolveComposeIntent({
@@ -1995,45 +778,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const expandSidebar = useCallback(() => setSidebarCollapsed(false), [])
   const openAddProjectModal = useCallback(() => setAddProjectModalOpen(true), [])
   const closeAddProjectModal = useCallback(() => setAddProjectModalOpen(false), [])
-
-  const handleAskUserQuestion = useCallback(async (
-    toolUseId: string,
-    questions: AskUserQuestionItem[],
-    answers: AskUserQuestionAnswerMap
-  ) => {
-    if (!activeChatId) return
-    try {
-      await socket.command({
-        type: "chat.respondTool",
-        chatId: activeChatId,
-        toolUseId,
-        result: { questions, answers },
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
-
-  const handleExitPlanMode = useCallback(async (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => {
-    if (!activeChatId) return
-    if (confirmed) {
-      useChatPreferencesStore.getState().setChatComposerPlanMode(activeChatId, false)
-    }
-    try {
-      await socket.command({
-        type: "chat.respondTool",
-        chatId: activeChatId,
-        toolUseId,
-        result: {
-          confirmed,
-          ...(clearContext ? { clearContext: true } : {}),
-          ...(message ? { message } : {}),
-        },
-      })
-    } catch (error) {
-      setCommandError(error instanceof Error ? error.message : String(error))
-    }
-  }, [activeChatId, socket])
 
   return {
     socket,
@@ -2090,6 +834,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleWriteAppSettings,
     handleReadLlmProvider,
     handleWriteLlmProvider,
+    handleWriteFaveModels,
     handleValidateLlmProvider,
     handleSignOut,
     handleSend,

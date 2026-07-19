@@ -29,6 +29,7 @@ import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
 import { ChatInputDock } from "./ChatInputDock"
+import { DefaultModelsDialog } from "../../components/DefaultModelsDialog"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
 import { useChatPageSidebarActions, EMPTY_DIFF_SNAPSHOT } from "./useChatPageSidebarActions"
@@ -522,6 +523,7 @@ export function ChatPage() {
   const { inputRef, syncInputHeight, transcriptPaddingBottom } = useTranscriptPaddingBottom()
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [pendingTerminalCommands, setPendingTerminalCommands] = useState<Record<string, string>>({})
+  const [defaultModelsDialogOpen, setDefaultModelsDialogOpen] = useState(false)
   const showEmptyState = state.messages.length === 0 && state.runtime?.title === "New Chat"
   const projectId = state.activeProjectId
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
@@ -801,7 +803,7 @@ export function ChatPage() {
   ) => {
     await scrollToTranscriptEnd(false)
     await state.handleSend(content, options)
-  }, [scrollToTranscriptEnd, state])
+  }, [scrollToTranscriptEnd, state.handleSend])
 
   useEffect(() => {
     return () => clearShowScrollTimeout()
@@ -1038,6 +1040,15 @@ export function ChatPage() {
         contextWindowSnapshot={contextWindowSnapshot}
         onSubmit={handleChatSubmit}
         onCancel={handleCancel}
+        onEditModels={() => setDefaultModelsDialogOpen(true)}
+      />
+      <DefaultModelsDialog
+        open={defaultModelsDialogOpen}
+        onOpenChange={setDefaultModelsDialogOpen}
+        faveModels={state.llmProvider?.faveModels ?? []}
+        onSave={(faveModels) => {
+          void state.handleWriteFaveModels(faveModels)
+        }}
       />
     </Card>
   )

@@ -19,8 +19,8 @@ import {
   isSidebarModifierShortcut,
   shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
+import { SIDEBAR_WIDTH_STORAGE_KEY } from "../lib/storageKeys"
 
-const SIDEBAR_WIDTH_STORAGE_KEY = "kanna:sidebar-width"
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
 export const MAX_SIDEBAR_WIDTH = 520

@@ -1,5 +1,6 @@
 import { useOutletContext } from "react-router-dom"
 import { LocalDev } from "../components/LocalDev"
+import type { FsListResult } from "../../shared/types"
 import type { KannaState } from "./useKannaState"
 
 export function LocalProjectsPage() {
@@ -23,6 +24,8 @@ export function LocalProjectsPage() {
         }}
         onOpenProject={state.handleOpenLocalProject}
         onCreateProject={state.handleCreateProject}
+        onListDirectory={(path, nearest) => state.socket.command<FsListResult>({ type: "fs.list", path, nearest })}
+        onMakeDirectory={(path) => state.socket.command<FsListResult>({ type: "fs.mkdir", path })}
       />
     </div>
   )

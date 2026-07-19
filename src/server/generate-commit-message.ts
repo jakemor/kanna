@@ -1,5 +1,5 @@
 import path from "node:path"
-import { QuickResponseAdapter } from "./quick-response"
+import { getSharedQuickResponseAdapter } from "./quick-response"
 
 interface CommitMessageFile {
   path: string
@@ -90,7 +90,7 @@ export async function generateCommitMessageDetailed(
     branchName?: string
     files: CommitMessageFile[]
   },
-  adapter = new QuickResponseAdapter()
+  adapter = getSharedQuickResponseAdapter()
 ): Promise<GenerateCommitMessageResult> {
   const result = await adapter.generateStructuredWithDiagnostics<{ subject: string; body: string }>({
     cwd: args.cwd,

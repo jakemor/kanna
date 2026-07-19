@@ -19,8 +19,8 @@ import { LocalProjectsPage } from "./LocalProjectsPage"
 import { SettingsPage } from "./SettingsPage"
 import { useKannaState } from "./useKannaState"
 import type { AppSettingsSnapshot } from "../../shared/types"
+import { VERSION_SEEN_STORAGE_KEY } from "../lib/storageKeys"
 
-const VERSION_SEEN_STORAGE_KEY = "kanna:last-seen-version"
 const AUTH_STATUS_RETRY_DELAY_MS = 500
 
 interface AuthStatusResponse {
@@ -235,7 +235,7 @@ function KannaLayout() {
   }, [state.handleOpenArchivedChat])
   const handleOpenAddProjectModal = useCallback(() => {
     state.openAddProjectModal()
-  }, [state])
+  }, [state.openAddProjectModal])
   const handleSidebarDeleteChat = useCallback((chat: Parameters<typeof state.handleDeleteChat>[0]) => {
     void state.handleDeleteChat(chat)
   }, [state.handleDeleteChat])

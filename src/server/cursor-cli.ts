@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { homedir } from "node:os"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type { ContextWindowUsageSnapshot } from "../shared/types"
@@ -49,6 +50,32 @@ export interface StartCursorTurnArgs {
   model: string
   /** Previous Cursor session id to resume, if any. */
   sessionToken: string | null
+}
+
+export interface CursorModelListEntry {
+  id: string
+  label: string
+  isDefault: boolean
+}
+
+// `cursor-agent --list-models` renders for humans: ANSI erase/cursor-move
+// sequences around a "Loading models…" spinner, then one line per model:
+//   <id> - <label>  [(default)|(current)]
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-9;?]*[A-Za-z]/g
+const MODEL_LINE_PATTERN = /^(\S+) - (.*?)(?:\s+\((default|current)\))?$/
+
+/** Parse `cursor-agent --list-models` output. Pure so it can be fixture-tested. */
+export function parseCursorModelList(output: string): CursorModelListEntry[] {
+  const entries: CursorModelListEntry[] = []
+  for (const rawLine of output.replace(ANSI_ESCAPE_PATTERN, "").split("\n")) {
+    const match = rawLine.trim().match(MODEL_LINE_PATTERN)
+    if (!match) continue
+    const [, id, label, marker] = match
+    const trimmedLabel = label?.trim()
+    if (!id || !trimmedLabel) continue
+    entries.push({ id, label: trimmedLabel, isDefault: marker === "default" })
+  }
+  return entries
 }
 
 /**
@@ -196,7 +223,7 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
     case "assistant": {
       const text = extractAssistantText(value.message)
       if (!text) return []
-      return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text, debugRaw }) }]
+      return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
     }
 
     case "tool_call": {
@@ -212,7 +239,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
             entry: timestamped({
               kind: "tool_call",
               tool: normalizeToolCall({ toolName, toolId: callId, input }),
-              debugRaw,
             }),
           },
         ]
@@ -232,7 +258,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
               toolId: callId,
               content,
               isError,
-              debugRaw,
             }),
           },
         ]
@@ -259,7 +284,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
           isError,
           durationMs: asNumber(value.duration_ms) ?? 0,
           result: asString(value.result) ?? "",
-          debugRaw,
         }),
       })
       return events
@@ -294,6 +318,56 @@ export class CursorCliManager {
           stdio: ["pipe", "pipe", "pipe"],
           env: process.env,
         }) as unknown as CursorChildProcess)
+  }
+
+  /**
+   * Ask the CLI which models the account can use (`cursor-agent --list-models`).
+   * Rejects when the binary is missing, unauthenticated, or times out — callers
+   * are expected to fall back to the static catalog.
+   */
+  async listModels(timeoutMs = 30_000): Promise<CursorModelListEntry[]> {
+    // The model list is account-level, not workspace-level — spawn from HOME.
+    const child = this.spawnProcess({ cwd: homedir(), argv: ["--list-models"] })
+
+    return await new Promise<CursorModelListEntry[]>((resolve, reject) => {
+      let stdout = ""
+      let stderr = ""
+      let settled = false
+      const settle = (complete: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        complete()
+      }
+      const timeout = setTimeout(() => {
+        settle(() => reject(new Error(`cursor-agent --list-models timed out after ${timeoutMs}ms`)))
+        try {
+          child.kill()
+        } catch {
+          // process already gone
+        }
+      }, timeoutMs)
+
+      child.stdout?.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString()
+      })
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString()
+      })
+      child.once("error", (err) => settle(() => reject(err)))
+      child.once("close", (code) => settle(() => {
+        const models = parseCursorModelList(stdout)
+        if (code === 0 && models.length > 0) {
+          resolve(models)
+          return
+        }
+        reject(new Error(
+          clarifyCursorAuthError(stderr.trim())
+            || `cursor-agent --list-models exited with code ${code ?? "unknown"} without listing models`,
+        ))
+      }))
+      child.stdin?.end()
+    })
   }
 
   async startTurn(args: StartCursorTurnArgs): Promise<HarnessTurn> {

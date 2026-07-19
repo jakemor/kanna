@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex" | "cursor"
+export type AgentProvider = "claude" | "codex" | "cursor" | "pi"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -126,12 +126,6 @@ export interface QueuedChatMessage {
   planMode?: boolean
 }
 
-export interface InternalUserAttachmentsData {
-  userText: string
-  attachments: ChatAttachment[]
-  llmHintText: string
-}
-
 export interface ProviderModelOption {
   id: string
   label: string
@@ -141,6 +135,13 @@ export interface ProviderModelOption {
   defaultReasoningEffort?: CodexReasoningEffort
   supportsFastMode?: boolean
   contextWindowOptions?: readonly ProviderContextWindowOption[]
+  /**
+   * Fixed context window (in tokens) for models that expose a single,
+   * non-selectable window. Drives the input-footer meter directly, bypassing
+   * the 200k/1m selector machinery. When set, `contextWindowOptions` should be
+   * omitted (no picker).
+   */
+  contextWindowTokens?: number
   supportsMaxReasoningEffort?: boolean
 }
 
@@ -181,6 +182,19 @@ export const CODEX_REASONING_OPTIONS = [
   },
 ] as const satisfies readonly CodexReasoningEffortOption[]
 
+// Pi's standardized thinking levels (mapped by pi-ai to each provider's native
+// reasoning parameter — for OpenRouter that's `reasoning: { effort }`).
+export const PI_REASONING_OPTIONS = [
+  { id: "off", label: "Off" },
+  { id: "minimal", label: "Minimal" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra High" },
+] as const satisfies readonly ProviderEffortOption[]
+
+export type PiReasoningEffort = (typeof PI_REASONING_OPTIONS)[number]["id"]
+
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
 export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
@@ -200,10 +214,15 @@ export interface CursorModelOptions {
   fastMode: boolean
 }
 
+export interface PiModelOptions {
+  reasoningEffort: PiReasoningEffort
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
   cursor: CursorModelOptions
+  pi: PiModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -216,6 +235,7 @@ export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
   cursor: ProviderPreference<CursorModelOptions>
+  pi: ProviderPreference<PiModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -237,8 +257,29 @@ export const DEFAULT_CURSOR_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CursorModelOptions
 
+export const DEFAULT_PI_MODEL = "~anthropic/claude-fable-latest"
+
+export const DEFAULT_PI_MODEL_OPTIONS = {
+  reasoningEffort: "medium",
+} as const satisfies PiModelOptions
+
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function isPiReasoningEffort(value: unknown): value is PiReasoningEffort {
+  return PI_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function normalizePiReasoningEffort(effort?: unknown): PiReasoningEffort {
+  return isPiReasoningEffort(effort) ? effort : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort
+}
+
+// Pi accepts any OpenRouter model id verbatim — unlike the other providers there
+// is no catalog clamp, the catalog entries are just suggestions.
+export function normalizePiModelId(modelId?: unknown, fallbackModelId = DEFAULT_PI_MODEL): string {
+  const trimmed = typeof modelId === "string" ? modelId.trim() : ""
+  return trimmed || fallbackModelId
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
@@ -258,10 +299,6 @@ export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
   { id: "200k", label: "200k" },
 ] as const satisfies readonly ProviderContextWindowOption[]
 
-export function isClaudeContextWindow(value: unknown): value is ClaudeContextWindow {
-  return CLAUDE_CONTEXT_WINDOW_OPTIONS.some((option) => option.id === value)
-}
-
 function titleCaseWord(value: string) {
   return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`
 }
@@ -272,6 +309,28 @@ export function deriveClaudeModelLabel(modelId: string): string {
   return titleCaseWord(parts[0] ?? modelId)
 }
 
+// Well-known acronyms kept fully uppercase when deriving labels from model ids.
+const MODEL_LABEL_ACRONYMS = new Set(["gpt", "glm"])
+
+/**
+ * Derive a display label from a bare model id when no catalog or fave record
+ * names it: strip the vendor prefix and any `:variant` suffix, then title-case
+ * the dash-separated words.
+ *
+ *   lab/kimi-k2.5:nitro → Kimi K2.5
+ *   gpt-5.6-sol         → GPT 5.6 Sol
+ *   openai/gpt-5.6      → GPT 5.6
+ */
+export function deriveModelLabel(modelId: string): string {
+  const base = modelId.split("/").pop() ?? modelId
+  const withoutVariant = base.split(":")[0] ?? base
+  const words = withoutVariant.split("-").filter(Boolean)
+  if (words.length === 0) return modelId
+  return words
+    .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
+    .join(" ")
+}
+
 export interface ProviderCatalogEntry {
   id: AgentProvider
   label: string
@@ -280,6 +339,53 @@ export interface ProviderCatalogEntry {
   supportsPlanMode: boolean
   models: ProviderModelOption[]
   efforts: ProviderEffortOption[]
+}
+
+/**
+ * The default Model Registry models for pi: `~vendor/model-latest` registry
+ * aliases that track the latest release of each family. This is the canonical
+ * list — the pi catalog, the Default Models settings, and the chat-input model
+ * picker all derive from it (overridden by the user's fave models when set).
+ */
+export const DEFAULT_PI_FAVE_MODELS: FaveModel[] = [
+  "~anthropic/claude-fable-latest",
+  "~anthropic/claude-opus-latest",
+  "~anthropic/claude-sonnet-latest",
+  "~openai/gpt-latest",
+  "~moonshotai/kimi-latest",
+  "~x-ai/grok-latest",
+  "~google/gemini-flash-latest",
+].map((id) => ({ id, label: deriveModelLabel(id) }))
+
+/** Map fave models (Default Models settings) into pi catalog picker entries. */
+export function piModelOptionsFromFaves(faveModels: ReadonlyArray<FaveModel>): ProviderModelOption[] {
+  return faveModels.map((fave) => ({
+    id: fave.id,
+    label: fave.label || deriveModelLabel(fave.id),
+    supportsEffort: true,
+  }))
+}
+
+/**
+ * Return the catalog with pi's picker replaced by the user's fave models (the
+ * first fave becomes the default model). An empty list leaves the built-in
+ * defaults in place. Pure — used by the server catalog and by clients that
+ * render outside a chat snapshot, so both always show the same list.
+ */
+export function withPiFaveModels(
+  providers: ProviderCatalogEntry[],
+  faveModels: ReadonlyArray<FaveModel>
+): ProviderCatalogEntry[] {
+  if (faveModels.length === 0) return providers
+  return providers.map((provider) => (
+    provider.id === "pi"
+      ? {
+        ...provider,
+        defaultModel: faveModels[0]!.id,
+        models: piModelOptionsFromFaves(faveModels),
+      }
+      : provider
+  ))
 }
 
 export const PROVIDERS: ProviderCatalogEntry[] = [
@@ -294,6 +400,9 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "fable",
         label: deriveClaudeModelLabel("fable"),
         supportsEffort: true,
+        // Fable runs a fixed 1M window (no 200k/1m selector). The SDK reports a
+        // 2M window for it, so pin the meter to the real 1M ceiling here.
+        contextWindowTokens: 1_000_000,
       },
       {
         id: "claude-opus-4-8",
@@ -397,10 +506,25 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     label: "Cursor",
     defaultModel: "composer-2.5",
     supportsPlanMode: false,
+    // Static fallback only — the real list is discovered at runtime via
+    // `cursor-agent --list-models` (see applyCursorModels in provider-catalog).
     models: [
-      { id: "composer-2.5", label: "Composer 2.5", supportsEffort: false },
+      { id: "composer-2.5", label: "Composer 2.5", supportsEffort: false, supportsFastMode: true },
     ],
     efforts: [],
+  },
+  {
+    // Pi (badlogic's pi-coding-agent) runs in-process against the Model
+    // Registry. The catalog is DEFAULT_PI_FAVE_MODELS until the user edits
+    // their Default Models — any registry model id remains valid (see
+    // normalizePiModelId).
+    id: "pi",
+    label: "Pi",
+    defaultModel: DEFAULT_PI_MODEL,
+    defaultEffort: "medium",
+    supportsPlanMode: false,
+    models: piModelOptionsFromFaves(DEFAULT_PI_FAVE_MODELS),
+    efforts: [...PI_REASONING_OPTIONS],
   },
 ]
 
@@ -425,6 +549,12 @@ export function normalizeProviderModelId(
   modelId?: string,
   fallbackModelId?: string
 ): string {
+  if (provider === "pi") {
+    return normalizePiModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
+  }
+  if (provider === "cursor") {
+    return normalizeCursorModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
+  }
   return getProviderModelMatch(provider, modelId)?.id
     ?? fallbackModelId
     ?? getProviderCatalog(provider).defaultModel
@@ -438,8 +568,16 @@ export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5
   return normalizeProviderModelId("codex", modelId, fallbackModelId)
 }
 
+// Cursor's real model list is discovered at runtime (`cursor-agent
+// --list-models` → applyCursorModels in the server catalog), so like pi,
+// unknown ids pass through instead of clamping to the static catalog. Kanna
+// tracks "fast" as a separate toggle (CursorModelOptions.fastMode) — a
+// trailing "-fast" folds back into the base id so the id and toggle can't
+// disagree (the suffix is re-applied at spawn time by cursorModelIdForOptions).
 export function normalizeCursorModelId(modelId?: string, fallbackModelId = "composer-2.5"): string {
-  return normalizeProviderModelId("cursor", modelId, fallbackModelId)
+  const trimmed = typeof modelId === "string" ? modelId.trim() : ""
+  const base = trimmed.endsWith("-fast") ? trimmed.slice(0, -"-fast".length) : trimmed
+  return base || fallbackModelId
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -534,6 +672,14 @@ export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWin
   }
 }
 
+// Effective context window (in tokens) for the input-footer meter. Models with
+// a fixed window (e.g. fable) short-circuit the 200k/1m selector.
+export function resolveClaudeContextWindowMaxTokens(modelId: string, contextWindow?: unknown): number {
+  const fixed = getClaudeModelOption(modelId)?.contextWindowTokens
+  if (typeof fixed === "number" && fixed > 0) return fixed
+  return resolveClaudeContextWindowTokens(resolveClaudeContextWindow(modelId, contextWindow))
+}
+
 export type KannaStatus =
   | "idle"
   | "starting"
@@ -606,6 +752,31 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
+export interface FsDirEntry {
+  name: string
+  kind: "dir" | "file"
+}
+
+export interface FsListResult {
+  /** Resolved absolute path of the listed directory. */
+  path: string
+  /** Absolute path of the parent directory, or null at the filesystem root. */
+  parentPath: string | null
+  /** The server user's home directory, for `~` display. */
+  homePath: string
+  /** True when the listed directory contains a `.git` entry. */
+  isGitRepo: boolean
+  /** Directories first, then files, each sorted case-insensitively. */
+  entries: FsDirEntry[]
+  /** True when entries were capped at the server-side limit. */
+  truncated: boolean
+  /**
+   * Set when a nearest-existing lookup fell back to an ancestor: the
+   * relative remainder from `path` to the directory that was requested.
+   */
+  missingSuffix?: string
+}
+
 export interface AppSettingsSnapshot {
   analyticsEnabled: boolean
   browserSettingsMigrated: boolean
@@ -646,14 +817,28 @@ export interface AppSettingsPatch {
       modelOptions?: Partial<CodexModelOptions>
     }
     cursor?: Partial<ProviderPreference<CursorModelOptions>>
+    pi?: Partial<Omit<ProviderPreference<PiModelOptions>, "modelOptions">> & {
+      modelOptions?: Partial<PiModelOptions>
+    }
   }
 }
 
+/** A user-curated model shortcut shown in Pi's model picker. */
+export interface FaveModel {
+  label: string
+  id: string
+}
+
+// The Model Registry: one OpenAI-compatible connection (OpenRouter, OpenAI, or
+// a custom base URL) used by Pi and for background quick responses (chat
+// naming, commit messages). Kept as "LlmProvider" internally / on disk for
+// backwards compatibility with existing ~/.kanna/llm-provider.json files.
 export interface LlmProviderFile {
   provider?: LlmProviderKind
   apiKey?: string
   model?: string
   baseUrl?: string | null
+  faveModels?: FaveModel[]
 }
 
 export interface LlmProviderSnapshot {
@@ -662,6 +847,7 @@ export interface LlmProviderSnapshot {
   model: string
   baseUrl: string
   resolvedBaseUrl: string
+  faveModels: FaveModel[]
   enabled: boolean
   warning: string | null
   filePathDisplay: string
@@ -944,6 +1130,20 @@ export interface ChatBranchHistorySnapshot {
 
 export type ChatBranchListEntryKind = "local" | "remote" | "pull_request"
 
+/** A branch chosen in the UI, as sent to branch preview/merge/checkout commands. */
+export type SelectedBranch =
+  | { kind: "local"; name: string }
+  | { kind: "remote"; name: string; remoteRef: string }
+  | {
+      kind: "pull_request"
+      name: string
+      prNumber: number
+      headRefName: string
+      headRepoCloneUrl?: string
+      isCrossRepository?: boolean
+      remoteRef?: string
+    }
+
 export interface ChatBranchListEntry {
   id: string
   kind: ChatBranchListEntryKind
@@ -1137,29 +1337,28 @@ export interface ExitPlanModeToolResult {
   discarded?: boolean
 }
 
-export type HydratedAskUserQuestionToolCall =
-  HydratedToolCallBase<"ask_user_question", AskUserQuestionToolCall["input"], AskUserQuestionToolResult>
+/** Per-kind hydrated result payloads; kinds not listed hydrate with `unknown`. */
+interface HydratedToolResultOverrides {
+  ask_user_question: AskUserQuestionToolResult
+  exit_plan_mode: ExitPlanModeToolResult
+  read_file: ReadFileToolResult | string
+}
 
-export type HydratedExitPlanModeToolCall =
-  HydratedToolCallBase<"exit_plan_mode", ExitPlanModeToolCall["input"], ExitPlanModeToolResult>
+/** Hydrated counterpart of the NormalizedToolCall member with kind `K`. */
+export type HydratedToolCallOf<K extends NormalizedToolCall["toolKind"]> = HydratedToolCallBase<
+  K,
+  Extract<NormalizedToolCall, { toolKind: K }>["input"],
+  K extends keyof HydratedToolResultOverrides ? HydratedToolResultOverrides[K] : unknown
+>
 
-export type HydratedTodoWriteToolCall =
-  HydratedToolCallBase<"todo_write", TodoWriteToolCall["input"], unknown>
-
-export type HydratedSkillToolCall =
-  HydratedToolCallBase<"skill", SkillToolCall["input"], unknown>
-
-export type HydratedGlobToolCall =
-  HydratedToolCallBase<"glob", GlobToolCall["input"], unknown>
-
-export type HydratedGrepToolCall =
-  HydratedToolCallBase<"grep", GrepToolCall["input"], unknown>
-
-export type HydratedBashToolCall =
-  HydratedToolCallBase<"bash", BashToolCall["input"], unknown>
-
-export type HydratedWebSearchToolCall =
-  HydratedToolCallBase<"web_search", WebSearchToolCall["input"], unknown>
+export type HydratedAskUserQuestionToolCall = HydratedToolCallOf<"ask_user_question">
+export type HydratedExitPlanModeToolCall = HydratedToolCallOf<"exit_plan_mode">
+export type HydratedTodoWriteToolCall = HydratedToolCallOf<"todo_write">
+export type HydratedSkillToolCall = HydratedToolCallOf<"skill">
+export type HydratedGlobToolCall = HydratedToolCallOf<"glob">
+export type HydratedGrepToolCall = HydratedToolCallOf<"grep">
+export type HydratedBashToolCall = HydratedToolCallOf<"bash">
+export type HydratedWebSearchToolCall = HydratedToolCallOf<"web_search">
 
 export interface ReadFileTextBlock {
   type: "text"
@@ -1177,43 +1376,18 @@ export interface ReadFileToolResult {
   blocks?: Array<ReadFileTextBlock | ReadFileImageBlock>
 }
 
-export type HydratedReadFileToolCall =
-  HydratedToolCallBase<"read_file", ReadFileToolCall["input"], ReadFileToolResult | string>
+export type HydratedReadFileToolCall = HydratedToolCallOf<"read_file">
+export type HydratedWriteFileToolCall = HydratedToolCallOf<"write_file">
+export type HydratedEditFileToolCall = HydratedToolCallOf<"edit_file">
+export type HydratedDeleteFileToolCall = HydratedToolCallOf<"delete_file">
+export type HydratedSubagentTaskToolCall = HydratedToolCallOf<"subagent_task">
+export type HydratedMcpGenericToolCall = HydratedToolCallOf<"mcp_generic">
+export type HydratedUnknownToolCall = HydratedToolCallOf<"unknown_tool">
 
-export type HydratedWriteFileToolCall =
-  HydratedToolCallBase<"write_file", WriteFileToolCall["input"], unknown>
-
-export type HydratedEditFileToolCall =
-  HydratedToolCallBase<"edit_file", EditFileToolCall["input"], unknown>
-
-export type HydratedDeleteFileToolCall =
-  HydratedToolCallBase<"delete_file", DeleteFileToolCall["input"], unknown>
-
-export type HydratedSubagentTaskToolCall =
-  HydratedToolCallBase<"subagent_task", SubagentTaskToolCall["input"], unknown>
-
-export type HydratedMcpGenericToolCall =
-  HydratedToolCallBase<"mcp_generic", McpGenericToolCall["input"], unknown>
-
-export type HydratedUnknownToolCall =
-  HydratedToolCallBase<"unknown_tool", UnknownToolCall["input"], unknown>
-
-export type HydratedToolCall =
-  | HydratedAskUserQuestionToolCall
-  | HydratedExitPlanModeToolCall
-  | HydratedTodoWriteToolCall
-  | HydratedSkillToolCall
-  | HydratedGlobToolCall
-  | HydratedGrepToolCall
-  | HydratedBashToolCall
-  | HydratedWebSearchToolCall
-  | HydratedReadFileToolCall
-  | HydratedWriteFileToolCall
-  | HydratedEditFileToolCall
-  | HydratedDeleteFileToolCall
-  | HydratedSubagentTaskToolCall
-  | HydratedMcpGenericToolCall
-  | HydratedUnknownToolCall
+/** Distributive union of HydratedToolCallOf over every NormalizedToolCall kind. */
+export type HydratedToolCall = {
+  [K in NormalizedToolCall["toolKind"]]: HydratedToolCallOf<K>
+}[NormalizedToolCall["toolKind"]]
 
 export type HydratedTranscriptMessage =
   | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; steered?: boolean; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -1260,11 +1434,6 @@ export interface ChatHistoryPage {
   messages: TranscriptEntry[]
   hasOlder: boolean
   olderCursor: string | null
-}
-
-export interface KannaSnapshot {
-  sidebar: SidebarData
-  chat?: ChatSnapshot | null
 }
 
 export interface PendingToolSnapshot {

@@ -179,6 +179,18 @@ export async function runCodexStructured(
   return parseJsonText(response)
 }
 
+let sharedQuickResponseAdapter: QuickResponseAdapter | null = null
+
+/**
+ * Process-wide adapter for quick structured responses (titles, commit
+ * messages). Shared so repeated calls reuse one CodexAppServerManager instead
+ * of constructing a fresh fallback stack per request.
+ */
+export function getSharedQuickResponseAdapter(): QuickResponseAdapter {
+  sharedQuickResponseAdapter ??= new QuickResponseAdapter()
+  return sharedQuickResponseAdapter
+}
+
 export class QuickResponseAdapter {
   private readonly codexManager: CodexAppServerManager
   private readonly readLlmProvider: () => Promise<LlmProviderSnapshot>

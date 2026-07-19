@@ -72,6 +72,11 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { fastMode: false },
           planMode: false,
         },
+        pi: {
+          model: "~anthropic/claude-fable-latest",
+          modelOptions: { reasoningEffort: "medium" },
+          planMode: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {

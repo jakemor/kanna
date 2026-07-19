@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
 import type { ServerWebSocket } from "bun"
 import { PROTOCOL_VERSION } from "../shared/types"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
@@ -15,99 +12,21 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { cloneRepository, ensureProjectDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { cloneRepository, createDirectory, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
+import { installSkill, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type {
-  AppSettingsPatch,
-  AppSettingsSnapshot,
-  InstalledSkillsSnapshot,
   LlmProviderSnapshot,
   LlmProviderValidationResult,
-  SkillInstallResult,
-  SkillSearchSnapshot,
-  SkillUninstallResult,
 } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
-const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
 
-function isSendToStartingProfilingEnabled() {
-  return process.env.KANNA_PROFILE_SEND_TO_STARTING === "1"
-}
-
-function logSendToStartingProfile(
-  traceId: string | null | undefined,
-  startedAt: number | null | undefined,
-  stage: string,
-  details?: Record<string, unknown>
-) {
-  if (!traceId || startedAt === undefined || startedAt === null || !isSendToStartingProfilingEnabled()) {
-    return
-  }
-
-  console.log("[kanna/send->starting][server]", JSON.stringify({
-    traceId,
-    stage,
-    elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-    ...details,
-  }))
-}
-
-function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
-  let sidebar = 0
-  let chat = 0
-  let projectGit = 0
-  let localProjects = 0
-  let update = 0
-  let keybindings = 0
-  let appSettings = 0
-  let terminal = 0
-
-  for (const topic of ws.data.subscriptions.values()) {
-    switch (topic.type) {
-      case "sidebar":
-        sidebar += 1
-        break
-      case "chat":
-        chat += 1
-        break
-      case "project-git":
-        projectGit += 1
-        break
-      case "local-projects":
-        localProjects += 1
-        break
-      case "update":
-        update += 1
-        break
-      case "keybindings":
-        keybindings += 1
-        break
-      case "app-settings":
-        appSettings += 1
-        break
-      case "terminal":
-        terminal += 1
-        break
-    }
-  }
-
-  return {
-    total: ws.data.subscriptions.size,
-    sidebar,
-    chat,
-    projectGit,
-    localProjects,
-    update,
-    keybindings,
-    appSettings,
-    terminal,
-  }
-}
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
@@ -117,15 +36,15 @@ export interface ClientState {
 
 interface CreateWsRouterArgs {
   store: EventStore
-  diffStore?: Pick<DiffStore, "getProjectSnapshot" | "getSnapshotVersion" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
+  diffStore: Pick<DiffStore, "getProjectSnapshot" | "getSnapshotVersion" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
-  appSettings?: Pick<AppSettingsManager, "getSnapshot" | "write"> & Partial<Pick<AppSettingsManager, "writePatch" | "onChange">>
+  appSettings: Pick<AppSettingsManager, "getSnapshot" | "write" | "writePatch" | "onChange">
   analytics?: AnalyticsReporter
-  llmProvider?: {
+  llmProvider: {
     read: () => Promise<LlmProviderSnapshot>
-    write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
+    write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>) => Promise<LlmProviderSnapshot>
     validate: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   }
   refreshDiscovery: () => Promise<DiscoveredProject[]>
@@ -150,12 +69,8 @@ interface SnapshotComputationCache {
     data: ReturnType<typeof deriveSidebarData>
     signature: string
   }
-}
-
-function getSidebarProjectOrder(store: EventStore) {
-  return typeof store.getSidebarProjectOrder === "function"
-    ? store.getSidebarProjectOrder()
-    : []
+  /** Serialized chat snapshots keyed by `chatId:recentLimit`, shared across sockets in one broadcast. */
+  chat?: Map<string, string>
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
@@ -164,205 +79,12 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
   return payload.length
 }
 
-export function assertSafeSkillSource(source: string) {
-  const normalized = source.trim()
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) {
-    throw new Error("Skill source must be an owner/repo pair.")
-  }
-  return normalized
-}
-
-export function assertSafeSkillId(skillId: string) {
-  const normalized = skillId.trim()
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(normalized)) {
-    throw new Error("Skill id is invalid.")
-  }
-  return normalized
-}
-
-export function getGlobalSkillLockPath() {
-  const xdgStateHome = process.env.XDG_STATE_HOME?.trim()
-  if (xdgStateHome) {
-    return path.join(xdgStateHome, "skills", ".skill-lock.json")
-  }
-  return path.join(os.homedir(), ".agents", ".skill-lock.json")
-}
-
-function asString(value: unknown) {
-  return typeof value === "string" ? value : ""
-}
-
-export function parseInstalledSkillsLock(parsed: unknown, lockFilePath: string): InstalledSkillsSnapshot {
-  const skillsRecord = parsed
-    && typeof parsed === "object"
-    && "skills" in parsed
-    && parsed.skills
-    && typeof parsed.skills === "object"
-    && !Array.isArray(parsed.skills)
-      ? parsed.skills as Record<string, unknown>
-      : {}
-
-  const skills = Object.entries(skillsRecord)
-    .filter(([, entry]) => entry && typeof entry === "object" && !Array.isArray(entry))
-    .map(([name, entry]) => {
-      const record = entry as Record<string, unknown>
-      return {
-        name,
-        source: asString(record.source),
-        sourceType: asString(record.sourceType),
-        sourceUrl: asString(record.sourceUrl),
-        skillPath: asString(record.skillPath) || undefined,
-        installedAt: asString(record.installedAt),
-        updatedAt: asString(record.updatedAt),
-        pluginName: asString(record.pluginName) || undefined,
-      }
-    })
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  return {
-    lockFilePath,
-    skills,
-  }
-}
-
-export async function listInstalledSkills(lockFilePath = getGlobalSkillLockPath()): Promise<InstalledSkillsSnapshot> {
-  try {
-    return parseInstalledSkillsLock(JSON.parse(await readFile(lockFilePath, "utf8")), lockFilePath)
-  } catch {
-    return {
-      lockFilePath,
-      skills: [],
-    }
-  }
-}
-
-export async function searchSkills(query: string, limit = 100): Promise<SkillSearchSnapshot> {
-  const normalizedQuery = query.trim()
-  if (normalizedQuery.length < 2) {
-    return {
-      query: normalizedQuery,
-      searchType: "fuzzy",
-      skills: [],
-      count: 0,
-      duration_ms: 0,
-    }
-  }
-
-  const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
-  const url = new URL("https://skills.sh/api/search")
-  url.searchParams.set("q", normalizedQuery)
-  url.searchParams.set("limit", String(normalizedLimit))
-
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (!response.ok) {
-    throw new Error(`Skills search failed with status ${response.status}.`)
-  }
-
-  const payload = await response.json() as Partial<SkillSearchSnapshot>
-  return {
-    query: typeof payload.query === "string" ? payload.query : normalizedQuery,
-    searchType: typeof payload.searchType === "string" ? payload.searchType : "fuzzy",
-    skills: Array.isArray(payload.skills)
-      ? payload.skills
-        .filter((skill) => (
-          skill
-          && typeof skill === "object"
-          && typeof skill.id === "string"
-          && typeof skill.skillId === "string"
-          && typeof skill.name === "string"
-          && typeof skill.source === "string"
-        ))
-        .map((skill) => ({
-          id: skill.id,
-          skillId: skill.skillId,
-          name: skill.name,
-          installs: typeof skill.installs === "number" ? skill.installs : 0,
-          source: skill.source,
-        }))
-      : [],
-    count: typeof payload.count === "number" ? payload.count : 0,
-    duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : 0,
-  }
-}
-
-export function buildInstallSkillCommand(source: string, skillId: string) {
-  return [
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    "skills",
-    "add",
-    assertSafeSkillSource(source),
-    "--skill",
-    assertSafeSkillId(skillId),
-    "--global",
-    "--agent",
-    ...SKILL_AGENT_ALIASES,
-    "--yes",
-  ]
-}
-
-export function buildUninstallSkillCommand(skillId: string) {
-  return [
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    "skills",
-    "remove",
-    assertSafeSkillId(skillId),
-    "--global",
-    "--agent",
-    ...SKILL_AGENT_ALIASES,
-    "--yes",
-  ]
-}
-
-async function runSkillCommand(command: string[]) {
-  const cwd = os.homedir()
-  const subprocess = Bun.spawn(command, {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      DISABLE_TELEMETRY: process.env.DISABLE_TELEMETRY ?? "1",
-    },
-  })
-
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(subprocess.stdout).text(),
-    new Response(subprocess.stderr).text(),
-    subprocess.exited,
-  ])
-
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || `skills CLI exited with code ${exitCode}.`)
-  }
-
-  return { cwd, stdout, stderr }
-}
-
-export async function installSkill(source: string, skillId: string): Promise<SkillInstallResult> {
-  const command = buildInstallSkillCommand(source, skillId)
-  const { cwd, stdout, stderr } = await runSkillCommand(command)
-  return {
-    source: command[3],
-    skillId: command[5],
-    command,
-    cwd,
-    stdout,
-    stderr,
-  }
-}
-
-export async function uninstallSkill(skillId: string): Promise<SkillUninstallResult> {
-  const command = buildUninstallSkillCommand(skillId)
-  const { cwd, stdout, stderr } = await runSkillCommand(command)
-  return {
-    skillId: command[3],
-    command,
-    cwd,
-    stdout,
-    stderr,
-  }
+/**
+ * Send a snapshot whose body was already serialized once for this broadcast,
+ * so N subscribers cost one JSON.stringify instead of N.
+ */
+function sendSerializedSnapshot(ws: ServerWebSocket<ClientState>, id: string, snapshotJson: string) {
+  ws.send(`{"v":${PROTOCOL_VERSION},"type":"snapshot","id":${JSON.stringify(id)},"snapshot":${snapshotJson}}`)
 }
 
 function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
@@ -391,164 +113,6 @@ export function createWsRouter({
   let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
   let pendingBroadcastAll = false
   const pendingBroadcastChatIds = new Set<string>()
-  const resolvedDiffStore = diffStore ?? {
-    getProjectSnapshot: () => ({ status: "unknown", branchName: undefined, defaultBranchName: undefined, hasOriginRemote: undefined, originRepoSlug: undefined, hasUpstream: undefined, aheadCount: undefined, behindCount: undefined, lastFetchedAt: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
-    getSnapshotVersion: () => 0,
-    refreshSnapshot: async () => false,
-    initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "my-repo" }),
-    checkGitHubRepoAvailability: async () => ({ available: false, message: "Unavailable" }),
-    publishToGitHub: async () => ({ ok: false, title: "Publish failed", message: "Unavailable", snapshotChanged: false }),
-    listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" as const }),
-    previewMergeBranch: async () => ({ currentBranchName: undefined, targetBranchName: "", targetDisplayName: "", status: "error" as const, commitCount: 0, hasConflicts: false, message: "Merge preview unavailable." }),
-    mergeBranch: async () => ({ ok: false as const, title: "Merge failed", message: "Merge unavailable.", snapshotChanged: false }),
-    syncBranch: async () => ({ ok: true, action: "fetch" as const, branchName: undefined, snapshotChanged: false }),
-    checkoutBranch: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-    generateCommitMessage: async () => ({ subject: "Update selected files", body: "", usedFallback: true, failureMessage: null }),
-    commitFiles: async () => ({ ok: true, mode: "commit_only" as const, branchName: undefined, pushed: false, snapshotChanged: false }),
-    discardFile: async () => ({ snapshotChanged: false }),
-    ignoreFile: async () => ({ snapshotChanged: false }),
-    readPatch: async () => ({ patch: "" }),
-  }
-  const resolvedLlmProvider = llmProvider ?? {
-    read: async () => ({
-      provider: "openai" as const,
-      apiKey: "",
-      model: "gpt-5.4-mini",
-      baseUrl: "",
-      resolvedBaseUrl: "https://api.openai.com/v1",
-      enabled: false,
-      warning: null,
-      filePathDisplay: "~/.kanna/llm-provider.json",
-    }),
-    write: async ({ provider, apiKey, model, baseUrl }: {
-      provider: "openai" | "openrouter" | "custom"
-      apiKey: string
-      model: string
-      baseUrl: string
-    }) => ({
-      provider,
-      apiKey,
-      model,
-      baseUrl,
-      resolvedBaseUrl: provider === "openrouter"
-        ? "https://openrouter.ai/api/v1"
-        : provider === "custom"
-          ? baseUrl
-          : "https://api.openai.com/v1",
-      enabled: false,
-      warning: null,
-      filePathDisplay: "~/.kanna/llm-provider.json",
-    }),
-    validate: async () => ({
-      ok: false,
-      error: {
-        type: "config_error",
-        message: "LLM provider validation unavailable.",
-      },
-    }),
-  }
-  let fallbackAppSettingsSnapshot: AppSettingsSnapshot = {
-    analyticsEnabled: true,
-    browserSettingsMigrated: false,
-    theme: "system",
-    chatSoundPreference: "always",
-    chatSoundId: "funk",
-    terminal: {
-      scrollbackLines: 1_000,
-      minColumnWidth: 450,
-    },
-    editor: {
-      preset: "cursor",
-      commandTemplate: "cursor {path}",
-    },
-    defaultProvider: "last_used",
-    providerDefaults: {
-      claude: {
-        model: "claude-opus-4-8",
-        modelOptions: {
-          reasoningEffort: "high",
-          contextWindow: "1m",
-          fastMode: false,
-        },
-        planMode: false,
-      },
-      codex: {
-        model: "gpt-5.6-sol",
-        modelOptions: {
-          reasoningEffort: "medium",
-          fastMode: false,
-        },
-        planMode: false,
-      },
-      cursor: {
-        model: "composer-2.5",
-        modelOptions: {
-          fastMode: false,
-        },
-        planMode: false,
-      },
-    },
-    boardAutoReturn: false,
-    warning: null,
-    filePathDisplay: "~/.kanna/data/settings.json",
-  }
-  const mergeAppSettingsPatch = (snapshot: AppSettingsSnapshot, patch: AppSettingsPatch): AppSettingsSnapshot => ({
-    ...snapshot,
-    ...patch,
-    terminal: {
-      ...snapshot.terminal,
-      ...patch.terminal,
-    },
-    editor: {
-      ...snapshot.editor,
-      ...patch.editor,
-    },
-    providerDefaults: {
-      claude: {
-        ...snapshot.providerDefaults.claude,
-        ...patch.providerDefaults?.claude,
-        modelOptions: {
-          ...snapshot.providerDefaults.claude.modelOptions,
-          ...patch.providerDefaults?.claude?.modelOptions,
-        },
-      },
-      codex: {
-        ...snapshot.providerDefaults.codex,
-        ...patch.providerDefaults?.codex,
-        modelOptions: {
-          ...snapshot.providerDefaults.codex.modelOptions,
-          ...patch.providerDefaults?.codex?.modelOptions,
-        },
-      },
-      cursor: {
-        ...snapshot.providerDefaults.cursor,
-        ...patch.providerDefaults?.cursor,
-        modelOptions: {
-          ...snapshot.providerDefaults.cursor.modelOptions,
-          ...patch.providerDefaults?.cursor?.modelOptions,
-        },
-      },
-    },
-  })
-  const resolvedAppSettings = {
-    getSnapshot: () => appSettings?.getSnapshot() ?? fallbackAppSettingsSnapshot,
-    write: async (value: { analyticsEnabled: boolean }) => {
-      if (appSettings) return await appSettings.write(value)
-      fallbackAppSettingsSnapshot = { ...fallbackAppSettingsSnapshot, analyticsEnabled: value.analyticsEnabled }
-      return fallbackAppSettingsSnapshot
-    },
-    writePatch: async (patch: AppSettingsPatch) => {
-      if (appSettings?.writePatch) return await appSettings.writePatch(patch)
-      if (appSettings && patch.analyticsEnabled !== undefined && Object.keys(patch).length === 1) {
-        return await appSettings.write({ analyticsEnabled: patch.analyticsEnabled })
-      }
-      fallbackAppSettingsSnapshot = mergeAppSettingsPatch(appSettings?.getSnapshot() ?? fallbackAppSettingsSnapshot, patch)
-      return fallbackAppSettingsSnapshot
-    },
-    onChange: (listener: (snapshot: AppSettingsSnapshot) => void) => appSettings?.onChange?.(listener) ?? (() => {}),
-  }
   const resolvedAnalytics = analytics ?? NoopAnalyticsReporter
 
   function getProtectedChatIds() {
@@ -581,24 +145,12 @@ export function createWsRouter({
   }
 
   async function maybePruneStaleEmptyChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
-    const startedAt = performance.now()
     const activeChatIds = getProtectedChatIds()
     const protectedDraftChatIds = getProtectedDraftChatIds(extraSockets)
-    const prunedChatIds = await store.pruneStaleEmptyChats?.({
+    return await store.pruneStaleEmptyChats({
       activeChatIds,
       protectedChatIds: protectedDraftChatIds,
     })
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.prune_stale_empty_chats",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        activeChatCount: activeChatIds.size,
-        protectedDraftChatCount: protectedDraftChatIds.size,
-        prunedCount: prunedChatIds?.length ?? 0,
-        totalChatCount: store.state.chatsById.size,
-        totalProjectCount: store.state.projectsById.size,
-      }))
-    }
   }
 
   function shouldIncludeTopic(topic: SubscriptionTopic, filter?: SnapshotBroadcastFilter) {
@@ -639,7 +191,6 @@ export function createWsRouter({
       return cache.sidebar
     }
 
-    const startedAt = performance.now()
     const activeStatuses = agent.getActiveStatuses()
     const pendingToolKinds = new Map<string, string>()
     for (const [chatId, status] of activeStatuses) {
@@ -648,21 +199,10 @@ export function createWsRouter({
       if (pendingTool) pendingToolKinds.set(chatId, pendingTool.toolKind)
     }
     const data = deriveSidebarData(store.state, activeStatuses, {
-      sidebarProjectOrder: getSidebarProjectOrder(store),
+      sidebarProjectOrder: store.getSidebarProjectOrder(),
       drainingChatIds: agent.getDrainingChatIds(),
       pendingToolKinds,
     })
-    if (isSendToStartingProfilingEnabled()) {
-      const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.sidebar_snapshot_built",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        projectGroupCount: data.projectGroups.length,
-        chatCount: totalChats,
-        totalChatCount: store.state.chatsById.size,
-        totalProjectCount: store.state.projectsById.size,
-      }))
-    }
 
     const sidebar = {
       data,
@@ -679,14 +219,9 @@ export function createWsRouter({
     return sidebar
   }
 
-  function getProjectGitSignature(projectId: string): string | null {
-    const getSnapshotVersion = (resolvedDiffStore as Partial<Pick<DiffStore, "getSnapshotVersion">>).getSnapshotVersion
-    if (typeof getSnapshotVersion !== "function") {
-      // Test doubles may omit getSnapshotVersion; fall back to the payload signature.
-      return null
-    }
+  function getProjectGitSignature(projectId: string): string {
     return store.getProject(projectId)
-      ? `project-git:${projectId}:v${getSnapshotVersion.call(resolvedDiffStore, projectId)}`
+      ? `project-git:${projectId}:v${diffStore.getSnapshotVersion(projectId)}`
       : `project-git:${projectId}:none`
   }
 
@@ -738,7 +273,7 @@ export function createWsRouter({
         id,
         snapshot: {
           type: "app-settings",
-          data: resolvedAppSettings.getSnapshot(),
+          data: appSettings.getSnapshot(),
         },
       }
     }
@@ -784,7 +319,7 @@ export function createWsRouter({
         snapshot: {
           type: "project-git",
           data: store.getProject(topic.projectId)
-            ? resolvedDiffStore.getProjectSnapshot(topic.projectId)
+            ? diffStore.getProjectSnapshot(topic.projectId)
             : null,
         },
       }
@@ -807,166 +342,130 @@ export function createWsRouter({
     }
   }
 
+  function getChatSnapshotJson(chatId: string, recentLimit: number | undefined, cache?: SnapshotComputationCache) {
+    const limit = recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT
+    const key = `${chatId}:${limit}`
+    const existing = cache?.chat?.get(key)
+    if (existing !== undefined) {
+      return existing
+    }
+    const data = deriveChatSnapshot(
+      store.state,
+      agent.getActiveStatuses(),
+      agent.getDrainingChatIds(),
+      chatId,
+      (id) => store.getRecentChatHistory(id, limit)
+    )
+    const snapshotJson = JSON.stringify({ type: "chat", data })
+    if (cache) {
+      (cache.chat ??= new Map()).set(key, snapshotJson)
+    }
+    return snapshotJson
+  }
+
   async function pushSnapshots(
     ws: ServerWebSocket<ClientState>,
     options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache }
   ) {
-    const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
       await maybePruneStaleEmptyChats([ws])
     }
     const snapshotSignatures = ensureSnapshotSignatures(ws)
-    let sentCount = 0
-    let skippedCount = 0
     for (const [id, topic] of ws.data.subscriptions.entries()) {
       if (!shouldIncludeTopic(topic, options?.filter)) {
         continue
       }
-      // Cheap signatures (computed without building the snapshot payload) let
-      // us skip serializing large snapshots — e.g. a project-git snapshot with
-      // thousands of changed files — when nothing changed since the last push.
-      const precomputedSignature = topic.type === "sidebar"
-        ? getSidebarSnapshotCacheEntry(options?.cache).signature
-        : topic.type === "project-git"
-          ? getProjectGitSignature(topic.projectId)
-          : null
-      if (precomputedSignature !== null && snapshotSignatures.get(id) === precomputedSignature) {
-        skippedCount += 1
+      // Sidebar and chat snapshots are serialized once per broadcast (shared
+      // via the cache) and that serialization doubles as the dedupe signature,
+      // so unchanged snapshots cost neither a derive nor a stringify per
+      // socket, and changed ones are stringified exactly once.
+      if (topic.type === "sidebar") {
+        const sidebar = getSidebarSnapshotCacheEntry(options?.cache)
+        if (snapshotSignatures.get(id) === sidebar.signature) {
+          continue
+        }
+        snapshotSignatures.set(id, sidebar.signature)
+        sendSerializedSnapshot(ws, id, sidebar.signature)
         continue
       }
-      const envelopeStartedAt = performance.now()
+      if (topic.type === "chat") {
+        const snapshotJson = getChatSnapshotJson(topic.chatId, topic.recentLimit, options?.cache)
+        if (snapshotSignatures.get(id) === snapshotJson) {
+          continue
+        }
+        snapshotSignatures.set(id, snapshotJson)
+        sendSerializedSnapshot(ws, id, snapshotJson)
+        continue
+      }
+      // project-git has a cheap version-counter signature, so an unchanged
+      // snapshot (e.g. thousands of diff files) skips payload building entirely.
+      const precomputedSignature = topic.type === "project-git"
+        ? getProjectGitSignature(topic.projectId)
+        : null
+      if (precomputedSignature !== null && snapshotSignatures.get(id) === precomputedSignature) {
+        continue
+      }
       const envelope = createEnvelope(id, topic, options?.cache)
-      const createdAt = performance.now()
       if (envelope.type !== "snapshot") continue
       const signature = precomputedSignature ?? JSON.stringify(envelope.snapshot)
-      const signatureReadyAt = precomputedSignature !== null ? createdAt : performance.now()
       if (snapshotSignatures.get(id) === signature) {
-        skippedCount += 1
         continue
       }
       snapshotSignatures.set(id, signature)
-      if (topic.type === "chat" && envelope.snapshot.type === "chat" && envelope.snapshot.data?.runtime.status === "starting") {
-        const profile = agent.getActiveTurnProfile(topic.chatId)
-        logSendToStartingProfile(profile?.traceId, profile?.startedAt, "ws.snapshot_sent", {
-          chatId: topic.chatId,
-          status: envelope.snapshot.data.runtime.status,
-          messageCount: envelope.snapshot.data.messages.length,
-          buildMs: Number((createdAt - envelopeStartedAt).toFixed(1)),
-          signatureMs: Number((signatureReadyAt - createdAt).toFixed(1)),
-          signatureBytes: signature.length,
-        })
-      }
-      const payloadBytes = send(ws, envelope)
-      sentCount += 1
-      if (topic.type === "chat" && envelope.snapshot.type === "chat" && envelope.snapshot.data?.runtime.status === "starting") {
-        const profile = agent.getActiveTurnProfile(topic.chatId)
-        logSendToStartingProfile(profile?.traceId, profile?.startedAt, "ws.snapshot_send_completed", {
-          chatId: topic.chatId,
-          payloadBytes,
-        })
-      }
-    }
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.push_snapshots_completed",
-        elapsedMs: Number((performance.now() - pushStartedAt).toFixed(1)),
-        skipPrune: Boolean(options?.skipPrune),
-        sentCount,
-        skippedCount,
-        ...countSubscriptionsByTopic(ws),
-      }))
+      send(ws, envelope)
     }
   }
 
   async function broadcastSnapshots() {
-    const startedAt = performance.now()
-    let socketCount = 0
     const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
-      socketCount += 1
       await pushSnapshots(ws, { skipPrune: true, cache })
-    }
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.broadcast_snapshots_completed",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        pruneMs: 0,
-        socketCount,
-        totalChatCount: store.state.chatsById.size,
-        totalProjectCount: store.state.projectsById.size,
-      }))
     }
   }
 
   async function broadcastFilteredSnapshots(filter: SnapshotBroadcastFilter) {
-    const startedAt = performance.now()
-    let socketCount = 0
     const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
-      socketCount += 1
       await pushSnapshots(ws, { skipPrune: true, filter, cache })
     }
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.broadcast_filtered_snapshots_completed",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        socketCount,
-        includeSidebar: Boolean(filter.includeSidebar),
-        chatCount: filter.chatIds?.size ?? 0,
-        projectCount: filter.projectIds?.size ?? 0,
-      }))
+  }
+
+  function flushPendingBroadcast() {
+    pendingBroadcastTimer = null
+    const shouldBroadcastAll = pendingBroadcastAll
+    const chatIds = new Set(pendingBroadcastChatIds)
+    pendingBroadcastAll = false
+    pendingBroadcastChatIds.clear()
+    if (shouldBroadcastAll) {
+      void broadcastSnapshots()
+      return
     }
+    if (chatIds.size > 0) {
+      void broadcastFilteredSnapshots({
+        includeSidebar: true,
+        chatIds,
+      })
+    }
+  }
+
+  function armPendingBroadcastTimer() {
+    if (pendingBroadcastTimer) {
+      return
+    }
+    pendingBroadcastTimer = setTimeout(flushPendingBroadcast, 16)
   }
 
   function scheduleBroadcast() {
     pendingBroadcastAll = true
     pendingBroadcastChatIds.clear()
-    if (pendingBroadcastTimer) {
-      return
-    }
-    pendingBroadcastTimer = setTimeout(() => {
-      pendingBroadcastTimer = null
-      const shouldBroadcastAll = pendingBroadcastAll
-      const chatIds = new Set(pendingBroadcastChatIds)
-      pendingBroadcastAll = false
-      pendingBroadcastChatIds.clear()
-      if (shouldBroadcastAll) {
-        void broadcastSnapshots()
-        return
-      }
-      if (chatIds.size > 0) {
-        void broadcastFilteredSnapshots({
-          includeSidebar: true,
-          chatIds,
-        })
-      }
-    }, 16)
+    armPendingBroadcastTimer()
   }
 
   function scheduleChatStateBroadcast(chatId: string) {
     if (!pendingBroadcastAll) {
       pendingBroadcastChatIds.add(chatId)
     }
-    if (pendingBroadcastTimer) {
-      return
-    }
-    pendingBroadcastTimer = setTimeout(() => {
-      pendingBroadcastTimer = null
-      const shouldBroadcastAll = pendingBroadcastAll
-      const chatIds = new Set(pendingBroadcastChatIds)
-      pendingBroadcastAll = false
-      pendingBroadcastChatIds.clear()
-      if (shouldBroadcastAll) {
-        void broadcastSnapshots()
-        return
-      }
-      if (chatIds.size > 0) {
-        void broadcastFilteredSnapshots({
-          includeSidebar: true,
-          chatIds,
-        })
-      }
-    }, 16)
+    armPendingBroadcastTimer()
   }
 
   async function broadcastChatAndSidebar(chatId: string) {
@@ -1038,7 +537,7 @@ export function createWsRouter({
     }
   })
 
-  const disposeAppSettingsEvents = resolvedAppSettings.onChange(() => {
+  const disposeAppSettingsEvents = appSettings.onChange(() => {
     for (const ws of sockets) {
       const snapshotSignatures = ensureSnapshotSignatures(ws)
       for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -1078,12 +577,46 @@ export function createWsRouter({
     return { chat, project }
   }
 
+  /**
+   * Shared shape for the chat-scoped git commands: resolve the chat's project,
+   * run the diff-store operation, ack (with the result when one is produced),
+   * and fire-and-forget a full snapshot broadcast when the operation reports
+   * the git snapshot changed.
+   */
+  async function handleChatGitCommand(
+    ws: ServerWebSocket<ClientState>,
+    id: string,
+    chatId: string,
+    run: (project: ReturnType<typeof resolveChatProject>["project"]) => Promise<{ result?: unknown; changed?: boolean }>,
+  ) {
+    const { project } = resolveChatProject(chatId)
+    const { result, changed } = await run(project)
+    if (result === undefined) {
+      send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+    } else {
+      send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+    }
+    if (changed) {
+      void broadcastSnapshots()
+    }
+  }
+
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
     try {
       switch (command.type) {
         case "system.ping": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "fs.list": {
+          const result = await listDirectory(command.path, { nearest: command.nearest })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "fs.mkdir": {
+          const result = await createDirectory(command.path)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "browser.listLocalHttpServers": {
@@ -1157,15 +690,15 @@ export function createWsRouter({
           return
         }
         case "settings.readAppSettings": {
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: resolvedAppSettings.getSnapshot() })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: appSettings.getSnapshot() })
           return
         }
         case "settings.writeAppSettings": {
-          const previousAnalyticsEnabled = resolvedAppSettings.getSnapshot().analyticsEnabled
+          const previousAnalyticsEnabled = appSettings.getSnapshot().analyticsEnabled
           if (previousAnalyticsEnabled && !command.analyticsEnabled) {
             resolvedAnalytics.track("analytics_disabled")
           }
-          const snapshot = await resolvedAppSettings.write({ analyticsEnabled: command.analyticsEnabled })
+          const snapshot = await appSettings.write({ analyticsEnabled: command.analyticsEnabled })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           if (!previousAnalyticsEnabled && command.analyticsEnabled) {
             resolvedAnalytics.track("analytics_enabled")
@@ -1173,8 +706,8 @@ export function createWsRouter({
           return
         }
         case "settings.writeAppSettingsPatch": {
-          const previousAnalyticsEnabled = resolvedAppSettings.getSnapshot().analyticsEnabled
-          const snapshot = await resolvedAppSettings.writePatch(command.patch)
+          const previousAnalyticsEnabled = appSettings.getSnapshot().analyticsEnabled
+          const snapshot = await appSettings.writePatch(command.patch)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           if (command.patch.analyticsEnabled !== undefined && previousAnalyticsEnabled && !snapshot.analyticsEnabled) {
             resolvedAnalytics.track("analytics_disabled")
@@ -1185,21 +718,28 @@ export function createWsRouter({
           return
         }
         case "settings.readLlmProvider": {
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await resolvedLlmProvider.read() })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await llmProvider.read() })
           return
         }
         case "settings.writeLlmProvider": {
-          const snapshot = await resolvedLlmProvider.write({
+          const snapshot = await llmProvider.write({
             provider: command.provider,
             apiKey: command.apiKey,
             model: command.model,
             baseUrl: command.baseUrl,
+            // Writers that don't manage faves must not wipe the saved list.
+            faveModels: command.faveModels ?? (await llmProvider.read()).faveModels,
           })
+          // Fave models feed the pi provider's model picker, which clients read
+          // from chat snapshots — refresh them when the catalog changes.
+          if (applyPiFaveModels(snapshot.faveModels)) {
+            void broadcastSnapshots()
+          }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
         case "settings.validateLlmProvider": {
-          const result = await resolvedLlmProvider.validate({
+          const result = await llmProvider.validate({
             provider: command.provider,
             apiKey: command.apiKey,
             model: command.model,
@@ -1238,20 +778,8 @@ export function createWsRouter({
           if (!existingProjectId) {
             resolvedAnalytics.track("project_opened")
           }
-          break
-        }
-        case "project.create": {
-          await ensureProjectDirectory(command.localPath)
-          const normalizedPath = resolveLocalPath(command.localPath)
-          const existingProjectId = store.state.projectIdsByPath.get(normalizedPath)
-          const project = await store.openProject(command.localPath, command.title)
-          await refreshDiscovery()
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
-          if (!existingProjectId) {
-            resolvedAnalytics.track("project_opened")
-            resolvedAnalytics.track("project_created")
-          }
-          break
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
         }
         case "project.rename": {
           await store.renameProjectSidebarTitle(command.projectId, command.title)
@@ -1265,13 +793,17 @@ export function createWsRouter({
           const project = await store.openProject(cloneDest, command.title)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id, localPath: cloneDest } })
-          break
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
         }
         case "project.remove": {
           await store.removeProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           resolvedAnalytics.track("project_removed")
-          break
+          // Removing a project tombstones its chats too, so subscribers of any
+          // topic may need fresh state.
+          await broadcastSnapshots()
+          return
         }
         case "sidebar.reorderProjectGroups": {
           await store.setSidebarProjectOrder(command.projectIds)
@@ -1284,7 +816,7 @@ export function createWsRouter({
           if (!project) {
             throw new Error("Project not found")
           }
-          const result = await resolvedDiffStore.readPatch({
+          const result = await diffStore.readPatch({
             projectPath: project.localPath,
             path: command.path,
           })
@@ -1294,19 +826,24 @@ export function createWsRouter({
         case "system.openExternal": {
           await openExternal(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.create": {
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
           resolvedAnalytics.track("chat_created")
-          await broadcastChatAndSidebar(chat.id)
+          // Adding a chat changes local-projects too (chatCount/lastOpenedAt).
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([chat.id]),
+          })
           return
         }
         case "chat.fork": {
           const result = await agent.forkChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "chat.rename": {
@@ -1318,7 +855,8 @@ export function createWsRouter({
         case "chat.archive": {
           await store.archiveChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          // Archiving removes the chat from local-projects' chat counts.
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "chat.unarchive": {
@@ -1328,7 +866,11 @@ export function createWsRouter({
           // sending a message clears the done state and brings it back to running.
           await store.setChatDoneState(command.chatId, true)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastChatAndSidebar(command.chatId)
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([command.chatId]),
+          })
           return
         }
         case "chat.delete": {
@@ -1337,7 +879,13 @@ export function createWsRouter({
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           resolvedAnalytics.track("chat_deleted")
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          // The deleted chat's own topic must refresh (to null) so another tab
+          // viewing it learns it's gone, and local-projects loses the chat.
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            chatIds: new Set([command.chatId]),
+          })
           return
         }
         case "chat.markRead": {
@@ -1353,56 +901,43 @@ export function createWsRouter({
           return
         }
         case "chat.setDraftProtection": {
+          // Only adjusts this socket's prune protection — no snapshot changes.
           ws.data.protectedDraftChatIds = new Set(command.chatIds)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.send": {
           const result = await agent.send(command)
-          const profile = command.clientTraceId && result.chatId
-            ? agent.getActiveTurnProfile(result.chatId)
-            : null
-          logSendToStartingProfile(profile?.traceId ?? command.clientTraceId, profile?.startedAt, "ws.chat_send_ack", {
-            chatId: result.chatId ?? null,
-          })
-          const payloadBytes = send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          logSendToStartingProfile(profile?.traceId ?? command.clientTraceId, profile?.startedAt, "ws.chat_send_ack_completed", {
-            chatId: result.chatId ?? null,
-            payloadBytes,
-          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.refreshDiffs": {
-          const { project } = resolveChatProject(command.chatId)
-          const changed = await resolvedDiffStore.refreshSnapshot(project.id, project.localPath)
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          if (changed) {
-            void broadcastSnapshots()
-          }
+          // Acks without a result; broadcasts when the refresh reported a change.
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            changed: await diffStore.refreshSnapshot(project.id, project.localPath),
+          }))
           return
         }
         case "chat.initGit": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.initializeGit({
-            projectId: project.id,
-            projectPath: project.localPath,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.initializeGit({
+              projectId: project.id,
+              projectPath: project.localPath,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.getGitHubPublishInfo": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.getGitHubPublishInfo({
-            projectPath: project.localPath,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.getGitHubPublishInfo({
+              projectPath: project.localPath,
+            }),
+          }))
           return
         }
         case "chat.checkGitHubRepoAvailability": {
-          const result = await resolvedDiffStore.checkGitHubRepoAvailability({
+          const result = await diffStore.checkGitHubRepoAvailability({
             owner: command.owner,
             name: command.name,
           })
@@ -1410,141 +945,125 @@ export function createWsRouter({
           return
         }
         case "chat.publishToGitHub": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.publishToGitHub({
-            projectId: project.id,
-            projectPath: project.localPath,
-            owner: command.owner,
-            name: command.name,
-            visibility: command.visibility,
-            description: command.description,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.publishToGitHub({
+              projectId: project.id,
+              projectPath: project.localPath,
+              owner: command.owner,
+              name: command.name,
+              visibility: command.visibility,
+              description: command.description,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.listBranches": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.listBranches({
-            projectPath: project.localPath,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.listBranches({
+              projectPath: project.localPath,
+            }),
+          }))
           return
         }
         case "chat.previewMergeBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.previewMergeBranch({
-            projectPath: project.localPath,
-            branch: command.branch,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.previewMergeBranch({
+              projectPath: project.localPath,
+              branch: command.branch,
+            }),
+          }))
           return
         }
         case "chat.mergeBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.mergeBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            branch: command.branch,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.mergeBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              branch: command.branch,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.checkoutBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.checkoutBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            branch: command.branch,
-            bringChanges: command.bringChanges,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.checkoutBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              branch: command.branch,
+              bringChanges: command.bringChanges,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.syncBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.syncBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            action: command.action,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.syncBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              action: command.action,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.createBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.createBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            name: command.name,
-            baseBranchName: command.baseBranchName,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.createBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              name: command.name,
+              baseBranchName: command.baseBranchName,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.generateCommitMessage": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.generateCommitMessage({
-            projectPath: project.localPath,
-            paths: command.paths,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.generateCommitMessage({
+              projectPath: project.localPath,
+              paths: command.paths,
+            }),
+          }))
           return
         }
         case "chat.commitDiffs": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.commitFiles({
-            projectId: project.id,
-            projectPath: project.localPath,
-            paths: command.paths,
-            summary: command.summary,
-            description: command.description,
-            mode: command.mode,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.commitFiles({
+              projectId: project.id,
+              projectPath: project.localPath,
+              paths: command.paths,
+              summary: command.summary,
+              description: command.description,
+              mode: command.mode,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.discardDiffFile": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.discardFile({
-            projectId: project.id,
-            projectPath: project.localPath,
-            path: command.path,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.discardFile({
+              projectId: project.id,
+              projectPath: project.localPath,
+              path: command.path,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.ignoreDiffFile": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.ignoreFile({
-            projectId: project.id,
-            projectPath: project.localPath,
-            path: command.path,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.ignoreFile({
+              projectId: project.id,
+              projectPath: project.localPath,
+              path: command.path,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.cancel": {
@@ -1632,8 +1151,6 @@ export function createWsRouter({
           return
         }
       }
-
-      await broadcastSnapshots()
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       console.error("[ws-router] command failed", {

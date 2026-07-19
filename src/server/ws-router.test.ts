@@ -10,10 +10,10 @@ import {
   assertSafeSkillSource,
   buildInstallSkillCommand,
   buildUninstallSkillCommand,
-  createWsRouter,
   listInstalledSkills,
   parseInstalledSkillsLock,
-} from "./ws-router"
+} from "./skills"
+import { createWsRouter } from "./ws-router"
 
 function withSidebarGroupDefaults(group: {
   groupKey: string
@@ -107,6 +107,13 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       model: "composer-2.5",
       modelOptions: {
         fastMode: false,
+      },
+      planMode: false,
+    },
+    pi: {
+      model: "~anthropic/claude-fable-latest",
+      modelOptions: {
+        reasoningEffort: "medium",
       },
       planMode: false,
     },
@@ -226,29 +233,113 @@ const DEFAULT_LLM_PROVIDER_SNAPSHOT: LlmProviderSnapshot = {
   model: "",
   baseUrl: "",
   resolvedBaseUrl: "https://api.openai.com/v1",
+  faveModels: [],
   enabled: false,
   warning: null,
   filePathDisplay: "~/.kanna/llm-provider.json",
 }
 
+type CreateWsRouterArgs = Parameters<typeof createWsRouter>[0]
+
+/** In-memory EventStore stand-in covering the methods the router always calls. */
+function createFakeStore(overrides: Record<string, unknown> = {}) {
+  return {
+    state: createEmptyState(),
+    getSidebarProjectOrder: () => [],
+    pruneStaleEmptyChats: async () => [],
+    ...overrides,
+  } as never
+}
+
+function createFakeDiffStore(overrides: Record<string, unknown> = {}): CreateWsRouterArgs["diffStore"] {
+  return {
+    getProjectSnapshot: () => null,
+    getSnapshotVersion: () => 0,
+    refreshSnapshot: async () => false,
+    initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
+    getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "my-repo" }),
+    checkGitHubRepoAvailability: async () => ({ available: false, message: "Unavailable" }),
+    publishToGitHub: async () => ({ ok: false, title: "Publish failed", message: "Unavailable", snapshotChanged: false }),
+    listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
+    previewMergeBranch: async () => ({ currentBranchName: undefined, targetBranchName: "", targetDisplayName: "", status: "error", commitCount: 0, hasConflicts: false, message: "Merge preview unavailable." }),
+    mergeBranch: async () => ({ ok: false, title: "Merge failed", message: "Merge unavailable.", snapshotChanged: false }),
+    syncBranch: async () => ({ ok: true, action: "fetch", branchName: undefined, snapshotChanged: false }),
+    checkoutBranch: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
+    createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
+    generateCommitMessage: async () => ({ subject: "Update selected files", body: "", usedFallback: true, failureMessage: null }),
+    commitFiles: async () => ({ ok: true, mode: "commit_only", branchName: undefined, pushed: false, snapshotChanged: false }),
+    discardFile: async () => ({ snapshotChanged: false }),
+    ignoreFile: async () => ({ snapshotChanged: false }),
+    readPatch: async () => ({ patch: "" }),
+    ...overrides,
+  } as never
+}
+
+function createFakeAppSettings(overrides: Partial<CreateWsRouterArgs["appSettings"]> = {}): CreateWsRouterArgs["appSettings"] {
+  let snapshot = DEFAULT_APP_SETTINGS_SNAPSHOT
+  return {
+    getSnapshot: () => snapshot,
+    write: async (value) => {
+      snapshot = { ...snapshot, analyticsEnabled: value.analyticsEnabled }
+      return snapshot
+    },
+    writePatch: async (patch) => {
+      snapshot = {
+        ...snapshot,
+        ...patch,
+        terminal: { ...snapshot.terminal, ...patch.terminal },
+        editor: { ...snapshot.editor, ...patch.editor },
+        providerDefaults: snapshot.providerDefaults,
+      } as AppSettingsSnapshot
+      return snapshot
+    },
+    onChange: () => () => {},
+    ...overrides,
+  }
+}
+
+function createFakeLlmProvider(): CreateWsRouterArgs["llmProvider"] {
+  return {
+    read: async () => DEFAULT_LLM_PROVIDER_SNAPSHOT,
+    write: async (value) => ({
+      ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
+      provider: value.provider,
+      apiKey: value.apiKey,
+      model: value.model,
+      baseUrl: value.baseUrl,
+      faveModels: value.faveModels ?? [],
+    }),
+    validate: async () => ({ ok: true, error: null }),
+  }
+}
+
+/** Builds a router with fake dependencies; pass overrides for the pieces a test cares about. */
+function createTestRouter(overrides: Partial<CreateWsRouterArgs> = {}) {
+  return createWsRouter({
+    store: createFakeStore(),
+    diffStore: createFakeDiffStore(),
+    agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+    terminals: {
+      getSnapshot: () => null,
+      onEvent: () => () => {},
+    } as never,
+    keybindings: {
+      getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+      onChange: () => () => {},
+    } as never,
+    appSettings: createFakeAppSettings(),
+    llmProvider: createFakeLlmProvider(),
+    refreshDiscovery: async () => [],
+    getDiscoveredProjects: () => [],
+    machineDisplayName: "Local Machine",
+    updateManager: null,
+    ...overrides,
+  })
+}
+
 describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", async () => {
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
-    })
+    const router = createTestRouter()
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
 
@@ -273,18 +364,8 @@ describe("ws-router", () => {
   })
 
   test("reads and writes llm provider settings via commands", async () => {
-    const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">> = []
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
+    const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>> = []
+    const router = createTestRouter({
       llmProvider: {
         read: async () => DEFAULT_LLM_PROVIDER_SNAPSHOT,
         write: async (value) => {
@@ -293,6 +374,7 @@ describe("ws-router", () => {
             ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
             ...value,
             resolvedBaseUrl: value.provider === "custom" ? value.baseUrl : "https://api.openai.com/v1",
+            faveModels: [],
             enabled: Boolean(value.apiKey && value.model),
           }
         },
@@ -301,10 +383,6 @@ describe("ws-router", () => {
           error: null,
         }),
       },
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -353,6 +431,7 @@ describe("ws-router", () => {
           model: "gpt-test",
           baseUrl: "https://example.com/v1",
           resolvedBaseUrl: "https://example.com/v1",
+          faveModels: [],
           enabled: true,
         },
       },
@@ -362,24 +441,17 @@ describe("ws-router", () => {
       apiKey: "test-key",
       model: "gpt-test",
       baseUrl: "https://example.com/v1",
+      // The command omitted faveModels, so the handler carried over the saved
+      // list (empty here) instead of wiping it.
+      faveModels: [],
     }])
   })
 
   test("reads and writes app settings via commands", async () => {
     const writes: Array<{ analyticsEnabled: boolean }> = []
     let analyticsEnabled = DEFAULT_APP_SETTINGS_SNAPSHOT.analyticsEnabled
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      appSettings: {
+    const router = createTestRouter({
+      appSettings: createFakeAppSettings({
         getSnapshot: () => ({
           ...DEFAULT_APP_SETTINGS_SNAPSHOT,
           analyticsEnabled,
@@ -392,11 +464,7 @@ describe("ws-router", () => {
             analyticsEnabled: value.analyticsEnabled,
           }
         },
-      },
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -447,17 +515,7 @@ describe("ws-router", () => {
   test("subscribes to app settings and writes patches through the router", async () => {
     let snapshot: AppSettingsSnapshot = DEFAULT_APP_SETTINGS_SNAPSHOT
     let listener: ((nextSnapshot: AppSettingsSnapshot) => void) | null = null
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
+    const router = createTestRouter({
       appSettings: {
         getSnapshot: () => snapshot,
         write: async (value) => {
@@ -486,10 +544,6 @@ describe("ws-router", () => {
           }
         },
       },
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -565,18 +619,8 @@ describe("ws-router", () => {
   test("tracks analytics preference transitions in the correct order", async () => {
     const analyticsEvents: string[] = []
     let analyticsEnabled = true
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      appSettings: {
+    const router = createTestRouter({
+      appSettings: createFakeAppSettings({
         getSnapshot: () => ({
           ...DEFAULT_APP_SETTINGS_SNAPSHOT,
           analyticsEnabled,
@@ -588,17 +632,13 @@ describe("ws-router", () => {
             analyticsEnabled: value.analyticsEnabled,
           }
         },
-      },
+      }),
       analytics: {
         track: (eventName: string) => {
           analyticsEvents.push(eventName)
         },
         trackLaunch: () => {},
       },
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
 
@@ -653,8 +693,8 @@ describe("ws-router", () => {
     const projectPath = await mkdtemp(path.join(tmpdir(), "kanna-router-project-"))
 
     try {
-      const router = createWsRouter({
-        store: {
+      const router = createTestRouter({
+        store: createFakeStore({
           state,
           openProject: async (localPath: string, title?: string) => {
             const project = {
@@ -675,7 +715,7 @@ describe("ws-router", () => {
           }),
           listChatsByProject: () => [{ id: "chat-1" }, { id: "chat-2" }],
           removeProject: async () => {},
-        } as never,
+        }),
         agent: {
           cancel: async () => {},
           closeChat: async () => {},
@@ -688,19 +728,6 @@ describe("ws-router", () => {
           },
           trackLaunch: () => {},
         },
-        terminals: {
-          closeByCwd: () => {},
-          getSnapshot: () => null,
-          onEvent: () => () => {},
-        } as never,
-        keybindings: {
-          getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-          onChange: () => () => {},
-        } as never,
-        refreshDiscovery: async () => [],
-        getDiscoveredProjects: () => [],
-        machineDisplayName: "Local Machine",
-        updateManager: null,
       })
       const ws = new FakeWebSocket()
 
@@ -709,8 +736,8 @@ describe("ws-router", () => {
         JSON.stringify({
           v: 1,
           type: "command",
-          id: "project-create-1",
-          command: { type: "project.create", localPath: projectPath, title: "Project" },
+          id: "project-open-analytics-1",
+          command: { type: "project.open", localPath: projectPath },
         })
       )
 
@@ -726,7 +753,6 @@ describe("ws-router", () => {
 
       expect(analyticsEvents).toEqual([
         "project_opened",
-        "project_created",
         "project_removed",
       ])
     } finally {
@@ -735,22 +761,12 @@ describe("ws-router", () => {
   })
 
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+    const router = createTestRouter({
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
         write: () => {},
       } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
 
@@ -779,22 +795,7 @@ describe("ws-router", () => {
   })
 
   test("subscribes and unsubscribes chat topics", async () => {
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
-    })
+    const router = createTestRouter()
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
 
@@ -845,8 +846,8 @@ describe("ws-router", () => {
     })
 
     let activeStatusCalls = 0
-    const router = createWsRouter({
-      store: { state } as never,
+    const router = createTestRouter({
+      store: createFakeStore({ state }),
       agent: {
         getActiveStatuses: () => {
           activeStatusCalls += 1
@@ -854,18 +855,6 @@ describe("ws-router", () => {
         },
         getDrainingChatIds: () => new Set(),
       } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
 
     const wsA = new FakeWebSocket()
@@ -892,44 +881,19 @@ describe("ws-router", () => {
       updatedAt: 1,
     })
 
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getProject: () => state.projectsById.get("project-1") ?? null,
-      } as never,
-      diffStore: {
+      }),
+      diffStore: createFakeDiffStore({
         getProjectSnapshot: () => ({
           status: "ready",
           branchName: "main",
           files: [],
           branchHistory: { entries: [] },
         }),
-        refreshSnapshot: async () => false,
-        listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
-        previewMergeBranch: async () => ({ currentBranchName: "main", targetBranchName: "feature/test", targetDisplayName: "feature/test", status: "mergeable", commitCount: 1, hasConflicts: false, message: "ready" }),
-        mergeBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-        syncBranch: async () => ({ ok: true, action: "fetch", snapshotChanged: false }),
-        checkoutBranch: async () => ({ ok: true, snapshotChanged: false }),
-        createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-        generateCommitMessage: async () => ({ subject: "", body: "", usedFallback: true, failureMessage: null }),
-        commitFiles: async () => ({ ok: true, mode: "commit_only", pushed: false, snapshotChanged: false }),
-        discardFile: async () => ({ snapshotChanged: false }),
-        ignoreFile: async () => ({ snapshotChanged: false }),
-        readPatch: async () => ({ patch: "" }),
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -970,39 +934,14 @@ describe("ws-router", () => {
       updatedAt: 1,
     })
 
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
-      } as never,
-      diffStore: {
-        getProjectSnapshot: () => null,
-        refreshSnapshot: async () => false,
-        listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
-        previewMergeBranch: async () => ({ currentBranchName: "main", targetBranchName: "feature/test", targetDisplayName: "feature/test", status: "mergeable", commitCount: 1, hasConflicts: false, message: "ready" }),
-        mergeBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-        syncBranch: async () => ({ ok: true, action: "fetch", snapshotChanged: false }),
-        checkoutBranch: async () => ({ ok: true, snapshotChanged: false }),
-        createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-        generateCommitMessage: async () => ({ subject: "", body: "", usedFallback: true, failureMessage: null }),
-        commitFiles: async () => ({ ok: true, mode: "commit_only", pushed: false, snapshotChanged: false }),
-        discardFile: async () => ({ snapshotChanged: false }),
-        ignoreFile: async () => ({ snapshotChanged: false }),
+      }),
+      diffStore: createFakeDiffStore({
         readPatch: async () => ({ patch: "diff --git a/app.txt b/app.txt" }),
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -1051,40 +990,17 @@ describe("ws-router", () => {
       lastTurnOutcome: null,
     })
 
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
-      } as never,
-      diffStore: {
+      }),
+      diffStore: createFakeDiffStore({
         getProjectSnapshot: () => ({ status: "ready", branchName: "main", files: [], branchHistory: { entries: [] } }),
-        refreshSnapshot: async () => false,
-        listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
         previewMergeBranch: async () => ({ currentBranchName: "main", targetBranchName: "feature/test", targetDisplayName: "feature/test", status: "mergeable", commitCount: 2, hasConflicts: false, message: "2 commits from feature/test will merge into main." }),
         mergeBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: true }),
-        syncBranch: async () => ({ ok: true, action: "fetch", snapshotChanged: false }),
-        checkoutBranch: async () => ({ ok: true, snapshotChanged: false }),
-        createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-        generateCommitMessage: async () => ({ subject: "", body: "", usedFallback: true, failureMessage: null }),
-        commitFiles: async () => ({ ok: true, mode: "commit_only", pushed: false, snapshotChanged: false }),
-        discardFile: async () => ({ snapshotChanged: false }),
-        ignoreFile: async () => ({ snapshotChanged: false }),
-        readPatch: async () => ({ patch: "" }),
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -1166,8 +1082,8 @@ describe("ws-router", () => {
       lastTurnOutcome: null,
     })
 
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getMessagesPageBefore: () => ({
           messages: [{
@@ -1180,20 +1096,7 @@ describe("ws-router", () => {
           olderCursor: null,
         }),
         getChat: () => state.chatsById.get("chat-1") ?? null,
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
 
@@ -1261,24 +1164,8 @@ describe("ws-router", () => {
       },
     }
 
-    const router = createWsRouter({
-      store: store as never,
-      agent: {
-        getActiveStatuses: () => new Map(),
-        getDrainingChatIds: () => new Set(),
-      } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+    const router = createTestRouter({
+      store: createFakeStore(store),
     })
     const wsA = new FakeWebSocket()
     const wsB = new FakeWebSocket()
@@ -1393,8 +1280,8 @@ describe("ws-router", () => {
 
     const setSidebarProjectOrderCalls: string[][] = []
     let sidebarProjectOrder: string[] = []
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getSidebarProjectOrder() {
           return [...sidebarProjectOrder]
@@ -1403,20 +1290,7 @@ describe("ws-router", () => {
           setSidebarProjectOrderCalls.push(projectIds)
           sidebarProjectOrder = [...projectIds]
         },
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -1497,8 +1371,8 @@ describe("ws-router", () => {
     })
 
     const forkChatCalls: string[] = []
-    const router = createWsRouter({
-      store: { state } as never,
+    const router = createTestRouter({
+      store: createFakeStore({ state }),
       agent: {
         getActiveStatuses: () => new Map(),
         getDrainingChatIds: () => new Set(),
@@ -1520,18 +1394,6 @@ describe("ws-router", () => {
           return { chatId: "chat-fork-1" }
         },
       } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -1627,28 +1489,15 @@ describe("ws-router", () => {
     })
 
     let pruneCalls = 0
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         async pruneStaleEmptyChats() {
           pruneCalls += 1
           state.chatsById.delete("chat-stale")
           return ["chat-stale"]
         },
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
 
@@ -1708,27 +1557,14 @@ describe("ws-router", () => {
     })
 
     let capturedProtectedChatIds: string[] = []
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         async pruneStaleEmptyChats(args?: { protectedChatIds?: Iterable<string> }) {
           capturedProtectedChatIds = [...(args?.protectedChatIds ?? [])]
           return []
         },
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -1767,26 +1603,13 @@ describe("ws-router", () => {
 
   test("broadcasts background title-generation errors to connected clients", () => {
     let reportBackgroundError: ((message: string) => void) | null | undefined
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
+    const router = createTestRouter({
       agent: {
         getActiveStatuses: () => new Map(),
         setBackgroundErrorReporter: (reporter: ((message: string) => void) | null) => {
           reportBackgroundError = reporter
         },
       } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -1816,18 +1639,8 @@ describe("ws-router", () => {
       },
     }
 
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
+    const router = createTestRouter({
       keybindings: keybindings as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
     })
     const ws = new FakeWebSocket()
 
@@ -1923,20 +1736,7 @@ describe("ws-router", () => {
       },
     }
 
-    const router = createWsRouter({
-      store: { state: createEmptyState() } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
+    const router = createTestRouter({
       updateManager: updateManager as never,
     })
     const ws = new FakeWebSocket()
@@ -2042,40 +1842,20 @@ describe("ws-router", () => {
     })
 
     const discardCalls: Array<{ projectId: string; projectPath: string; path: string }> = []
-    const diffStore = {
-      getProjectSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
-      refreshSnapshot: async () => false,
-      syncBranch: async () => ({ ok: true as const, action: "fetch" as const, snapshotChanged: false }),
-      generateCommitMessage: async () => ({ subject: "", body: "" }),
-      commitFiles: async () => ({ ok: true as const, mode: "commit_only" as const, pushed: false, snapshotChanged: false }),
-      discardFile: async (args: { projectId: string; projectPath: string; path: string }) => {
-        discardCalls.push(args)
-        return { snapshotChanged: true }
-      },
-      ignoreFile: async () => ({ snapshotChanged: false }),
-    }
-
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
         getRecentChatHistory: () => ({ entries: [], hasOlder: false, olderCursor: null }),
-      } as never,
-      diffStore: diffStore as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
+      diffStore: createFakeDiffStore({
+        getProjectSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
+        discardFile: async (args: { projectId: string; projectPath: string; path: string }) => {
+          discardCalls.push(args)
+          return { snapshotChanged: true }
+        },
+      }),
     })
     const ws = new FakeWebSocket()
 
@@ -2141,37 +1921,19 @@ describe("ws-router", () => {
     })
 
     const ignoreCalls: Array<{ projectId: string; projectPath: string; path: string }> = []
-    const router = createWsRouter({
-      store: {
+    const router = createTestRouter({
+      store: createFakeStore({
         state,
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
-      } as never,
-      diffStore: {
+      }),
+      diffStore: createFakeDiffStore({
         getProjectSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
-        refreshSnapshot: async () => false,
-        syncBranch: async () => ({ ok: true as const, action: "fetch" as const, snapshotChanged: false }),
-        generateCommitMessage: async () => ({ subject: "", body: "" }),
-        commitFiles: async () => ({ ok: true as const, mode: "commit_only" as const, pushed: false, snapshotChanged: false }),
-        discardFile: async () => ({ snapshotChanged: false }),
         ignoreFile: async (args: { projectId: string; projectPath: string; path: string }) => {
           ignoreCalls.push(args)
           return { snapshotChanged: false }
         },
-      } as never,
-      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-      } as never,
-      keybindings: {
-        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-        onChange: () => () => {},
-      } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Local Machine",
-      updateManager: null,
+      }),
     })
     const ws = new FakeWebSocket()
 

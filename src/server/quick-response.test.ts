@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { fallbackTitleFromMessage, generateTitleForChat, generateTitleForChatDetailed } from "./generate-title"
+import { fallbackTitleFromMessage, generateTitleForChatDetailed } from "./generate-title"
 import { getQuickResponseWorkspace, QuickResponseAdapter } from "./quick-response"
 
 describe("QuickResponseAdapter", () => {
@@ -11,6 +11,7 @@ describe("QuickResponseAdapter", () => {
         model: "gpt-5-mini",
         baseUrl: "",
         resolvedBaseUrl: "https://api.openai.com/v1",
+        faveModels: [],
         enabled: true,
         warning: null,
         filePathDisplay: "~/.kanna/llm-provider.json",
@@ -49,6 +50,7 @@ describe("QuickResponseAdapter", () => {
         model: "",
         baseUrl: "",
         resolvedBaseUrl: "https://api.openai.com/v1",
+        faveModels: [],
         enabled: false,
         warning: null,
         filePathDisplay: "~/.kanna/llm-provider.json",
@@ -86,6 +88,7 @@ describe("QuickResponseAdapter", () => {
         model: "",
         baseUrl: "",
         resolvedBaseUrl: "https://api.openai.com/v1",
+        faveModels: [],
         enabled: false,
         warning: null,
         filePathDisplay: "~/.kanna/llm-provider.json",
@@ -123,6 +126,7 @@ describe("QuickResponseAdapter", () => {
         model: "",
         baseUrl: "",
         resolvedBaseUrl: "https://api.openai.com/v1",
+        faveModels: [],
         enabled: false,
         warning: null,
         filePathDisplay: "~/.kanna/llm-provider.json",
@@ -167,6 +171,7 @@ describe("QuickResponseAdapter", () => {
           model: "",
           baseUrl: "",
           resolvedBaseUrl: "https://api.openai.com/v1",
+          faveModels: [],
           enabled: false,
           warning: null,
           filePathDisplay: "~/.kanna-dev/llm-provider.json",
@@ -215,6 +220,7 @@ describe("QuickResponseAdapter", () => {
         model: "",
         baseUrl: "",
         resolvedBaseUrl: "https://api.openai.com/v1",
+        faveModels: [],
         enabled: false,
         warning: null,
         filePathDisplay: "~/.kanna/llm-provider.json",
@@ -260,6 +266,7 @@ describe("QuickResponseAdapter", () => {
         model: "",
         baseUrl: "",
         resolvedBaseUrl: "https://api.openai.com/v1",
+        faveModels: [],
         enabled: false,
         warning: null,
         filePathDisplay: "~/.kanna/llm-provider.json",
@@ -296,7 +303,7 @@ describe("QuickResponseAdapter", () => {
 
 describe("generateTitleForChat", () => {
   test("sanitizes generated titles", async () => {
-    const title = await generateTitleForChat(
+    const { title } = await generateTitleForChatDetailed(
       "hello",
       "/tmp/project",
       new QuickResponseAdapter({
@@ -306,6 +313,7 @@ describe("generateTitleForChat", () => {
           model: "",
           baseUrl: "",
           resolvedBaseUrl: "https://api.openai.com/v1",
+          faveModels: [],
           enabled: false,
           warning: null,
           filePathDisplay: "~/.kanna/llm-provider.json",
@@ -318,7 +326,7 @@ describe("generateTitleForChat", () => {
   })
 
   test("rejects invalid generated titles", async () => {
-    const title = await generateTitleForChat(
+    const { title } = await generateTitleForChatDetailed(
       "hello",
       "/tmp/project",
       new QuickResponseAdapter({
@@ -328,6 +336,7 @@ describe("generateTitleForChat", () => {
           model: "",
           baseUrl: "",
           resolvedBaseUrl: "https://api.openai.com/v1",
+          faveModels: [],
           enabled: false,
           warning: null,
           filePathDisplay: "~/.kanna/llm-provider.json",
@@ -341,7 +350,7 @@ describe("generateTitleForChat", () => {
   })
 
   test("falls back to the first 35 characters of the message with ellipsis", async () => {
-    const title = await generateTitleForChat(
+    const { title } = await generateTitleForChatDetailed(
       "This message is definitely longer than thirty five characters",
       "/tmp/project",
       new QuickResponseAdapter({
@@ -351,6 +360,7 @@ describe("generateTitleForChat", () => {
           model: "",
           baseUrl: "",
           resolvedBaseUrl: "https://api.openai.com/v1",
+          faveModels: [],
           enabled: false,
           warning: null,
           filePathDisplay: "~/.kanna/llm-provider.json",
@@ -376,6 +386,7 @@ describe("generateTitleForChat", () => {
           model: "",
           baseUrl: "",
           resolvedBaseUrl: "https://api.openai.com/v1",
+          faveModels: [],
           enabled: false,
           warning: null,
           filePathDisplay: "~/.kanna/llm-provider.json",
@@ -407,6 +418,7 @@ describe("generateTitleForChat", () => {
           model: "gpt-5-mini",
           baseUrl: "",
           resolvedBaseUrl: "https://api.openai.com/v1",
+          faveModels: [],
           enabled: true,
           warning: null,
           filePathDisplay: "~/.kanna/llm-provider.json",

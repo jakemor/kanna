@@ -7,10 +7,10 @@ import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "./ui/
 import { Button } from "./ui/button"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "./ui/select"
 import { ContextMenuContent, ContextMenuItem } from "./ui/context-menu"
+import { OPEN_EXTERNAL_SELECT_STORAGE_KEY as OPEN_SELECT_STORAGE_KEY } from "../lib/storageKeys"
 
 export type OpenAppValue = "finder" | "terminal" | "preview" | "default" | `editor:${EditorPreset}`
 
-const OPEN_SELECT_STORAGE_KEY = "kanna:last-open-external"
 const OPEN_APP_MENU_ITEM_CLASS_NAME = "py-2 pl-2 pr-8"
 const OPEN_APP_CONTEXT_MENU_ITEM_CLASS_NAME = "rounded-md text-sm font-normal focus:bg-accent focus:text-accent-foreground hover:bg-accent hover:text-accent-foreground"
 const OPEN_APP_MENU_ROW_CLASS_NAME = "flex items-center gap-3"

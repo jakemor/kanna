@@ -14,21 +14,25 @@ import type {
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
+import { AsyncQueue } from "./async-queue"
 import { EventStore } from "./event-store"
 import type { AnalyticsReporter } from "./analytics"
 import { NoopAnalyticsReporter } from "./analytics"
 import { CodexAppServerManager } from "./codex-app-server"
 import { CursorCliManager } from "./cursor-cli"
+import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   applyClaudeSdkModels,
+  applyCursorModels,
   type ClaudeSdkModelInfo,
   cursorModelIdForOptions,
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeCursorModelOptions,
+  normalizePiModelOptions,
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
@@ -85,8 +89,6 @@ interface ActiveTurn {
   hasFinalResult: boolean
   cancelRequested: boolean
   cancelRecorded: boolean
-  clientTraceId?: string
-  profilingStartedAt?: number
 }
 
 interface ClaudeSessionHandle {
@@ -139,6 +141,8 @@ interface AgentCoordinatorArgs {
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
   cursorManager?: CursorCliManager
+  piManager?: PiAgentManager
+  resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
     localPath: string
@@ -152,10 +156,6 @@ interface AgentCoordinatorArgs {
   }) => Promise<ClaudeSessionHandle>
 }
 
-interface SendToStartingProfile {
-  traceId: string
-  startedAt: number
-}
 
 function isClaudeSteerLoggingEnabled() {
   return process.env.KANNA_LOG_CLAUDE_STEER === "1"
@@ -204,30 +204,8 @@ function escapeXmlAttribute(value: string) {
     .replaceAll(">", "&gt;")
 }
 
-function isSendToStartingProfilingEnabled() {
-  return process.env.KANNA_PROFILE_SEND_TO_STARTING === "1"
-}
 
-function elapsedProfileMs(startedAt: number) {
-  return Number((performance.now() - startedAt).toFixed(1))
-}
 
-function logSendToStartingProfile(
-  profile: SendToStartingProfile | null | undefined,
-  stage: string,
-  details?: Record<string, unknown>
-) {
-  if (!profile || !isSendToStartingProfilingEnabled()) {
-    return
-  }
-
-  console.log("[kanna/send->starting][server]", JSON.stringify({
-    traceId: profile.traceId,
-    stage,
-    elapsedMs: elapsedProfileMs(profile.startedAt),
-    ...details,
-  }))
-}
 
 export function buildAttachmentHintText(attachments: ChatAttachment[]) {
   if (attachments.length === 0) return ""
@@ -352,7 +330,11 @@ function getClaudeAssistantMessageUsageId(message: any): string | null {
 }
 
 export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
-  const debugRaw = JSON.stringify(message)
+  // Raw SDK JSON is kept only where the client actually consumes it: the
+  // system_init raw view and tool_use_result extraction on tool_result
+  // entries. Stamping it on every entry doubled transcript size on disk
+  // and on every snapshot push — so serialize lazily, inside only the
+  // branches that keep it, never on streaming deltas.
   const messageId = typeof message.uuid === "string" ? message.uuid : undefined
 
   if (message.type === "system" && message.subtype === "init") {
@@ -368,7 +350,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           ? message.slash_commands.filter((entry: string) => !entry.startsWith("._"))
           : [],
         mcpServers: Array.isArray(message.mcp_servers) ? message.mcp_servers : [],
-        debugRaw,
+        debugRaw: JSON.stringify(message),
       }),
     ]
   }
@@ -381,7 +363,6 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           kind: "assistant_text",
           messageId,
           text: content.text,
-          debugRaw,
         }))
       }
       if (content.type === "tool_use" && typeof content.name === "string" && typeof content.id === "string") {
@@ -393,7 +374,6 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
             toolId: content.id,
             input: (content.input ?? {}) as Record<string, unknown>,
           }),
-          debugRaw,
         }))
       }
     }
@@ -402,8 +382,10 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
   if (message.type === "user" && Array.isArray(message.message?.content)) {
     const entries: TranscriptEntry[] = []
+    let debugRaw: string | undefined
     for (const content of message.message.content) {
       if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
+        debugRaw ??= JSON.stringify(message)
         entries.push(timestamped({
           kind: "tool_result",
           messageId,
@@ -418,7 +400,6 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           kind: "compact_summary",
           messageId,
           summary: message.message.content,
-          debugRaw,
         }))
       }
     }
@@ -427,7 +408,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
   if (message.type === "result") {
     if (message.subtype === "cancelled") {
-      return [timestamped({ kind: "interrupted", messageId, debugRaw })]
+      return [timestamped({ kind: "interrupted", messageId })]
     }
     return [
       timestamped({
@@ -438,21 +419,20 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
         durationMs: typeof message.duration_ms === "number" ? message.duration_ms : 0,
         result: typeof message.result === "string" ? message.result : stringFromUnknown(message.result),
         costUsd: typeof message.total_cost_usd === "number" ? message.total_cost_usd : undefined,
-        debugRaw,
       }),
     ]
   }
 
   if (message.type === "system" && message.subtype === "status" && typeof message.status === "string") {
-    return [timestamped({ kind: "status", messageId, status: message.status, debugRaw })]
+    return [timestamped({ kind: "status", messageId, status: message.status })]
   }
 
   if (message.type === "system" && message.subtype === "compact_boundary") {
-    return [timestamped({ kind: "compact_boundary", messageId, debugRaw })]
+    return [timestamped({ kind: "compact_boundary", messageId })]
   }
 
   if (message.type === "system" && message.subtype === "context_cleared") {
-    return [timestamped({ kind: "context_cleared", messageId, debugRaw })]
+    return [timestamped({ kind: "context_cleared", messageId })]
   }
 
   if (
@@ -461,7 +441,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
     typeof message.message.content === "string" &&
     message.message.content.startsWith("This session is being continued")
   ) {
-    return [timestamped({ kind: "compact_summary", messageId, summary: message.message.content, debugRaw })]
+    return [timestamped({ kind: "compact_summary", messageId, summary: message.message.content })]
   }
 
   return []
@@ -568,52 +548,6 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
   }
 }
 
-class AsyncMessageQueue<T> implements AsyncIterable<T> {
-  private readonly values: T[] = []
-  private readonly waiters: Array<(result: IteratorResult<T>) => void> = []
-  private closed = false
-
-  push(value: T) {
-    if (this.closed) {
-      throw new Error("Cannot push to a closed queue")
-    }
-
-    const waiter = this.waiters.shift()
-    if (waiter) {
-      waiter({ done: false, value })
-      return
-    }
-
-    this.values.push(value)
-  }
-
-  close() {
-    if (this.closed) return
-    this.closed = true
-    while (this.waiters.length > 0) {
-      const waiter = this.waiters.shift()
-      waiter?.({ done: true, value: undefined as never })
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: async () => {
-        if (this.values.length > 0) {
-          return { done: false, value: this.values.shift() as T }
-        }
-
-        if (this.closed) {
-          return { done: true, value: undefined as never }
-        }
-
-        return await new Promise<IteratorResult<T>>((resolve) => {
-          this.waiters.push(resolve)
-        })
-      },
-    }
-  }
-}
 
 async function startClaudeSession(args: {
   localPath: string
@@ -680,7 +614,8 @@ async function startClaudeSession(args: {
     } satisfies PermissionResult
   }
 
-  const promptQueue = new AsyncMessageQueue<SDKUserMessage>()
+  const promptQueue = new AsyncQueue<SDKUserMessage>()
+  let promptQueueClosed = false
 
   const q = query({
     prompt: promptQueue,
@@ -718,6 +653,9 @@ async function startClaudeSession(args: {
       await q.interrupt()
     },
     sendPrompt: async (content: string) => {
+      if (promptQueueClosed) {
+        throw new Error("Cannot push to a closed queue")
+      }
       promptQueue.push({
         type: "user",
         message: {
@@ -739,7 +677,8 @@ async function startClaudeSession(args: {
     },
     supportedModels: async () => await q.supportedModels(),
     close: () => {
-      promptQueue.close()
+      promptQueueClosed = true
+      promptQueue.finish()
       q.close()
     },
   }
@@ -751,9 +690,12 @@ export class AgentCoordinator {
   private readonly analytics: AnalyticsReporter
   private readonly codexManager: CodexAppServerManager
   private readonly cursorManager: CursorCliManager
+  private readonly piManager: PiAgentManager
+  private readonly resolvePiConnection: () => Promise<import("./pi-agent").PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private reportBackgroundError: ((message: string) => void) | null = null
+  private cursorModelCatalogApplied = false
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
@@ -764,6 +706,8 @@ export class AgentCoordinator {
     this.analytics = args.analytics ?? NoopAnalyticsReporter
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.cursorManager = args.cursorManager ?? new CursorCliManager()
+    this.piManager = args.piManager ?? new PiAgentManager()
+    this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
   }
@@ -808,17 +752,27 @@ export class AgentCoordinator {
       })
   }
 
-  getActiveTurnProfile(chatId: string): SendToStartingProfile | null {
-    const active = this.activeTurns.get(chatId)
-    if (!active?.clientTraceId || active.profilingStartedAt === undefined) {
-      return null
-    }
-
-    return {
-      traceId: active.clientTraceId,
-      startedAt: active.profilingStartedAt,
+  /**
+   * Overlay the account's live Cursor model list (`cursor-agent --list-models`)
+   * on the catalog — the Cursor analog of refreshClaudeModelCatalog. Runs at
+   * server startup and retries on cursor turns until one fetch succeeds (e.g.
+   * the user logs in to cursor-agent while the server is running). Failure is
+   * expected — cursor-agent missing or logged out — so it stays quiet and the
+   * static catalog remains in place.
+   */
+  async refreshCursorModelCatalog() {
+    if (this.cursorModelCatalogApplied) return
+    try {
+      const models = await this.cursorManager.listModels()
+      this.cursorModelCatalogApplied = true
+      if (applyCursorModels(models)) {
+        this.emitStateChange(undefined, { immediate: true })
+      }
+    } catch {
+      // Keep the static fallback catalog; the next cursor turn retries.
     }
   }
+
 
   async stopDraining(chatId: string) {
     const draining = this.drainingStreams.get(chatId)
@@ -835,6 +789,7 @@ export class AgentCoordinator {
       claudeSession.session.close()
       this.claudeSessions.delete(chatId)
     }
+    this.piManager.closeChat(chatId)
     this.emitStateChange(chatId)
   }
 
@@ -861,6 +816,16 @@ export class AgentCoordinator {
       return {
         model: cursorModelIdForOptions(normalizeServerModel(provider, options.model), modelOptions),
         effort: undefined,
+        serviceTier: undefined,
+        planMode: false,
+      }
+    }
+
+    if (provider === "pi") {
+      const modelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
+      return {
+        model: normalizeServerModel(provider, options.model),
+        effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
         planMode: false,
       }
@@ -929,14 +894,7 @@ export class AgentCoordinator {
     planMode: boolean
     appendUserPrompt: boolean
     steered?: boolean
-    profile?: SendToStartingProfile | null
   }) {
-    logSendToStartingProfile(args.profile, "start_turn.begin", {
-      chatId: args.chatId,
-      provider: args.provider,
-      appendUserPrompt: args.appendUserPrompt,
-      planMode: args.planMode,
-    })
 
     // Close any lingering draining stream before starting a new turn.
     const draining = this.drainingStreams.get(args.chatId)
@@ -952,16 +910,8 @@ export class AgentCoordinator {
 
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
-      logSendToStartingProfile(args.profile, "start_turn.provider_set", {
-        chatId: args.chatId,
-        provider: args.provider,
-      })
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
-    logSendToStartingProfile(args.profile, "start_turn.plan_mode_set", {
-      chatId: args.chatId,
-      planMode: args.planMode,
-    })
 
     const existingMessages = this.store.getMessages(args.chatId)
     const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
@@ -969,10 +919,6 @@ export class AgentCoordinator {
 
     if (optimisticTitle) {
       await this.store.renameChat(args.chatId, optimisticTitle)
-      logSendToStartingProfile(args.profile, "start_turn.optimistic_title_set", {
-        chatId: args.chatId,
-        title: optimisticTitle,
-      })
     }
 
     const project = this.store.getProject(chat.projectId)
@@ -986,15 +932,8 @@ export class AgentCoordinator {
         Date.now()
       )
       await this.store.appendMessage(args.chatId, userPromptEntry)
-      logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
-        chatId: args.chatId,
-        entryId: userPromptEntry._id,
-      })
     }
     await this.store.recordTurnStarted(args.chatId)
-    logSendToStartingProfile(args.profile, "start_turn.turn_started_recorded", {
-      chatId: args.chatId,
-    })
 
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
@@ -1020,11 +959,6 @@ export class AgentCoordinator {
 
     let turn: HarnessTurn
     if (args.provider === "claude") {
-      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
-        chatId: args.chatId,
-        provider: args.provider,
-        model: args.model,
-      })
       turn = await this.startClaudeTurn({
         chatId: args.chatId,
         localPath: project.localPath,
@@ -1036,17 +970,10 @@ export class AgentCoordinator {
         forkSession: Boolean(chat.pendingForkSessionToken),
         onToolRequest,
       })
-      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
-        chatId: args.chatId,
-        provider: args.provider,
-        model: args.model,
-      })
     } else if (args.provider === "cursor") {
-      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
-        chatId: args.chatId,
-        provider: args.provider,
-        model: args.model,
-      })
+      // Refresh the model catalog off the turn's critical path if a previous
+      // fetch never succeeded (e.g. the user just logged in to cursor-agent).
+      void this.refreshCursorModelCatalog()
       // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
@@ -1054,17 +981,21 @@ export class AgentCoordinator {
         model: args.model,
         sessionToken: chat.sessionToken,
       })
-      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
+    } else if (args.provider === "pi") {
+      // A missing connection or session boot failure surfaces as an error
+      // result in the turn stream (like Cursor spawn failures) rather than throwing.
+      const connection = await this.resolvePiConnection()
+      turn = await this.piManager.startTurn({
         chatId: args.chatId,
-        provider: args.provider,
+        cwd: project.localPath,
+        content: buildPromptText(args.content, args.attachments),
         model: args.model,
+        effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
+        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken),
+        connection,
       })
     } else {
-      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
-        chatId: args.chatId,
-        provider: args.provider,
-        model: args.model,
-      })
       const sessionToken = await this.codexManager.startSession({
         chatId: args.chatId,
         cwd: project.localPath,
@@ -1076,11 +1007,6 @@ export class AgentCoordinator {
       if (chat.pendingForkSessionToken && sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
       }
-      logSendToStartingProfile(args.profile, "start_turn.session_ready", {
-        chatId: args.chatId,
-        provider: args.provider,
-        model: args.model,
-      })
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
         content: buildPromptText(args.content, args.attachments),
@@ -1089,11 +1015,6 @@ export class AgentCoordinator {
         serviceTier: args.serviceTier,
         planMode: args.planMode,
         onToolRequest,
-      })
-      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
-        chatId: args.chatId,
-        provider: args.provider,
-        model: args.model,
       })
     }
 
@@ -1111,19 +1032,9 @@ export class AgentCoordinator {
       hasFinalResult: false,
       cancelRequested: false,
       cancelRecorded: false,
-      clientTraceId: args.profile?.traceId,
-      profilingStartedAt: args.profile?.startedAt,
     }
     this.activeTurns.set(args.chatId, active)
-    logSendToStartingProfile(args.profile, "start_turn.active_turn_registered", {
-      chatId: args.chatId,
-      status: active.status,
-    })
     this.emitStateChange(args.chatId, { immediate: active.status === "starting" })
-    logSendToStartingProfile(args.profile, "start_turn.state_change_emitted", {
-      chatId: args.chatId,
-      status: active.status,
-    })
 
     if (turn.getAccountInfo) {
       void turn.getAccountInfo()
@@ -1163,9 +1074,6 @@ export class AgentCoordinator {
         pendingPromptSeqs: [...session.pendingPromptSeqs],
       })
       await session.session.sendPrompt(buildPromptText(args.content, args.attachments))
-      logSendToStartingProfile(args.profile, "start_turn.claude_prompt_sent", {
-        chatId: args.chatId,
-      })
       return
     }
 
@@ -1248,15 +1156,8 @@ export class AgentCoordinator {
   }
 
   async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
-    const profile = command.clientTraceId
-      ? { traceId: command.clientTraceId, startedAt: performance.now() }
-      : null
     let chatId = command.chatId
 
-    logSendToStartingProfile(profile, "chat_send.received", {
-      existingChatId: command.chatId ?? null,
-      projectId: command.projectId ?? null,
-    })
 
     if (!chatId) {
       if (!command.projectId) {
@@ -1265,10 +1166,6 @@ export class AgentCoordinator {
       const created = await this.store.createChat(command.projectId)
       chatId = created.id
       this.analytics.track("chat_created")
-      logSendToStartingProfile(profile, "chat_send.chat_created", {
-        chatId,
-        projectId: command.projectId,
-      })
     }
 
     const chat = this.store.requireChat(chatId)
@@ -1297,14 +1194,8 @@ export class AgentCoordinator {
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
       appendUserPrompt: true,
-      profile,
     })
 
-    logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
-      chatId,
-      provider,
-      model: settings.model,
-    })
 
     return { chatId }
   }

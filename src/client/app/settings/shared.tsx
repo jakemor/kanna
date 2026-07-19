@@ -1,5 +1,6 @@
 import type { KeyboardEvent, ReactNode } from "react"
 import { cn } from "../../lib/utils"
+import type { ChatBrowserNotificationPreference } from "../../stores/chatSoundPreferencesStore"
 
 /** Shared row layout + tiny helpers for the settings sections. */
 
@@ -17,6 +18,14 @@ export function shouldPreviewChatSoundChange(
   nextValue: string
 ) {
   return previousValue !== nextValue
+}
+
+export function resolveChatBrowserNotificationPreferenceAfterPermission(
+  requestedPreference: ChatBrowserNotificationPreference,
+  permission: NotificationPermission | "unsupported"
+): ChatBrowserNotificationPreference {
+  if (requestedPreference === "never") return "never"
+  return permission === "granted" ? requestedPreference : "never"
 }
 
 export function handleSettingsInputKeyDown(event: KeyboardEvent<HTMLInputElement>, commit: () => void) {

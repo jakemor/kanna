@@ -35,7 +35,11 @@ export {
   setCachedChangelog,
 } from "./settings/ChangelogSection"
 export { SkillsSection } from "./settings/SkillsSection"
-export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
+export {
+  getKeybindingsSubtitle,
+  resolveChatBrowserNotificationPreferenceAfterPermission,
+  shouldPreviewChatSoundChange,
+} from "./settings/shared"
 
 const sidebarItems = [
   {

@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "../../components/ui/select"
 import { useTheme, type ThemePreference } from "../../hooks/useTheme"
+import { requestChatBrowserNotificationPermission } from "../../lib/chatBrowserNotifications"
 import { playChatNotificationSound } from "../../lib/chatSounds"
 import {
   DEFAULT_TERMINAL_MIN_COLUMN_WIDTH,
@@ -27,11 +28,18 @@ import {
   getDefaultEditorCommandTemplate,
   useTerminalPreferencesStore,
 } from "../../stores/terminalPreferencesStore"
-import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore, type ChatSoundId, type ChatSoundPreference } from "../../stores/chatSoundPreferencesStore"
+import {
+  CHAT_SOUND_OPTIONS,
+  useChatSoundPreferencesStore,
+  type ChatBrowserNotificationPreference,
+  type ChatSoundId,
+  type ChatSoundPreference,
+} from "../../stores/chatSoundPreferencesStore"
 import type { KannaState } from "../useKannaState"
 import {
   ENABLED_DISABLED_OPTIONS,
   handleSettingsInputKeyDown,
+  resolveChatBrowserNotificationPreferenceAfterPermission,
   SettingsErrorBanner,
   SettingsRow,
   shouldPreviewChatSoundChange,
@@ -44,6 +52,15 @@ const themeOptions = [
 ]
 
 const chatSoundPreferenceOptions: { value: ChatSoundPreference; label: string }[] = [
+  { value: "never", label: "Never" },
+  { value: "unfocused", label: "When Unfocused" },
+  { value: "always", label: "Always" },
+]
+
+const chatBrowserNotificationPreferenceOptions: Array<{
+  value: ChatBrowserNotificationPreference
+  label: string
+}> = [
   { value: "never", label: "Never" },
   { value: "unfocused", label: "When Unfocused" },
   { value: "always", label: "Always" },
@@ -71,8 +88,10 @@ export function GeneralSection({
   const setEditorCommandTemplate = useTerminalPreferencesStore((store) => store.setEditorCommandTemplate)
   const chatSoundPreference = useChatSoundPreferencesStore((store) => store.chatSoundPreference)
   const chatSoundId = useChatSoundPreferencesStore((store) => store.chatSoundId)
+  const chatBrowserNotificationPreference = useChatSoundPreferencesStore((store) => store.chatBrowserNotificationPreference)
   const setChatSoundPreference = useChatSoundPreferencesStore((store) => store.setChatSoundPreference)
   const setChatSoundId = useChatSoundPreferencesStore((store) => store.setChatSoundId)
+  const setChatBrowserNotificationPreference = useChatSoundPreferencesStore((store) => store.setChatBrowserNotificationPreference)
 
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
   const [minColumnWidthDraft, setMinColumnWidthDraft] = useState(String(minColumnWidth))
@@ -181,6 +200,33 @@ export function GeneralSection({
     void playChatNotificationSound(nextValue, 1).catch(() => undefined)
   }
 
+  function handleChatBrowserNotificationPreferenceChange(nextValue: ChatBrowserNotificationPreference) {
+    if (chatBrowserNotificationPreference === nextValue) {
+      return
+    }
+
+    async function savePreference(preference: ChatBrowserNotificationPreference) {
+      setChatBrowserNotificationPreference(preference)
+      await handleWriteAppSettings({ chatBrowserNotificationPreference: preference })
+    }
+
+    void (async () => {
+      try {
+        const permission = nextValue === "never"
+          ? "granted"
+          : await requestChatBrowserNotificationPermission()
+        const resolvedPreference = resolveChatBrowserNotificationPreferenceAfterPermission(nextValue, permission)
+
+        await savePreference(resolvedPreference)
+        if (nextValue !== "never" && resolvedPreference === "never") {
+          setAppSettingsError("Browser notifications are blocked or unsupported for this browser.")
+        }
+      } catch (error) {
+        setAppSettingsError(error instanceof Error ? error.message : "Unable to save chat notification settings.")
+      }
+    })()
+  }
+
   async function handleAnalyticsPreferenceChange(nextValue: "enabled" | "disabled") {
     try {
       setAppSettingsError(null)
@@ -287,6 +333,29 @@ export function GeneralSection({
             <SelectContent>
               <SelectGroup>
                 {CHAT_SOUND_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Chat Notifications"
+          description="Show browser system notifications for new chat activity"
+        >
+          <Select
+            value={chatBrowserNotificationPreference}
+            onValueChange={(value) => handleChatBrowserNotificationPreferenceChange(value as ChatBrowserNotificationPreference)}
+          >
+            <SelectTrigger className="min-w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {chatBrowserNotificationPreferenceOptions.map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>

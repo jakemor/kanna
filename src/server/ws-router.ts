@@ -202,6 +202,7 @@ export function createWsRouter({
       sidebarProjectOrder: store.getSidebarProjectOrder(),
       drainingChatIds: agent.getDrainingChatIds(),
       pendingToolKinds,
+      pendingUserInputPreviews: agent.getPendingToolPreviews(),
     })
 
     const sidebar = {

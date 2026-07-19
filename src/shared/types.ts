@@ -5,6 +5,7 @@ export type AgentProvider = "claude" | "codex" | "cursor" | "pi"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
+export type ChatBrowserNotificationPreference = ChatSoundPreference
 export type ChatSoundId = "blow" | "bottle" | "frog" | "funk" | "glass" | "ping" | "pop" | "purr" | "tink"
 export type DefaultProviderPreference = "last_used" | AgentProvider
 export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
@@ -713,6 +714,8 @@ export interface SidebarChatRow {
   lastAgentMessagePreview?: string
   /** Tool kind the chat is waiting on when status is waiting_for_user (e.g. "ask_user_question"). */
   pendingToolKind?: string
+  /** Preview of the tool request that currently needs user input. */
+  pendingUserInputPreview?: string
   hasAutomation: boolean
   canFork?: boolean
 }
@@ -783,6 +786,7 @@ export interface AppSettingsSnapshot {
   theme: AppThemePreference
   chatSoundPreference: ChatSoundPreference
   chatSoundId: ChatSoundId
+  chatBrowserNotificationPreference: ChatBrowserNotificationPreference
   terminal: {
     scrollbackLines: number
     minColumnWidth: number
@@ -805,6 +809,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
+  chatBrowserNotificationPreference?: ChatBrowserNotificationPreference
   boardAutoReturn?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>

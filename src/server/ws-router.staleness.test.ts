@@ -249,6 +249,7 @@ function createWorld(options?: { projectPath?: string }) {
   const agent = {
     getActiveStatuses: () => new Map(),
     getDrainingChatIds: () => new Set(),
+    getPendingToolPreviews: () => new Map(),
     getPendingTool: () => null,
     cancel: async () => {},
     closeChat: async () => {},

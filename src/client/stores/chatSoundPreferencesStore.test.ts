@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import {
+  DEFAULT_CHAT_BROWSER_NOTIFICATION_PREFERENCE,
   DEFAULT_CHAT_SOUND_ID,
   DEFAULT_CHAT_SOUND_PREFERENCE,
+  normalizeChatBrowserNotificationPreference,
   normalizeChatSoundId,
   normalizeChatSoundPreference,
   useChatSoundPreferencesStore,
@@ -26,6 +28,19 @@ describe("normalizeChatSoundPreference", () => {
   })
 })
 
+describe("normalizeChatBrowserNotificationPreference", () => {
+  test("accepts supported values", () => {
+    expect(normalizeChatBrowserNotificationPreference("never")).toBe("never")
+    expect(normalizeChatBrowserNotificationPreference("unfocused")).toBe("unfocused")
+    expect(normalizeChatBrowserNotificationPreference("always")).toBe("always")
+  })
+
+  test("falls back to the default for unknown values", () => {
+    expect(normalizeChatBrowserNotificationPreference("loud")).toBe(DEFAULT_CHAT_BROWSER_NOTIFICATION_PREFERENCE)
+    expect(normalizeChatBrowserNotificationPreference(undefined)).toBe(DEFAULT_CHAT_BROWSER_NOTIFICATION_PREFERENCE)
+  })
+})
+
 describe("normalizeChatSoundId", () => {
   test("accepts supported values", () => {
     expect(normalizeChatSoundId("blow")).toBe("blow")
@@ -40,9 +55,10 @@ describe("normalizeChatSoundId", () => {
 })
 
 describe("chat sound preferences store", () => {
-  test("defaults to always and funk", () => {
+  test("defaults sounds to always and browser notifications to never", () => {
     expect(useChatSoundPreferencesStore.getState().chatSoundPreference).toBe("always")
     expect(useChatSoundPreferencesStore.getState().chatSoundId).toBe("funk")
+    expect(useChatSoundPreferencesStore.getState().chatBrowserNotificationPreference).toBe("never")
   })
 
   test("normalizes stored values through the setters", () => {
@@ -57,5 +73,11 @@ describe("chat sound preferences store", () => {
 
     useChatSoundPreferencesStore.getState().setChatSoundId("invalid" as never)
     expect(useChatSoundPreferencesStore.getState().chatSoundId).toBe("funk")
+
+    useChatSoundPreferencesStore.getState().setChatBrowserNotificationPreference("unfocused")
+    expect(useChatSoundPreferencesStore.getState().chatBrowserNotificationPreference).toBe("unfocused")
+
+    useChatSoundPreferencesStore.getState().setChatBrowserNotificationPreference("invalid" as never)
+    expect(useChatSoundPreferencesStore.getState().chatBrowserNotificationPreference).toBe("never")
   })
 })

@@ -120,6 +120,7 @@ function syncRuntimeStoresFromAppSettings(snapshot: AppSettingsSnapshot) {
   const chatSoundPreferences = useChatSoundPreferencesStore.getState()
   chatSoundPreferences.setChatSoundPreference(snapshot.chatSoundPreference)
   chatSoundPreferences.setChatSoundId(snapshot.chatSoundId)
+  chatSoundPreferences.setChatBrowserNotificationPreference(snapshot.chatBrowserNotificationPreference)
 
   useChatPreferencesStore.getState().syncProviderDefaults(snapshot.defaultProvider, snapshot.providerDefaults)
 }

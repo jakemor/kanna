@@ -9,6 +9,7 @@ import {
   getKeybindingsSubtitle,
   loadChangelog,
   resetSettingsPageChangelogCache,
+  resolveChatBrowserNotificationPreferenceAfterPermission,
   resolveSettingsSectionId,
   setCachedChangelog,
   shouldPreviewChatSoundChange,
@@ -180,6 +181,23 @@ describe("shouldPreviewChatSoundChange", () => {
     expect(shouldPreviewChatSoundChange("always", "never")).toBe(true)
     expect(shouldPreviewChatSoundChange("never", "unfocused")).toBe(true)
     expect(shouldPreviewChatSoundChange("funk", "glass")).toBe(true)
+  })
+})
+
+describe("resolveChatBrowserNotificationPreferenceAfterPermission", () => {
+  test("keeps enabled browser notification preferences only after permission is granted", () => {
+    expect(resolveChatBrowserNotificationPreferenceAfterPermission("always", "granted")).toBe("always")
+    expect(resolveChatBrowserNotificationPreferenceAfterPermission("unfocused", "granted")).toBe("unfocused")
+  })
+
+  test("falls back to never when browser notifications cannot be used", () => {
+    expect(resolveChatBrowserNotificationPreferenceAfterPermission("always", "denied")).toBe("never")
+    expect(resolveChatBrowserNotificationPreferenceAfterPermission("unfocused", "unsupported")).toBe("never")
+    expect(resolveChatBrowserNotificationPreferenceAfterPermission("always", "default")).toBe("never")
+  })
+
+  test("keeps never without requiring browser permission", () => {
+    expect(resolveChatBrowserNotificationPreferenceAfterPermission("never", "denied")).toBe("never")
   })
 })
 

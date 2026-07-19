@@ -82,6 +82,7 @@ export function deriveSidebarData(
     sidebarProjectOrder?: string[]
     drainingChatIds?: Set<string>
     pendingToolKinds?: Map<string, string>
+    pendingUserInputPreviews?: Map<string, string>
   }
 ): SidebarData {
   const nowMs = options?.nowMs ?? Date.now()
@@ -117,13 +118,14 @@ export function deriveSidebarData(
     return projectChats
       .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
       .map((chat) => {
+        const status = deriveStatus(chat, activeStatuses.get(chat.id))
         const pendingToolKind = options?.pendingToolKinds?.get(chat.id)
         return {
           _id: chat.id,
           _creationTime: chat.createdAt,
           chatId: chat.id,
           title: chat.title,
-          status: deriveStatus(chat, activeStatuses.get(chat.id)),
+          status,
           unread: chat.unread,
           ...(chat.doneAt ? { done: true } : {}),
           localPath: project.localPath,
@@ -132,6 +134,9 @@ export function deriveSidebarData(
           ...(chat.lastUserMessagePreview ? { lastUserMessagePreview: chat.lastUserMessagePreview } : {}),
           ...(chat.lastAgentMessagePreview ? { lastAgentMessagePreview: chat.lastAgentMessagePreview } : {}),
           ...(pendingToolKind ? { pendingToolKind } : {}),
+          ...(status === "waiting_for_user" && options?.pendingUserInputPreviews?.get(chat.id)
+            ? { pendingUserInputPreview: options.pendingUserInputPreviews.get(chat.id) }
+            : {}),
           hasAutomation: false,
           canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
         }

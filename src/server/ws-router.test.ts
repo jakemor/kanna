@@ -76,6 +76,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   theme: "system",
   chatSoundPreference: "always",
   chatSoundId: "funk",
+  chatBrowserNotificationPreference: "never",
   terminal: {
     scrollbackLines: 1_000,
     minColumnWidth: 450,
@@ -318,7 +319,11 @@ function createTestRouter(overrides: Partial<CreateWsRouterArgs> = {}) {
   return createWsRouter({
     store: createFakeStore(),
     diffStore: createFakeDiffStore(),
-    agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+    agent: {
+      getActiveStatuses: () => new Map(),
+      getDrainingChatIds: () => new Set(),
+      getPendingToolPreviews: () => new Map(),
+    } as never,
     terminals: {
       getSnapshot: () => null,
       onEvent: () => () => {},
@@ -530,6 +535,7 @@ describe("ws-router", () => {
             theme: patch.theme ?? snapshot.theme,
             chatSoundPreference: patch.chatSoundPreference ?? snapshot.chatSoundPreference,
             chatSoundId: patch.chatSoundId ?? snapshot.chatSoundId,
+            chatBrowserNotificationPreference: patch.chatBrowserNotificationPreference ?? snapshot.chatBrowserNotificationPreference,
             defaultProvider: patch.defaultProvider ?? snapshot.defaultProvider,
             terminal: { ...snapshot.terminal, ...patch.terminal },
             editor: { ...snapshot.editor, ...patch.editor },
@@ -721,6 +727,7 @@ describe("ws-router", () => {
           closeChat: async () => {},
           getActiveStatuses: () => new Map(),
           getDrainingChatIds: () => new Set(),
+          getPendingToolPreviews: () => new Map(),
         } as never,
         analytics: {
           track: (eventName: string) => {
@@ -854,6 +861,7 @@ describe("ws-router", () => {
           return new Map()
         },
         getDrainingChatIds: () => new Set(),
+        getPendingToolPreviews: () => new Map(),
       } as never,
     })
 
@@ -1376,7 +1384,8 @@ describe("ws-router", () => {
       agent: {
         getActiveStatuses: () => new Map(),
         getDrainingChatIds: () => new Set(),
-          forkChat: async (chatId: string) => {
+        getPendingToolPreviews: () => new Map(),
+        forkChat: async (chatId: string) => {
           forkChatCalls.push(chatId)
           state.chatsById.set("chat-fork-1", {
             id: "chat-fork-1",
@@ -1606,6 +1615,7 @@ describe("ws-router", () => {
     const router = createTestRouter({
       agent: {
         getActiveStatuses: () => new Map(),
+        getPendingToolPreviews: () => new Map(),
         setBackgroundErrorReporter: (reporter: ((message: string) => void) | null) => {
           reportBackgroundError = reporter
         },

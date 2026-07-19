@@ -74,6 +74,28 @@ interface PendingToolRequest {
   resolve: (result: unknown) => void
 }
 
+function normalizePreviewText(text: string) {
+  return text.replace(/\s+/g, " ").trim()
+}
+
+function getToolRequestPreview(tool: PendingToolRequest["tool"]) {
+  if (tool.toolKind === "ask_user_question") {
+    const questions = tool.input.questions
+      .map((question) => normalizePreviewText(question.question))
+      .filter(Boolean)
+    if (questions.length > 0) return questions.join(" ")
+  }
+
+  if (tool.toolKind === "exit_plan_mode") {
+    const summary = normalizePreviewText(tool.input.summary ?? "")
+    if (summary) return summary
+    const plan = normalizePreviewText(tool.input.plan ?? "")
+    if (plan) return plan
+  }
+
+  return "Waiting for your response."
+}
+
 interface ActiveTurn {
   chatId: string
   provider: AgentProvider
@@ -730,6 +752,15 @@ export class AgentCoordinator {
     return { toolUseId: pending.toolUseId, toolKind: pending.tool.toolKind }
   }
 
+  getPendingToolPreviews() {
+    const previews = new Map<string, string>()
+    for (const [chatId, turn] of this.activeTurns.entries()) {
+      if (!turn.pendingTool) continue
+      previews.set(chatId, getToolRequestPreview(turn.pendingTool.tool))
+    }
+    return previews
+  }
+
   getDrainingChatIds(): Set<string> {
     return new Set(this.drainingStreams.keys())
   }
@@ -945,15 +976,14 @@ export class AgentCoordinator {
         throw new Error("Chat turn ended unexpectedly")
       }
 
-      active.status = "waiting_for_user"
-      this.emitStateChange(args.chatId)
-
       return await new Promise<unknown>((resolve) => {
         active.pendingTool = {
           toolUseId: request.tool.toolId,
           tool: request.tool,
           resolve,
         }
+        active.status = "waiting_for_user"
+        this.emitStateChange(args.chatId)
       })
     }
 

@@ -50,6 +50,13 @@ interface ChatNotificationSnapshot {
   waitingChatIds: Set<string>
 }
 
+interface ChatNotificationEvent {
+  chatId: string
+  projectTitle: string
+  chatTitle: string
+  message: string
+}
+
 export function getChatNotificationSnapshot(sidebarData: SidebarData): ChatNotificationSnapshot {
   let unreadCount = 0
   const waitingChatIds = new Set<string>()
@@ -81,4 +88,41 @@ export function getChatSoundBurstCount(previous: SidebarData | null, next: Sideb
   }
 
   return unreadIncrease + newWaitingChats
+}
+
+export function getChatNotificationEvents(previous: SidebarData | null, next: SidebarData): ChatNotificationEvent[] {
+  if (!previous) return []
+
+  const previousChats = new Map<string, { unread: boolean; waiting: boolean }>()
+  for (const group of previous.projectGroups) {
+    for (const chat of group.chats) {
+      previousChats.set(chat.chatId, {
+        unread: chat.unread,
+        waiting: chat.status === "waiting_for_user",
+      })
+    }
+  }
+
+  const events: ChatNotificationEvent[] = []
+  for (const group of next.projectGroups) {
+    for (const chat of group.chats) {
+      const previousChat = previousChats.get(chat.chatId) ?? { unread: false, waiting: false }
+
+      const becameUnread = chat.unread && !previousChat.unread
+      const becameWaiting = chat.status === "waiting_for_user" && !previousChat.waiting
+      if (!becameUnread && !becameWaiting) continue
+
+      // The read model keeps this preview synced to the latest assistant text for the chat.
+      events.push({
+        chatId: chat.chatId,
+        projectTitle: group.title?.trim() || group.localPath,
+        chatTitle: chat.title.trim() || "Untitled chat",
+        message: becameWaiting
+          ? chat.pendingUserInputPreview ?? chat.lastAgentMessagePreview ?? ""
+          : chat.lastAgentMessagePreview ?? "",
+      })
+    }
+  }
+
+  return events
 }

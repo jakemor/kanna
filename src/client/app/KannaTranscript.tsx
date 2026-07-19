@@ -33,12 +33,14 @@ export interface ResolvedSingleTranscriptRow {
   isLoading: boolean
   localPath?: string
   isFirstSystem: boolean
+  isModelChange: boolean
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  nextPromptTimestamp?: string
 }
 
 export interface ResolvedToolGroupTranscriptRow {
@@ -59,10 +61,12 @@ export interface StableResolvedTranscriptRowsState {
 
 interface TranscriptMessageRenderState {
   isFirstSystem: boolean
+  isModelChange: boolean
   isFirstAccount: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  nextPromptTimestamp?: string
   shouldRender: boolean
 }
 
@@ -76,10 +80,12 @@ function getTranscriptMessageRenderState(
   message: HydratedTranscriptMessage,
   {
     isFirstSystem,
+    isModelChange,
     isFirstAccount,
     isLatestTodoWrite,
     hideResult,
     isFinalStatus,
+    nextPromptTimestamp,
   }: Omit<TranscriptMessageRenderState, "shouldRender">
 ): TranscriptMessageRenderState {
   let shouldRender = !message.hidden
@@ -87,7 +93,7 @@ function getTranscriptMessageRenderState(
   if (shouldRender) {
     switch (message.kind) {
       case "system_init":
-        shouldRender = isFirstSystem
+        shouldRender = isFirstSystem || isModelChange
         break
       case "account_info":
         shouldRender = isFirstAccount
@@ -96,7 +102,7 @@ function getTranscriptMessageRenderState(
         shouldRender = message.toolKind !== "todo_write" || isLatestTodoWrite
         break
       case "result":
-        shouldRender = !hideResult && (!message.success || message.durationMs > 60000)
+        shouldRender = !hideResult
         break
       case "context_window_updated":
         shouldRender = false
@@ -112,10 +118,12 @@ function getTranscriptMessageRenderState(
 
   return {
     isFirstSystem,
+    isModelChange,
     isFirstAccount,
     isLatestTodoWrite,
     hideResult,
     isFinalStatus,
+    nextPromptTimestamp,
     shouldRender,
   }
 }
@@ -127,15 +135,38 @@ function buildTranscriptMessageRenderStates(
   const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
   const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
 
+  // Timestamp of the next visible user prompt after each message (undefined when none follows).
+  const nextPromptTimestamps = new Array<string | undefined>(messages.length)
+  let upcomingPromptTimestamp: string | undefined
+  for (let index = messages.length - 1; index >= 0; index--) {
+    nextPromptTimestamps[index] = upcomingPromptTimestamp
+    const message = messages[index]!
+    if (message.kind === "user_prompt" && !message.hidden) {
+      upcomingPromptTimestamp = message.timestamp
+    }
+  }
+
+  // Mark session inits whose model differs from the previous session's model.
+  const modelChanges = new Array<boolean>(messages.length).fill(false)
+  let previousModel: string | undefined
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!
+    if (message.kind !== "system_init") continue
+    modelChanges[index] = previousModel !== undefined && message.model !== previousModel
+    previousModel = message.model
+  }
+
   return messages.map<TranscriptMessageRenderState>((message, index) => {
     const previousMessage = messages[index - 1]
     const nextMessage = messages[index + 1]
     return getTranscriptMessageRenderState(message, {
       isFirstSystem: firstSystemIndex === index,
+      isModelChange: modelChanges[index] ?? false,
       isFirstAccount: firstAccountIndex === index,
       isLatestTodoWrite: message.id === latestToolIds.TodoWrite,
       hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
       isFinalStatus: index === messages.length - 1,
+      nextPromptTimestamp: message.kind === "result" ? nextPromptTimestamps[index] : undefined,
     })
   })
 }
@@ -277,12 +308,14 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
       && left.isLoading === right.isLoading
       && left.localPath === right.localPath
       && left.isFirstSystem === right.isFirstSystem
+      && left.isModelChange === right.isModelChange
       && left.isFirstAccount === right.isFirstAccount
       && left.isLatestAskUserQuestion === right.isLatestAskUserQuestion
       && left.isLatestExitPlanMode === right.isLatestExitPlanMode
       && left.isLatestTodoWrite === right.isLatestTodoWrite
       && left.hideResult === right.hideResult
       && left.isFinalStatus === right.isFinalStatus
+      && left.nextPromptTimestamp === right.nextPromptTimestamp
       && sameMessage(left.message, right.message)
   }
 
@@ -336,12 +369,14 @@ interface TranscriptSingleRowProps {
   isLoading: boolean
   localPath?: string
   isFirstSystem: boolean
+  isModelChange: boolean
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  nextPromptTimestamp?: string
   onAskUserQuestionSubmit: (
     toolUseId: string,
     questions: AskUserQuestionItem[],
@@ -356,12 +391,14 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   isLoading,
   localPath,
   isFirstSystem,
+  isModelChange,
   isFirstAccount,
   isLatestAskUserQuestion,
   isLatestExitPlanMode,
   isLatestTodoWrite,
   hideResult,
   isFinalStatus,
+  nextPromptTimestamp,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: TranscriptSingleRowProps) {
@@ -375,7 +412,9 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
         rendered = <RawJsonMessage key={message.id} json={message.json} />
         break
       case "system_init":
-        rendered = isFirstSystem ? <SystemMessage key={message.id} message={message} rawJson={message.debugRaw} /> : null
+        rendered = isFirstSystem || isModelChange
+          ? <SystemMessage key={message.id} message={message} rawJson={message.debugRaw} modelChanged={!isFirstSystem && isModelChange} />
+          : null
         break
       case "account_info":
         rendered = isFirstAccount ? <AccountInfoMessage key={message.id} message={message} /> : null
@@ -413,7 +452,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
         rendered = <ToolCallMessage key={message.id} message={message} isLoading={isLoading} localPath={localPath} />
         break
       case "result":
-        rendered = hideResult ? null : <ResultMessage key={message.id} message={message} />
+        rendered = hideResult ? null : <ResultMessage key={message.id} message={message} nextPromptTimestamp={nextPromptTimestamp} />
         break
       case "context_window_updated":
         rendered = null
@@ -452,12 +491,14 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   && prev.isLoading === next.isLoading
   && prev.localPath === next.localPath
   && prev.isFirstSystem === next.isFirstSystem
+  && prev.isModelChange === next.isModelChange
   && prev.isFirstAccount === next.isFirstAccount
   && prev.isLatestAskUserQuestion === next.isLatestAskUserQuestion
   && prev.isLatestExitPlanMode === next.isLatestExitPlanMode
   && prev.isLatestTodoWrite === next.isLatestTodoWrite
   && prev.hideResult === next.hideResult
   && prev.isFinalStatus === next.isFinalStatus
+  && prev.nextPromptTimestamp === next.nextPromptTimestamp
   && prev.onAskUserQuestionSubmit === next.onAskUserQuestionSubmit
   && prev.onExitPlanModeConfirm === next.onExitPlanModeConfirm
   && sameMessage(prev.message, next.message)
@@ -546,12 +587,14 @@ export function buildResolvedTranscriptRows(
       isLoading: item.message.kind === "tool" && item.message.result === undefined && isLoading,
       localPath,
       isFirstSystem: renderState.isFirstSystem,
+      isModelChange: renderState.isModelChange,
       isFirstAccount: renderState.isFirstAccount,
       isLatestAskUserQuestion: item.message.id === latestToolIds.AskUserQuestion,
       isLatestExitPlanMode: item.message.id === latestToolIds.ExitPlanMode,
       isLatestTodoWrite: renderState.isLatestTodoWrite,
       hideResult: renderState.hideResult,
       isFinalStatus: renderState.isFinalStatus,
+      nextPromptTimestamp: renderState.nextPromptTimestamp,
     }
 
     if (renderState.shouldRender) {
@@ -602,12 +645,14 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       isLoading={row.isLoading}
       localPath={row.localPath}
       isFirstSystem={row.isFirstSystem}
+      isModelChange={row.isModelChange}
       isFirstAccount={row.isFirstAccount}
       isLatestAskUserQuestion={row.isLatestAskUserQuestion}
       isLatestExitPlanMode={row.isLatestExitPlanMode}
       isLatestTodoWrite={row.isLatestTodoWrite}
       hideResult={row.hideResult}
       isFinalStatus={row.isFinalStatus}
+      nextPromptTimestamp={row.nextPromptTimestamp}
       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
       onExitPlanModeConfirm={onExitPlanModeConfirm}
     />
@@ -635,12 +680,14 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       && prev.row.isLoading === next.row.isLoading
       && prev.row.localPath === next.row.localPath
       && prev.row.isFirstSystem === next.row.isFirstSystem
+      && prev.row.isModelChange === next.row.isModelChange
       && prev.row.isFirstAccount === next.row.isFirstAccount
       && prev.row.isLatestAskUserQuestion === next.row.isLatestAskUserQuestion
       && prev.row.isLatestExitPlanMode === next.row.isLatestExitPlanMode
       && prev.row.isLatestTodoWrite === next.row.isLatestTodoWrite
       && prev.row.hideResult === next.row.hideResult
       && prev.row.isFinalStatus === next.row.isFinalStatus
+      && prev.row.nextPromptTimestamp === next.row.nextPromptTimestamp
       && sameMessage(prev.row.message, next.row.message)
   }
 

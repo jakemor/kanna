@@ -9,6 +9,8 @@ import { cn } from "../../lib/utils"
 interface Props {
   message: ProcessedSystemMessage
   rawJson?: string
+  /** Rendered mid-conversation because the model changed (rather than as the first session init). */
+  modelChanged?: boolean
 }
 
 function CollapsibleSection({ title, count, children, badge }: { title: string; count: number; children: ReactNode; badge?: ReactNode }) {
@@ -163,7 +165,7 @@ function RawMessageSection({ rawJson }: { rawJson: string }) {
   )
 }
 
-export function SystemMessage({ message, rawJson }: Props) {
+export function SystemMessage({ message, rawJson, modelChanged }: Props) {
   const { coreTools, mcpServersWithTools } = useMemo(() => {
     const mcpToolsByServer = new Map<string, string[]>()
     const core: string[] = []
@@ -206,7 +208,7 @@ export function SystemMessage({ message, rawJson }: Props) {
         }
       >
         <Asterisk className="h-5 w-5 text-logo" />
-        <MetaLabel>Session Started</MetaLabel>
+        <MetaLabel>{modelChanged ? `Model changed to ${message.model}` : `Session started with ${message.model}`}</MetaLabel>
       </ExpandableRow>
     </MetaRow>
   )

@@ -1,5 +1,5 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, Plus } from "lucide-react"
+import { ArrowUp, Paperclip } from "lucide-react"
 import {
   type AgentProvider,
   type ChatAttachment,
@@ -15,7 +15,7 @@ import {
   resolveClaudeContextWindowMaxTokens,
 } from "../../../shared/types"
 import { assertNever } from "../../../shared/assert"
-import { Button, buttonVariants } from "../ui/button"
+import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { cn } from "../../lib/utils"
@@ -727,30 +727,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : null}
 
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
-            <label
-              aria-label="Add attachment"
-              className={cn(
-                buttonVariants({ variant: "ghost", size: "icon" }),
-                "relative md:hidden flex-shrink-0 ml-1.5 mb-2.5 h-7 w-7 rounded-full text-muted-foreground hover:text-foreground",
-                disabled && "pointer-events-none opacity-50",
-              )}
-            >
-              <Plus className="h-5 w-5" />
-              <input
-                type="file"
-                multiple
-                disabled={disabled}
-                aria-label="Add attachment"
-                className="absolute inset-0 cursor-pointer opacity-0"
-                onChange={(event) => {
-                  const files = [...(event.target.files ?? [])]
-                  if (files.length > 0) {
-                    enqueueFiles(files)
-                  }
-                  event.target.value = ""
-                }}
-              />
-            </label>
             <Textarea
               ref={setTextareaRefs}
               placeholder="Build something..."
@@ -766,7 +742,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}
               disabled={disabled}
-              className="min-w-0 flex-1 text-base p-3 md:p-4 !pr-2 pl-2 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
+              className="min-w-0 flex-1 text-base p-3 md:p-4 !pr-2 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
             />
             <Button
               type="button"
@@ -805,6 +781,31 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "p-5 pt-3")}>
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex flex-row">
           <div className="min-w-3" />
+          <label
+            aria-label="Add attachment"
+            className={cn(
+              "relative md:hidden shrink-0 self-center overflow-hidden mr-0.5 cursor-pointer",
+              "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap hover:bg-muted/50",
+              disabled && "pointer-events-none opacity-70",
+            )}
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+            <span>Attach</span>
+            <input
+              type="file"
+              multiple
+              disabled={disabled}
+              aria-label="Add attachment"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])]
+                if (files.length > 0) {
+                  enqueueFiles(files)
+                }
+                event.target.value = ""
+              }}
+            />
+          </label>
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}

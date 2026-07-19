@@ -1,5 +1,5 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, Paperclip } from "lucide-react"
+import { ArrowUp, Plus } from "lucide-react"
 import {
   type AgentProvider,
   type ChatAttachment,
@@ -727,32 +727,15 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : null}
 
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
-            <Textarea
-              ref={setTextareaRefs}
-              placeholder="Build something..."
-              value={value}
-              autoFocus
-              {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
-              rows={1}
-              onChange={(event) => {
-                setValue(event.target.value)
-                if (chatId) setDraft(chatId, event.target.value)
-                autoResize()
-              }}
-              onPaste={handlePaste}
-              onKeyDown={handleKeyDown}
-              disabled={disabled}
-              className="min-w-0 flex-1 text-base p-3 md:p-4 !pr-2 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
-            />
             <label
               aria-label="Add attachment"
               className={cn(
                 buttonVariants({ variant: "ghost", size: "icon" }),
-                "relative md:hidden flex-shrink-0 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
+                "relative md:hidden flex-shrink-0 ml-1.5 mb-2.5 h-7 w-7 rounded-full text-muted-foreground hover:text-foreground",
                 disabled && "pointer-events-none opacity-50",
               )}
             >
-              <Paperclip className="h-5 w-5" />
+              <Plus className="h-5 w-5" />
               <input
                 type="file"
                 multiple
@@ -768,6 +751,23 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 }}
               />
             </label>
+            <Textarea
+              ref={setTextareaRefs}
+              placeholder="Build something..."
+              value={value}
+              autoFocus
+              {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
+              rows={1}
+              onChange={(event) => {
+                setValue(event.target.value)
+                if (chatId) setDraft(chatId, event.target.value)
+                autoResize()
+              }}
+              onPaste={handlePaste}
+              onKeyDown={handleKeyDown}
+              disabled={disabled}
+              className="min-w-0 flex-1 text-base p-3 md:p-4 !pr-2 pl-2 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
+            />
             <Button
               type="button"
               onPointerDown={(event) => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
+import { formatPathWithTilde, parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
 
 describe("parseLocalFileLink", () => {
   test("parses an absolute file path with a line fragment", () => {
@@ -75,5 +75,16 @@ describe("shouldOpenLocalFileLinkInEditor", () => {
     expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/kanna/movie.mp4")).toBe(false)
     expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/kanna/report.docx")).toBe(false)
     expect(shouldOpenLocalFileLinkInEditor("/Users/jake/Projects/kanna/archive.zip")).toBe(false)
+  })
+})
+
+describe("formatPathWithTilde", () => {
+  test("abbreviates macOS and Linux home directory paths", () => {
+    expect(formatPathWithTilde("/Users/jake/Projects/kanna")).toBe("~/Projects/kanna")
+    expect(formatPathWithTilde("/home/jake/Projects/kanna")).toBe("~/Projects/kanna")
+  })
+
+  test("preserves paths outside a home directory", () => {
+    expect(formatPathWithTilde("/tmp/kanna")).toBe("/tmp/kanna")
   })
 })

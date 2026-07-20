@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 import type { LocalProjectSummary } from "../../shared/types"
-import { filterProjects, groupProjectsByRecency } from "./LocalDev"
+import { filterProjects, groupProjectsByRecency, LocalDev } from "./LocalDev"
+import { TooltipProvider } from "./ui/tooltip"
 
 const DAY_MS = 24 * 60 * 60 * 1_000
 const NOW_MS = Date.parse("2026-07-17T12:00:00.000Z")
@@ -63,5 +66,30 @@ describe("local project recency groups", () => {
       "alpha-quarter",
       "Zulu-quarter",
     ])
+  })
+})
+
+describe("LocalDev", () => {
+  test("shows each project's path below its name", () => {
+    const projectPage = createElement(LocalDev, {
+      connectionStatus: "connected",
+      ready: true,
+      snapshot: {
+        machine: { id: "local", displayName: "Test Mac", platform: "darwin" },
+        projects: [project("kanna", 1)],
+      },
+      startingLocalPath: null,
+      commandError: null,
+      newProjectOpen: false,
+      onNewProjectOpenChange: () => {},
+      onOpenProject: async () => {},
+      onCreateProject: async () => {},
+      onListDirectory: async () => { throw new Error("not called") },
+      onMakeDirectory: async () => { throw new Error("not called") },
+    })
+    const html = renderToStaticMarkup(createElement(TooltipProvider, null, projectPage))
+
+    expect(html).toContain(">kanna<")
+    expect(html).toContain(">/projects/kanna<")
   })
 })

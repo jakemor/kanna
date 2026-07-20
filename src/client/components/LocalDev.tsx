@@ -15,6 +15,7 @@ import type { FsListResult, LocalProjectSummary, LocalProjectsSnapshot } from ".
 import type { SocketStatus } from "../app/socket"
 import { PageHeader } from "../app/PageHeader"
 import { getPathBasename } from "../lib/formatters"
+import { formatPathWithTilde } from "../lib/pathUtils"
 import { cn } from "../lib/utils"
 import { NewProjectModal } from "./NewProjectModal"
 import { Button } from "./ui/button"
@@ -196,8 +197,13 @@ function ProjectCard({
           onClick={onClick}
         >
           <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-          <span className="font-medium text-foreground truncate flex-1">
-            {getPathBasename(localPath)}
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="truncate font-medium text-foreground">
+              {getPathBasename(localPath)}
+            </span>
+            <span className="truncate text-xs text-muted-foreground">
+              {formatPathWithTilde(localPath)}
+            </span>
           </span>
           {loading ? (
             <Loader2 className="h-4 w-4 text-muted-foreground group-hover:text-primary animate-spin flex-shrink-0" />

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { PROVIDERS } from "../../../shared/types"
+import { generateUUID } from "../../lib/utils"
 import { ChatInput, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 
 function createClipboardItem(args: {
@@ -100,6 +101,25 @@ describe("getClipboardImageFiles", () => {
       "clipboard-789.png",
       "clipboard-789-1.webp",
     ])
+  })
+})
+
+describe("attachment IDs", () => {
+  test("uses the UUID fallback when randomUUID is unavailable", () => {
+    const originalCrypto = globalThis.crypto
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: {},
+    })
+
+    try {
+      expect(generateUUID()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: originalCrypto,
+      })
+    }
   })
 })
 

@@ -366,20 +366,23 @@ const MODEL_LABEL_ACRONYMS = new Set(["gpt", "glm"])
 /**
  * Derive a display label from a bare model id when no catalog or fave record
  * names it: strip the vendor prefix and any `:variant` suffix, then title-case
- * the dash-separated words.
+ * the dash-separated words. A leading "Claude" is dropped — the id's family
+ * name (Fable, Opus, Sonnet…) already identifies the model.
  *
  *   lab/kimi-k2.5:nitro → Kimi K2.5
  *   gpt-5.6-sol         → GPT 5.6 Sol
  *   openai/gpt-5.6      → GPT 5.6
+ *   claude-fable-5      → Fable 5
  */
 export function deriveModelLabel(modelId: string): string {
   const base = modelId.split("/").pop() ?? modelId
   const withoutVariant = base.split(":")[0] ?? base
   const words = withoutVariant.split("-").filter(Boolean)
   if (words.length === 0) return modelId
-  return words
+  const label = words
     .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
     .join(" ")
+  return label.startsWith("Claude ") ? label.slice("Claude ".length) : label
 }
 
 /**

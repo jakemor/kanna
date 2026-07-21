@@ -18,6 +18,13 @@ const PING_INTERVAL_MS = 30_000
 const PING_TIMEOUT_MS = 10_000
 /** Re-register every Nth successful ping (~2 min) as a heartbeat. */
 const HEARTBEAT_EVERY_N_PINGS = 4
+/**
+ * Consecutive self-ping failures before the tunnel is declared dead and
+ * restarted. Fresh trycloudflare hostnames can 530 at the edge for a while
+ * before they propagate — restarting on the first failure would mint a new
+ * hostname and start the propagation wait over again.
+ */
+const PING_FAILURE_TOLERANCE = 3
 const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 10_000]
 const RESTART_BACKOFF_MAX_MS = 30_000
 
@@ -120,11 +127,22 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
       log(`cloud: tunnel registered (${publicUrl})`)
 
       let pingCount = 0
+      let consecutivePingFailures = 0
       while (!stopped) {
         await sleepImpl(pingIntervalMs, abortController.signal)
         if (stopped) return
 
-        await pingPublicHealth(publicUrl)
+        try {
+          await pingPublicHealth(publicUrl)
+          consecutivePingFailures = 0
+        } catch (error) {
+          consecutivePingFailures += 1
+          if (consecutivePingFailures >= PING_FAILURE_TOLERANCE) {
+            throw error
+          }
+          warn(`cloud: self-ping failed (${consecutivePingFailures}/${PING_FAILURE_TOLERANCE}) — tunnel may still be propagating`)
+          continue
+        }
         pingCount += 1
 
         if (pingCount % heartbeatEveryNPings === 0) {

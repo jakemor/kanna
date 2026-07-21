@@ -612,5 +612,14 @@ function getStaticHeaders(requestedPath: string) {
     }
   }
 
+  // Vite emits content-hashed filenames under /assets/ — safe to cache
+  // forever. Matters most in cloud mode, where every uncached asset request
+  // pays proxy + D1 + tunnel latency on top of the local read.
+  if (requestedPath.startsWith("/assets/")) {
+    return {
+      "Cache-Control": "public, max-age=31536000, immutable",
+    }
+  }
+
   return undefined
 }

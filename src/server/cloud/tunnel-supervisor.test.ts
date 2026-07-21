@@ -172,17 +172,50 @@ describe("tunnel supervisor", () => {
     supervisor.stop()
   })
 
-  test("ping failure restarts the tunnel with backoff and re-registers the rotated URL", async () => {
+  test("tolerates isolated ping failures without restarting (tunnel propagation)", async () => {
+    const sleep = createManualSleep()
+    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
+    const api = createFakeApi()
+
+    let failuresRemaining = 2 // below the tolerance of 3
+    const fetchImpl = (async () => {
+      if (failuresRemaining > 0) {
+        failuresRemaining -= 1
+        throw new Error("530 not yet propagated")
+      }
+      return new Response("ok")
+    }) as unknown as typeof fetch
+
+    const supervisor = startCloudTunnelSupervisor({
+      localUrl: "http://localhost:3210",
+      identity: IDENTITY,
+      apiClient: api.client,
+      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
+    })
+
+    await waitFor(() => api.updates.length === 1)
+    await sleep.releaseNext() // ping 1 fails
+    await sleep.releaseNext() // ping 2 fails
+    await sleep.releaseNext() // ping 3 succeeds — counter resets
+    await Bun.sleep(10)
+
+    expect(tunnels.startedCount()).toBe(1) // never restarted
+    expect(supervisor.getCurrentUrl()).toBe("https://one.trycloudflare.com")
+
+    supervisor.stop()
+  })
+
+  test("sustained ping failure restarts the tunnel with backoff and re-registers the rotated URL", async () => {
     const sleep = createManualSleep()
     const tunnels = createFakeTunnels(["https://one.trycloudflare.com", "https://two.trycloudflare.com"])
     const api = createFakeApi()
     const upEvents: string[] = []
     const urlChanges: Array<string | null> = []
 
-    let pingShouldFail = false
+    let failuresRemaining = 0
     const fetchImpl = (async () => {
-      if (pingShouldFail) {
-        pingShouldFail = false
+      if (failuresRemaining > 0) {
+        failuresRemaining -= 1
         throw new Error("tunnel gone")
       }
       return new Response("ok")
@@ -198,8 +231,10 @@ describe("tunnel supervisor", () => {
     })
 
     await waitFor(() => api.updates.length === 1)
-    pingShouldFail = true
-    await sleep.releaseNext() // ping interval → failing ping → restart cycle
+    failuresRemaining = 3 // meets the tolerance → declared dead
+    await sleep.releaseNext() // ping 1 fails
+    await sleep.releaseNext() // ping 2 fails
+    await sleep.releaseNext() // ping 3 fails → restart cycle
     await sleep.releaseNext() // backoff sleep (1s)
     await waitFor(() => api.updates.length === 2)
 

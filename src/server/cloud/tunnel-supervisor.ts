@@ -25,6 +25,15 @@ const HEARTBEAT_EVERY_N_PINGS = 4
  * hostname and start the propagation wait over again.
  */
 const PING_FAILURE_TOLERANCE = 3
+/**
+ * Before registering a fresh tunnel URL with the control plane, poll its
+ * public /health until it actually serves. Advertising the hostname before
+ * it propagates makes the proxy (and its colo's DNS negative cache) resolve
+ * a name that doesn't exist yet — visitors then sit on the offline page far
+ * longer than the propagation itself.
+ */
+const PREFLIGHT_INTERVAL_MS = 2_000
+const PREFLIGHT_MAX_ATTEMPTS = 45 // ~90s, then restart with a new hostname
 const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 10_000]
 const RESTART_BACKOFF_MAX_MS = 30_000
 
@@ -116,6 +125,23 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
         throw new Error("quick tunnel started without a public URL")
       }
       const publicUrl = tunnel.publicUrl.replace(/\/$/, "")
+
+      // Preflight: only advertise the URL once it demonstrably serves.
+      log(`cloud: waiting for ${publicUrl} to become reachable`)
+      let reachable = false
+      for (let attempt = 0; attempt < PREFLIGHT_MAX_ATTEMPTS && !stopped; attempt += 1) {
+        try {
+          await pingPublicHealth(publicUrl)
+          reachable = true
+          break
+        } catch {
+          await sleepImpl(PREFLIGHT_INTERVAL_MS, abortController.signal)
+        }
+      }
+      if (stopped) return
+      if (!reachable) {
+        throw new Error("tunnel never became publicly reachable")
+      }
 
       await args.apiClient.updateTunnel(args.identity.machineToken, {
         url: publicUrl,

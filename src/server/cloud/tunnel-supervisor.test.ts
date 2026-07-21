@@ -117,6 +117,41 @@ describe("restartDelayMs", () => {
 })
 
 describe("tunnel supervisor", () => {
+  test("defers registration until the public URL is actually reachable", async () => {
+    const sleep = createManualSleep()
+    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
+    const api = createFakeApi()
+
+    let propagated = false
+    const fetchImpl = (async () => {
+      if (!propagated) {
+        throw new Error("530: hostname not yet propagated")
+      }
+      return new Response("ok")
+    }) as unknown as typeof fetch
+
+    const supervisor = startCloudTunnelSupervisor({
+      localUrl: "http://localhost:3210",
+      identity: IDENTITY,
+      apiClient: api.client,
+      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
+    })
+
+    // Two failed preflight attempts — nothing registered yet.
+    await sleep.releaseNext()
+    await sleep.releaseNext()
+    expect(api.updates.length).toBe(0)
+    expect(supervisor.getCurrentUrl()).toBeNull()
+
+    // Hostname propagates → next preflight succeeds → registration happens.
+    propagated = true
+    await sleep.releaseNext()
+    await waitFor(() => api.updates.length === 1)
+    expect(supervisor.getCurrentUrl()).toBe("https://one.trycloudflare.com")
+
+    supervisor.stop()
+  })
+
   test("registers the tunnel URL and reports it", async () => {
     const sleep = createManualSleep()
     const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
@@ -177,11 +212,11 @@ describe("tunnel supervisor", () => {
     const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
     const api = createFakeApi()
 
-    let failuresRemaining = 2 // below the tolerance of 3
+    let failuresRemaining = 0 // preflight succeeds immediately
     const fetchImpl = (async () => {
       if (failuresRemaining > 0) {
         failuresRemaining -= 1
-        throw new Error("530 not yet propagated")
+        throw new Error("530 transient blip")
       }
       return new Response("ok")
     }) as unknown as typeof fetch
@@ -194,6 +229,7 @@ describe("tunnel supervisor", () => {
     })
 
     await waitFor(() => api.updates.length === 1)
+    failuresRemaining = 2 // below the tolerance of 3
     await sleep.releaseNext() // ping 1 fails
     await sleep.releaseNext() // ping 2 fails
     await sleep.releaseNext() // ping 3 succeeds — counter resets

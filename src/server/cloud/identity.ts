@@ -21,6 +21,10 @@ export interface CloudIdentity {
   subdomain: string
   /** e.g. "https://jakemor-mbp.kanna.sh" */
   appOrigin: string
+  /** Connector credential for this machine's named Cloudflare tunnel. */
+  tunnelToken: string
+  /** Permanent tunnel hostname, e.g. "tun-<machineId>.kanna.sh". */
+  tunnelHost: string
   /** Sticky flag: bring this machine online on every plain `kanna` run. */
   enabled: boolean
 }
@@ -47,12 +51,16 @@ export function normalizeCloudIdentity(
   const proxySecret = normalizeString(source.proxySecret)
   const subdomain = normalizeString(source.subdomain)
   const appOrigin = normalizeString(source.appOrigin).replace(/\/$/, "")
+  const tunnelToken = normalizeString(source.tunnelToken)
+  const tunnelHost = normalizeString(source.tunnelHost).replace(/^https?:\/\//, "").replace(/\/$/, "")
 
   const missing = [
     !machineToken && "machineToken",
     !proxySecret && "proxySecret",
     !subdomain && "subdomain",
     !appOrigin && "appOrigin",
+    !tunnelToken && "tunnelToken",
+    !tunnelHost && "tunnelHost",
   ].filter(Boolean)
   if (missing.length > 0) {
     warn(`cloud.json is missing ${missing.join(", ")} — run \`kanna pair\` again`)
@@ -65,6 +73,8 @@ export function normalizeCloudIdentity(
     proxySecret,
     subdomain,
     appOrigin,
+    tunnelToken,
+    tunnelHost,
     enabled: source.enabled !== false,
   }
 }

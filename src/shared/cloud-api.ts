@@ -1,5 +1,5 @@
 /**
- * Kanna Cloud pairing contract.
+ * Kanna Cloud pairing contract (v2 — named tunnels).
  *
  * This file is the wire contract between the open-source machine side (this
  * repo) and the hosted control plane / proxy (kanna-site, private). It is
@@ -8,6 +8,12 @@
  * APPEND-ONLY: never remove or rename a field or constant; add optional
  * fields only. Machines in the wild update on their own schedule and must
  * keep working against the deployed control plane (and vice versa).
+ *
+ * Transport model: each machine gets a named Cloudflare tunnel owned by the
+ * kanna.sh account, with a permanent hostname (`tunnelHost`, e.g.
+ * `tun-<machineId>.kanna.sh`) created at machine-creation time. The machine
+ * runs the connector with `tunnelToken` and reports liveness via heartbeats;
+ * there is no per-boot URL registration because the hostname never changes.
  *
  * No Bun/node imports here — shared code is imported by both the server and
  * the browser client (and by the kanna-site Worker via the mirror).
@@ -37,8 +43,9 @@ export const CLOUD_BROWSER_PATH_PREFIX = "/__cloud"
 
 /**
  * Machine-served endpoint the client fetches before every WebSocket connect.
- * Always present: proxied requests get the direct tunnel URL + a short-lived
- * connect token; local requests get `wsUrl: null` (use same-origin `/ws`).
+ * Always present: proxied requests get the machine's stable tunnel WS URL +
+ * a short-lived connect token; local requests get `wsUrl: null` (use
+ * same-origin `/ws`).
  */
 export const CLOUD_WS_ENDPOINT_PATH = "/api/cloud/ws-endpoint"
 
@@ -58,7 +65,7 @@ export interface CloudPairRequest {
  * 404/410 for unknown/expired codes.
  */
 export interface CloudPairResponse {
-  /** Durable bearer credential for `{controlUrl}/tunnel` + `/machine`. */
+  /** Durable bearer credential for the machine-facing endpoints below. */
   machineToken: string
   /** Shared secret the proxy sends in PROXY_AUTH_HEADER on forwarded requests. */
   proxySecret: string
@@ -66,36 +73,39 @@ export interface CloudPairResponse {
   subdomain: string
   /** Public app origin for this machine, e.g. "https://jakemor-mbp.kanna.sh". */
   appOrigin: string
+  /** Connector credential for this machine's named Cloudflare tunnel (scoped to it alone). */
+  tunnelToken: string
+  /** Permanent tunnel hostname, e.g. "tun-<machineId>.kanna.sh". */
+  tunnelHost: string
 }
 
 /**
- * `POST {controlUrl}/tunnel` with `Authorization: Bearer <machineToken>` —
- * sent whenever the tunnel URL changes and periodically as a heartbeat
- * (~2 min) so the control plane can tell online from dead. 401 = revoked.
+ * `POST {controlUrl}/heartbeat` with `Authorization: Bearer <machineToken>` —
+ * sent when the connector comes up and periodically (~2 min) so the control
+ * plane can tell online from dead. Carries the local service URL the
+ * connector is fronting; the control plane re-syncs the tunnel's remote
+ * ingress when it changes (e.g. the port shifted). 401 = revoked.
  */
-export interface CloudTunnelUpdateRequest {
-  /** Current public tunnel URL, e.g. "https://xyz.trycloudflare.com". */
-  url: string
-  /** Transport kind — escape hatch for future transports. "cloudflared-quick" today. */
-  kind: string
+export interface CloudHeartbeatRequest {
+  /** Local origin the connector serves, e.g. "http://localhost:3210". */
+  localUrl: string
 }
 
-export interface CloudTunnelUpdateResponse {
-  ok: true
-}
-
-/** `DELETE {controlUrl}/machine` with bearer token — unlink this machine. */
-export interface CloudMachineRemoveResponse {
+export interface CloudHeartbeatResponse {
   ok: true
 }
 
 /**
  * `POST {controlUrl}/offline` with bearer token — best-effort graceful
- * shutdown signal: clears the registered tunnel so the dashboard and proxy
- * show offline immediately instead of waiting out the heartbeat window.
- * (Added after v1; older machines simply never call it.)
+ * shutdown signal: the dashboard and proxy show offline immediately instead
+ * of waiting out the heartbeat window.
  */
 export interface CloudMarkOfflineResponse {
+  ok: true
+}
+
+/** `DELETE {controlUrl}/machine` with bearer token — unlink this machine. */
+export interface CloudMachineRemoveResponse {
   ok: true
 }
 
@@ -106,7 +116,7 @@ export interface CloudMarkOfflineResponse {
 /** `GET /api/cloud/ws-endpoint` response. */
 export interface CloudWsEndpointResponse {
   /**
-   * Direct WebSocket URL (`wss://<tunnel-host>/ws`) when the request arrived
+   * Direct WebSocket URL (`wss://<tunnelHost>/ws`) when the request arrived
    * through the proxy; null for local requests (client connects same-origin).
    */
   wsUrl: string | null
@@ -126,7 +136,7 @@ export interface CloudMachineSummary {
   /** e.g. "https://jakemor-mbp.kanna.sh" */
   appOrigin: string
   online: boolean
-  /** Unix ms of the last tunnel heartbeat, null if never seen. */
+  /** Unix ms of the last heartbeat, null if never seen / gracefully offline. */
   lastSeenAt: number | null
 }
 

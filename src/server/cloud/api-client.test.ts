@@ -17,6 +17,8 @@ const PAIR_RESPONSE = {
   proxySecret: "ps",
   subdomain: "jakemor-mbp",
   appOrigin: "https://jakemor-mbp.kanna.sh",
+  tunnelToken: "connector-token",
+  tunnelHost: "tun-m1.kanna.sh",
 }
 
 describe("resolveControlUrl", () => {
@@ -56,28 +58,35 @@ describe("cloud api client", () => {
     }
   })
 
-  test("pair rejects incomplete responses", async () => {
-    const { fetchImpl } = fakeFetch(() => Response.json({ machineToken: "only" }))
+  test("pair rejects incomplete responses (e.g. missing tunnel credentials)", async () => {
+    const { fetchImpl } = fakeFetch(() => Response.json({
+      machineToken: "mt",
+      proxySecret: "ps",
+      subdomain: "s",
+      appOrigin: "https://s.kanna.sh",
+      // tunnelToken / tunnelHost missing
+    }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
     await expect(client.pair("ABC")).rejects.toThrow("incomplete pair response")
   })
 
-  test("updateTunnel sends the bearer token", async () => {
+  test("heartbeat sends the bearer token and local service", async () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json({ ok: true }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    await client.updateTunnel("token", { url: "https://x.trycloudflare.com", kind: "cloudflared-quick" })
-    expect(calls[0].url).toBe("http://cp/api/cloud/tunnel")
+    await client.heartbeat("token", { localUrl: "http://localhost:3210" })
+    expect(calls[0].url).toBe("http://cp/api/cloud/heartbeat")
     expect(new Headers(calls[0].init.headers).get("authorization")).toBe("Bearer token")
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ localUrl: "http://localhost:3210" })
   })
 
-  test("updateTunnel surfaces 401 (revoked machine)", async () => {
+  test("heartbeat surfaces 401 (revoked machine)", async () => {
     const { fetchImpl } = fakeFetch(() => Response.json({ error: "Unauthorized" }, { status: 401 }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
     try {
-      await client.updateTunnel("gone", { url: "https://x", kind: "k" })
-      throw new Error("expected updateTunnel to throw")
+      await client.heartbeat("gone", { localUrl: "http://localhost:3210" })
+      throw new Error("expected heartbeat to throw")
     } catch (error) {
       expect((error as CloudApiError).status).toBe(401)
     }

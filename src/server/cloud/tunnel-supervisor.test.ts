@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { DEFAULT_CLOUD_CONTROL_URL, type CloudTunnelUpdateRequest } from "../../shared/cloud-api"
+import { DEFAULT_CLOUD_CONTROL_URL, type CloudHeartbeatRequest } from "../../shared/cloud-api"
 import type { StartedShareTunnel } from "../share"
 import { CloudApiError, type CloudApiClient } from "./api-client"
 import type { CloudIdentity } from "./identity"
@@ -11,6 +11,8 @@ const IDENTITY: CloudIdentity = {
   proxySecret: "proxy-secret",
   subdomain: "jakemor-mbp",
   appOrigin: "https://jakemor-mbp.kanna.sh",
+  tunnelToken: "connector-token",
+  tunnelHost: "tun-m1.kanna.sh",
   enabled: true,
 }
 
@@ -60,44 +62,60 @@ function createManualSleep() {
   }
 }
 
-function createFakeTunnels(urls: Array<string | null>) {
+/** Fake named-tunnel connector: resolves "connected" (publicUrl null). */
+function createFakeConnectors() {
   const stopped: number[] = []
+  const tokens: string[] = []
   let started = 0
-  const startTunnelImpl = async (_localUrl: string): Promise<StartedShareTunnel> => {
+  let failNext = false
+  const startTunnelImpl = async (_localUrl: string, tunnelToken: string): Promise<StartedShareTunnel> => {
     const index = started
     started += 1
+    tokens.push(tunnelToken)
+    if (failNext) {
+      failNext = false
+      throw new Error("connector failed to start")
+    }
     return {
-      publicUrl: urls[Math.min(index, urls.length - 1)],
+      publicUrl: null,
       stop: () => {
         stopped.push(index)
       },
     }
   }
-  return { startTunnelImpl, stopped, startedCount: () => started }
+  return {
+    startTunnelImpl,
+    stopped,
+    tokens,
+    startedCount: () => started,
+    failNextStart() {
+      failNext = true
+    },
+  }
 }
 
 function createFakeApi() {
-  const updates: CloudTunnelUpdateRequest[] = []
+  const heartbeats: CloudHeartbeatRequest[] = []
   let failNextWith: Error | null = null
   const client: CloudApiClient = {
     controlUrl: "http://cp/api/cloud",
     async pair() {
       throw new Error("not used")
     },
-    async updateTunnel(_token, update) {
+    async heartbeat(_token, update) {
       if (failNextWith) {
         const error = failNextWith
         failNextWith = null
         throw error
       }
-      updates.push(update)
+      heartbeats.push(update)
     },
     async markOffline() {},
     async removeMachine() {},
   }
   return {
     client,
-    updates,
+    heartbeats,
     failNext(error: Error) {
       failNextWith = error
     },
@@ -116,72 +134,33 @@ describe("restartDelayMs", () => {
   })
 })
 
-describe("tunnel supervisor", () => {
-  test("defers registration until the public URL is actually reachable", async () => {
+describe("tunnel supervisor (named tunnel)", () => {
+  test("connects with the tunnel token and heartbeats immediately", async () => {
     const sleep = createManualSleep()
-    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
-    const api = createFakeApi()
-
-    let propagated = false
-    const fetchImpl = (async () => {
-      if (!propagated) {
-        throw new Error("530: hostname not yet propagated")
-      }
-      return new Response("ok")
-    }) as unknown as typeof fetch
-
-    const supervisor = startCloudTunnelSupervisor({
-      localUrl: "http://localhost:3210",
-      identity: IDENTITY,
-      apiClient: api.client,
-      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
-    })
-
-    // Two failed preflight attempts — nothing registered yet.
-    await sleep.releaseNext()
-    await sleep.releaseNext()
-    expect(api.updates.length).toBe(0)
-    expect(supervisor.getCurrentUrl()).toBeNull()
-
-    // Hostname propagates → next preflight succeeds → registration happens.
-    propagated = true
-    await sleep.releaseNext()
-    await waitFor(() => api.updates.length === 1)
-    expect(supervisor.getCurrentUrl()).toBe("https://one.trycloudflare.com")
-
-    supervisor.stop()
-  })
-
-  test("registers the tunnel URL and reports it", async () => {
-    const sleep = createManualSleep()
-    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
+    const connectors = createFakeConnectors()
     const api = createFakeApi()
     const upEvents: string[] = []
-    const urlChanges: Array<string | null> = []
 
     const supervisor = startCloudTunnelSupervisor({
       localUrl: "http://localhost:3210",
       identity: IDENTITY,
       apiClient: api.client,
       onTunnelUp: (kind) => upEvents.push(kind),
-      onTunnelUrlChange: (url) => urlChanges.push(url),
-      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl: okPing(), sleepImpl: sleep.sleepImpl },
+      deps: { startTunnelImpl: connectors.startTunnelImpl, fetchImpl: okPing(), sleepImpl: sleep.sleepImpl },
     })
 
-    await waitFor(() => api.updates.length === 1)
-    expect(api.updates[0]).toEqual({ url: "https://one.trycloudflare.com", kind: "cloudflared-quick" })
-    expect(supervisor.getCurrentUrl()).toBe("https://one.trycloudflare.com")
+    await waitFor(() => api.heartbeats.length === 1)
+    expect(api.heartbeats[0]).toEqual({ localUrl: "http://localhost:3210" })
+    expect(connectors.tokens).toEqual(["connector-token"])
     expect(upEvents).toEqual(["started"])
-    expect(urlChanges).toEqual(["https://one.trycloudflare.com"])
 
     supervisor.stop()
-    expect(supervisor.getCurrentUrl()).toBeNull()
-    expect(tunnels.stopped).toEqual([0])
+    expect(connectors.stopped).toEqual([0])
   })
 
   test("heartbeats every Nth successful ping", async () => {
     const sleep = createManualSleep()
-    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
+    const connectors = createFakeConnectors()
     const api = createFakeApi()
 
     const supervisor = startCloudTunnelSupervisor({
@@ -189,30 +168,30 @@ describe("tunnel supervisor", () => {
       identity: IDENTITY,
       apiClient: api.client,
       deps: {
-        startTunnelImpl: tunnels.startTunnelImpl,
+        startTunnelImpl: connectors.startTunnelImpl,
         fetchImpl: okPing(),
         sleepImpl: sleep.sleepImpl,
         heartbeatEveryNPings: 2,
       },
     })
 
-    await waitFor(() => api.updates.length === 1)
+    await waitFor(() => api.heartbeats.length === 1)
     await sleep.releaseNext() // ping 1
     await sleep.releaseNext() // ping 2 → heartbeat
-    await waitFor(() => api.updates.length === 2)
+    await waitFor(() => api.heartbeats.length === 2)
     await sleep.releaseNext() // ping 3
     await sleep.releaseNext() // ping 4 → heartbeat
-    await waitFor(() => api.updates.length === 3)
+    await waitFor(() => api.heartbeats.length === 3)
 
     supervisor.stop()
   })
 
-  test("tolerates isolated ping failures without restarting (tunnel propagation)", async () => {
+  test("tolerates isolated ping failures without restarting", async () => {
     const sleep = createManualSleep()
-    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
+    const connectors = createFakeConnectors()
     const api = createFakeApi()
 
-    let failuresRemaining = 0 // preflight succeeds immediately
+    let failuresRemaining = 0
     const fetchImpl = (async () => {
       if (failuresRemaining > 0) {
         failuresRemaining -= 1
@@ -225,28 +204,26 @@ describe("tunnel supervisor", () => {
       localUrl: "http://localhost:3210",
       identity: IDENTITY,
       apiClient: api.client,
-      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
+      deps: { startTunnelImpl: connectors.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
     })
 
-    await waitFor(() => api.updates.length === 1)
+    await waitFor(() => api.heartbeats.length === 1)
     failuresRemaining = 2 // below the tolerance of 3
     await sleep.releaseNext() // ping 1 fails
     await sleep.releaseNext() // ping 2 fails
     await sleep.releaseNext() // ping 3 succeeds — counter resets
     await Bun.sleep(10)
 
-    expect(tunnels.startedCount()).toBe(1) // never restarted
-    expect(supervisor.getCurrentUrl()).toBe("https://one.trycloudflare.com")
+    expect(connectors.startedCount()).toBe(1) // never restarted
 
     supervisor.stop()
   })
 
-  test("sustained ping failure restarts the tunnel with backoff and re-registers the rotated URL", async () => {
+  test("sustained ping failure restarts the connector with backoff (same hostname)", async () => {
     const sleep = createManualSleep()
-    const tunnels = createFakeTunnels(["https://one.trycloudflare.com", "https://two.trycloudflare.com"])
+    const connectors = createFakeConnectors()
     const api = createFakeApi()
     const upEvents: string[] = []
-    const urlChanges: Array<string | null> = []
 
     let failuresRemaining = 0
     const fetchImpl = (async () => {
@@ -262,40 +239,32 @@ describe("tunnel supervisor", () => {
       identity: IDENTITY,
       apiClient: api.client,
       onTunnelUp: (kind) => upEvents.push(kind),
-      onTunnelUrlChange: (url) => urlChanges.push(url),
-      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
+      deps: { startTunnelImpl: connectors.startTunnelImpl, fetchImpl, sleepImpl: sleep.sleepImpl },
     })
 
-    await waitFor(() => api.updates.length === 1)
+    await waitFor(() => api.heartbeats.length === 1)
     failuresRemaining = 3 // meets the tolerance → declared dead
     await sleep.releaseNext() // ping 1 fails
     await sleep.releaseNext() // ping 2 fails
     await sleep.releaseNext() // ping 3 fails → restart cycle
     await sleep.releaseNext() // backoff sleep (1s)
-    await waitFor(() => api.updates.length === 2)
+    await waitFor(() => api.heartbeats.length === 2) // reconnect heartbeat
 
-    expect(api.updates[1].url).toBe("https://two.trycloudflare.com")
-    expect(supervisor.getCurrentUrl()).toBe("https://two.trycloudflare.com")
+    expect(connectors.startedCount()).toBe(2)
+    expect(connectors.stopped).toEqual([0]) // first connector was stopped
     expect(upEvents).toEqual(["started", "recovered"])
-    expect(urlChanges).toEqual([
-      "https://one.trycloudflare.com",
-      null,
-      "https://two.trycloudflare.com",
-    ])
-    expect(tunnels.stopped).toEqual([0]) // first tunnel was stopped on failure
-    // Backoff used the first restart delay.
     expect(sleep.requestedMs).toContain(1_000)
 
     supervisor.stop()
   })
 
-  test("repeated startup failures escalate the backoff", async () => {
+  test("repeated connector startup failures escalate the backoff", async () => {
     const sleep = createManualSleep()
     const api = createFakeApi()
     let attempts = 0
     const startTunnelImpl = async (): Promise<StartedShareTunnel> => {
       attempts += 1
-      throw new Error(`no tunnel ${attempts}`)
+      throw new Error(`no connector ${attempts}`)
     }
 
     const supervisor = startCloudTunnelSupervisor({
@@ -316,7 +285,7 @@ describe("tunnel supervisor", () => {
 
   test("401 from the control plane stops supervision (machine revoked)", async () => {
     const sleep = createManualSleep()
-    const tunnels = createFakeTunnels(["https://one.trycloudflare.com"])
+    const connectors = createFakeConnectors()
     const api = createFakeApi()
     api.failNext(new CloudApiError("Unauthorized", 401))
     const warnings: string[] = []
@@ -326,15 +295,46 @@ describe("tunnel supervisor", () => {
       identity: IDENTITY,
       apiClient: api.client,
       warn: (message) => warnings.push(message),
-      deps: { startTunnelImpl: tunnels.startTunnelImpl, fetchImpl: okPing(), sleepImpl: sleep.sleepImpl },
+      deps: { startTunnelImpl: connectors.startTunnelImpl, fetchImpl: okPing(), sleepImpl: sleep.sleepImpl },
     })
 
     await waitFor(() => warnings.some((message) => message.includes("revoked")))
     await Bun.sleep(10)
     // No restarts were scheduled after the revocation.
     expect(sleep.requestedMs).toEqual([])
-    expect(tunnels.startedCount()).toBe(1)
-    expect(supervisor.getCurrentUrl()).toBeNull()
+    expect(connectors.startedCount()).toBe(1)
+    expect(connectors.stopped).toEqual([0])
+
+    supervisor.stop()
+  })
+
+  test("heartbeat network hiccups are tolerated (retry next round)", async () => {
+    const sleep = createManualSleep()
+    const connectors = createFakeConnectors()
+    const api = createFakeApi()
+    const warnings: string[] = []
+
+    const supervisor = startCloudTunnelSupervisor({
+      localUrl: "http://localhost:3210",
+      identity: IDENTITY,
+      apiClient: api.client,
+      warn: (message) => warnings.push(message),
+      deps: {
+        startTunnelImpl: connectors.startTunnelImpl,
+        fetchImpl: okPing(),
+        sleepImpl: sleep.sleepImpl,
+        heartbeatEveryNPings: 1,
+      },
+    })
+
+    await waitFor(() => api.heartbeats.length === 1)
+    api.failNext(new Error("control plane blip"))
+    await sleep.releaseNext() // ping ok → heartbeat fails (tolerated)
+    await waitFor(() => warnings.some((message) => message.includes("heartbeat failed")))
+    await sleep.releaseNext() // ping ok → heartbeat retries fine
+    await waitFor(() => api.heartbeats.length === 2)
+
+    expect(connectors.startedCount()).toBe(1) // no restart for a CP blip
 
     supervisor.stop()
   })

@@ -310,20 +310,18 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             if (req.method !== "GET") {
               return new Response(null, { status: 405, headers: { Allow: "GET" } })
             }
-            // Proxied requests get the direct tunnel URL + a short-lived
-            // token so the browser's WebSocket bypasses the proxy entirely.
-            // Local requests get null → the client connects same-origin.
+            // Proxied requests get the machine's permanent tunnel WS URL + a
+            // short-lived token so the browser's WebSocket bypasses the proxy
+            // entirely. Local requests get null → same-origin connect. The
+            // hostname is static (named tunnel), so no runtime tunnel state.
             if (cloud && requestClass === "proxied") {
-              const tunnelUrl = cloud.getTunnelUrl()
-              if (tunnelUrl) {
-                const minted = cloud.connectTokens.mint()
-                const payload: CloudWsEndpointResponse = {
-                  wsUrl: `${tunnelUrl.replace(/^http/, "ws")}/ws`,
-                  connectToken: minted.token,
-                  expiresInMs: minted.expiresInMs,
-                }
-                return Response.json(payload, { headers: { "Cache-Control": "no-store" } })
+              const minted = cloud.connectTokens.mint()
+              const payload: CloudWsEndpointResponse = {
+                wsUrl: `wss://${cloud.identity.tunnelHost}/ws`,
+                connectToken: minted.token,
+                expiresInMs: minted.expiresInMs,
               }
+              return Response.json(payload, { headers: { "Cache-Control": "no-store" } })
             }
             const payload: CloudWsEndpointResponse = { wsUrl: null }
             return Response.json(payload, { headers: { "Cache-Control": "no-store" } })

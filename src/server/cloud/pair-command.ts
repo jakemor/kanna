@@ -89,6 +89,8 @@ export async function runPairCommand(args: PairCommandArgs, deps: PairCommandDep
         proxySecret: response.proxySecret,
         subdomain: response.subdomain,
         appOrigin: response.appOrigin,
+        tunnelToken: response.tunnelToken,
+        tunnelHost: response.tunnelHost,
         enabled: true,
       })
 

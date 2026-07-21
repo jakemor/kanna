@@ -16,7 +16,6 @@ import {
 export interface CloudRuntime {
   identity: CloudIdentity
   connectTokens: ConnectTokenManager
-  getTunnelUrl(): string | null
   start(args: {
     localUrl: string
     log?: (message: string) => void
@@ -44,12 +43,10 @@ export function createCloudRuntime(
   const apiClient = deps.apiClient ?? createCloudApiClient({ controlUrl: identity.controlUrl })
   const connectTokens = createConnectTokenManager()
   let supervisor: CloudTunnelSupervisor | null = null
-  let tunnelUrl: string | null = null
 
   return {
     identity,
     connectTokens,
-    getTunnelUrl: () => tunnelUrl,
 
     start(args) {
       if (supervisor) return
@@ -60,18 +57,14 @@ export function createCloudRuntime(
         log: args.log,
         warn: args.warn,
         onTunnelUp: args.onTunnelUp,
-        onTunnelUrlChange: (url) => {
-          tunnelUrl = url
-        },
         deps: deps.supervisorDeps,
       })
     },
 
     async stop() {
-      const wasRunning = supervisor !== null && tunnelUrl !== null
+      const wasRunning = supervisor !== null
       supervisor?.stop()
       supervisor = null
-      tunnelUrl = null
 
       if (wasRunning) {
         // Graceful offline signal, capped so shutdown never hangs on it.

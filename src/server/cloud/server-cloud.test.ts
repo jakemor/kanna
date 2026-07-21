@@ -21,6 +21,8 @@ const IDENTITY: CloudIdentity = {
   proxySecret: PROXY_SECRET,
   subdomain: "jakemor-mbp",
   appOrigin: "https://jakemor-mbp.kanna.sh",
+  tunnelToken: "connector-token",
+  tunnelHost: "tun-m1.kanna.sh",
   enabled: true,
 }
 
@@ -32,11 +34,10 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
-function fakeCloudRuntime(tunnelUrl: string | null): CloudRuntime {
+function fakeCloudRuntime(): CloudRuntime {
   return {
     identity: IDENTITY,
     connectTokens: createConnectTokenManager(),
-    getTunnelUrl: () => tunnelUrl,
     start: () => {},
     stop: async () => {},
   }
@@ -64,10 +65,10 @@ describe("server cloud integration", () => {
   })
 
   test("raw tunnel traffic sees only /health and /ws", async () => {
-    const tunnelUrl = "https://xyz.trycloudflare.com"
-    const server = await startCloudServer({ port: 4362, cloud: fakeCloudRuntime(tunnelUrl) })
+    
+    const server = await startCloudServer({ port: 4362, cloud: fakeCloudRuntime() })
     const base = `http://127.0.0.1:${server.port}`
-    const tunnelHeaders = { host: "xyz.trycloudflare.com" }
+    const tunnelHeaders = { host: "tun-m1.kanna.sh" }
 
     // Public health check for the supervisor self-ping.
     const health = await fetch(`${base}/health`, { headers: tunnelHeaders })
@@ -85,7 +86,7 @@ describe("server cloud integration", () => {
   })
 
   test("ws-endpoint: proxied → tunnel URL + token; local → null", async () => {
-    const cloud = fakeCloudRuntime("https://xyz.trycloudflare.com")
+    const cloud = fakeCloudRuntime()
     const server = await startCloudServer({ port: 4363, cloud })
     const base = `http://127.0.0.1:${server.port}`
 
@@ -94,11 +95,11 @@ describe("server cloud integration", () => {
     expect(await local.json() as CloudWsEndpointResponse).toEqual({ wsUrl: null })
 
     const proxied = await fetch(`${base}${CLOUD_WS_ENDPOINT_PATH}`, {
-      headers: { host: "xyz.trycloudflare.com", [PROXY_AUTH_HEADER]: PROXY_SECRET },
+      headers: { host: "tun-m1.kanna.sh", [PROXY_AUTH_HEADER]: PROXY_SECRET },
     })
     expect(proxied.status).toBe(200)
     const payload = await proxied.json() as CloudWsEndpointResponse
-    expect(payload.wsUrl).toBe("wss://xyz.trycloudflare.com/ws")
+    expect(payload.wsUrl).toBe("wss://tun-m1.kanna.sh/ws")
     expect(typeof payload.connectToken).toBe("string")
     expect(cloud.connectTokens.validate(payload.connectToken as string)).toBe(true)
   })
@@ -106,7 +107,7 @@ describe("server cloud integration", () => {
   test("proxied requests bypass password auth; local ones don't", async () => {
     const server = await startCloudServer({
       port: 4364,
-      cloud: fakeCloudRuntime("https://xyz.trycloudflare.com"),
+      cloud: fakeCloudRuntime(),
       password: "hunter2",
     })
     const base = `http://127.0.0.1:${server.port}`
@@ -115,20 +116,20 @@ describe("server cloud integration", () => {
     expect(localApi.status).toBe(401)
 
     const proxiedApi = await fetch(`${base}${CLOUD_WS_ENDPOINT_PATH}`, {
-      headers: { host: "xyz.trycloudflare.com", [PROXY_AUTH_HEADER]: PROXY_SECRET },
+      headers: { host: "tun-m1.kanna.sh", [PROXY_AUTH_HEADER]: PROXY_SECRET },
     })
     expect(proxiedApi.status).toBe(200)
   })
 
   test("cloud WS upgrade with a minted token succeeds on the raw tunnel", async () => {
-    const cloud = fakeCloudRuntime("https://xyz.trycloudflare.com")
+    const cloud = fakeCloudRuntime()
     const server = await startCloudServer({ port: 4365, cloud })
     const { token } = cloud.connectTokens.mint()
 
     // Bun's WebSocket accepts { headers } at runtime; the DOM lib types only
     // know the protocols overload, hence the cast. Simulates a raw tunnel
     // hit: public Host, page origin on kanna.sh.
-    const tunnelHeaders = { headers: { host: "xyz.trycloudflare.com", origin: IDENTITY.appOrigin } }
+    const tunnelHeaders = { headers: { host: "tun-m1.kanna.sh", origin: IDENTITY.appOrigin } }
     const socket = new WebSocket(
       `ws://127.0.0.1:${server.port}/ws?token=${token}`,
       tunnelHeaders as unknown as string[],
@@ -144,7 +145,7 @@ describe("server cloud integration", () => {
     // Bad token is rejected.
     const badSocket = new WebSocket(
       `ws://127.0.0.1:${server.port}/ws?token=bogus`,
-      { headers: { host: "xyz.trycloudflare.com", origin: IDENTITY.appOrigin } } as unknown as string[],
+      { headers: { host: "tun-m1.kanna.sh", origin: IDENTITY.appOrigin } } as unknown as string[],
     )
     const badOpened = await new Promise<boolean>((resolve) => {
       badSocket.addEventListener("open", () => resolve(true), { once: true })
@@ -159,7 +160,7 @@ describe("server cloud integration", () => {
     const base = `http://127.0.0.1:${server.port}`
 
     // Even a tunnel-looking Host serves the app when cloud is off.
-    const response = await fetch(`${base}/health`, { headers: { host: "xyz.trycloudflare.com" } })
+    const response = await fetch(`${base}/health`, { headers: { host: "tun-m1.kanna.sh" } })
     expect(response.status).toBe(200)
 
     const wsEndpoint = await fetch(`${base}${CLOUD_WS_ENDPOINT_PATH}`)

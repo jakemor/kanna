@@ -17,6 +17,8 @@ const IDENTITY: CloudIdentity = {
   proxySecret: "proxy-secret",
   subdomain: "jakemor-mbp",
   appOrigin: "https://jakemor-mbp.kanna.sh",
+  tunnelToken: "connector-token",
+  tunnelHost: "tun-m1.kanna.sh",
   enabled: true,
 }
 
@@ -68,12 +70,14 @@ describe("cloud identity file", () => {
 })
 
 describe("normalizeCloudIdentity", () => {
-  test("defaults controlUrl and enabled", () => {
+  test("defaults controlUrl and enabled; strips scheme from tunnelHost", () => {
     const normalized = normalizeCloudIdentity({
       machineToken: "t",
       proxySecret: "p",
       subdomain: "s-x",
       appOrigin: "https://s-x.kanna.sh/",
+      tunnelToken: "tt",
+      tunnelHost: "https://tun-m1.kanna.sh/",
     })
     expect(normalized).toEqual({
       controlUrl: DEFAULT_CLOUD_CONTROL_URL,
@@ -81,19 +85,28 @@ describe("normalizeCloudIdentity", () => {
       proxySecret: "p",
       subdomain: "s-x",
       appOrigin: "https://s-x.kanna.sh",
+      tunnelToken: "tt",
+      tunnelHost: "tun-m1.kanna.sh",
       enabled: true,
     })
   })
 
-  test("missing required field → null + names the field", () => {
+  test("missing required field → null + names the field (v1 files invalidate cleanly)", () => {
     const warnings: string[] = []
     expect(
       normalizeCloudIdentity(
-        { machineToken: "t", proxySecret: "p", subdomain: "s" },
+        {
+          machineToken: "t",
+          proxySecret: "p",
+          subdomain: "s",
+          appOrigin: "https://s.kanna.sh",
+          // v1 file: no tunnel credentials
+        },
         (message) => warnings.push(message),
       ),
     ).toBeNull()
-    expect(warnings[0]).toContain("appOrigin")
+    expect(warnings[0]).toContain("tunnelToken")
+    expect(warnings[0]).toContain("kanna pair")
   })
 
   test("enabled: false is preserved", () => {

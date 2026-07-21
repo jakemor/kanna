@@ -103,6 +103,8 @@ const CLOUD_IDENTITY = {
   proxySecret: "proxy-secret",
   subdomain: "jakemor-mbp",
   appOrigin: "https://jakemor-mbp.kanna.sh",
+  tunnelToken: "connector-token",
+  tunnelHost: "tun-m1.kanna.sh",
   enabled: true,
 }
 

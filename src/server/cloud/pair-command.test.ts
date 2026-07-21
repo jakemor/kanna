@@ -9,6 +9,8 @@ const PAIR_RESPONSE: CloudPairResponse = {
   proxySecret: "ps",
   subdomain: "jakemor-mbp",
   appOrigin: "https://jakemor-mbp.kanna.sh",
+  tunnelToken: "new-connector-token",
+  tunnelHost: "tun-new.kanna.sh",
 }
 
 const IDENTITY: CloudIdentity = {
@@ -17,6 +19,8 @@ const IDENTITY: CloudIdentity = {
   proxySecret: "old-proxy",
   subdomain: "jakemor-old",
   appOrigin: "https://jakemor-old.kanna.sh",
+  tunnelToken: "connector-token",
+  tunnelHost: "tun-m1.kanna.sh",
   enabled: true,
 }
 
@@ -43,7 +47,7 @@ function createHarness(overrides: {
       if (result instanceof Error) throw result
       return result
     },
-    async updateTunnel() {},
+    async heartbeat() {},
     async markOffline() {},
     async removeMachine() {
       calls.remove += 1
@@ -85,6 +89,8 @@ describe("kanna pair", () => {
         proxySecret: "ps",
         subdomain: "jakemor-mbp",
         appOrigin: "https://jakemor-mbp.kanna.sh",
+        tunnelToken: "new-connector-token",
+        tunnelHost: "tun-new.kanna.sh",
         enabled: true,
       },
     ])

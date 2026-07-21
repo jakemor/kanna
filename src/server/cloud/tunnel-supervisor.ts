@@ -1,8 +1,10 @@
 /**
- * Keeps the machine reachable: runs a cloudflared quick tunnel, registers its
- * (rotating) URL with the control plane, self-pings through the public URL,
- * and heartbeats so `last_seen_at` stays fresh. On any failure it restarts
- * the tunnel with backoff and re-registers the new URL.
+ * Keeps the machine reachable over its named Cloudflare tunnel: runs the
+ * connector (token-scoped to this machine's tunnel), heartbeats the control
+ * plane so the dashboard/proxy know it's alive, self-pings through the
+ * permanent public hostname, and restarts the connector with backoff on
+ * sustained failure. The hostname never changes, so there is no URL
+ * registration, rotation handling, or propagation wait.
  *
  * Fully DI'd (tunnel, fetch, sleep) so tests drive it deterministically.
  */
@@ -12,38 +14,24 @@ import type { CloudApiClient } from "./api-client"
 import { CloudApiError } from "./api-client"
 import type { CloudIdentity } from "./identity"
 
-export const TUNNEL_KIND_QUICK = "cloudflared-quick"
-
 const PING_INTERVAL_MS = 30_000
 const PING_TIMEOUT_MS = 10_000
-/** Re-register every Nth successful ping (~2 min) as a heartbeat. */
+/** Heartbeat the control plane every Nth successful ping (~2 min). */
 const HEARTBEAT_EVERY_N_PINGS = 4
 /**
- * Consecutive self-ping failures before the tunnel is declared dead and
- * restarted. Fresh trycloudflare hostnames can 530 at the edge for a while
- * before they propagate — restarting on the first failure would mint a new
- * hostname and start the propagation wait over again.
+ * Consecutive self-ping failures before the connector is declared dead and
+ * restarted — tolerates transient edge blips without churning the connector.
  */
 const PING_FAILURE_TOLERANCE = 3
-/**
- * Before registering a fresh tunnel URL with the control plane, poll its
- * public /health until it actually serves. Advertising the hostname before
- * it propagates makes the proxy (and its colo's DNS negative cache) resolve
- * a name that doesn't exist yet — visitors then sit on the offline page far
- * longer than the propagation itself.
- */
-const PREFLIGHT_INTERVAL_MS = 2_000
-const PREFLIGHT_MAX_ATTEMPTS = 45 // ~90s, then restart with a new hostname
 const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 10_000]
 const RESTART_BACKOFF_MAX_MS = 30_000
 
 export interface CloudTunnelSupervisor {
-  getCurrentUrl(): string | null
   stop(): void
 }
 
 export interface TunnelSupervisorDeps {
-  startTunnelImpl?: (localUrl: string) => Promise<StartedShareTunnel>
+  startTunnelImpl?: (localUrl: string, tunnelToken: string) => Promise<StartedShareTunnel>
   fetchImpl?: typeof fetch
   sleepImpl?: (ms: number, signal: AbortSignal) => Promise<void>
   pingIntervalMs?: number
@@ -56,9 +44,7 @@ export interface TunnelSupervisorArgs {
   apiClient: CloudApiClient
   log?: (message: string) => void
   warn?: (message: string) => void
-  /** Fired with the public URL after each successful registration, and null when the tunnel drops. */
-  onTunnelUrlChange?: (url: string | null) => void
-  /** Fired once on the first successful registration, then on each recovery. */
+  /** Fired once when the connector first comes up, then on each recovery. */
   onTunnelUp?: (kind: "started" | "recovered") => void
   deps?: TunnelSupervisorDeps
 }
@@ -92,23 +78,18 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
   const fetchImpl = args.deps?.fetchImpl ?? fetch
   const sleepImpl = args.deps?.sleepImpl ?? defaultSleep
   const startTunnelImpl = args.deps?.startTunnelImpl
-    ?? ((localUrl: string) => startShareTunnel(localUrl, "quick", { log }))
+    ?? ((localUrl: string, tunnelToken: string) =>
+      startShareTunnel(localUrl, { kind: "token", token: tunnelToken }, { log }))
   const pingIntervalMs = args.deps?.pingIntervalMs ?? PING_INTERVAL_MS
   const heartbeatEveryNPings = args.deps?.heartbeatEveryNPings ?? HEARTBEAT_EVERY_N_PINGS
 
+  const publicUrl = `https://${args.identity.tunnelHost}`
   let stopped = false
-  let currentUrl: string | null = null
   let activeTunnel: StartedShareTunnel | null = null
-  let hasEverRegistered = false
+  let hasEverConnected = false
   const abortController = new AbortController()
 
-  function setCurrentUrl(url: string | null) {
-    if (currentUrl === url) return
-    currentUrl = url
-    args.onTunnelUrlChange?.(url)
-  }
-
-  async function pingPublicHealth(publicUrl: string) {
+  async function pingPublicHealth() {
     const response = await fetchImpl(`${publicUrl}/health`, {
       signal: AbortSignal.timeout(PING_TIMEOUT_MS),
     })
@@ -117,40 +98,21 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
     }
   }
 
+  async function sendHeartbeat() {
+    await args.apiClient.heartbeat(args.identity.machineToken, { localUrl: args.localUrl })
+  }
+
   async function runOnce() {
-    const tunnel = await startTunnelImpl(args.localUrl)
+    // Named tunnel: resolves once the connector reports "connected".
+    const tunnel = await startTunnelImpl(args.localUrl, args.identity.tunnelToken)
     activeTunnel = tunnel
     try {
-      if (!tunnel.publicUrl) {
-        throw new Error("quick tunnel started without a public URL")
-      }
-      const publicUrl = tunnel.publicUrl.replace(/\/$/, "")
-
-      // Preflight: only advertise the URL once it demonstrably serves.
-      log(`cloud: waiting for ${publicUrl} to become reachable`)
-      let reachable = false
-      for (let attempt = 0; attempt < PREFLIGHT_MAX_ATTEMPTS && !stopped; attempt += 1) {
-        try {
-          await pingPublicHealth(publicUrl)
-          reachable = true
-          break
-        } catch {
-          await sleepImpl(PREFLIGHT_INTERVAL_MS, abortController.signal)
-        }
-      }
-      if (stopped) return
-      if (!reachable) {
-        throw new Error("tunnel never became publicly reachable")
-      }
-
-      await args.apiClient.updateTunnel(args.identity.machineToken, {
-        url: publicUrl,
-        kind: TUNNEL_KIND_QUICK,
-      })
-      setCurrentUrl(publicUrl)
-      args.onTunnelUp?.(hasEverRegistered ? "recovered" : "started")
-      hasEverRegistered = true
-      log(`cloud: tunnel registered (${publicUrl})`)
+      // Announce liveness immediately — the hostname is permanent, so the
+      // machine is reachable the moment the connector is up.
+      await sendHeartbeat()
+      args.onTunnelUp?.(hasEverConnected ? "recovered" : "started")
+      hasEverConnected = true
+      log(`cloud: connected (${args.identity.appOrigin})`)
 
       let pingCount = 0
       let consecutivePingFailures = 0
@@ -159,24 +121,21 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
         if (stopped) return
 
         try {
-          await pingPublicHealth(publicUrl)
+          await pingPublicHealth()
           consecutivePingFailures = 0
         } catch (error) {
           consecutivePingFailures += 1
           if (consecutivePingFailures >= PING_FAILURE_TOLERANCE) {
             throw error
           }
-          warn(`cloud: self-ping failed (${consecutivePingFailures}/${PING_FAILURE_TOLERANCE}) — tunnel may still be propagating`)
+          warn(`cloud: self-ping failed (${consecutivePingFailures}/${PING_FAILURE_TOLERANCE})`)
           continue
         }
         pingCount += 1
 
         if (pingCount % heartbeatEveryNPings === 0) {
           try {
-            await args.apiClient.updateTunnel(args.identity.machineToken, {
-              url: publicUrl,
-              kind: TUNNEL_KIND_QUICK,
-            })
+            await sendHeartbeat()
           } catch (error) {
             if (error instanceof CloudApiError && error.status === 401) {
               throw error
@@ -201,7 +160,6 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
         await runOnce()
         consecutiveFailures = 0
       } catch (error) {
-        setCurrentUrl(null)
         if (error instanceof CloudApiError && error.status === 401) {
           warn("cloud: this machine was revoked on kanna.sh — run `kanna pair` again (or `kanna pair --disable` to silence this)")
           return
@@ -209,24 +167,21 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
         if (stopped) return
         consecutiveFailures += 1
         const delay = restartDelayMs(consecutiveFailures)
-        warn(`cloud: tunnel down (${error instanceof Error ? error.message : String(error)}) — restarting in ${Math.round(delay / 1000)}s`)
+        warn(`cloud: connection down (${error instanceof Error ? error.message : String(error)}) — restarting in ${Math.round(delay / 1000)}s`)
         await sleepImpl(delay, abortController.signal)
       }
     }
-    setCurrentUrl(null)
   }
 
   void supervise()
 
   return {
-    getCurrentUrl: () => currentUrl,
     stop() {
       if (stopped) return
       stopped = true
       abortController.abort()
       activeTunnel?.stop()
       activeTunnel = null
-      setCurrentUrl(null)
     },
   }
 }

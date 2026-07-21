@@ -8,9 +8,9 @@ import process from "node:process"
 import {
   CLOUD_CONTROL_URL_ENV_VAR,
   DEFAULT_CLOUD_CONTROL_URL,
+  type CloudHeartbeatRequest,
   type CloudPairRequest,
   type CloudPairResponse,
-  type CloudTunnelUpdateRequest,
 } from "../../shared/cloud-api"
 
 export class CloudApiError extends Error {
@@ -31,7 +31,8 @@ export interface CloudApiClientDeps {
 export interface CloudApiClient {
   controlUrl: string
   pair(pairingCode: string, machineName?: string): Promise<CloudPairResponse>
-  updateTunnel(machineToken: string, update: CloudTunnelUpdateRequest): Promise<void>
+  /** Liveness + the local service the connector fronts (~every 2 min). */
+  heartbeat(machineToken: string, update: CloudHeartbeatRequest): Promise<void>
   /** Best-effort graceful shutdown signal — flips the machine offline immediately. */
   markOffline(machineToken: string): Promise<void>
   removeMachine(machineToken: string): Promise<void>
@@ -80,14 +81,21 @@ export function createCloudApiClient(deps: CloudApiClientDeps = {}): CloudApiCli
         body: JSON.stringify(body),
       })
       const payload = await response.json() as CloudPairResponse
-      if (!payload.machineToken || !payload.proxySecret || !payload.subdomain || !payload.appOrigin) {
+      if (
+        !payload.machineToken ||
+        !payload.proxySecret ||
+        !payload.subdomain ||
+        !payload.appOrigin ||
+        !payload.tunnelToken ||
+        !payload.tunnelHost
+      ) {
         throw new CloudApiError("control plane returned an incomplete pair response", 502)
       }
       return payload
     },
 
-    async updateTunnel(machineToken, update) {
-      await request("/tunnel", {
+    async heartbeat(machineToken, update) {
+      await request("/heartbeat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -445,7 +445,9 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         }
       },
     })
-    deps.log(`${LOG_PREFIX} cloud: ${runtime.identity.appOrigin} (disable with \`${CLI_COMMAND} pair --disable\`)`)
+    // The supervisor logs `cloud: connected (…)` when the tunnel is live —
+    // that's also when the browser opens.
+    deps.log(`${LOG_PREFIX} cloud: waiting for ${runtime.identity.appOrigin} to come online… (disable with \`${CLI_COMMAND} pair --disable\`)`)
   }
 
   if (runOptions.openBrowser && !isShareEnabled(runOptions.share) && !suppressOpenBrowser && !cloudRuntime) {

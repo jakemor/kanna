@@ -10,6 +10,7 @@ import {
   CLI_SUPPRESS_OPEN_ONCE_ENV_VAR,
   isUiUpdateRestart,
   parseChildArgsEnv,
+  sanitizeRestartArgv,
   shouldRestartCliProcess,
 } from "./restart"
 
@@ -71,12 +72,16 @@ function spawnChild(argv: string[]) {
 }
 
 const argv = process.argv.slice(2)
+// The original argv only applies to the first spawn: a `pair <code>` launch
+// must not replay the (single-use) pairing on update restarts.
+let currentArgv = argv
 let suppressOpenOnNextChild = false
 let skipUpdateOnNextChild = false
 let lastStartupUpdateRestart = false
 
 while (true) {
-  const result = await spawnChild(argv)
+  const result = await spawnChild(currentArgv)
+  currentArgv = sanitizeRestartArgv(currentArgv)
   if (shouldRestartCliProcess(result.code, result.signal)) {
     const isStartupUpdate = result.signal === null && result.code === CLI_STARTUP_UPDATE_RESTART_EXIT_CODE
 

@@ -655,7 +655,7 @@ describe("runCli cloud", () => {
     expect(serverOptions.trustProxy).toBe(true)
     expect(serverOptions.cloud).toBe(fake.runtime)
     expect(fake.calls.starts).toEqual([{ localUrl: "http://localhost:3210" }])
-    expect(calls.log.some((line) => line.includes("cloud: https://jakemor-mbp.kanna.sh"))).toBe(true)
+    expect(calls.log.some((line) => line.includes("cloud: waiting for https://jakemor-mbp.kanna.sh"))).toBe(true)
 
     if (result.kind === "started") {
       await result.stop()

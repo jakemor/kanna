@@ -14,6 +14,17 @@ export function isUiUpdateRestart(code: number | null, signal: NodeJS.Signals | 
   return signal === null && code === CLI_UI_UPDATE_RESTART_EXIT_CODE
 }
 
+/**
+ * Argv the supervisor uses when it RESPAWNS a child after an update restart.
+ * A `kanna pair <code>` launch falls through into a normal run once paired —
+ * replaying the original argv would re-redeem the single-use pairing code
+ * (and fail with "invalid code"). Respawns continue as a plain run; the
+ * sticky cloud.json brings the machine back online.
+ */
+export function sanitizeRestartArgv(argv: string[]) {
+  return argv[0] === "pair" ? [] : argv
+}
+
 export function parseChildArgsEnv(value: string | undefined) {
   if (!value) return []
 

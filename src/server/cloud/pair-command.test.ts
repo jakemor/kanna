@@ -29,9 +29,6 @@ function createHarness(overrides: {
   pairResult?: CloudPairResponse | Error
   removeResult?: Error | null
   confirm?: boolean
-  serviceInstallOk?: boolean
-  tunnelComesOnline?: boolean
-  runningInstance?: boolean
 } = {}) {
   const calls = {
     pair: [] as Array<{ code: string; name?: string }>,
@@ -40,10 +37,6 @@ function createHarness(overrides: {
     deleted: 0,
     log: [] as string[],
     warn: [] as string[],
-    serviceInstalls: 0,
-    serviceUninstalls: 0,
-    opened: [] as string[],
-    tunnelPolls: 0,
   }
 
   const client: CloudApiClient = {
@@ -76,30 +69,6 @@ function createHarness(overrides: {
     createApiClient: () => client,
     getMachineName: () => "Jake's MBP",
     confirm: async () => overrides.confirm ?? true,
-    // Hermetic: never touch launchctl/systemctl, real ports, or the network.
-    installServiceImpl: async () => {
-      calls.serviceInstalls += 1
-      return overrides.serviceInstallOk === false
-        ? { ok: false, message: "unsupported platform" }
-        : { ok: true, message: "installed launchd service" }
-    },
-    uninstallServiceImpl: async () => {
-      calls.serviceUninstalls += 1
-      return { ok: true, message: "service removed" }
-    },
-    probeExistingInstanceImpl: async () =>
-      overrides.runningInstance ? { localUrl: "http://localhost:3210", port: 3210 } : null,
-    openUrl: (url) => {
-      calls.opened.push(url)
-    },
-    fetchImpl: (async () => {
-      calls.tunnelPolls += 1
-      if (overrides.tunnelComesOnline === false) {
-        throw new Error("tunnel not up")
-      }
-      return new Response("ok")
-    }) as unknown as typeof fetch,
-    sleepImpl: async () => {},
   }
 
   return { calls, deps }
@@ -126,52 +95,6 @@ describe("kanna pair", () => {
       },
     ])
     expect(calls.log.some((line) => line.includes("https://jakemor-mbp.kanna.sh"))).toBe(true)
-  })
-
-  test("pair installs the service, waits for the tunnel, and opens the hosted URL", async () => {
-    const { calls, deps } = createHarness()
-
-    const code = await runPairCommand({ action: "pair", pairingCode: "ABC123" }, deps)
-
-    expect(code).toBe(0)
-    expect(calls.serviceInstalls).toBe(1)
-    expect(calls.tunnelPolls).toBeGreaterThan(0)
-    expect(calls.opened).toEqual(["https://jakemor-mbp.kanna.sh"])
-    expect(calls.log.some((line) => line.includes("online!"))).toBe(true)
-  })
-
-  test("pair falls back to `run kanna` when the service can't be installed", async () => {
-    const { calls, deps } = createHarness({ serviceInstallOk: false })
-
-    const code = await runPairCommand({ action: "pair", pairingCode: "ABC123" }, deps)
-
-    expect(code).toBe(0)
-    expect(calls.warn.some((line) => line.includes("could not set up the background service"))).toBe(true)
-    expect(calls.log.some((line) => line.includes("run `kanna`"))).toBe(true)
-    expect(calls.opened).toEqual([])
-  })
-
-  test("pair with a pre-existing running instance installs the service but tells the user to restart", async () => {
-    const { calls, deps } = createHarness({ runningInstance: true })
-
-    const code = await runPairCommand({ action: "pair", pairingCode: "ABC123" }, deps)
-
-    expect(code).toBe(0)
-    expect(calls.serviceInstalls).toBe(1)
-    expect(calls.tunnelPolls).toBe(0) // the old instance can't serve the tunnel
-    expect(calls.opened).toEqual([])
-    expect(calls.warn.some((line) => line.includes("restart it"))).toBe(true)
-  })
-
-  test("pair reports 'still starting' when the tunnel never comes up", async () => {
-    const { calls, deps } = createHarness({ tunnelComesOnline: false })
-
-    const code = await runPairCommand({ action: "pair", pairingCode: "ABC123" }, deps)
-
-    expect(code).toBe(0)
-    expect(calls.tunnelPolls).toBe(45)
-    expect(calls.opened).toEqual([])
-    expect(calls.warn.some((line) => line.includes("still starting"))).toBe(true)
   })
 
   test("pairing over a stale/outdated cloud.json stays silent about it", async () => {
@@ -249,12 +172,11 @@ describe("kanna pair", () => {
     expect(await runPairCommand({ action: "disable", pairingCode: null }, deps)).toBe(1)
   })
 
-  test("remove unlinks remotely, deletes credentials, and removes the service", async () => {
+  test("remove unlinks remotely and deletes credentials", async () => {
     const { calls, deps } = createHarness({ identity: IDENTITY })
     expect(await runPairCommand({ action: "remove", pairingCode: null }, deps)).toBe(0)
     expect(calls.remove).toBe(1)
     expect(calls.deleted).toBe(1)
-    expect(calls.serviceUninstalls).toBe(1)
   })
 
   test("remove deletes local credentials even when the control plane call fails", async () => {

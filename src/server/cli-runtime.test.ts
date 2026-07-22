@@ -595,20 +595,48 @@ describe("parseArgs pair subcommand", () => {
 })
 
 describe("runCli cloud", () => {
-  test("pair subcommand delegates and exits with its code", async () => {
+  test("successful pair flows straight into a normal run (machine comes online immediately)", async () => {
     const pairCalls: unknown[] = []
+    const fake = createFakeCloudRuntime()
     const { calls, deps } = createDeps({
       runPairCommandImpl: async (args) => {
         pairCalls.push(args)
         return 0
       },
+      // After pairing, the identity exists — sticky cloud kicks in.
+      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      createCloudRuntimeImpl: () => fake.runtime,
     })
 
     const result = await runCli(["pair", "ABC123"], deps)
 
-    expect(result).toEqual({ kind: "exited", code: 0 })
     expect(pairCalls).toEqual([{ action: "pair", pairingCode: "ABC123" }])
-    // No server, no update check.
+    expect(result.kind).toBe("started")
+    expect(calls.startServer.length).toBe(1)
+    expect(fake.calls.starts.length).toBe(1)
+    expect(calls.log.some((line) => line.includes("starting kanna"))).toBe(true)
+    if (result.kind === "started") await result.stop()
+  })
+
+  test("failed pair exits without starting a server", async () => {
+    const { calls, deps } = createDeps({
+      runPairCommandImpl: async () => 1,
+    })
+
+    const result = await runCli(["pair", "BAD"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 1 })
+    expect(calls.startServer).toEqual([])
+  })
+
+  test("pair management actions exit without starting a server", async () => {
+    const { calls, deps } = createDeps({
+      runPairCommandImpl: async () => 0,
+    })
+
+    const result = await runCli(["pair", "--status"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
     expect(calls.startServer).toEqual([])
     expect(calls.fetchLatestVersion).toEqual([])
   })
@@ -760,30 +788,3 @@ describe("runCli single-instance guard + hosted open", () => {
   })
 })
 
-describe("parseArgs service subcommand", () => {
-  test("service actions parse; default is status", () => {
-    expect(parseArgs(["service", "install"])).toEqual({ kind: "service", action: "install" })
-    expect(parseArgs(["service", "uninstall"])).toEqual({ kind: "service", action: "uninstall" })
-    expect(parseArgs(["service", "status"])).toEqual({ kind: "service", action: "status" })
-    expect(parseArgs(["service"])).toEqual({ kind: "service", action: "status" })
-  })
-
-  test("unknown service action throws", () => {
-    expect(() => parseArgs(["service", "bogus"])).toThrow("Unknown kanna service action")
-    expect(() => parseArgs(["service", "install", "extra"])).toThrow("Unexpected argument")
-  })
-
-  test("runCli delegates service to the command impl", async () => {
-    const actions: string[] = []
-    const { calls, deps } = createDeps({
-      runServiceCommandImpl: async (action) => {
-        actions.push(action)
-        return 0
-      },
-    })
-    const result = await runCli(["service", "install"], deps)
-    expect(result).toEqual({ kind: "exited", code: 0 })
-    expect(actions).toEqual(["install"])
-    expect(calls.startServer).toEqual([])
-  })
-})

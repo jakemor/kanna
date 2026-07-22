@@ -8,9 +8,7 @@
 import process from "node:process"
 import { createInterface } from "node:readline/promises"
 import { getCloudFilePathDisplay, LOG_PREFIX } from "../../shared/branding"
-import { PROD_SERVER_PORT } from "../../shared/ports"
 import { getMachineDisplayName } from "../machine-name"
-import { probeExistingInstance, type ExistingInstance } from "../instance"
 import { CloudApiError, createCloudApiClient, type CloudApiClient } from "./api-client"
 import {
   deleteCloudIdentity,
@@ -18,7 +16,6 @@ import {
   writeCloudIdentity,
   type CloudIdentity,
 } from "./identity"
-import { installService, uninstallService, type ServiceActionResult, type ServiceDeps } from "./service"
 
 export type PairAction = "pair" | "status" | "disable" | "enable" | "remove"
 
@@ -36,35 +33,6 @@ export interface PairCommandDeps {
   createApiClient?: (controlUrl?: string) => CloudApiClient
   getMachineName?: () => string
   confirm?: (question: string) => Promise<boolean>
-  installServiceImpl?: (deps?: ServiceDeps) => Promise<ServiceActionResult>
-  uninstallServiceImpl?: (deps?: ServiceDeps) => Promise<ServiceActionResult>
-  probeExistingInstanceImpl?: (port: number) => Promise<ExistingInstance | null>
-  openUrl?: (url: string) => void
-  fetchImpl?: typeof fetch
-  sleepImpl?: (ms: number) => Promise<void>
-}
-
-const TUNNEL_WAIT_MAX_ATTEMPTS = 45
-const TUNNEL_WAIT_INTERVAL_MS = 1_000
-
-/** Poll the machine's public tunnel /health until it serves (or ~45s). */
-async function waitForTunnelOnline(
-  tunnelHost: string,
-  fetchImpl: typeof fetch,
-  sleepImpl: (ms: number) => Promise<void>,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < TUNNEL_WAIT_MAX_ATTEMPTS; attempt += 1) {
-    try {
-      const response = await fetchImpl(`https://${tunnelHost}/health`, {
-        signal: AbortSignal.timeout(3_000),
-      })
-      if (response.ok) return true
-    } catch {
-      // not up yet
-    }
-    await sleepImpl(TUNNEL_WAIT_INTERVAL_MS)
-  }
-  return false
 }
 
 async function promptConfirm(question: string) {
@@ -133,41 +101,6 @@ export async function runPairCommand(args: PairCommandArgs, deps: PairCommandDep
 
       log(`${LOG_PREFIX} paired! this machine is now ${response.appOrigin}`)
       log(`${LOG_PREFIX} credentials saved to ${getCloudFilePathDisplay()}`)
-
-      // If a kanna started before pairing is still running, it holds the
-      // port but knows nothing about the new credentials. Install the
-      // service anyway (it takes over when that instance exits or at next
-      // login — clean exits don't crash-loop), but don't wait for a tunnel
-      // that can't come up yet.
-      const probe = deps.probeExistingInstanceImpl ?? probeExistingInstance
-      const runningBeforePair = await probe(PROD_SERVER_PORT)
-
-      const install = deps.installServiceImpl ?? installService
-      const serviceResult = await install({ log: (message) => log(`${LOG_PREFIX} ${message}`) })
-      if (!serviceResult.ok) {
-        warn(`${LOG_PREFIX} could not set up the background service: ${serviceResult.message}`)
-        log(`${LOG_PREFIX} run \`kanna\` to bring this machine online`)
-        return 0
-      }
-      log(`${LOG_PREFIX} ${serviceResult.message}`)
-
-      if (runningBeforePair) {
-        warn(`${LOG_PREFIX} a kanna started before pairing is still running at ${runningBeforePair.localUrl} — restart it to bring this machine online`)
-        return 0
-      }
-
-      log(`${LOG_PREFIX} waiting for the machine to come online…`)
-      const online = await waitForTunnelOnline(
-        response.tunnelHost,
-        deps.fetchImpl ?? fetch,
-        deps.sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
-      )
-      if (online) {
-        log(`${LOG_PREFIX} online! opening ${response.appOrigin}`)
-        deps.openUrl?.(response.appOrigin)
-      } else {
-        warn(`${LOG_PREFIX} still starting — it will appear at ${response.appOrigin} shortly (logs: ~/.kanna/logs/service.log)`)
-      }
       return 0
     }
 
@@ -212,11 +145,6 @@ export async function runPairCommand(args: PairCommandArgs, deps: PairCommandDep
         warn(`${LOG_PREFIX} could not remove the machine on kanna.sh (${error instanceof Error ? error.message : String(error)}); deleting local credentials anyway`)
       }
       await deleteIdentity()
-      const uninstall = deps.uninstallServiceImpl ?? uninstallService
-      const serviceResult = await uninstall({ log: (message) => log(`${LOG_PREFIX} ${message}`) })
-      if (serviceResult.ok) {
-        log(`${LOG_PREFIX} background service removed`)
-      }
       log(`${LOG_PREFIX} unpaired — local credentials deleted`)
       return 0
     }

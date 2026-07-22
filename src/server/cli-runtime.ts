@@ -13,7 +13,6 @@ import type { AnalyticsReporter } from "./analytics"
 import { createCloudRuntime, type CloudRuntime } from "./cloud"
 import { readCloudIdentity, type CloudIdentity } from "./cloud/identity"
 import { runPairCommand, type PairCommandArgs, type PairAction } from "./cloud/pair-command"
-import { runServiceCommand, type ServiceAction } from "./cloud/service"
 
 export interface CliOptions {
   port: number
@@ -68,7 +67,6 @@ export interface CliRuntimeDeps {
   renderShareQr?: (url: string) => Promise<string>
   startShareTunnel?: (localUrl: string, shareMode: Exclude<ShareMode, false>) => Promise<StartedShareTunnel>
   runPairCommandImpl?: typeof runPairCommand
-  runServiceCommandImpl?: typeof runServiceCommand
   readCloudIdentityImpl?: (warn: (message: string) => void) => Promise<CloudIdentity | null>
   createCloudRuntimeImpl?: (identity: CloudIdentity) => CloudRuntime
   probeExistingInstanceImpl?: (port: number) => Promise<ExistingInstance | null>
@@ -84,7 +82,6 @@ export interface UpdateInstallAttemptResult {
 type ParsedArgs =
   | { kind: "run"; options: CliOptions }
   | { kind: "pair"; args: PairCommandArgs }
-  | { kind: "service"; action: ServiceAction }
   | { kind: "help" }
   | { kind: "version" }
 
@@ -99,10 +96,8 @@ function printHelp() {
 
 Usage:
   ${CLI_COMMAND} [options]
-  ${CLI_COMMAND} pair <code>   Pair this machine with kanna.sh (get a code at https://kanna.sh/machines)
+  ${CLI_COMMAND} pair <code>   Pair with kanna.sh and start (get a code at https://kanna.sh/machines)
   ${CLI_COMMAND} pair --status|--disable|--enable|--remove
-  ${CLI_COMMAND} service install|uninstall|status
-                       Manage the always-on background service
 
 Options:
   --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
@@ -149,16 +144,6 @@ function parsePairArgs(argv: string[]): ParsedArgs {
 export function parseArgs(argv: string[]): ParsedArgs {
   if (argv[0] === "pair") {
     return parsePairArgs(argv.slice(1))
-  }
-  if (argv[0] === "service") {
-    const action = argv[1] ?? "status"
-    if (action !== "install" && action !== "uninstall" && action !== "status") {
-      throw new Error(`Unknown ${CLI_COMMAND} service action: ${action} (use install, uninstall, or status)`)
-    }
-    if (argv.length > 2) {
-      throw new Error(`Unexpected argument for ${CLI_COMMAND} service: ${argv[2]}`)
-    }
-    return { kind: "service", action }
   }
 
   let port = PROD_SERVER_PORT
@@ -317,7 +302,7 @@ async function maybeSelfUpdate(_argv: string[], deps: CliRuntimeDeps) {
 }
 
 export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliRunResult> {
-  const parsedArgs = parseArgs(argv)
+  let parsedArgs = parseArgs(argv)
   if (parsedArgs.kind === "version") {
     deps.log(deps.version)
     return { kind: "exited", code: 0 }
@@ -331,19 +316,22 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     const code = await (deps.runPairCommandImpl ?? runPairCommand)(parsedArgs.args, {
       log: deps.log,
       warn: deps.warn,
-      openUrl: deps.openUrl,
     })
-    return { kind: "exited", code }
+    if (code !== 0 || parsedArgs.args.action !== "pair") {
+      return { kind: "exited", code }
+    }
+    // Successful pairing flows straight into a normal run — the machine
+    // comes online immediately and the hosted URL opens once the tunnel
+    // connects. From then on any plain `kanna` does the same (sticky).
+    deps.log(`${LOG_PREFIX} starting ${CLI_COMMAND}…`)
+    parsedArgs = parseArgs([])
   }
 
-  if (parsedArgs.kind === "service") {
-    const code = await (deps.runServiceCommandImpl ?? runServiceCommand)(parsedArgs.action, {
-      log: deps.log,
-      warn: deps.warn,
-      logPrefix: LOG_PREFIX,
-    })
-    return { kind: "exited", code }
+  if (parsedArgs.kind !== "run") {
+    // Unreachable: every non-run kind returned above.
+    return { kind: "exited", code: 0 }
   }
+  const runOptions = parsedArgs.options
 
   if (compareVersions(deps.bunVersion, MINIMUM_BUN_VERSION) < 0) {
     deps.warn(`${LOG_PREFIX} Bun ${MINIMUM_BUN_VERSION}+ is required for the embedded terminal. Current Bun: ${deps.bunVersion}`)
@@ -365,11 +353,14 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   // divergent processes. If this data dir is already being served on the
   // configured port, just point the user (and browser) at it. A different
   // fingerprint (e.g. dev profile) keeps the try-next-port behavior.
-  const existing = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(parsedArgs.options.port)
+  const existing = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(runOptions.port)
   if (existing) {
     const hostedUrl = identity?.enabled ? identity.appOrigin : null
     deps.log(`${LOG_PREFIX} kanna is already running at ${existing.localUrl}${hostedUrl ? ` (and ${hostedUrl})` : ""}`)
-    if (parsedArgs.options.openBrowser && !suppressOpenBrowser) {
+    if (hostedUrl) {
+      deps.log(`${LOG_PREFIX} if the hosted URL shows offline, restart the running ${CLI_COMMAND} to pick up the pairing`)
+    }
+    if (runOptions.openBrowser && !suppressOpenBrowser) {
       deps.openUrl(hostedUrl ?? existing.localUrl)
     }
     return { kind: "exited", code: 0 }
@@ -380,16 +371,16 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   // it once; --share/--host/--remote imply a different exposure and win.
   let cloudRuntime: CloudRuntime | null = null
   const cloudEligible =
-    !parsedArgs.options.noCloud &&
-    !isShareEnabled(parsedArgs.options.share) &&
-    parsedArgs.options.host === "127.0.0.1"
+    !runOptions.noCloud &&
+    !isShareEnabled(runOptions.share) &&
+    runOptions.host === "127.0.0.1"
   if (cloudEligible && identity?.enabled) {
     cloudRuntime = (deps.createCloudRuntimeImpl ?? createCloudRuntime)(identity)
   }
 
   const started = await deps.startServer({
-    ...parsedArgs.options,
-    trustProxy: isShareEnabled(parsedArgs.options.share) || cloudRuntime !== null,
+    ...runOptions,
+    trustProxy: isShareEnabled(runOptions.share) || cloudRuntime !== null,
     cloud: cloudRuntime,
     onMigrationProgress: deps.log,
     update: {
@@ -401,25 +392,25 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     },
   })
   const { port, stop } = started
-  const bindHost = parsedArgs.options.host
-  const displayHost = isShareEnabled(parsedArgs.options.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
+  const bindHost = runOptions.host
+  const displayHost = isShareEnabled(runOptions.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const launchUrl = `http://${displayHost}:${port}`
   let shareTunnelStop: (() => void) | null = null
 
   deps.log(`${LOG_PREFIX} listening on http://${bindHost}:${port}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
 
-  if (isShareEnabled(parsedArgs.options.share)) {
+  if (isShareEnabled(runOptions.share)) {
     try {
       const shareTunnel = await (deps.startShareTunnel ?? ((localUrl, shareMode) => startShareTunnel(localUrl, shareMode, {
         log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
-      })))(launchUrl, parsedArgs.options.share)
+      })))(launchUrl, runOptions.share)
       shareTunnelStop = shareTunnel.stop
       if (shareTunnel.publicUrl) {
         await logShareDetails(deps.log, shareTunnel.publicUrl, launchUrl, deps.renderShareQr ?? renderTerminalQr)
       } else {
         deps.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
-        if (isTokenShareMode(parsedArgs.options.share)) {
+        if (isTokenShareMode(runOptions.share)) {
           deps.warn(`${LOG_PREFIX} use the hostname configured for the provided Cloudflare tunnel token`)
         }
         deps.log("Local URL:")
@@ -440,7 +431,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     // Paired machines open the hosted URL — the one that works from every
     // device — once the tunnel is actually serving (opening it earlier would
     // land on the offline page).
-    const openHostedOnConnect = parsedArgs.options.openBrowser && !suppressOpenBrowser
+    const openHostedOnConnect = runOptions.openBrowser && !suppressOpenBrowser
     let openedHosted = false
     runtime.start({
       localUrl: launchUrl,
@@ -457,7 +448,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     deps.log(`${LOG_PREFIX} cloud: ${runtime.identity.appOrigin} (disable with \`${CLI_COMMAND} pair --disable\`)`)
   }
 
-  if (parsedArgs.options.openBrowser && !isShareEnabled(parsedArgs.options.share) && !suppressOpenBrowser && !cloudRuntime) {
+  if (runOptions.openBrowser && !isShareEnabled(runOptions.share) && !suppressOpenBrowser && !cloudRuntime) {
     deps.openUrl(launchUrl)
   }
 

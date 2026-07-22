@@ -64,7 +64,7 @@ describe("buildHandoffContext", () => {
     // Points the new harness at the full JSONL for elided/omitted content.
     expect(text).toContain(TRANSCRIPT_PATH)
     // Provider labels, not raw ids.
-    expect(text).toContain("(Claude)")
+    expect(text).toContain("(Claude Code)")
     expect(context!.stats.includedEntries).toBe(5)
     expect(context!.stats.elidedToolResults).toBe(0)
   })
@@ -96,7 +96,7 @@ describe("buildHandoffContext", () => {
     ])
 
     const text = context!.text
-    expect(text).toContain("--- conversation handed off from Codex to Claude ---")
+    expect(text).toContain("--- conversation handed off from Codex to Claude Code ---")
     expect(text).toContain("--- turn ended with error ---\nboom")
   })
 

@@ -1,9 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { compareVersions, classifyInstallVersionFailure, parseArgs, runCli } from "./cli-runtime"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 
 const originalRuntimeProfile = process.env.KANNA_RUNTIME_PROFILE
 const originalSuppressOpen = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+
+beforeEach(() => {
+  // Every test assumes the open-once suppression flag is unset; the parent
+  // process may have exported it (e.g. when this suite runs inside a
+  // Kanna-managed terminal after a self-restart). Tests that need it set it
+  // themselves; afterEach restores the inherited value for other suites.
+  delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+})
 
 afterEach(() => {
   if (originalRuntimeProfile === undefined) {

@@ -7,7 +7,7 @@ import {
   Check,
   Copy,
   ExternalLink,
-  FolderGit2,
+  Folder,
   Gauge,
   GitBranch,
   GitFork,
@@ -319,16 +319,13 @@ export function CommandPalette({ state }: { state: KannaState }) {
 
   const openProject = useCallback((project: PaletteProject) => {
     close()
-    if (project.mostRecentChatId) {
-      navigate(`/chat/${project.mostRecentChatId}`)
-      return
-    }
+    // Selecting a project always starts a new chat in it.
     if (project.projectId) {
       void state.handleCreateChat(project.projectId)
       return
     }
     void state.handleOpenLocalProject(project.localPath)
-  }, [close, navigate, state.handleCreateChat, state.handleOpenLocalProject])
+  }, [close, state.handleCreateChat, state.handleOpenLocalProject])
 
   const openGitPanel = useCallback((viewMode: "changes" | "history") => {
     if (!projectId) return
@@ -355,7 +352,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     if (projectId) {
       list.push({
         id: "new-thread-current",
-        title: currentProjectTitle ? `New Thread in ${currentProjectTitle}` : "New Thread in Current...",
+        title: currentProjectTitle ? `New Chat in ${currentProjectTitle}` : "New Chat in Current...",
         keywords: ["create chat", "compose", "start"],
         icon: <SquarePen className={ICON_CLASS} />,
         shortcut: chatShortcuts("createChatInCurrentProject"),
@@ -369,7 +366,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     if (state.sidebarData.projectGroups.length > 0) {
       list.push({
         id: "new-thread-choose",
-        title: "New Thread in…",
+        title: "New Chat in…",
         keywords: ["create chat", "compose", "start", "project"],
         icon: <SquarePen className={ICON_CLASS} />,
         run: () => pushPage("new-thread"),
@@ -960,7 +957,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
             ) : null
 
             const threadsGroup = threadResults.length > 0 ? (
-              <CommandGroup key="threads" heading={trimmedQuery ? "Threads" : "Recents"}>
+              <CommandGroup key="threads" heading={trimmedQuery ? "Chats" : "Recents"}>
                 {threadResults.map((thread) => (
                   <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus={!trimmedQuery} />
                 ))}
@@ -991,10 +988,10 @@ export function CommandPalette({ state }: { state: KannaState }) {
                     value={`palette-project-${project.localPath}`}
                     onSelect={() => openProject(project)}
                   >
-                    <FolderGit2 className={ICON_CLASS} />
+                    <Folder className={ICON_CLASS} />
                     <span className="min-w-0 truncate">{project.title}</span>
                     <span className="ml-auto shrink-0 pl-3 text-xs text-muted-foreground">
-                      {project.mostRecentChatId ? "Open latest chat" : "New chat"}
+                      New chat
                     </span>
                   </CommandItem>
                 ))}
@@ -1081,7 +1078,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
           ) : null}
 
           {page === "new-thread" ? (
-            <CommandGroup heading="New Thread In">
+            <CommandGroup heading="New Chat In">
               {projectResults.map((group) => (
                 <CommandItem
                   key={group.groupKey}
@@ -1091,7 +1088,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
                     void state.handleCreateChat(group.groupKey)
                   }}
                 >
-                  <FolderGit2 className={ICON_CLASS} />
+                  <Folder className={ICON_CLASS} />
                   <span className="min-w-0 truncate">{group.title}</span>
                   <span className="ml-auto max-w-[220px] shrink-0 truncate pl-3 text-xs text-muted-foreground">{group.localPath}</span>
                 </CommandItem>

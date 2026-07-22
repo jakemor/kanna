@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react"
-import { ChevronDown, Cloud, ExternalLink, MonitorSmartphone } from "lucide-react"
+import { ChevronDown, Cloud, ExternalLink, LaptopMinimal } from "lucide-react"
 import {
   Dialog,
   DialogBody,
@@ -17,16 +17,9 @@ const MANAGE_MACHINES_URL = "https://kanna.sh/machines"
 /** Shared trigger padding: borderless, but keeps the same net inset as before. */
 const TRIGGER_CLASS = "w-full justify-between py-1.5 rounded-md hover:bg-transparent"
 
-/**
- * Full-width section wrapper: breaks out of the sidebar's 7px padding so the
- * bottom divider spans edge-to-edge, then re-adds matching inner padding.
- */
+/** Wrapper for the sidebar footer: sits just above the Settings button. */
 function MachineSection({ children }: { children: ReactNode }) {
-  return (
-    <div className="-mx-[7px] -mt-[7px] mb-[7px] border-b border-border p-[7px]">
-      {children}
-    </div>
-  )
+  return <div className="pl-2.5 pr-[7px] py-1 border-t ">{children}</div>
 }
 
 function OnlineDot({ online }: { online: boolean }) {
@@ -61,9 +54,6 @@ function PairInstructionsDialog({ open, onOpenChange }: { open: boolean; onOpenC
               Run{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">bunx kanna pair &lt;code&gt;</code>{" "}
               in a terminal on this machine.
-            </li>
-            <li>
-              Restart <code className="rounded bg-muted px-1.5 py-0.5 text-xs">kanna</code> — it comes online automatically from then on.
             </li>
           </ol>
         </DialogBody>
@@ -105,10 +95,10 @@ export function MachineSwitcher() {
           )}
         >
           <span className="flex min-w-0 items-center gap-2">
-            <Cloud className="h-3.5 w-3.5 shrink-0" />
+            <Cloud className="ml-[1px] size-4 shrink-0" />
             <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
           </span>
-          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          <ExternalLink className="size-3.5 shrink-0 opacity-60" />
         </button>
         <PairInstructionsDialog open={pairDialogOpen} onOpenChange={setPairDialogOpen} />
       </MachineSection>
@@ -124,12 +114,12 @@ export function MachineSwitcher() {
         trigger={
           <>
             <span className="flex min-w-0 items-center gap-2">
-              <MonitorSmartphone className="h-3.5 w-3.5 shrink-0" />
+              <LaptopMinimal className="size-4 shrink-0" />
               <span className="truncate text-xs font-medium">
                 {currentMachine?.name ?? window.location.hostname}
               </span>
             </span>
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+            <ChevronDown className="size-3.5 shrink-0 opacity-60" />
           </>
         }
       >

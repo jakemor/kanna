@@ -11,6 +11,7 @@ import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { MachineSwitcher } from "./MachineSwitcher"
 import { getResolvedKeybindings } from "../lib/keybindings"
+import { useIsStandalone } from "../hooks/useIsStandalone"
 import type { KeybindingsSnapshot, SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
 import {
@@ -108,6 +109,7 @@ function KannaSidebarImpl({
 }: KannaSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const isStandalone = useIsStandalone()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null)
   const initializedCollapsedGroupKeysRef = useRef<Set<string>>(new Set())
@@ -507,8 +509,6 @@ function KannaSidebarImpl({
           }}
         >
           <div className="p-[7px]">
-            <MachineSwitcher />
-
             {!hasVisibleChats && isConnecting ? (
               <div className="space-y-5 px-1 pt-3">
                 {[0, 1, 2].map((section) => (
@@ -561,8 +561,9 @@ function KannaSidebarImpl({
           </div>
         </div>
 
-        <div className="border-t border-border p-2">
-            <button
+          <MachineSwitcher />
+        <div className={cn("border-t border-border p-2", isStandalone && "pb-[55px]")}>
+          <button
             type="button"
             onClick={() => {
               navigate("/settings/general")

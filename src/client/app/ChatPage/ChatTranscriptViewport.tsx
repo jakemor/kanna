@@ -388,7 +388,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                 there's room, but its auto margins collapse once the content
                 outgrows the container, so overflow-y-auto scrolls it from the
                 top instead of clipping — no height measurement. */}
-            <div className="my-auto flex w-full flex-col items-center py-6">
+            <div className="my-auto flex w-full flex-col items-center gap-[6vh] py-6">
             <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground opacity-70">
               <Flower strokeWidth={1.5} className="kanna-empty-state-flower size-8 text-muted-foreground" />
               <div

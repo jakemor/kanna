@@ -930,7 +930,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
           placeholder={inputPlaceholder}
           autoFocus
         />
-        <CommandList ref={listRef} className={footerCopyPath ? "pb-9" : undefined}>
+        <CommandList ref={listRef} className={footerCopyPath ? "pb-[42px]" : undefined}>
           {page !== "usage" ? <CommandEmpty>No results found.</CommandEmpty> : null}
 
           {page === "usage" ? (

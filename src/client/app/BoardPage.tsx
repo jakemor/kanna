@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react"
 import { SquareKanban } from "lucide-react"
-import { useLocation, useNavigate, useOutletContext } from "react-router-dom"
+import { Navigate, useLocation, useNavigate, useOutletContext } from "react-router-dom"
 import { ProjectBoard, type ProjectBoardMove } from "../components/ProjectBoard"
 import { isProjectBoardColumnId } from "../lib/projectBoard"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { PageHeader } from "./PageHeader"
 import type { KannaState } from "./useKannaState"
 
@@ -19,6 +20,7 @@ export function BoardPage() {
   const state = useOutletContext<KannaState>()
   const navigate = useNavigate()
   const location = useLocation()
+  const appSettings = useAppSettingsStore((s) => s.settings)
   // Capture once on mount; the history state is cleared right after so
   // back/forward navigation doesn't replay the animation.
   const boardMoveRef = useRef(readBoardMove(location.state))
@@ -29,6 +31,12 @@ export function BoardPage() {
     navigate(location.pathname, { replace: true, state: null })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Board view is off by default; if a user lands on /board directly while it is
+  // disabled, send them home. Wait until settings load to avoid a redirect flash.
+  if (appSettings && appSettings.boardViewEnabled !== true) {
+    return <Navigate to="/" replace />
+  }
 
   return (
     <div className="flex-1 flex flex-col min-w-0 relative">

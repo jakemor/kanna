@@ -98,6 +98,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "The bundled sound used for chat notification playback and previews",
     keywords: ["notifications", "audio"],
   },
+  boardView: {
+    sectionId: "general",
+    title: "Board View",
+    description: "Show the board view and its navbar button for tracking conversations across projects",
+    keywords: ["kanban", "board", "navbar"],
+  },
   jumpBackToBoard: {
     sectionId: "general",
     title: "Jump Back to Board",

@@ -68,6 +68,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
       },
     },
     boardAutoReturn: false,
+    boardViewEnabled: false,
     warning: null,
     filePathDisplay: filePath,
     ...overrides,

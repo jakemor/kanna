@@ -43,6 +43,7 @@ interface AppSettingsFile {
     pi?: ProviderPreferenceInput
   }
   boardAutoReturn?: unknown
+  boardViewEnabled?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -145,6 +146,7 @@ function toFilePayload(state: AppSettingsState) {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     boardAutoReturn: state.boardAutoReturn,
+    boardViewEnabled: state.boardViewEnabled,
   }
 }
 
@@ -160,6 +162,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     boardAutoReturn: state.boardAutoReturn,
+    boardViewEnabled: state.boardViewEnabled,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -197,6 +200,11 @@ function normalizeAppSettings(
     warnings.push("boardAutoReturn must be a boolean")
   }
 
+  const boardViewEnabled = source?.boardViewEnabled === true
+  if (source?.boardViewEnabled !== undefined && typeof source.boardViewEnabled !== "boolean") {
+    warnings.push("boardViewEnabled must be a boolean")
+  }
+
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
   const state: AppSettingsState = {
     analyticsEnabled,
@@ -216,6 +224,7 @@ function normalizeAppSettings(
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     boardAutoReturn,
+    boardViewEnabled,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -245,6 +254,7 @@ function toComparablePayload(source: AppSettingsFile) {
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
     boardAutoReturn: source.boardAutoReturn,
+    boardViewEnabled: source.boardViewEnabled,
   }
 }
 

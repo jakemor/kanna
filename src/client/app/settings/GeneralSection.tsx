@@ -200,12 +200,22 @@ export function GeneralSection({
     }
   }
 
+  async function handleBoardViewEnabledChange(nextValue: "enabled" | "disabled") {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ boardViewEnabled: nextValue === "enabled" })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save board settings.")
+    }
+  }
+
   const customEditorPreview = editorCommandDraft
     .replaceAll("{path}", "/Users/jake/Projects/kanna/src/client/app/App.tsx")
     .replaceAll("{line}", "12")
     .replaceAll("{column}", "1")
   const analyticsSettingValue = appSettings?.analyticsEnabled === false ? "disabled" : "enabled"
   const boardAutoReturnValue = appSettings?.boardAutoReturn === true ? "enabled" : "disabled"
+  const boardViewEnabledValue = appSettings?.boardViewEnabled === true ? "enabled" : "disabled"
 
   return (
     <>
@@ -286,6 +296,17 @@ export function GeneralSection({
               </SelectGroup>
             </SelectContent>
           </Select>
+        </SettingsRow>
+
+        <SettingsRow def={SETTINGS_ROWS.boardView}>
+          <SegmentedControl
+            value={boardViewEnabledValue}
+            onValueChange={(value) => {
+              void handleBoardViewEnabledChange(value)
+            }}
+            options={ENABLED_DISABLED_OPTIONS}
+            size="sm"
+          />
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.jumpBackToBoard}>

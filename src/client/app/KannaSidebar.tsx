@@ -21,6 +21,7 @@ import {
   shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
 import { SIDEBAR_WIDTH_STORAGE_KEY } from "../lib/storageKeys"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
@@ -345,6 +346,7 @@ function KannaSidebarImpl({
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
   const isBoardActive = location.pathname === "/board"
+  const boardViewEnabled = useAppSettingsStore((s) => s.settings?.boardViewEnabled === true)
   const isSettingsActive = location.pathname.startsWith("/settings")
   const isUtilityPageActive = isLocalProjectsActive || isBoardActive || isSettingsActive
   const isConnecting = connectionStatus === "connecting" || !ready
@@ -421,18 +423,20 @@ function KannaSidebarImpl({
             <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{APP_NAME}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                navigate("/board")
-                onClose()
-              }}
-              className="size-10 rounded-lg hover:!border-border/0 md:hidden"
-              title="Board"
-            >
-              <SquareKanban className="h-5 w-5" />
-            </Button>
+            {boardViewEnabled && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  navigate("/board")
+                  onClose()
+                }}
+                className="size-10 rounded-lg hover:!border-border/0 md:hidden"
+                title="Board"
+              >
+                <SquareKanban className="h-5 w-5" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -465,18 +469,20 @@ function KannaSidebarImpl({
                 UPDATE
               </Button>
             ) : null}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                navigate("/board")
-                onClose()
-              }}
-              className="hidden md:inline-flex h-10 w-auto rounded-lg pl-3 pr-1.5 hover:!border-border/0"
-              title="Board"
-            >
-              <SquareKanban className="size-4" />
-            </Button>
+            {boardViewEnabled && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  navigate("/board")
+                  onClose()
+                }}
+                className="hidden md:inline-flex h-10 w-auto rounded-lg pl-3 pr-1.5 hover:!border-border/0"
+                title="Board"
+              >
+                <SquareKanban className="size-4" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"

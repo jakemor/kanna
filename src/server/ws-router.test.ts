@@ -121,6 +121,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
     },
   },
   boardAutoReturn: false,
+  boardViewEnabled: false,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

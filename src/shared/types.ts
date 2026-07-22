@@ -864,6 +864,8 @@ export interface AppSettingsSnapshot {
   providerDefaults: ChatProviderPreferences
   /** Return to the board when a chat opened from it starts running. Off by default. */
   boardAutoReturn: boolean
+  /** Show the board view and its navbar entry. Off by default. */
+  boardViewEnabled: boolean
   warning: string | null
   filePathDisplay: string
 }
@@ -875,6 +877,7 @@ export interface AppSettingsPatch {
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
   boardAutoReturn?: boolean
+  boardViewEnabled?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference

@@ -12,6 +12,7 @@ import {
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
+import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
@@ -525,9 +526,16 @@ describe("AgentCoordinator codex integration", () => {
 
   test("binds codex provider and reuses the session token on later turns", async () => {
     const sessionCalls: Array<{ chatId: string; sessionToken: string | null }> = []
+    // Model the real manager's warm-session early return: once a chat has a
+    // live session, later startSession calls (including the coordinator's
+    // health-check preflight) no-op instead of re-resuming.
+    const openSessions = new Set<string>()
     const fakeCodexManager = {
-      async startSession(args: { chatId: string; sessionToken: string | null }) {
+      async startSession(args: { chatId: string; sessionToken: string | null; pendingForkSessionToken?: string | null }) {
+        if (openSessions.has(args.chatId) && !args.pendingForkSessionToken) return
+        openSessions.add(args.chatId)
         sessionCalls.push({ chatId: args.chatId, sessionToken: args.sessionToken })
+        return { sessionToken: "thread-1", resumeFellBack: false }
       },
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -591,10 +599,10 @@ describe("AgentCoordinator codex integration", () => {
     })
 
     await waitFor(() => store.turnFinishedCount === 2)
-    expect(sessionCalls).toEqual([
-      { chatId: "chat-1", sessionToken: null },
-      { chatId: "chat-1", sessionToken: "thread-1" },
-    ])
+    // The warm app-server session is reused across turns — no fresh resume on
+    // the second turn — and the resumed token is retained.
+    expect(sessionCalls).toEqual([{ chatId: "chat-1", sessionToken: null }])
+    expect(store.chat.sessionToken).toBe("thread-1")
   })
 
   test("maps codex model options into session and turn settings", async () => {
@@ -2013,7 +2021,7 @@ describe("mid-conversation provider switch", () => {
     const stoppedCodexSessions: string[] = []
     const fakeCodexManager = {
       async startSession() {
-        return "codex-thread-1"
+        return { sessionToken: "codex-thread-1", resumeFellBack: false }
       },
       stopSession(chatId: string) {
         stoppedCodexSessions.push(chatId)
@@ -2105,6 +2113,178 @@ describe("mid-conversation provider switch", () => {
     const boundaries = store.messages.filter((entry) => entry.kind === "handoff_boundary")
     expect(boundaries).toHaveLength(1)
     expect(sentContents[1]).toBe("same harness again")
+  })
+})
+
+describe("session restore on lost native session", () => {
+  function createClaudeRestoreFixture(artifactStatus: SessionArtifactStatus) {
+    const chat = createFakeChat("chat-1", "project-1", "Old conversation")
+    chat.provider = "claude"
+    chat.sessionToken = "claude-session-old"
+    const store = createFakeStore({ chats: [chat] })
+    store.messages.push(
+      timestamped({ kind: "user_prompt", content: "earlier question" }),
+      timestamped({ kind: "assistant_text", text: "earlier answer" }),
+    )
+
+    const events = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+    const startSessionCalls: Array<{ sessionToken: string | null; forkSession: boolean }> = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      checkSessionArtifact: () => artifactStatus,
+      startClaudeSession: async (args) => {
+        startSessionCalls.push({ sessionToken: args.sessionToken, forkSession: args.forkSession })
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+            events.push({ type: "session_token" as const, sessionToken: "claude-session-new" })
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+            })
+          },
+        }
+      },
+    })
+
+    return { store, coordinator, events, prompts, startSessionCalls }
+  }
+
+  test("rebuilds context and marks a boundary when the Claude session file is gone", async () => {
+    const { store, coordinator, events, prompts, startSessionCalls } = createClaudeRestoreFixture("missing")
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "continue please",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    // Boundary precedes the new user prompt and records the provider + stats.
+    const boundaryIndex = store.messages.findIndex((entry) => entry.kind === "session_restored")
+    const promptIndex = store.messages.findIndex(
+      (entry) => entry.kind === "user_prompt" && (entry as { content: string }).content === "continue please"
+    )
+    expect(boundaryIndex).toBeGreaterThan(-1)
+    expect(promptIndex).toBeGreaterThan(boundaryIndex)
+    const boundary = store.messages[boundaryIndex] as Extract<TranscriptEntry, { kind: "session_restored" }>
+    expect(boundary.provider).toBe("claude")
+    expect(boundary.stats?.includedEntries).toBe(2)
+
+    // Stale token cleared; a fresh session is started (no resume, no fork).
+    expect(startSessionCalls).toEqual([{ sessionToken: null, forkSession: false }])
+
+    // Wire leads with the rebuilt transcript + restore preamble and ends with
+    // the user's verbatim prompt.
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toContain("<handoff_transcript>")
+    expect(prompts[0]).toContain("restored from Kanna's saved transcript")
+    expect(prompts[0]).toContain("earlier question")
+    expect(prompts[0]?.endsWith("continue please")).toBe(true)
+    expect((store.messages[promptIndex] as { content: string }).content).toBe("continue please")
+
+    events.close()
+  })
+
+  test("does not restore when the session artifact status is unknown", async () => {
+    const { store, coordinator, events, prompts, startSessionCalls } = createClaudeRestoreFixture("unknown")
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "continue please",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(store.messages.some((entry) => entry.kind === "session_restored")).toBe(false)
+    // Normal resume with the existing token; prompt is not wrapped in a transcript.
+    expect(startSessionCalls).toEqual([{ sessionToken: "claude-session-old", forkSession: false }])
+    expect(prompts[0]).toBe("continue please")
+
+    events.close()
+  })
+
+  test("marks a boundary once when codex resume falls back to a fresh thread", async () => {
+    const chat = createFakeChat("chat-1", "project-1", "Old codex conversation")
+    chat.provider = "codex"
+    chat.sessionToken = "codex-thread-old"
+    const store = createFakeStore({ chats: [chat] })
+    store.messages.push(
+      timestamped({ kind: "user_prompt", content: "earlier question" }),
+      timestamped({ kind: "assistant_text", text: "earlier answer" }),
+    )
+
+    const sentContents: string[] = []
+    let resumeFellBack = true
+    const fakeCodexManager = {
+      async startSession() {
+        return { sessionToken: "codex-thread-new", resumeFellBack }
+      },
+      stopSession() {},
+      async startTurn(args: { content: string }): Promise<HarnessTurn> {
+        sentContents.push(args.content)
+        async function* stream() {
+          yield { type: "session_token" as const, sessionToken: "codex-thread-new" }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "" }),
+          }
+        }
+        return { provider: "codex", stream: stream(), interrupt: async () => {}, close: () => {} }
+      },
+    }
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "continue please",
+      model: "gpt-5.4",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    const boundaryIndex = store.messages.findIndex((entry) => entry.kind === "session_restored")
+    const promptIndex = store.messages.findIndex(
+      (entry) => entry.kind === "user_prompt" && (entry as { content: string }).content === "continue please"
+    )
+    expect(boundaryIndex).toBeGreaterThan(-1)
+    expect(promptIndex).toBeGreaterThan(boundaryIndex)
+    expect((store.messages[boundaryIndex] as Extract<TranscriptEntry, { kind: "session_restored" }>).provider).toBe("codex")
+    expect(sentContents[0]).toContain("<handoff_transcript>")
+    expect(sentContents[0]?.endsWith("continue please")).toBe(true)
+
+    // Live session on the follow-up turn: resume succeeds, so no second boundary.
+    resumeFellBack = false
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "and again",
+      model: "gpt-5.4",
+    })
+    await waitFor(() => store.turnFinishedCount === 2)
+
+    expect(store.messages.filter((entry) => entry.kind === "session_restored")).toHaveLength(1)
+    expect(sentContents[1]).toBe("and again")
   })
 })
 

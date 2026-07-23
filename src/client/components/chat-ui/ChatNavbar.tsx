@@ -7,6 +7,7 @@ import { cn } from "../../lib/utils"
 import { OpenExternalSelect, openContextMenuFromButton } from "../open-external-menu"
 import { OPEN_COMMAND_PALETTE_EVENT } from "../command-palette/CommandPalette"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 
 function NavbarOverflowMenu({
   showOnDesktop,
@@ -34,7 +35,7 @@ function NavbarOverflowMenu({
           onClick={openContextMenuFromButton}
           title="More actions"
           className={cn(
-            "border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 hover:!bg-transparent",
+            "border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[42px] max-md:px-0 hover:!bg-transparent",
             showOnDesktop ? "flex" : "flex md:hidden"
           )}
         >
@@ -132,6 +133,9 @@ export function ChatNavbar({
   hasGitRepo = true,
   gitStatus = "unknown",
 }: Props) {
+  // New Sidebar mode surfaces search in the sidebar, so the chat navbar only
+  // keeps its search button on mobile (where the sidebar is hidden).
+  const newSidebar = useAppSettingsStore((store) => store.settings?.newSidebarEnabled !== false)
   const branchLabel = !hasGitRepo
     ? "Setup Git"
     : gitStatus === "unknown"
@@ -156,7 +160,7 @@ export function ChatNavbar({
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden h-[45px] w-[45px] hover:!border-border/0 hover:!bg-transparent"
+            className="md:hidden h-[45px] w-[42px] hover:!border-border/0 hover:!bg-transparent"
             onClick={onOpenSidebar}
           >
             <Menu className="size-5" />
@@ -180,7 +184,10 @@ export function ChatNavbar({
           <Button
             variant="ghost"
             size="icon"
-            className="max-md:h-[45px] max-md:w-[45px] hover:!border-border/0 hover:!bg-transparent"
+            className={cn(
+              "max-md:h-[45px] max-md:w-[42px] hover:!border-border/0 hover:!bg-transparent",
+              newSidebar && "md:hidden"
+            )}
             onClick={() => window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT))}
             title="Search"
           >
@@ -189,7 +196,7 @@ export function ChatNavbar({
           <Button
             variant="ghost"
             size="icon"
-            className="max-md:h-[45px] max-md:w-[45px] hover:!border-border/0 hover:!bg-transparent"
+            className="max-md:h-[45px] max-md:w-[42px] hover:!border-border/0 hover:!bg-transparent"
             onClick={onNewChat}
             title="Compose"
           >
@@ -272,7 +279,7 @@ export function ChatNavbar({
                     title="Browser"
                     aria-label="Browser"
                     className={cn(
-                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 hover:!bg-transparent"
+                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[42px] max-md:px-0 hover:!bg-transparent"
                     )}
                   >
                     <Globe strokeWidth={2.25} className="h-4 max-md:h-5 max-md:w-5" />
@@ -286,7 +293,7 @@ export function ChatNavbar({
                         size="none"
                         onClick={onToggleGitPanel}
                         className={cn(
-                          "border flex flex-row items-center gap-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 border-border/0 hover:!border-border/0 hover:!bg-transparent",
+                          "border flex flex-row items-center gap-1.5 h-9 max-md:h-[45px] max-md:w-[42px] max-md:px-0 border-border/0 hover:!border-border/0 hover:!bg-transparent",
                           rightPanelVisible ? "w-[38px] justify-center px-0" : "pl-1.5 pr-2"
                         )}
                       >
@@ -304,7 +311,7 @@ export function ChatNavbar({
                     onClick={handleCloseRightPanel}
                     title="Collapse sidebar"
                     aria-label="Collapse sidebar"
-                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 hover:!bg-transparent text-foreground"
+                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[42px] max-md:px-0 hover:!bg-transparent text-foreground"
                   >
                     <PanelRight strokeWidth={2.25} className="h-4 max-md:h-5 max-md:w-5" />
                   </Button>

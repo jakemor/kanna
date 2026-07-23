@@ -55,6 +55,22 @@ describe("deriveLatestContextWindowSnapshot", () => {
     expect(afterSwitch?.usedTokens).toBe(42)
     expect(afterSwitch?.compactsAutomatically).toBe(false)
   })
+
+  test("a session restore resets the meter like a handoff boundary", () => {
+    // The restored session is a fresh native session, so usage before the
+    // session_restored boundary describes the old (gone) one.
+    expect(deriveLatestContextWindowSnapshot([
+      entry({ kind: "context_window_updated", usage: { usedTokens: 999, compactsAutomatically: false } }, 1),
+      entry({ kind: "session_restored", provider: "claude" }, 2),
+    ])).toBeNull()
+
+    const afterRestore = deriveLatestContextWindowSnapshot([
+      entry({ kind: "context_window_updated", usage: { usedTokens: 999, compactsAutomatically: false } }, 1),
+      entry({ kind: "session_restored", provider: "claude" }, 2),
+      entry({ kind: "context_window_updated", usage: { usedTokens: 7, compactsAutomatically: false } }, 3),
+    ])
+    expect(afterRestore?.usedTokens).toBe(7)
+  })
 })
 
 describe("formatContextWindowTokens", () => {

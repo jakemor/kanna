@@ -155,6 +155,13 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           toProvider: entry.toProvider,
         })
         break
+      case "session_restored":
+        messages.push({
+          ...createBaseMessage(entry),
+          kind: "session_restored",
+          provider: entry.provider,
+        })
+        break
       case "interrupted":
         messages.push({
           ...createBaseMessage(entry),

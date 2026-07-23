@@ -44,6 +44,11 @@ interface Props {
   onReorderGroups?: (newOrder: string[]) => void
   isConnected?: boolean
   startingLocalPath?: string | null
+  /**
+   * New Sidebar mode: order projects by recent activity (no drag-reorder) and
+   * expand every project fully (all chats, no "Show more" collapsing).
+   */
+  newSidebar?: boolean
 }
 
 interface SortableProjectGroupProps {
@@ -63,10 +68,21 @@ interface SortableProjectGroupProps {
   onHideProject?: (projectId: string) => void
   isConnected?: boolean
   startingLocalPath?: string | null
+  newSidebar?: boolean
 }
 
 const DRAG_REORDER_TRIGGER_OFFSET_PX = 20
 const SIDEBAR_REORDER_MEDIA_QUERY = "(min-width: 768px)"
+
+/** Most recent chat activity in a project, for New Sidebar's activity ordering. */
+export function projectActivity(group: SidebarProjectGroup): number {
+  let latest = 0
+  for (const chat of group.chats) {
+    const activity = chat.lastMessageAt ?? chat._creationTime
+    if (activity > latest) latest = activity
+  }
+  return latest
+}
 
 function subscribeToSidebarReorderMediaQuery(onChange: () => void) {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
@@ -211,9 +227,10 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
   onHideProject,
   isConnected,
   startingLocalPath,
+  newSidebar = false,
 }: SortableProjectGroupProps) {
   const { groupKey, localPath, title } = group
-  const isExpanded = expandedGroups.has(groupKey)
+  const isExpanded = newSidebar || expandedGroups.has(groupKey)
   const isEmptyProject = group.chats.length === 0
   const hasMore = group.olderChats.length > 0
   const hasProjectMenu = Boolean(onHideProject && onCopyPath && onOpenExternalPath)
@@ -356,7 +373,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
           ) : (
             <>
               {group.previewChats.map(renderChatRow)}
-              {hasMore && isExpanded ? (
+              {!newSidebar && hasMore && isExpanded ? (
                 <button
                   onClick={() => onToggleExpandedGroup(groupKey)}
                   className="pl-2.5 py-1 text-xs text-muted-foreground/60 hover:text-foreground/60 transition-colors flex flex-row items-center gap-2 justify-center"
@@ -365,7 +382,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                 </button>
               ) : null}
               {isExpanded ? group.olderChats.map(renderChatRow) : null}
-              {hasMore && !isExpanded ? (
+              {!newSidebar && hasMore && !isExpanded ? (
                 <button
                   onClick={() => onToggleExpandedGroup(groupKey)}
                   className="pl-2.5 py-1 text-xs text-muted-foreground/60 hover:text-foreground/60 transition-colors flex flex-row items-center gap-1 justify-center"
@@ -398,13 +415,18 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   onReorderGroups,
   isConnected,
   startingLocalPath,
+  newSidebar,
 }: Props) {
-  const isReorderEnabled = useSidebarReorderEnabled()
+  // New Sidebar mode fixes the order to recent activity, so drag-reorder is off.
+  const reorderMediaEnabled = useSidebarReorderEnabled()
+  const isReorderEnabled = !newSidebar && reorderMediaEnabled
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 2 } }),
     useSensor(KeyboardSensor)
   )
 
+  // In New Sidebar mode the caller passes groups pre-sorted by activity
+  // (with sticky positions for just-emptied projects); render as given.
   const groupIds = useMemo(
     () => projectGroups.map((g) => g.groupKey),
     [projectGroups]
@@ -482,6 +504,7 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
           onHideProject={onHideProject}
           isConnected={isConnected}
           startingLocalPath={startingLocalPath}
+          newSidebar={newSidebar}
         />
         ))}
       </SortableContext>

@@ -233,6 +233,9 @@ function KannaLayout() {
   const handleOpenArchivedChat = useCallback((chatId: string) => {
     void state.handleOpenArchivedChat(chatId)
   }, [state.handleOpenArchivedChat])
+  const handleRestoreChat = useCallback((chatId: string) => {
+    void state.handleRestoreChat(chatId)
+  }, [state.handleRestoreChat])
   const handleOpenAddProjectModal = useCallback(() => {
     state.openAddProjectModal()
   }, [state.openAddProjectModal])
@@ -275,6 +278,7 @@ function KannaLayout() {
       onShareChat={handleSidebarShareChat}
       onArchiveChat={handleSidebarArchiveChat}
       onOpenArchivedChat={handleOpenArchivedChat}
+      onRestoreChat={handleRestoreChat}
       onDeleteChat={handleSidebarDeleteChat}
       onOpenAddProjectModal={handleOpenAddProjectModal}
       onCopyPath={handleSidebarCopyPath}
@@ -294,6 +298,7 @@ function KannaLayout() {
     handleSidebarArchiveChat,
     handleSidebarDeleteChat,
     handleOpenArchivedChat,
+    handleRestoreChat,
     handleSidebarForkChat,
     handleSidebarOpenExternalPath,
     handleSidebarRenameProject,

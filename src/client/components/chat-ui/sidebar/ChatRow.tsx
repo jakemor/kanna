@@ -17,10 +17,14 @@ interface Props {
   nowMs: number
   shortcutHint?: string | null
   showShortcutHint?: boolean
+  editorLabel: string
   onSelectChat: (chatId: string) => void
+  onNewChatInProject: (localPath: string) => void
   onRenameChat: (chatId: string) => void
   onShareChat: (chatId: string) => void
+  onCopyPath: (localPath: string) => void
   onOpenInFinder: (localPath: string) => void
+  onOpenInEditor: (localPath: string) => void
   onForkChat: (chatId: string) => void
   onArchiveChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
@@ -32,10 +36,14 @@ function ChatRowImpl({
   nowMs,
   shortcutHint = null,
   showShortcutHint = false,
+  editorLabel,
   onSelectChat,
+  onNewChatInProject,
   onRenameChat,
   onShareChat,
+  onCopyPath,
   onOpenInFinder,
+  onOpenInEditor,
   onForkChat,
   onArchiveChat,
   onDeleteChat,
@@ -140,9 +148,13 @@ function ChatRowImpl({
   return (
     <ChatRowMenu
       canFork={chat.canFork}
+      editorLabel={editorLabel}
+      onNewChat={() => onNewChatInProject(chat.localPath)}
       onRename={() => onRenameChat(chat.chatId)}
       onShare={() => onShareChat(chat.chatId)}
+      onCopyPath={() => onCopyPath(chat.localPath)}
       onOpenInFinder={() => onOpenInFinder(chat.localPath)}
+      onOpenInEditor={() => onOpenInEditor(chat.localPath)}
       onFork={() => onForkChat(chat.chatId)}
       onArchive={() => onArchiveChat(chat.chatId)}
       onDelete={() => onDeleteChat(chat.chatId)}

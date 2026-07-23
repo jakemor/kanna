@@ -90,6 +90,10 @@ export function deriveSidebarData(
   const archivedChatsByProjectId = new Map<string, ChatRecord[]>()
   for (const chat of state.chatsById.values()) {
     if (chat.deletedAt) continue
+    // Archived chats that never got a message are meaningless — hide them
+    // everywhere (the archive command hard-deletes these going forward; this
+    // also sweeps any pre-existing ones out of every client surface).
+    if (chat.archivedAt && !chat.hasMessages && !chat.lastMessageAt) continue
     const targetMap = chat.archivedAt ? archivedChatsByProjectId : chatsByProjectId
     const projectChats = targetMap.get(chat.projectId)
     if (projectChats) {

@@ -105,13 +105,14 @@ describe("CodexAppServerManager", () => {
       spawnProcess: () => process as never,
     })
 
-    await manager.startSession({
+    const started = await manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: "missing-thread",
     })
 
+    expect(started).toEqual({ sessionToken: "thread-2", resumeFellBack: true })
     expect(process.messages.map((message: any) => message.method)).toEqual([
       "initialize",
       "initialized",
@@ -136,7 +137,7 @@ describe("CodexAppServerManager", () => {
       spawnProcess: () => process as never,
     })
 
-    const sessionToken = await manager.startSession({
+    const started = await manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
@@ -144,7 +145,7 @@ describe("CodexAppServerManager", () => {
       pendingForkSessionToken: "thread-source",
     })
 
-    expect(sessionToken).toBe("thread-fork-1")
+    expect(started).toEqual({ sessionToken: "thread-fork-1", resumeFellBack: false })
     expect(process.messages.map((message: any) => message.method)).toEqual([
       "initialize",
       "initialized",

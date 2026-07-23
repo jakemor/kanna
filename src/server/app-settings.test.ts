@@ -67,7 +67,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         planMode: false,
       },
     },
-    showRecentChatsInSidebar: false,
+    newSidebarEnabled: true,
     warning: null,
     filePathDisplay: filePath,
     ...overrides,

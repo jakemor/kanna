@@ -100,6 +100,31 @@ describe("buildHandoffContext", () => {
     expect(text).toContain("--- turn ended with error ---\nboom")
   })
 
+  test("session_restore reason swaps the preamble and renders restore boundaries", () => {
+    const context = buildHandoffContext({
+      entries: [
+        userPrompt("earlier question"),
+        assistantText("earlier answer"),
+        timestamped({ kind: "session_restored", provider: "claude" }),
+      ],
+      fromProvider: "claude",
+      toProvider: "claude",
+      transcriptPath: TRANSCRIPT_PATH,
+      reason: "session_restore",
+    })
+
+    const text = context!.text
+    // Restore preamble, not the "handed off from another agent" one.
+    expect(text).toContain("restored from Kanna's saved transcript")
+    expect(text).not.toContain("handed off to you from another coding agent")
+    // The restore boundary renders its own marker.
+    expect(text).toContain("--- conversation restored from saved transcript (previous native session unavailable) ---")
+    // The shared transcript body + JSONL pointer are unchanged.
+    expect(text).toContain("<handoff_transcript>")
+    expect(text).toContain("--- user ---\nearlier question")
+    expect(text).toContain(TRANSCRIPT_PATH)
+  })
+
   test("returns null when there is nothing worth handing off", () => {
     expect(build([])).toBeNull()
     expect(build([

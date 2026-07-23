@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
+import { Flower, History, House, Loader2, PanelLeft, Search, X, Menu, Plus, Settings, SquarePen } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
@@ -8,8 +8,9 @@ import { formatSidebarAgeLabel } from "../lib/formatters"
 import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
-import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
+import { LocalProjectsSection, projectActivity } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { ThreadSections } from "../components/chat-ui/sidebar/ThreadSections"
+import { SegmentedControl } from "../components/ui/segmented-control"
 import { MachineSwitcher } from "./MachineSwitcher"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { useIsStandalone } from "../hooks/useIsStandalone"
@@ -22,8 +23,9 @@ import {
   isSidebarModifierShortcut,
   shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
-import { SIDEBAR_WIDTH_STORAGE_KEY } from "../lib/storageKeys"
+import { SIDEBAR_VIEW_STORAGE_KEY, SIDEBAR_WIDTH_STORAGE_KEY } from "../lib/storageKeys"
 import { useAppSettingsStore } from "../stores/appSettingsStore"
+import { OPEN_COMMAND_PALETTE_EVENT, openCommandPalette } from "../components/command-palette/CommandPalette"
 
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
@@ -43,6 +45,14 @@ function readStoredSidebarWidth() {
 function persistSidebarWidth(width: number) {
   if (typeof window === "undefined") return
   window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
+}
+
+/** Which view the sidebar shows when the recent-chats Labs mode is enabled. */
+type SidebarView = "recents" | "projects"
+
+function readStoredSidebarView(): SidebarView {
+  if (typeof window === "undefined") return "recents"
+  return window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY) === "projects" ? "projects" : "recents"
 }
 
 interface KannaSidebarProps {
@@ -65,6 +75,7 @@ interface KannaSidebarProps {
   onShareChat: (chatId: string) => void
   onArchiveChat: (chat: SidebarChatRow) => void
   onOpenArchivedChat: (chatId: string) => void
+  onRestoreChat: (chatId: string) => void
   onDeleteChat: (chat: SidebarChatRow) => void
   onOpenAddProjectModal: () => void
   onCopyPath: (localPath: string) => void
@@ -97,6 +108,7 @@ function KannaSidebarImpl({
   onShareChat,
   onArchiveChat,
   onOpenArchivedChat,
+  onRestoreChat,
   onDeleteChat,
   onOpenAddProjectModal,
   onCopyPath,
@@ -117,10 +129,25 @@ function KannaSidebarImpl({
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set())
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
+
+  // The selected chat's project group, when it has chats to browse — gates the
+  // "Chats in <project>" shortcut (mirrors the palette's own action gating).
+  const currentProjectGroup = useMemo(() => {
+    if (!currentProjectId) return null
+    const group = data.projectGroups.find((candidate) => candidate.groupKey === currentProjectId)
+    if (!group) return null
+    return group.chats.length > 0 || (group.archivedChats?.length ?? 0) > 0 ? group : null
+  }, [currentProjectId, data.projectGroups])
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [archivedProjectId, setArchivedProjectId] = useState<string | null>(null)
+  const [sidebarView, setSidebarView] = useState<SidebarView>(readStoredSidebarView)
+
+  const changeSidebarView = useCallback((view: SidebarView) => {
+    setSidebarView(view)
+    if (typeof window !== "undefined") window.localStorage.setItem(SIDEBAR_VIEW_STORAGE_KEY, view)
+  }, [])
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const visibleChats = useMemo(
     () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups),
@@ -216,16 +243,23 @@ function KannaSidebarImpl({
         nowMs={nowMs}
         shortcutHint={visibleIndex ? getSidebarNumberJumpHint(resolvedKeybindings, visibleIndex) : null}
         showShortcutHint={showNumberJumpHints}
+        editorLabel={editorLabel}
         onSelectChat={selectChat}
+        onNewChatInProject={(localPath) => {
+          const projectId = projectIdByPath.get(localPath)
+          if (projectId) onCreateChat(projectId)
+        }}
         onRenameChat={() => onRenameChat(chat)}
         onShareChat={() => onShareChat(chat.chatId)}
+        onCopyPath={() => onCopyPath(chat.localPath)}
         onOpenInFinder={() => onOpenExternalPath("open_finder", chat.localPath)}
+        onOpenInEditor={() => onOpenExternalPath("open_editor", chat.localPath)}
         onForkChat={() => onForkChat(chat)}
         onArchiveChat={() => onArchiveChat(chat)}
         onDeleteChat={() => onDeleteChat(chat)}
       />
     )
-  }, [activeChatId, nowMs, onArchiveChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, visibleIndexByChatId])
+  }, [activeChatId, editorLabel, nowMs, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, projectIdByPath, resolvedKeybindings, selectChat, showNumberJumpHints, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -350,7 +384,33 @@ function KannaSidebarImpl({
 
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
-  const showRecentChatsInSidebar = useAppSettingsStore((s) => s.settings?.showRecentChatsInSidebar === true)
+  const newSidebarEnabled = useAppSettingsStore((s) => s.settings?.newSidebarEnabled !== false)
+  const newSidebarProjectsView = newSidebarEnabled && sidebarView === "projects"
+
+  // New Sidebar's Projects tab hides projects with no chats and sorts by
+  // recent activity — but a project seen non-empty during the current tab
+  // visit sticks around at its last position even after its last chat is
+  // archived (activity would otherwise drop to 0 and yank it to the bottom).
+  // The sticky memory resets when you leave the Projects tab.
+  const stickyProjectActivityRef = useRef<Map<string, number>>(new Map())
+  useEffect(() => {
+    if (!newSidebarProjectsView) stickyProjectActivityRef.current = new Map()
+  }, [newSidebarProjectsView])
+  const visibleProjectGroups = useMemo(() => {
+    if (!newSidebarProjectsView) return data.projectGroups
+    const sticky = stickyProjectActivityRef.current
+    const visible = data.projectGroups.filter((group) => {
+      if (group.chats.length > 0) {
+        sticky.set(group.groupKey, projectActivity(group))
+        return true
+      }
+      return sticky.has(group.groupKey)
+    })
+    // Sticky (just-emptied) groups sort by their remembered activity.
+    return visible.sort((left, right) =>
+      (sticky.get(right.groupKey) ?? projectActivity(right)) - (sticky.get(left.groupKey) ?? projectActivity(left)))
+  }, [data.projectGroups, newSidebarProjectsView])
+
   const isSettingsActive = location.pathname.startsWith("/settings")
   const isUtilityPageActive = isLocalProjectsActive || isSettingsActive
   const isConnecting = connectionStatus === "connecting" || !ready
@@ -401,17 +461,28 @@ function KannaSidebarImpl({
         )}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        <div className="px-2.5 h-[63px] md:h-auto md:py-1 border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
-          <div className="md:hidden">
+        <div className="px-2.5 h-[64px] md:h-auto md:py-1 border-b grid grid-cols-[84px_minmax(0,1fr)_84px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
+          <div className="md:hidden grid grid-cols-2">
             <Button
               variant="ghost"
               size="icon"
-              className="size-10 rounded-lg hover:!border-border/0"
+              className="w-[42px] rounded-lg hover:!border-border/0 !border-0"
               onClick={onClose}
               title="Close sidebar"
             >
               <X className="h-5 w-5" />
             </Button>
+            {!newSidebarEnabled ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="w-[42px] rounded-lg hover:!border-border/0 !border-0 -translate-x-[1px]"
+                onClick={() => window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT))}
+                title="Search"
+              >
+                <Search className="h-5 w-5" />
+              </Button>
+            ) : null}
           </div>
           <div className="flex items-center justify-self-center gap-2 md:justify-self-auto">
             <button
@@ -430,15 +501,34 @@ function KannaSidebarImpl({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => {
-                navigate("/")
-                onClose()
-              }}
+              onClick={newSidebarEnabled
+                ? () => openCommandPalette()
+                : () => {
+                  navigate("/")
+                  onClose()
+                }}
               className="size-10 rounded-lg hover:!border-border/0 md:hidden"
-              title="New project"
+              title={newSidebarEnabled ? "Search" : "New project"}
             >
-              <Plus className="h-5 w-5" />
+              {newSidebarEnabled ? <Search className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
             </Button>
+            {newSidebarEnabled ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  navigate("/")
+                  onClose()
+                }}
+                className={cn(
+                  "size-10 rounded-lg hover:!border-border/0 md:hidden",
+                  isLocalProjectsActive ? "text-foreground" : "text-muted-foreground"
+                )}
+                title="Projects"
+              >
+                <House className="h-5 w-5" />
+              </Button>
+            ) : null}
             {showDevBadge ? (
               <span
                 className="mr-1 hidden md:inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-bold tracking-wider text-muted-foreground"
@@ -462,17 +552,70 @@ function KannaSidebarImpl({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => {
-                navigate("/")
-                onClose()
-              }}
-              className="hidden md:inline-flex h-10 w-auto rounded-lg pl-1.5 pr-3 hover:!border-border/0"
-              title="New project"
+              onClick={newSidebarEnabled
+                ? () => openCommandPalette()
+                : () => {
+                  navigate("/")
+                  onClose()
+                }}
+              className="hidden md:inline-flex h-10 w-auto rounded-lg px-1.5 hover:!border-border/0"
+              title={newSidebarEnabled ? "Search" : "New project"}
             >
-              <Plus className="size-4" />
+              {newSidebarEnabled ? <Search className="size-4" /> : <Plus className="size-4" />}
             </Button>
+            {newSidebarEnabled ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  navigate("/")
+                  onClose()
+                }}
+                className={cn(
+                  "hidden md:inline-flex h-10 w-auto rounded-lg pl-1.5 pr-3 hover:!border-border/0",
+                  isLocalProjectsActive ? "text-foreground" : "text-muted-foreground"
+                )}
+                title="Projects"
+              >
+                <House className="size-4" />
+              </Button>
+            ) : null}
           </div>
         </div>
+
+        {newSidebarEnabled ? (
+          <div className="flex flex-col gap-[1px] border-b border-border px-[7px] py-2">
+            <SegmentedControl
+              value={sidebarView}
+              onValueChange={changeSidebarView}
+              options={[
+                { value: "recents", label: "Chats" },
+                { value: "projects", label: "Projects" },
+              ]}
+              size="sm"
+              className="grid w-full grid-cols-2 mb-2"
+              optionClassName="w-full justify-center"
+            />
+            <button
+              type="button"
+              onClick={() => openCommandPalette("new-thread")}
+              className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
+            >
+              <SquarePen className="h-4 w-4 shrink-0" />
+              <span>New chat in…</span>
+            </button>
+            {currentProjectGroup ? (
+              <button
+                type="button"
+                onClick={() => openCommandPalette("project-chats")}
+                className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
+              >
+                <History className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 truncate">Chats in {currentProjectGroup.title}</span>
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <div
           ref={scrollContainerRef}
@@ -510,32 +653,51 @@ function KannaSidebarImpl({
               <p className="text-sm text-slate-400 p-2 mt-6 text-center">No conversations yet</p>
             ) : null}
 
-            {showRecentChatsInSidebar ? (
-              <ThreadSections data={data} activeChatId={activeChatId} onSelectChat={selectChat} />
+            {newSidebarEnabled && sidebarView === "recents" ? (
+              <ThreadSections
+                data={data}
+                activeChatId={activeChatId}
+                editorLabel={editorLabel}
+                nowMs={nowMs}
+                onSelectChat={selectChat}
+                onOpenArchivedChat={onOpenArchivedChat}
+                onRestoreChat={onRestoreChat}
+                onCreateChat={onCreateChat}
+                onRenameChat={onRenameChat}
+                onShareChat={onShareChat}
+                onForkChat={onForkChat}
+                onArchiveChat={onArchiveChat}
+                onDeleteChat={onDeleteChat}
+                onCopyPath={onCopyPath}
+                onOpenExternalPath={onOpenExternalPath}
+              />
             ) : null}
 
-            <LocalProjectsSection
-              projectGroups={data.projectGroups}
-              editorLabel={editorLabel}
-              onReorderGroups={onReorderProjectGroups}
-              collapsedSections={collapsedSections}
-              expandedGroups={expandedGroups}
-              onToggleSection={toggleSection}
-              onToggleExpandedGroup={toggleExpandedGroup}
-              renderChatRow={renderChatRow}
-              onShowArchivedProject={setArchivedProjectId}
-              onNewLocalChat={(localPath) => {
-                const projectId = projectIdByPath.get(localPath)
-                if (projectId) {
-                  onCreateChat(projectId)
-                }
-              }}
-              onCopyPath={onCopyPath}
-              onOpenExternalPath={onOpenExternalPath}
-              onRenameProject={onRenameProject}
-              onHideProject={onHideProject}
-              isConnected={connectionStatus === "connected"}
-            />
+            {!newSidebarEnabled || sidebarView === "projects" ? (
+              <LocalProjectsSection
+                projectGroups={visibleProjectGroups}
+                editorLabel={editorLabel}
+                onReorderGroups={onReorderProjectGroups}
+                collapsedSections={collapsedSections}
+                expandedGroups={expandedGroups}
+                onToggleSection={toggleSection}
+                onToggleExpandedGroup={toggleExpandedGroup}
+                renderChatRow={renderChatRow}
+                onShowArchivedProject={setArchivedProjectId}
+                onNewLocalChat={(localPath) => {
+                  const projectId = projectIdByPath.get(localPath)
+                  if (projectId) {
+                    onCreateChat(projectId)
+                  }
+                }}
+                onCopyPath={onCopyPath}
+                onOpenExternalPath={onOpenExternalPath}
+                onRenameProject={onRenameProject}
+                onHideProject={onHideProject}
+                isConnected={connectionStatus === "connected"}
+                newSidebar={newSidebarProjectsView}
+              />
+            ) : null}
           </div>
         </div>
 

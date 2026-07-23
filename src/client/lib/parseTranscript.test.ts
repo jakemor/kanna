@@ -132,6 +132,17 @@ describe("processTranscriptMessages", () => {
     expect(messages[0].usage.compactsAutomatically).toBe(true)
   })
 
+  test("hydrates session_restored boundaries with their provider", () => {
+    const messages = processTranscriptMessages([
+      entry({ kind: "session_restored", provider: "claude" }),
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.kind).toBe("session_restored")
+    if (messages[0]?.kind !== "session_restored") throw new Error("unexpected message")
+    expect(messages[0].provider).toBe("claude")
+  })
+
   test("preserves structured Claude ask-user-question results when a later echoed tool result arrives", () => {
     const messages = processTranscriptMessages([
       entry({

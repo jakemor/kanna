@@ -816,6 +816,10 @@ export class CodexAppServerManager {
     } satisfies ThreadStartParams
 
     let response: ThreadStartResponse | ThreadResumeResponse | ThreadForkResponse
+    // Set when a requested resume failed recoverably and we started a fresh
+    // thread instead — the caller surfaces this as a "Conversation Restored"
+    // boundary so the silent context loss becomes visible.
+    let resumeFellBack = false
     if (args.pendingForkSessionToken) {
       response = await this.sendRequest<ThreadForkResponse>(context, "thread/fork", {
         threadId: args.pendingForkSessionToken,
@@ -843,13 +847,14 @@ export class CodexAppServerManager {
           throw error
         }
         response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
+        resumeFellBack = true
       }
     } else {
       response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
     }
 
     context.sessionToken = response.thread.id
-    return context.sessionToken
+    return { sessionToken: context.sessionToken, resumeFellBack }
   }
 
   async startTurn(args: StartCodexTurnArgs): Promise<HarnessTurn> {

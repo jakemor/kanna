@@ -120,7 +120,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
     },
   },
-  showRecentChatsInSidebar: false,
+  newSidebarEnabled: false,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

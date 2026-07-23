@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { OpenLocalLinkProvider } from "../components/messages/shared"
+import { formatPromptTimestamp } from "../components/messages/ResultMessage"
 import type { HydratedTranscriptMessage } from "../../shared/types"
 import {
   buildResolvedTranscriptRows,
@@ -229,6 +230,42 @@ Please check the latest error first.`,
     expect(html).not.toContain("Completed")
   })
 
+  test("a session restore surfaces as 'Session Repaired' on the next system init", () => {
+    const systemInit = (id: string): HydratedTranscriptMessage => ({
+      id,
+      kind: "system_init",
+      provider: "claude",
+      model: "claude-opus-4-1",
+      tools: [],
+      agents: [],
+      slashCommands: [],
+      mcpServers: [],
+      timestamp: new Date().toISOString(),
+    })
+
+    const html = renderTranscript([
+      systemInit("init-1"),
+      {
+        id: "restored-1",
+        kind: "session_restored",
+        provider: "claude",
+        timestamp: new Date().toISOString(),
+      },
+      systemInit("init-2"),
+    ])
+
+    // The boundary renders no row of its own; the second init (same provider,
+    // same model — otherwise hidden) surfaces the repair.
+    expect(countRowWrappers(html)).toBe(2)
+    expect(html).toContain("Session Repaired")
+    expect(html).toContain("lucide-rotate-cw")
+
+    // Without the boundary, the identical second init stays hidden.
+    const withoutRestore = renderTranscript([systemInit("init-1"), systemInit("init-2")])
+    expect(countRowWrappers(withoutRestore)).toBe(1)
+    expect(withoutRestore).not.toContain("Session Repaired")
+  })
+
   test("renders wrappers for short successful result rows", () => {
     const html = renderTranscript([
       {
@@ -298,12 +335,7 @@ Please check the latest error first.`,
       },
     ])
 
-    const expectedPromptLabel = new Date(promptTimestamp).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    })
+    const expectedPromptLabel = formatPromptTimestamp(promptTimestamp)
 
     expect(html).not.toContain("Worked for 8m")
     expect(html).toContain(expectedPromptLabel)

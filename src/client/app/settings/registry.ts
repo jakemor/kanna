@@ -45,7 +45,7 @@ export const SETTINGS_SECTIONS = [
     id: "labs",
     label: "Labs",
     icon: FlaskConical as LucideIcon,
-    subtitle: "Experimental features that are still in progress and off by default.",
+    subtitle: "Experimental features that are still in progress.",
   },
   // always last
   {
@@ -174,9 +174,9 @@ export const SETTINGS_ROWS = defineRows({
   // Labs
   recentChatsInSidebar: {
     sectionId: "labs",
-    title: "Show recent chats in sidebar",
-    description: "Pin Review, In Progress, and Recents sections to the top of the sidebar.",
-    keywords: ["sidebar", "recents", "review", "in progress", "experimental"],
+    title: "New Sidebar",
+    description: "Replace the sidebar with a tabbed Chats / Projects view — In Progress, Review, and Recents up top, full projects one tap away.",
+    keywords: ["sidebar", "recents", "chats", "projects", "review", "in progress", "experimental"],
   },
 })
 

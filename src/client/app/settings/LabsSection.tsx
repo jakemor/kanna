@@ -15,13 +15,13 @@ export function LabsSection({
   async function handleRecentChatsChange(nextValue: "enabled" | "disabled") {
     try {
       setError(null)
-      await handleWriteAppSettings({ showRecentChatsInSidebar: nextValue === "enabled" })
+      await handleWriteAppSettings({ newSidebarEnabled: nextValue === "enabled" })
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to save Labs settings.")
     }
   }
 
-  const recentChatsValue = appSettings?.showRecentChatsInSidebar === true ? "enabled" : "disabled"
+  const recentChatsValue = appSettings?.newSidebarEnabled === false ? "disabled" : "enabled"
 
   return (
     <>

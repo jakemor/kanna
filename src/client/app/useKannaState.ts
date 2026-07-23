@@ -25,7 +25,6 @@ import {
   NEW_CHAT_OPTIMISTIC_SCOPE,
   reconcileOptimisticUserPrompts,
   resolveComposeIntent,
-  shouldMarkActiveChatRead,
   type OptimisticProcessingState,
   type OptimisticUserPrompt,
   type ProjectRequest,
@@ -190,6 +189,7 @@ export interface KannaState {
   handleShareChat: (chatId?: string | null) => Promise<void>
   handleArchiveChat: (chat: SidebarChatRow) => Promise<void>
   handleOpenArchivedChat: (chatId: string) => Promise<void>
+  handleRestoreChat: (chatId: string) => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleHideProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
@@ -243,7 +243,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
   const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
-  const [focusEpoch, setFocusEpoch] = useState(0)
   const draftChatIds = useChatInputStore(useShallow((state) => Object.keys(state.drafts).sort()))
   const attachmentDraftChatIds = useChatInputStore(
     useShallow((state) => Object.keys(state.attachmentDrafts).sort())
@@ -321,20 +320,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   } = useAppSettingsSync({ socket, connectionStatus, setCommandError })
 
   useEffect(() => {
-    function handleFocusSignal() {
-      setFocusEpoch((value) => value + 1)
-    }
-
-    window.addEventListener("focus", handleFocusSignal)
-    document.addEventListener("visibilitychange", handleFocusSignal)
-
-    return () => {
-      window.removeEventListener("focus", handleFocusSignal)
-      document.removeEventListener("visibilitychange", handleFocusSignal)
-    }
-  }, [])
-
-  useEffect(() => {
     if (!activeChatId) {
       setChatSnapshot(null)
       setChatReady(true)
@@ -364,7 +349,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
   useEffect(() => {
     if (!activeChatId) return
     if (!sidebarReady || !chatReady) return
-    const exists = sidebarProjectGroups.some((group) => group.chats.some((chat) => chat.chatId === activeChatId))
+    // Archived chats are viewable in place (viewing doesn't unarchive), so
+    // they count as existing — only truly unknown/deleted chats bounce home.
+    const exists = sidebarProjectGroups.some((group) =>
+      group.chats.some((chat) => chat.chatId === activeChatId)
+      || (group.archivedChats ?? []).some((chat) => chat.chatId === activeChatId))
     if (exists) {
       if (pendingChatId === activeChatId) {
         setPendingChatId(null)
@@ -385,17 +374,29 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [chatSnapshot, pendingChatId])
 
+  // Mark a chat read when the user navigates *away* from it, not when it opens.
+  // A chat that receives new activity while it's the active chat stays unread
+  // (badge visible) until the user leaves it. We look up the outgoing chat's
+  // unread state through a ref so this effect only re-runs on chat switches, and
+  // skip chats that no longer exist (avoids spurious markRead commands).
+  const sidebarGroupsRef = useRef(sidebarProjectGroups)
   useEffect(() => {
-    if (!activeChatId || !sidebarReady) return
-    if (!shouldMarkActiveChatRead()) return
-    const activeSidebarChat = sidebarProjectGroups
+    sidebarGroupsRef.current = sidebarProjectGroups
+  }, [sidebarProjectGroups])
+
+  const previousActiveChatIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    const previousChatId = previousActiveChatIdRef.current
+    previousActiveChatIdRef.current = activeChatId ?? null
+    if (!previousChatId || previousChatId === activeChatId) return
+    const previousChat = sidebarGroupsRef.current
       .flatMap((group) => group.chats)
-      .find((chat) => chat.chatId === activeChatId)
-    if (!activeSidebarChat?.unread) return
-    void socket.command({ type: "chat.markRead", chatId: activeChatId }).catch((error) => {
+      .find((chat) => chat.chatId === previousChatId)
+    if (!previousChat?.unread) return
+    void socket.command({ type: "chat.markRead", chatId: previousChatId }).catch((error) => {
       setCommandError(error instanceof Error ? error.message : String(error))
     })
-  }, [activeChatId, focusEpoch, sidebarProjectGroups, sidebarReady, socket])
+  }, [activeChatId, socket])
 
   useEffect(() => {
     setOlderHistoryEntries([])
@@ -719,17 +720,21 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [activeChatId, navigate, sidebarProjectGroups, socket])
 
+  // Viewing an archived chat is read-only navigation — it stays archived.
+  // Restoring is explicit (context menu) or implicit via sending a message
+  // (the server unarchives on chat.send).
   const handleOpenArchivedChat = useCallback(async (chatId: string) => {
+    navigate(`/chat/${chatId}`)
+  }, [navigate])
+
+  const handleRestoreChat = useCallback(async (chatId: string) => {
     try {
-      setPendingChatId(chatId)
       await socket.command({ type: "chat.unarchive", chatId })
-      navigate(`/chat/${chatId}`)
       setCommandError(null)
     } catch (error) {
-      setPendingChatId(null)
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [navigate, socket])
+  }, [socket])
 
   const handleHideProject = useCallback(async (projectId: string) => {
     try {
@@ -877,6 +882,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleShareChat,
     handleArchiveChat,
     handleOpenArchivedChat,
+    handleRestoreChat,
     handleDeleteChat,
     handleHideProject,
     handleReorderProjectGroups,

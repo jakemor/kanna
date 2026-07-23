@@ -52,6 +52,7 @@ import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
+import { checkSessionArtifact, type SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
 
 const CLAUDE_TOOLSET = [
@@ -170,6 +171,15 @@ interface AgentCoordinatorArgs {
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
   }) => Promise<ClaudeSessionHandle>
+  /**
+   * Probe whether a provider's native session artifact still exists on disk.
+   * Injectable so tests can force a "missing" session without touching the
+   * filesystem. Defaults to the real {@link checkSessionArtifact}.
+   */
+  checkSessionArtifact?: (
+    provider: AgentProvider,
+    query: { cwd: string; sessionToken: string | null | undefined }
+  ) => SessionArtifactStatus
 }
 
 
@@ -785,6 +795,7 @@ export class AgentCoordinator {
   private readonly resolvePiConnection: () => Promise<import("./pi-agent").PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
+  private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
@@ -802,6 +813,7 @@ export class AgentCoordinator {
     this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
+    this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -1085,6 +1097,91 @@ export class AgentCoordinator {
     return handoff
   }
 
+  /**
+   * Decide whether this chat's native provider session is gone and should be
+   * rebuilt from the transcript. Only called when the provider is unchanged
+   * (a switch already rebuilds context via the handoff path).
+   *
+   * - claude/cursor: the session artifact is deterministic on disk, so we
+   *   probe it directly. A session minted this process lifetime is still warm
+   *   (in `claudeSessions`) and can't have been GC'd — skip the check.
+   * - codex: the app-server reports a recoverable resume failure by falling
+   *   back to a fresh thread, so we preflight `startSession` (which the turn's
+   *   own call then reuses via its warm-session early return) and read the
+   *   flag. Errors are swallowed so the turn's own startSession surfaces them
+   *   with today's ordering.
+   * - pi: out of scope.
+   */
+  private async detectLostProviderSession(args: {
+    chatId: string
+    provider: AgentProvider
+    cwd: string
+    model: string
+    serviceTier?: "fast"
+    sessionToken: string | null | undefined
+    pendingForkSessionToken: string | null | undefined
+  }): Promise<boolean> {
+    switch (args.provider) {
+      case "claude": {
+        if (this.claudeSessions.has(args.chatId)) return false
+        const token = args.pendingForkSessionToken ?? args.sessionToken
+        return this.checkSessionArtifactFn("claude", { cwd: args.cwd, sessionToken: token }) === "missing"
+      }
+      case "cursor":
+        return this.checkSessionArtifactFn("cursor", { cwd: args.cwd, sessionToken: args.sessionToken }) === "missing"
+      case "codex": {
+        // No token → nothing to resume; a fork in progress must not be disturbed.
+        if (!args.sessionToken || args.pendingForkSessionToken) return false
+        try {
+          const started = await this.codexManager.startSession({
+            chatId: args.chatId,
+            cwd: args.cwd,
+            model: args.model,
+            serviceTier: args.serviceTier,
+            sessionToken: args.sessionToken,
+            pendingForkSessionToken: null,
+          })
+          return started?.resumeFellBack === true
+        } catch {
+          return false
+        }
+      }
+      default:
+        return false
+    }
+  }
+
+  /**
+   * Recover a chat whose native session is gone: clear the stale token, mark a
+   * "Conversation Restored" boundary, and rebuild the wire-only context from
+   * the transcript (same machinery as a provider handoff, from==to provider).
+   * Nothing warm needs closing — claude/cursor have no live session by
+   * construction here, and codex's warm context IS the fresh replacement
+   * thread, whose id the turn's session_token stream event persists.
+   */
+  private async prepareSessionRestore(
+    chatId: string,
+    provider: AgentProvider,
+    entries: TranscriptEntry[],
+  ): Promise<HandoffContext | null> {
+    await this.store.setSessionToken(chatId, null)
+    await this.store.setPendingForkSessionToken(chatId, null)
+
+    const restore = buildHandoffContext({
+      entries,
+      fromProvider: provider,
+      toProvider: provider,
+      transcriptPath: this.store.getTranscriptPath(chatId),
+      reason: "session_restore",
+    })
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "session_restored",
+      provider,
+      ...(restore ? { stats: restore.stats } : {}),
+    }))
+    return restore
+  }
+
   private async startTurnForChat(args: {
     chatId: string
     provider: AgentProvider
@@ -1136,6 +1233,26 @@ export class AgentCoordinator {
     // that precede this turn's prompt.
     const handoff = previousProvider !== null && previousProvider !== args.provider
       ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages)
+      : null
+
+    // Same-provider session recovery: when we're NOT switching harnesses but
+    // the provider's native session for this chat is gone (e.g. the CLI
+    // garbage-collected its session file, or codex's resume fell back to a
+    // fresh thread), rebuild context from our transcript exactly like a
+    // handoff — clear the stale token, mark a "Conversation Restored" boundary,
+    // and prepend the rebuilt context on the wire. Runs before the user prompt
+    // is appended so the boundary precedes it, mirroring the handoff ordering.
+    const restore = !handoff && previousProvider !== null
+      && await this.detectLostProviderSession({
+        chatId: args.chatId,
+        provider: args.provider,
+        cwd: project.localPath,
+        model: args.model,
+        serviceTier: args.serviceTier,
+        sessionToken: chat.sessionToken,
+        pendingForkSessionToken: chat.pendingForkSessionToken,
+      })
+      ? await this.prepareSessionRestore(args.chatId, args.provider, existingMessages)
       : null
 
     if (args.appendUserPrompt) {
@@ -1191,11 +1308,12 @@ export class AgentCoordinator {
       wireContent = appendSystemMessageBlock(wireContent, concurrentAgentsNotice)
     }
 
-    // Harness switch: lead with the handoff transcript so the user's actual
-    // prompt is the last thing in context (trails for slash invocations,
-    // which must stay at the very start of the message).
-    if (handoff) {
-      wireContent = buildHandoffMessageContent(handoff.text, wireContent)
+    // Harness switch or session restore: lead with the rebuilt transcript so
+    // the user's actual prompt is the last thing in context (trails for slash
+    // invocations, which must stay at the very start of the message).
+    const contextBlock = handoff ?? restore
+    if (contextBlock) {
+      wireContent = buildHandoffMessageContent(contextBlock.text, wireContent)
     }
 
     // "/name" skill invocation, translated per provider:
@@ -1252,7 +1370,7 @@ export class AgentCoordinator {
         connection,
       })
     } else {
-      const sessionToken = await this.codexManager.startSession({
+      const started = await this.codexManager.startSession({
         chatId: args.chatId,
         cwd: project.localPath,
         model: args.model,
@@ -1260,7 +1378,7 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
       })
-      if (chat.pendingForkSessionToken && sessionToken) {
+      if (chat.pendingForkSessionToken && started?.sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
       }
       turn = await this.codexManager.startTurn({
@@ -1429,6 +1547,11 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(chatId)
+    // Sending a message to an archived chat resurrects it (viewing alone
+    // never unarchives).
+    if (chat.archivedAt) {
+      await this.store.unarchiveChat(chatId)
+    }
     if (this.activeTurns.has(chatId)) {
       this.analytics.track("message_sent")
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {

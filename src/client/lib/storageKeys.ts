@@ -16,3 +16,6 @@ export const SIDEBAR_WIDTH_STORAGE_KEY = "kanna:sidebar-width"
 
 /** localStorage: last action chosen in the open-external menu. */
 export const OPEN_EXTERNAL_SELECT_STORAGE_KEY = "kanna:last-open-external"
+
+/** localStorage: active sidebar view ("recents" | "projects") when the recent-chats Labs mode is on. */
+export const SIDEBAR_VIEW_STORAGE_KEY = "kanna:sidebar-view"

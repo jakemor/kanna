@@ -30,6 +30,7 @@ import { REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import type { KannaState } from "../../app/useKannaState"
 import { useComposer } from "../../hooks/useComposer"
 import { actionMatchesEvent, getBindingsForAction } from "../../lib/keybindings"
+import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { formatPathWithTilde } from "../../lib/pathUtils"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
@@ -63,7 +64,18 @@ import {
 /** Window event that opens the command palette from anywhere (e.g. mobile nav). */
 export const OPEN_COMMAND_PALETTE_EVENT = "kanna:open-command-palette"
 
-type PalettePage = "models" | "harness" | "new-thread" | "open-in" | "settings" | "usage"
+/** Palette sub-pages callers may deep-link to when opening the palette. */
+export type CommandPaletteTargetPage = "new-thread" | "project-chats"
+
+/**
+ * Opens the command palette from anywhere. Pass a target page to land directly
+ * on a sub-page (e.g. "new-thread" for the "New Chat In…" project picker).
+ */
+export function openCommandPalette(page?: CommandPaletteTargetPage) {
+  window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT, { detail: page ? { page } : undefined }))
+}
+
+type PalettePage = "models" | "harness" | "new-thread" | "open-in" | "settings" | "usage" | "project-chats"
 
 interface PaletteAction {
   id: string
@@ -122,15 +134,18 @@ function ThreadItem({
   thread,
   onSelect,
   showStatus = false,
+  trailingLabel,
 }: {
   thread: SidebarThread
   onSelect: (thread: SidebarThread) => void
   /** Use the sidebar status glyph (ping dots / spinner) instead of the chat icon. */
   showStatus?: boolean
+  /** Replaces the trailing project label (e.g. a relative age in project-scoped lists). */
+  trailingLabel?: string | null
 }) {
   return (
     <CommandItem value={`thread-${thread.chatId}`} onSelect={() => onSelect(thread)}>
-      <ThreadRowContent thread={thread} showStatus={showStatus} showPreview />
+      <ThreadRowContent thread={thread} showStatus={showStatus} showPreview trailingLabel={trailingLabel} />
     </CommandItem>
   )
 }
@@ -151,6 +166,9 @@ export function CommandPalette({ state }: { state: KannaState }) {
   const listRef = useRef<HTMLDivElement>(null)
   // cmdk's highlighted item value, controlled so the footer can react to it.
   const [selectedValue, setSelectedValue] = useState("")
+  // Reference time for relative age labels ("4h", "6w"), snapped on open —
+  // the palette is transient, so a per-open snapshot stays accurate enough.
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const page: PalettePage | "root" = pages.length > 0 ? pages[pages.length - 1] : "root"
 
   const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
@@ -187,10 +205,11 @@ export function CommandPalette({ state }: { state: KannaState }) {
 
   const close = useCallback(() => setOpen(false), [])
 
-  const openPalette = useCallback(() => {
-    setPages([])
+  const openPalette = useCallback((initialPage?: PalettePage) => {
+    setPages(initialPage ? [initialPage] : [])
     setQuery("")
     setSelectedValue("")
+    setNowMs(Date.now())
     setOpen(true)
   }, [])
 
@@ -219,10 +238,12 @@ export function CommandPalette({ state }: { state: KannaState }) {
     return () => window.removeEventListener("keydown", handleGlobalKeydown)
   }, [open, openPalette, state.keybindings])
 
-  // Programmatic open (e.g. the mobile nav search button).
+  // Programmatic open (e.g. the mobile nav search button, sidebar "New chat
+  // in…" button). An optional `detail.page` deep-links to a sub-page.
   useEffect(() => {
-    function handleOpenRequest() {
-      openPalette()
+    function handleOpenRequest(event: Event) {
+      const detail = (event as CustomEvent<{ page?: PalettePage }>).detail
+      openPalette(detail?.page)
     }
     window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, handleOpenRequest)
     return () => window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, handleOpenRequest)
@@ -272,6 +293,15 @@ export function CommandPalette({ state }: { state: KannaState }) {
     [projectId, state.sidebarData.projectGroups]
   )
 
+  // Every chat (active + archived) in the current project, most recent first —
+  // backs the "Chats in <project>" sub-page.
+  const currentProjectThreads = useMemo(() => {
+    if (!projectId) return []
+    return threads
+      .filter((thread) => thread.projectId === projectId)
+      .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
+  }, [projectId, threads])
+
   const actions = useMemo<PaletteAction[]>(() => {
     const list: PaletteAction[] = []
     const chatShortcuts = (action: Parameters<typeof getBindingsForAction>[1]) =>
@@ -288,6 +318,16 @@ export function CommandPalette({ state }: { state: KannaState }) {
           close()
           void state.handleCreateChat(projectId)
         },
+      })
+    }
+
+    if (projectId && currentProjectThreads.length > 0) {
+      list.push({
+        id: "project-chats",
+        title: currentProjectTitle ? `Chats in ${currentProjectTitle}` : "Chats in Current Project…",
+        keywords: ["threads", "history", "browse", "recent", "project chats"],
+        icon: <History className={ICON_CLASS} />,
+        run: () => pushPage("project-chats"),
       })
     }
 
@@ -341,15 +381,15 @@ export function CommandPalette({ state }: { state: KannaState }) {
       run: () => pushPage("usage"),
     })
 
-    const recentChatsInSidebarOn = state.appSettings?.showRecentChatsInSidebar === true
+    const recentChatsInSidebarOn = state.appSettings?.newSidebarEnabled !== false
     list.push({
       id: "toggle-recent-chats-sidebar",
-      title: recentChatsInSidebarOn ? "Hide Recent Chats in Sidebar" : "Show Recent Chats in Sidebar",
-      keywords: ["labs", "sidebar", "recents", "review", "in progress", "experimental", "toggle"],
+      title: recentChatsInSidebarOn ? "Disable New Sidebar" : "Enable New Sidebar",
+      keywords: ["labs", "new sidebar", "sidebar", "recents", "chats", "projects", "review", "in progress", "experimental", "toggle"],
       icon: <FlaskConical className={ICON_CLASS} />,
       run: () => {
         close()
-        void state.handleWriteAppSettings({ showRecentChatsInSidebar: !recentChatsInSidebarOn })
+        void state.handleWriteAppSettings({ newSidebarEnabled: !recentChatsInSidebarOn })
       },
     })
 
@@ -625,6 +665,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     close,
     composer,
     currentChatRow,
+    currentProjectThreads.length,
     currentProjectTitle,
     navigate,
     onChatPage,
@@ -632,7 +673,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     projectId,
     pushPage,
     state.activeChatId,
-    state.appSettings?.showRecentChatsInSidebar,
+    state.appSettings?.newSidebarEnabled,
     state.availableProviders,
     state.handleArchiveChat,
     state.handleCopyPath,
@@ -766,6 +807,12 @@ export function CommandPalette({ state }: { state: KannaState }) {
       .map((entry) => entry.group)
   }, [page, state.sidebarData.projectGroups, trimmedQuery])
 
+  const projectChatResults = useMemo(() => {
+    if (page !== "project-chats") return []
+    if (!trimmedQuery) return currentProjectThreads
+    return searchThreadsByTitle(currentProjectThreads, trimmedQuery, currentProjectThreads.length)
+  }, [currentProjectThreads, page, trimmedQuery])
+
   const openInResults = useMemo(() => {
     if (page !== "open-in") return []
     const items = getOpenAppItems({ editorPreset, isMac, includeFinder: true, includeTerminal: true })
@@ -781,7 +828,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
   // project rows). Drives the sticky "⌘C Copy path" footer + shortcut.
   const copyPathByValue = useMemo(() => {
     const map = new Map<string, string>()
-    for (const thread of [...reviewResults, ...inProgressResults, ...threadResults]) {
+    for (const thread of [...reviewResults, ...inProgressResults, ...threadResults, ...projectChatResults]) {
       map.set(`thread-${thread.chatId}`, thread.row.localPath)
     }
     for (const project of projectSearchResults) {
@@ -791,7 +838,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
       map.set(`project-${group.groupKey}`, group.localPath)
     }
     return map
-  }, [inProgressResults, projectResults, projectSearchResults, reviewResults, threadResults])
+  }, [inProgressResults, projectChatResults, projectResults, projectSearchResults, reviewResults, threadResults])
   const footerCopyPath = selectedValue ? copyPathByValue.get(selectedValue) : undefined
 
   const inputPlaceholder = page === "models"
@@ -802,7 +849,9 @@ export function CommandPalette({ state }: { state: KannaState }) {
         ? "Choose a project…"
         : page === "open-in"
           ? "Open project in…"
-          : page === "settings"
+          : page === "project-chats"
+            ? `Search chats in ${currentProjectTitle ?? "project"}…`
+            : page === "settings"
             ? "Search settings…"
             : page === "usage"
               ? "Harness usage"
@@ -1028,6 +1077,20 @@ export function CommandPalette({ state }: { state: KannaState }) {
                   <span>New Project…</span>
                 </CommandItem>
               ) : null}
+            </CommandGroup>
+          ) : null}
+
+          {page === "project-chats" ? (
+            <CommandGroup heading={currentProjectTitle ? `Chats in ${currentProjectTitle}` : "Project Chats"}>
+              {projectChatResults.map((thread) => (
+                <ThreadItem
+                  key={thread.chatId}
+                  thread={thread}
+                  onSelect={openThread}
+                  showStatus
+                  trailingLabel={formatSidebarAgeLabel(thread.lastActivityAt, nowMs)}
+                />
+              ))}
             </CommandGroup>
           ) : null}
 

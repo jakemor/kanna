@@ -159,7 +159,10 @@ export function composerStateFromSendOptions(options?: {
 
 export function getProjectIdForChat(projectGroups: SidebarData["projectGroups"], chatId: string | null) {
   if (!chatId) return null
-  return projectGroups.find((group) => group.chats.some((chat) => chat.chatId === chatId))?.groupKey ?? null
+  // Archived chats are viewable in place, so they resolve project context too.
+  return projectGroups.find((group) =>
+    group.chats.some((chat) => chat.chatId === chatId)
+    || (group.archivedChats ?? []).some((chat) => chat.chatId === chatId))?.groupKey ?? null
 }
 
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {

@@ -3,7 +3,7 @@ import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messa
 import type { AskUserQuestionAnswerMap, ChatAttachment, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
-import { SystemMessage, type SessionHandoff } from "../components/messages/SystemMessage"
+import { SystemMessage, type SessionHandoff, type SessionRestore } from "../components/messages/SystemMessage"
 import { AccountInfoMessage } from "../components/messages/AccountInfoMessage"
 import { TextMessage } from "../components/messages/TextMessage"
 import { AskUserQuestionMessage } from "../components/messages/AskUserQuestionMessage"
@@ -36,6 +36,8 @@ export interface ResolvedSingleTranscriptRow {
   isModelChange: boolean
   /** Set on a system_init that follows a harness switch (handoff_boundary). */
   handoff?: SessionHandoff
+  /** Set on a system_init that follows a session restore (session_restored). */
+  restored?: SessionRestore
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
@@ -65,6 +67,7 @@ interface TranscriptMessageRenderState {
   isFirstSystem: boolean
   isModelChange: boolean
   handoff?: SessionHandoff
+  restored?: SessionRestore
   isFirstAccount: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
@@ -75,6 +78,10 @@ interface TranscriptMessageRenderState {
 
 function sameHandoff(left: SessionHandoff | undefined, right: SessionHandoff | undefined) {
   return left?.fromProvider === right?.fromProvider && left?.toProvider === right?.toProvider
+}
+
+function sameRestore(left: SessionRestore | undefined, right: SessionRestore | undefined) {
+  return left?.provider === right?.provider
 }
 
 function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
@@ -89,6 +96,7 @@ function getTranscriptMessageRenderState(
     isFirstSystem,
     isModelChange,
     handoff,
+    restored,
     isFirstAccount,
     isLatestTodoWrite,
     hideResult,
@@ -101,11 +109,16 @@ function getTranscriptMessageRenderState(
   if (shouldRender) {
     switch (message.kind) {
       case "system_init":
-        shouldRender = isFirstSystem || isModelChange || handoff !== undefined
+        shouldRender = isFirstSystem || isModelChange || handoff !== undefined || restored !== undefined
         break
       case "handoff_boundary":
         // Not rendered as its own row — the switch surfaces on the next
         // session_init ("Codex").
+        shouldRender = false
+        break
+      case "session_restored":
+        // Not rendered as its own row — the repair surfaces on the next
+        // session_init ("Session Repaired").
         shouldRender = false
         break
       case "account_info":
@@ -133,6 +146,7 @@ function getTranscriptMessageRenderState(
     isFirstSystem,
     isModelChange,
     handoff,
+    restored,
     isFirstAccount,
     isLatestTodoWrite,
     hideResult,
@@ -177,17 +191,30 @@ function buildTranscriptMessageRenderStates(
 
   // Attach each handoff boundary to the next session init: the switch renders
   // as that init's destination harness label rather than as its own row.
+  // Session restores surface the same way ("Session Repaired").
   const handoffs = new Array<SessionHandoff | undefined>(messages.length)
+  const restores = new Array<SessionRestore | undefined>(messages.length)
   let pendingHandoff: SessionHandoff | undefined
+  let pendingRestore: SessionRestore | undefined
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]!
     if (message.kind === "handoff_boundary") {
       pendingHandoff = { fromProvider: message.fromProvider, toProvider: message.toProvider }
       continue
     }
-    if (message.kind === "system_init" && pendingHandoff) {
-      handoffs[index] = pendingHandoff
-      pendingHandoff = undefined
+    if (message.kind === "session_restored") {
+      pendingRestore = { provider: message.provider }
+      continue
+    }
+    if (message.kind === "system_init") {
+      if (pendingHandoff) {
+        handoffs[index] = pendingHandoff
+        pendingHandoff = undefined
+      }
+      if (pendingRestore) {
+        restores[index] = pendingRestore
+        pendingRestore = undefined
+      }
     }
   }
 
@@ -198,6 +225,7 @@ function buildTranscriptMessageRenderStates(
       isFirstSystem: firstSystemIndex === index,
       isModelChange: modelChanges[index] ?? false,
       handoff: handoffs[index],
+      restored: restores[index],
       isFirstAccount: firstAccountIndex === index,
       isLatestTodoWrite: message.id === latestToolIds.TodoWrite,
       hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
@@ -335,6 +363,8 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
       return right.kind === "handoff_boundary"
         && left.fromProvider === right.fromProvider
         && left.toProvider === right.toProvider
+    case "session_restored":
+      return right.kind === "session_restored" && left.provider === right.provider
     case "unknown":
       return right.kind === "unknown" && left.json === right.json
   }
@@ -350,6 +380,7 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
       && left.isFirstSystem === right.isFirstSystem
       && left.isModelChange === right.isModelChange
       && sameHandoff(left.handoff, right.handoff)
+      && sameRestore(left.restored, right.restored)
       && left.isFirstAccount === right.isFirstAccount
       && left.isLatestAskUserQuestion === right.isLatestAskUserQuestion
       && left.isLatestExitPlanMode === right.isLatestExitPlanMode
@@ -412,6 +443,7 @@ interface TranscriptSingleRowProps {
   isFirstSystem: boolean
   isModelChange: boolean
   handoff?: SessionHandoff
+  restored?: SessionRestore
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
@@ -435,6 +467,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   isFirstSystem,
   isModelChange,
   handoff,
+  restored,
   isFirstAccount,
   isLatestAskUserQuestion,
   isLatestExitPlanMode,
@@ -455,7 +488,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
         rendered = <RawJsonMessage key={message.id} json={message.json} />
         break
       case "system_init":
-        rendered = isFirstSystem || isModelChange || handoff
+        rendered = isFirstSystem || isModelChange || handoff || restored
           ? (
             <SystemMessage
               key={message.id}
@@ -463,6 +496,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
               rawJson={message.debugRaw}
               modelChanged={!isFirstSystem && isModelChange}
               handoff={isFirstSystem ? undefined : handoff}
+              restored={isFirstSystem ? undefined : restored}
             />
           )
           : null
@@ -544,6 +578,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   && prev.isFirstSystem === next.isFirstSystem
   && prev.isModelChange === next.isModelChange
   && sameHandoff(prev.handoff, next.handoff)
+  && sameRestore(prev.restored, next.restored)
   && prev.isFirstAccount === next.isFirstAccount
   && prev.isLatestAskUserQuestion === next.isLatestAskUserQuestion
   && prev.isLatestExitPlanMode === next.isLatestExitPlanMode
@@ -644,6 +679,7 @@ export function buildResolvedTranscriptRows(
       isFirstSystem: renderState.isFirstSystem,
       isModelChange: renderState.isModelChange,
       handoff: renderState.handoff,
+      restored: renderState.restored,
       isFirstAccount: renderState.isFirstAccount,
       isLatestAskUserQuestion: item.message.id === latestToolIds.AskUserQuestion,
       isLatestExitPlanMode: item.message.id === latestToolIds.ExitPlanMode,
@@ -703,6 +739,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       isFirstSystem={row.isFirstSystem}
       isModelChange={row.isModelChange}
       handoff={row.handoff}
+      restored={row.restored}
       isFirstAccount={row.isFirstAccount}
       isLatestAskUserQuestion={row.isLatestAskUserQuestion}
       isLatestExitPlanMode={row.isLatestExitPlanMode}
@@ -739,6 +776,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       && prev.row.isFirstSystem === next.row.isFirstSystem
       && prev.row.isModelChange === next.row.isModelChange
       && sameHandoff(prev.row.handoff, next.row.handoff)
+      && sameRestore(prev.row.restored, next.row.restored)
       && prev.row.isFirstAccount === next.row.isFirstAccount
       && prev.row.isLatestAskUserQuestion === next.row.isLatestAskUserQuestion
       && prev.row.isLatestExitPlanMode === next.row.isLatestExitPlanMode

@@ -39,12 +39,13 @@ function withDerivedMetrics(
 export function deriveLatestContextWindowSnapshot(
   entries: ReadonlyArray<TranscriptEntry>,
 ): ContextWindowSnapshot | null {
-  // A harness switch starts a fresh provider session — usage entries from
-  // before the last handoff boundary describe the old session's context
-  // window, so only the segment after it counts.
+  // A harness switch or same-provider session restore starts a fresh provider
+  // session — usage entries from before the last such boundary describe the
+  // old session's context window, so only the segment after it counts.
   let segmentStart = 0
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index]?.kind === "handoff_boundary") {
+    const kind = entries[index]?.kind
+    if (kind === "handoff_boundary" || kind === "session_restored") {
       segmentStart = index + 1
       break
     }

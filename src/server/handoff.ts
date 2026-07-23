@@ -144,6 +144,13 @@ function blockFromEntry(entry: TranscriptEntry): Omit<HandoffBlock, "elided"> | 
         body: "",
         elidableBody: false,
       }
+    case "session_restored":
+      return {
+        entry,
+        header: "--- conversation restored from saved transcript (previous native session unavailable) ---",
+        body: "",
+        elidableBody: false,
+      }
     case "result":
       if (!entry.isError) return null
       return {
@@ -191,6 +198,13 @@ export function buildHandoffContext(args: {
   toProvider: AgentProvider
   transcriptPath: string
   charBudget?: number
+  /**
+   * Why the context is being rebuilt. `provider_switch` (default) is a
+   * mid-conversation harness change; `session_restore` is a same-provider
+   * recovery after the native session became unavailable (see
+   * session-artifacts.ts). Only the preamble differs.
+   */
+  reason?: "provider_switch" | "session_restore"
 }): HandoffContext | null {
   const charBudget = args.charBudget ?? HANDOFF_CHAR_BUDGET
 
@@ -260,9 +274,12 @@ export function buildHandoffContext(args: {
   const body = bodyLines.join("\n\n")
 
   const fromLabel = providerLabel(args.fromProvider)
+  const intro = args.reason === "session_restore"
+    ? "Your previous session for this conversation could not be resumed — its native session data is no longer available (coding-agent CLIs clean up old session files). The conversation has been restored from Kanna's saved transcript; you are continuing the same conversation, not taking over from another agent."
+    : `This conversation is being handed off to you from another coding agent (${fromLabel}). You are taking over mid-conversation.`
   const text = [
     "<system-message>",
-    `This conversation is being handed off to you from another coding agent (${fromLabel}). You are taking over mid-conversation.`,
+    intro,
     "",
     "Everything inside <handoff_transcript> is a read-only record of the conversation so far: the user's messages, the previous agent's replies, and its tool activity. Do not imitate its formatting and do not continue or reply to the transcript itself — treat the conversation as your own history and respond to the user's message that follows it.",
     "",

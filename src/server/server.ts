@@ -34,6 +34,8 @@ import { getProjectUploadDir } from "./paths"
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
+const STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS = 6 * 60 * 60 * 1000
+const STALE_CHAT_DELETE_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 export async function persistUploadedFiles(args: {
   projectId: string
@@ -199,14 +201,53 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     })
     .catch(() => undefined)
 
-  const staleEmptyChatPruneInterval = setInterval(() => {
+  // Chat garbage collection, three tiers measured against the user's latest
+  // chat activity: empty drafts are hard-deleted after 5 idle minutes, chats
+  // 30+ days behind are auto-archived, and 90+ days behind are hard-deleted.
+  const runPruneStaleEmptyChats = () => {
     void router.pruneStaleEmptyChats()
       .then((prunedChatIds) => {
         if (prunedChatIds.length > 0) {
           return router.broadcastSnapshots()
         }
       })
-  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
+  }
+  const runAutoArchiveStaleChats = () => {
+    void router.autoArchiveStaleChats()
+      .then((archivedChatIds) => {
+        if (archivedChatIds.length > 0) {
+          return router.broadcastSnapshots()
+        }
+      })
+  }
+  const runDeleteStaleChats = () => {
+    void router.deleteStaleChats()
+      .then((deletedChatIds) => {
+        if (deletedChatIds.length > 0) {
+          return router.broadcastSnapshots()
+        }
+      })
+  }
+
+  // All three run once at startup — a long-idle instance gets cleaned
+  // immediately, not minutes or hours later. Lifecycle order: prune empties,
+  // hard-delete 90d+ (so they aren't pointlessly archived first), then
+  // archive 30d+. One broadcast at the end covers all changes.
+  const runStartupGc = async () => {
+    const pruned = await router.pruneStaleEmptyChats().catch(() => [])
+    const deleted = await router.deleteStaleChats().catch(() => [])
+    const archived = await router.autoArchiveStaleChats().catch(() => [])
+    if (pruned.length + deleted.length + archived.length > 0) {
+      await router.broadcastSnapshots()
+    }
+  }
+  void runStartupGc()
+
+  // Then keep sweeping for the lifetime of the (potentially months-long)
+  // process: empties every minute, deletes daily, archives every 6 hours.
+  const staleEmptyChatPruneInterval = setInterval(runPruneStaleEmptyChats, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
+  const staleChatAutoArchiveInterval = setInterval(runAutoArchiveStaleChats, STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS)
+  const staleChatDeleteInterval = setInterval(runDeleteStaleChats, STALE_CHAT_DELETE_INTERVAL_MS)
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -403,6 +444,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
+    clearInterval(staleChatAutoArchiveInterval)
+    clearInterval(staleChatDeleteInterval)
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)
     }

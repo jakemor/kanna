@@ -19,7 +19,11 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
-const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
+const STALE_EMPTY_CHAT_MAX_AGE_MS = 5 * 60 * 1000
+/** Chats this much older than the user's latest activity are auto-archived (kept, not deleted). */
+const STALE_CHAT_AUTO_ARCHIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+/** Chats this much older than the user's latest activity are hard-deleted (archived or not). */
+const STALE_CHAT_DELETE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
 const SIDEBAR_PROJECT_ORDER_FILE = "sidebar-order.json"
 const CHAT_MESSAGE_PREVIEW_MAX_LENGTH = 160
 // How much of each transcript tail is scanned at boot to rebuild chat metadata
@@ -873,6 +877,16 @@ export class EventStore {
         if (chat) {
           chat.hasMessages = true
           chat.updatedAt = Math.max(chat.updatedAt, createdAt)
+          // Mirror what a transcript reload would derive: the fork inherits
+          // the copied conversation's recency and previews. Without
+          // lastMessageAt the fork reads as an empty draft and stays hidden
+          // from recency-driven sidebar sections until its first new message.
+          const lastEntryAt = sourceEntries[sourceEntries.length - 1]?.createdAt
+          if (lastEntryAt != null) {
+            chat.lastMessageAt = Math.max(chat.lastMessageAt ?? 0, lastEntryAt)
+          }
+          if (sourceChat.lastUserMessagePreview) chat.lastUserMessagePreview = sourceChat.lastUserMessagePreview
+          if (sourceChat.lastAgentMessagePreview) chat.lastAgentMessagePreview = sourceChat.lastAgentMessagePreview
         }
         this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries))
       })
@@ -974,6 +988,111 @@ export class EventStore {
     }
 
     return prunedChatIds
+  }
+
+  /**
+   * The most recent activity across all live chats — the reference point the
+   * staleness sweeps measure against. Anchoring to the user's own activity
+   * (never the wall clock) means an idle month away moves nothing: chats only
+   * become "stale" relative to newer work, not relative to time passing.
+   */
+  private latestChatActivityAt(): number | null {
+    let latest: number | null = null
+    for (const chat of this.state.chatsById.values()) {
+      if (chat.deletedAt) continue
+      const at = chat.lastMessageAt ?? chat.createdAt
+      if (latest == null || at > latest) latest = at
+    }
+    return latest
+  }
+
+  /**
+   * Garbage-collects long-idle chats by archiving (not deleting) them: any
+   * chat whose last activity is more than `maxAgeMs` behind the user's latest
+   * chat activity and that isn't already archived/deleted, protected, or
+   * empty. Empty stale chats are left for pruneStaleEmptyChats to
+   * hard-delete. Sending a message unarchives, so this is non-destructive
+   * housekeeping.
+   */
+  async autoArchiveStaleChats(args?: {
+    now?: number
+    maxAgeMs?: number
+    activeChatIds?: Iterable<string>
+    protectedChatIds?: Iterable<string>
+  }) {
+    const now = args?.now ?? Date.now()
+    const maxAgeMs = args?.maxAgeMs ?? STALE_CHAT_AUTO_ARCHIVE_MAX_AGE_MS
+    // min() guards against clock skew pushing a chat timestamp into the future.
+    const reference = Math.min(now, this.latestChatActivityAt() ?? now)
+    const protectedChatIds = new Set([
+      ...(args?.activeChatIds ?? []),
+      ...(args?.protectedChatIds ?? []),
+    ])
+    const archivedChatIds: string[] = []
+
+    for (const chat of this.state.chatsById.values()) {
+      if (chat.deletedAt || chat.archivedAt || protectedChatIds.has(chat.id)) continue
+      // Empty chats are the prune sweep's job (hard delete), not ours.
+      if (!chat.hasMessages && chat.lastMessageAt == null) continue
+      const lastActivityAt = chat.lastMessageAt ?? chat.createdAt
+      if (reference - lastActivityAt < maxAgeMs) continue
+
+      const event: ChatEvent = {
+        v: STORE_VERSION,
+        type: "chat_archived",
+        timestamp: now,
+        chatId: chat.id,
+      }
+      await this.append(this.chatsLogPath, event)
+      archivedChatIds.push(chat.id)
+    }
+
+    return archivedChatIds
+  }
+
+  /**
+   * Hard-deletes long-idle chats — archived or not — whose last activity is
+   * more than `maxAgeMs` behind the user's latest chat activity, reclaiming
+   * their transcript files. The end of the lifecycle after auto-archive;
+   * protected (active/draft) chats are spared.
+   */
+  async deleteStaleChats(args?: {
+    now?: number
+    maxAgeMs?: number
+    activeChatIds?: Iterable<string>
+    protectedChatIds?: Iterable<string>
+  }) {
+    const now = args?.now ?? Date.now()
+    const maxAgeMs = args?.maxAgeMs ?? STALE_CHAT_DELETE_MAX_AGE_MS
+    // min() guards against clock skew pushing a chat timestamp into the future.
+    const reference = Math.min(now, this.latestChatActivityAt() ?? now)
+    const protectedChatIds = new Set([
+      ...(args?.activeChatIds ?? []),
+      ...(args?.protectedChatIds ?? []),
+    ])
+    const deletedChatIds: string[] = []
+
+    for (const chat of this.state.chatsById.values()) {
+      if (chat.deletedAt || protectedChatIds.has(chat.id)) continue
+      const lastActivityAt = chat.lastMessageAt ?? chat.createdAt
+      if (reference - lastActivityAt < maxAgeMs) continue
+
+      const event: ChatEvent = {
+        v: STORE_VERSION,
+        type: "chat_deleted",
+        timestamp: now,
+        chatId: chat.id,
+      }
+      await this.append(this.chatsLogPath, event)
+
+      const transcriptPath = this.transcriptPath(chat.id)
+      await rm(transcriptPath, { force: true })
+      this.transcriptCache.delete(chat.id)
+
+      deletedChatIds.push(chat.id)
+    }
+
+    return deletedChatIds
   }
 
   async setChatProvider(chatId: string, provider: AgentProvider) {

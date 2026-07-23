@@ -1,5 +1,5 @@
 import { useState, useMemo, type ReactNode } from "react"
-import { ArrowRightLeft, ChevronRight, Slash, UserRound } from "lucide-react"
+import { ArrowRightLeft, ChevronRight, RotateCw, Slash, UserRound } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import type { ProcessedSystemMessage } from "./types"
 import { PROVIDERS, resolveModelLabel, type AgentProvider } from "../../../shared/types"
@@ -13,6 +13,10 @@ export interface SessionHandoff {
   toProvider: AgentProvider
 }
 
+export interface SessionRestore {
+  provider: AgentProvider
+}
+
 interface Props {
   message: ProcessedSystemMessage
   rawJson?: string
@@ -20,6 +24,12 @@ interface Props {
   modelChanged?: boolean
   /** This session init follows a harness switch — label it "From → To". */
   handoff?: SessionHandoff
+  /**
+   * This session init follows a same-provider session restore
+   * (session_restored boundary) — label it "Session Repaired" and explain the
+   * recovery in the expanded content.
+   */
+  restored?: SessionRestore
 }
 
 function providerLabel(provider: AgentProvider) {
@@ -178,7 +188,7 @@ function RawMessageSection({ rawJson }: { rawJson: string }) {
   )
 }
 
-export function SystemMessage({ message, rawJson, modelChanged, handoff }: Props) {
+export function SystemMessage({ message, rawJson, modelChanged, handoff, restored }: Props) {
   const iconProvider = handoff?.toProvider ?? message.provider
   const ProviderIcon = PROVIDER_ICONS[iconProvider]
   const { coreTools, mcpServersWithTools } = useMemo(() => {
@@ -212,6 +222,11 @@ export function SystemMessage({ message, rawJson, modelChanged, handoff }: Props
         expandedContent={
           <VerticalLineContainer className="my-4 text-xs">
             <div className="flex flex-col gap-3">
+              {restored && (
+                <MetaText>
+                  {providerLabel(restored.provider)}'s saved session for this conversation was no longer available — coding-agent CLIs clean up old session files. Kanna repaired it by starting a fresh session and restoring the conversation from its own saved transcript.
+                </MetaText>
+              )}
               <MetaText>{message.model}</MetaText>
               <PillSection title="Tools" items={coreTools} getIcon={(tool) => toolIcons[tool] ?? defaultToolIcon} />
               <PillSection title="Agents" items={message.agents} icon={UserRound} />
@@ -222,13 +237,17 @@ export function SystemMessage({ message, rawJson, modelChanged, handoff }: Props
           </VerticalLineContainer>
         }
       >
-        {modelChanged && !handoff
-          ? <ArrowRightLeft className="h-5 w-5 p-0.5 text-logo" />
-          : <ProviderIcon data-provider-icon={iconProvider} className="h-5 w-5 p-0.5 text-logo" />}
+        {restored && !handoff
+          ? <RotateCw className="h-5 w-5 p-0.5 text-logo" />
+          : modelChanged && !handoff
+            ? <ArrowRightLeft className="h-5 w-5 p-0.5 text-logo" />
+            : <ProviderIcon data-provider-icon={iconProvider} className="h-5 w-5 p-0.5 text-logo" />}
         <MetaLabel>
           {handoff
             ? providerLabel(handoff.toProvider)
-            : modelChanged ? "Model Changed" : providerLabel(message.provider)}
+            : restored
+              ? "Session Repaired"
+              : modelChanged ? "Model Changed" : providerLabel(message.provider)}
           <span className="ml-1.5 opacity-50 tracking-normal">
             {resolveModelLabel(PROVIDERS.find((provider) => provider.id === message.provider)?.models, message.model)}
           </span>

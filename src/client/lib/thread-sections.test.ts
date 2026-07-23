@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { SidebarChatRow, SidebarData } from "../../shared/types"
 import {
+  computeSidebarThreadSections,
+  computeThreadDateBuckets,
   computeThreadSections,
   flattenSidebarThreads,
   getInProgressThreads,
@@ -190,5 +192,103 @@ describe("computeThreadSections", () => {
       makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 800 }),
     ])))
     expect(withOthers.recent).toHaveLength(RECENT_THREADS_LIMIT)
+  })
+})
+
+// Wednesday, July 15 2026 at noon local — the reference date from the spec.
+const NOW = new Date(2026, 6, 15, 12).getTime()
+
+function at(year: number, month: number, day: number, hour = 10): number {
+  return new Date(year, month - 1, day, hour).getTime()
+}
+
+function bucketThreads(rows: SidebarChatRow[]) {
+  return computeThreadDateBuckets(
+    flattenSidebarThreads(makeData(rows)).filter((thread) => thread.row.lastMessageAt != null),
+    NOW,
+  )
+}
+
+describe("computeThreadDateBuckets", () => {
+  // Reference: Wed Jul 15 2026. This week = Mon Jul 13; last week = Mon Jul 6 – Sun Jul 12.
+  test("two most recent activity days lead as Today/Yesterday, then This Week, Last Week, Last 30 Days", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "today", title: "t", lastMessageAt: at(2026, 7, 15) }),
+      makeChatRow({ chatId: "yesterday", title: "y", lastMessageAt: at(2026, 7, 14) }),
+      makeChatRow({ chatId: "monday", title: "m", lastMessageAt: at(2026, 7, 13) }),
+      makeChatRow({ chatId: "last-week", title: "lw", lastMessageAt: at(2026, 7, 8) }),
+      makeChatRow({ chatId: "older", title: "o", lastMessageAt: at(2026, 6, 20) }),
+    ])
+    expect(buckets.map((bucket) => [bucket.label, bucket.defaultExpanded])).toEqual([
+      ["Today", true],
+      ["Yesterday", true],
+      ["This Week", false],
+      ["Last Week", false],
+      ["Last 30 Days", false],
+    ])
+    // Monday's chats fall through to This Week — the day sections took the 2 newest days.
+    expect(buckets[2].threads.map((thread) => thread.chatId)).toEqual(["monday"])
+  })
+
+  test("walks timestamps: a gap yields Today and Last <weekday>", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "today", title: "t", lastMessageAt: at(2026, 7, 15) }),
+      makeChatRow({ chatId: "friday", title: "f", lastMessageAt: at(2026, 7, 10) }), // Fri, 5 days back
+    ])
+    expect(buckets.map((bucket) => bucket.label)).toEqual(["Today", "Last Friday"])
+  })
+
+  test("after idle weeks the day sections carry full dates, with the rest in Last 30 Days", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "mon", title: "a", lastMessageAt: at(2026, 6, 29) }), // Monday
+      makeChatRow({ chatId: "fri", title: "b", lastMessageAt: at(2026, 6, 26) }), // Friday
+      makeChatRow({ chatId: "older", title: "c", lastMessageAt: at(2026, 6, 20) }),
+    ])
+    expect(buckets.map((bucket) => [bucket.label, bucket.defaultExpanded])).toEqual([
+      ["Monday Jun 29th", true],
+      ["Friday Jun 26th", true],
+      ["Last 30 Days", false],
+    ])
+  })
+
+  test("has no client-side age cutoff — server GC bounds the list", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "recent", title: "a", lastMessageAt: at(2026, 7, 15) }),
+      makeChatRow({ chatId: "ancient", title: "b", lastMessageAt: at(2026, 5, 1) }),
+    ])
+    expect(buckets.map((bucket) => bucket.label)).toEqual(["Today", "Friday May 1st"])
+  })
+
+  test("empty buckets are never emitted and threads sort newest-first within a bucket", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "late", title: "a", lastMessageAt: at(2026, 7, 15, 11) }),
+      makeChatRow({ chatId: "early", title: "b", lastMessageAt: at(2026, 7, 15, 9) }),
+    ])
+    expect(buckets).toHaveLength(1)
+    expect(buckets[0].label).toBe("Today")
+    expect(buckets[0].threads.map((thread) => thread.chatId)).toEqual(["late", "early"])
+  })
+})
+
+describe("computeSidebarThreadSections", () => {
+  test("buckets exclude review/in-progress chats and empty new chats; archived get their own list", () => {
+    const data = makeData(
+      [
+        makeChatRow({ chatId: "unread", title: "u", unread: true, lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "running", title: "r", status: "running", lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "idle", title: "i", lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "empty-draft", title: "d" }), // no lastMessageAt
+      ],
+      [
+        makeChatRow({ chatId: "archived-new", title: "x", lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "archived-old", title: "y", lastMessageAt: at(2026, 7, 10) }),
+      ],
+    )
+    const sections = computeSidebarThreadSections(flattenSidebarThreads(data), NOW)
+    expect(sections.review.map((thread) => thread.chatId)).toEqual(["unread"])
+    expect(sections.inProgress.map((thread) => thread.chatId)).toEqual(["running"])
+    expect(sections.buckets).toHaveLength(1)
+    expect(sections.buckets[0].threads.map((thread) => thread.chatId)).toEqual(["idle"])
+    expect(sections.archived.map((thread) => thread.chatId)).toEqual(["archived-new", "archived-old"])
   })
 })

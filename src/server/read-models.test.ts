@@ -111,6 +111,22 @@ describe("read models", () => {
       planMode: false,
       sessionToken: null,
       lastTurnOutcome: null,
+      hasMessages: true,
+      lastMessageAt: 3,
+    })
+    // Archived chats that never got a message are hidden from every surface.
+    state.chatsById.set("chat-archived-empty", {
+      id: "chat-archived-empty",
+      projectId: "project-1",
+      title: "New Chat",
+      createdAt: 2,
+      updatedAt: 3,
+      archivedAt: 3,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
     })
 
     const sidebar = deriveSidebarData(state, new Map(), { nowMs: 1_000_000 })

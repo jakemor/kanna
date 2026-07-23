@@ -877,8 +877,8 @@ export interface AppSettingsSnapshot {
   }
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
-  /** Labs: show the Review / In Progress / Recents sections atop the sidebar. Off by default. */
-  showRecentChatsInSidebar: boolean
+  /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
+  newSidebarEnabled: boolean
   warning: string | null
   filePathDisplay: string
 }
@@ -889,7 +889,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
-  showRecentChatsInSidebar?: boolean
+  newSidebarEnabled?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference
@@ -1475,6 +1475,19 @@ export interface HandoffBoundaryEntry extends TranscriptEntryBase {
   }
 }
 
+/**
+ * Marks a same-provider session recovery. The chat's native session could not
+ * be resumed (e.g. the coding-agent CLI garbage-collected its session file);
+ * the next turn starts a fresh session on the same `provider` with the
+ * conversation rebuilt from Kanna's saved transcript on the wire.
+ */
+export interface SessionRestoredEntry extends TranscriptEntryBase {
+  kind: "session_restored"
+  provider: AgentProvider
+  /** Debug metadata about the restore context built for the new session. */
+  stats?: HandoffBoundaryEntry["stats"]
+}
+
 export type TranscriptEntry =
   | UserPromptEntry
   | SystemInitEntry
@@ -1490,6 +1503,7 @@ export type TranscriptEntry =
   | ContextClearedEntry
   | InterruptedEntry
   | HandoffBoundaryEntry
+  | SessionRestoredEntry
 
 export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   id: string
@@ -1582,6 +1596,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "handoff_boundary"; fromProvider: AgentProvider; toProvider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "session_restored"; provider: AgentProvider; stats?: HandoffBoundaryEntry["stats"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "unknown"; json: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)

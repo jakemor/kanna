@@ -158,6 +158,24 @@ export function createWsRouter({
     })
   }
 
+  async function maybeAutoArchiveStaleChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
+    const activeChatIds = getProtectedChatIds()
+    const protectedDraftChatIds = getProtectedDraftChatIds(extraSockets)
+    return await store.autoArchiveStaleChats({
+      activeChatIds,
+      protectedChatIds: protectedDraftChatIds,
+    })
+  }
+
+  async function maybeDeleteStaleChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
+    const activeChatIds = getProtectedChatIds()
+    const protectedDraftChatIds = getProtectedDraftChatIds(extraSockets)
+    return await store.deleteStaleChats({
+      activeChatIds,
+      protectedChatIds: protectedDraftChatIds,
+    })
+  }
+
   function shouldIncludeTopic(topic: SubscriptionTopic, filter?: SnapshotBroadcastFilter) {
     if (!filter) {
       return true
@@ -910,17 +928,32 @@ export function createWsRouter({
           return
         }
         case "chat.archive": {
-          await store.archiveChat(command.chatId)
+          // Archiving a chat that never got a message is a hard delete — an
+          // empty chat has nothing worth keeping in the Archived list.
+          const chat = store.getChat(command.chatId)
+          const hardDeleted = chat != null && !chat.hasMessages && !chat.lastMessageAt
+          if (hardDeleted) {
+            await store.deleteChat(command.chatId)
+          } else {
+            await store.archiveChat(command.chatId)
+          }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          // Archiving removes the chat from local-projects' chat counts.
-          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          // Archiving removes the chat from local-projects' chat counts; a hard
+          // delete must also refresh the chat's own topic (to null) so a tab
+          // viewing it learns it's gone.
+          await broadcastFilteredSnapshots({
+            includeSidebar: true,
+            includeLocalProjects: true,
+            ...(hardDeleted ? { chatIds: new Set([command.chatId]) } : {}),
+          })
           return
         }
         case "chat.unarchive": {
           await store.unarchiveChat(command.chatId)
-          // Unarchiving happens when the user opens an archived chat to view it.
-          // Mark it done so viewing alone doesn't resurface it as needing review;
-          // sending a message clears the done state and brings it back to running.
+          // Unarchiving is the explicit "Restore" action (viewing an archived
+          // chat no longer unarchives it). Mark it done so restoring alone
+          // doesn't resurface it as needing review; sending a message clears
+          // the done state and brings it back to running.
           await store.setChatDoneState(command.chatId, true)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastFilteredSnapshots({
@@ -1231,6 +1264,8 @@ export function createWsRouter({
     scheduleBroadcast,
     scheduleChatStateBroadcast,
     pruneStaleEmptyChats: () => maybePruneStaleEmptyChats(),
+    autoArchiveStaleChats: () => maybeAutoArchiveStaleChats(),
+    deleteStaleChats: () => maybeDeleteStaleChats(),
     async handleMessage(ws: ServerWebSocket<ClientState>, raw: string | Buffer | ArrayBuffer | Uint8Array) {
       let parsed: unknown
       try {

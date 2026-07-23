@@ -39,8 +39,13 @@ function getStructuredToolResultFromDebug(entry: Extract<TranscriptEntry, { kind
   }
 }
 
+type WorkflowStateMessage = Extract<HydratedTranscriptMessage, { kind: "workflow_state" }>
+
 export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedTranscriptMessage[] {
   const pendingToolCalls = new Map<string, { hydrated: HydratedToolCall; normalized: NormalizedToolCall }>()
+  // Latest workflow snapshot per background-task id: the server appends
+  // snapshots, the client keeps last-write-wins anchored at first occurrence.
+  const workflowMessages = new Map<string, WorkflowStateMessage>()
   const messages: HydratedTranscriptMessage[] = []
 
   for (const entry of entries) {
@@ -161,6 +166,42 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           kind: "interrupted",
         })
         break
+      case "workflow_state": {
+        // The raw Workflow tool card is superseded by the workflow card once
+        // lifecycle snapshots exist for its tool-use id.
+        const spawningCall = entry.toolId ? pendingToolCalls.get(entry.toolId) : undefined
+        if (spawningCall) spawningCall.hydrated.hidden = true
+
+        const fields = {
+          status: entry.status,
+          usage: entry.usage,
+          phases: entry.phases,
+          agents: entry.agents,
+          workflowName: entry.workflowName,
+          description: entry.description,
+          summary: entry.summary,
+          // _id is the change marker (unique per snapshot); createdAt feeds
+          // elapsed-time math but can collide within a millisecond.
+          lastSnapshotId: entry._id,
+          revision: entry.createdAt,
+        }
+        const existing = workflowMessages.get(entry.taskId)
+        if (existing) {
+          Object.assign(existing, fields)
+        } else {
+          const message: WorkflowStateMessage = {
+            ...createBaseMessage(entry),
+            kind: "workflow_state",
+            taskId: entry.taskId,
+            toolId: entry.toolId,
+            startedAtMs: entry.createdAt,
+            ...fields,
+          }
+          workflowMessages.set(entry.taskId, message)
+          messages.push(message)
+        }
+        break
+      }
       default:
         messages.push({
           ...createBaseMessage(entry),

@@ -1475,6 +1475,67 @@ export interface HandoffBoundaryEntry extends TranscriptEntryBase {
   }
 }
 
+/**
+ * Status of a CLI background-task registry entry (workflow runs). Distinct
+ * from any todo-list task status — background tasks are executing units,
+ * not plan bookkeeping.
+ */
+export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "killed" | "paused"
+
+export type WorkflowAgentRunState = "queued" | "running" | "done" | "error"
+
+/** One agent() call inside a Workflow run, folded from workflow_progress events. */
+export interface WorkflowAgentSnapshot {
+  /** 1-based agent() call index within the run — stable identity across progress events. */
+  index: number
+  label: string
+  phaseIndex?: number
+  phaseTitle?: string
+  /** CLI-assigned agent id, present once the agent actually starts. */
+  agentId?: string
+  model?: string
+  state: WorkflowAgentRunState
+  promptPreview?: string
+  tokens?: number
+  toolCalls?: number
+  durationMs?: number
+  error?: string
+}
+
+export interface WorkflowPhaseSnapshot {
+  index: number
+  title: string
+}
+
+export interface WorkflowUsageSnapshot {
+  totalTokens: number
+  toolUses: number
+  durationMs: number
+}
+
+/**
+ * Canonical snapshot of one Workflow tool run, folded server-side from the
+ * SDK's system/task_started + task_progress + task_updated + task_notification
+ * messages. Append-only in the transcript: the client keeps the latest
+ * snapshot per taskId (last write wins), anchored at the first occurrence.
+ */
+export interface WorkflowStateEntry extends TranscriptEntryBase {
+  kind: "workflow_state"
+  /** Parent subagent scope when a workflow is launched inside a child agent. */
+  agentId?: string
+  /** Background-task handle from the CLI task registry (NOT a todo-list task id). */
+  taskId: string
+  /** Tool-use id of the spawning Workflow tool call, when known. */
+  toolId?: string
+  workflowName?: string
+  description?: string
+  status: WorkflowRunStatus
+  usage?: WorkflowUsageSnapshot
+  phases: WorkflowPhaseSnapshot[]
+  agents: WorkflowAgentSnapshot[]
+  summary?: string
+}
+
 export type TranscriptEntry =
   | UserPromptEntry
   | SystemInitEntry
@@ -1490,6 +1551,7 @@ export type TranscriptEntry =
   | ContextClearedEntry
   | InterruptedEntry
   | HandoffBoundaryEntry
+  | WorkflowStateEntry
 
 export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   id: string
@@ -1583,6 +1645,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "handoff_boundary"; fromProvider: AgentProvider; toProvider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "workflow_state"; taskId: string; toolId?: string; workflowName?: string; description?: string; status: WorkflowRunStatus; usage?: WorkflowUsageSnapshot; phases: WorkflowPhaseSnapshot[]; agents: WorkflowAgentSnapshot[]; summary?: string; /** _id of the latest folded snapshot entry — guaranteed-unique change marker for memoized rows (createdAt can collide within one millisecond). */ lastSnapshotId: string; /** createdAt of the latest folded snapshot — elapsed-time math only, NOT change detection. */ revision: number; /** createdAt of the first snapshot — anchor for live elapsed time. */ startedAtMs: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "unknown"; json: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 

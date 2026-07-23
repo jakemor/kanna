@@ -159,6 +159,7 @@ function blockFromEntry(entry: TranscriptEntry): Omit<HandoffBlock, "elided"> | 
     case "context_window_updated":
     case "compact_boundary":
     case "context_cleared":
+    case "workflow_state":
       return null
   }
 }

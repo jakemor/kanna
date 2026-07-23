@@ -75,6 +75,13 @@ describe("buildHandoffContext", () => {
       userPrompt("hello"),
       timestamped({ kind: "status", status: "compacting" }),
       timestamped({ kind: "context_window_updated", usage: { usedTokens: 10, compactsAutomatically: false } }),
+      timestamped({
+        kind: "workflow_state",
+        taskId: "workflow-task-1",
+        status: "running",
+        phases: [],
+        agents: [],
+      }),
       timestamped({ kind: "user_prompt", content: "secret steering", hidden: true }),
       assistantText("hi"),
       timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: "hi" }),

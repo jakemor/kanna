@@ -342,4 +342,53 @@ describe("getLatestToolIds", () => {
       TodoWrite: null,
     })
   })
+
+  test("folds same-millisecond workflow snapshots without reusing stale state", () => {
+    const createdAt = Date.now()
+    const first: TranscriptEntry = {
+      _id: "workflow-snapshot-1",
+      createdAt,
+      kind: "workflow_state",
+      taskId: "workflow-task-1",
+      toolId: "workflow-tool-1",
+      workflowName: "demo",
+      status: "running",
+      phases: [],
+      agents: [{ index: 1, label: "agent-1", state: "running" }],
+    }
+    const second: TranscriptEntry = {
+      ...first,
+      _id: "workflow-snapshot-2",
+      status: "completed",
+      agents: [{ index: 1, label: "agent-1", state: "done", tokens: 500 }],
+    }
+
+    const messages = processTranscriptMessages([
+      entry({
+        kind: "tool_call",
+        tool: {
+          kind: "tool",
+          toolKind: "unknown_tool",
+          toolName: "Workflow",
+          toolId: "workflow-tool-1",
+          input: {},
+        },
+      }),
+      first,
+      second,
+    ])
+
+    const toolCall = messages.find((message) => message.kind === "tool")
+    expect(toolCall?.hidden).toBe(true)
+
+    const workflowMessages = messages.filter((message) => message.kind === "workflow_state")
+    expect(workflowMessages).toHaveLength(1)
+    const workflow = workflowMessages[0]
+    if (workflow?.kind !== "workflow_state") throw new Error("unexpected message")
+    expect(workflow.status).toBe("completed")
+    expect(workflow.agents[0]).toMatchObject({ state: "done", tokens: 500 })
+    expect(workflow.lastSnapshotId).toBe("workflow-snapshot-2")
+    expect(workflow.startedAtMs).toBe(createdAt)
+    expect(workflow.id).toBe("workflow-snapshot-1")
+  })
 })

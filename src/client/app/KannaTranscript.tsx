@@ -8,6 +8,7 @@ import { AccountInfoMessage } from "../components/messages/AccountInfoMessage"
 import { TextMessage } from "../components/messages/TextMessage"
 import { AskUserQuestionMessage } from "../components/messages/AskUserQuestionMessage"
 import { ExitPlanModeMessage } from "../components/messages/ExitPlanModeMessage"
+import { WorkflowMessage } from "../components/messages/WorkflowMessage"
 import { TodoWriteMessage } from "../components/messages/TodoWriteMessage"
 import { ToolCallMessage } from "../components/messages/ToolCallMessage"
 import { ResultMessage } from "../components/messages/ResultMessage"
@@ -335,6 +336,15 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
       return right.kind === "handoff_boundary"
         && left.fromProvider === right.fromProvider
         && left.toProvider === right.toProvider
+    case "workflow_state":
+      // lastSnapshotId is the _id of the newest folded snapshot: any
+      // state/usage/agent change produces a new snapshot entry, so comparing
+      // it is sufficient (and far cheaper than deep-comparing agents).
+      // createdAt-based revisions are NOT safe here — two lifecycle snapshots
+      // can land in the same millisecond.
+      return right.kind === "workflow_state"
+        && left.taskId === right.taskId
+        && left.lastSnapshotId === right.lastSnapshotId
     case "unknown":
       return right.kind === "unknown" && left.json === right.json
   }
@@ -510,6 +520,9 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
         break
       case "interrupted":
         rendered = <InterruptedMessage key={message.id} message={message} />
+        break
+      case "workflow_state":
+        rendered = <WorkflowMessage key={message.id} message={message} />
         break
       case "compact_boundary":
         rendered = <CompactBoundaryMessage key={message.id} />

@@ -53,6 +53,7 @@ import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
 import { timestamped } from "./transcript"
+import { WorkflowTracker } from "./workflow-tracker"
 
 const CLAUDE_TOOLSET = [
   "Skill",
@@ -503,6 +504,7 @@ async function* createClaudeHarnessStream(
   let seenAssistantUsageIds = new Set<string>()
   let latestUsageSnapshot: ContextWindowUsageSnapshot | null = null
   let lastKnownContextWindow: number | undefined
+  const workflowTracker = new WorkflowTracker()
 
   for await (const sdkMessage of q as AsyncIterable<any>) {
     const sessionToken = typeof sdkMessage.session_id === "string" ? sdkMessage.session_id : null
@@ -607,6 +609,13 @@ async function* createClaudeHarnessStream(
     }
 
     for (const entry of normalizeClaudeStreamMessage(sdkMessage)) {
+      yield { type: "transcript", entry }
+    }
+
+    // Background-task lifecycle (system/task_*) is invisible to the
+    // normalizer; the workflow tracker folds it into canonical
+    // workflow_state snapshots.
+    for (const entry of workflowTracker.process(sdkMessage)) {
       yield { type: "transcript", entry }
     }
   }

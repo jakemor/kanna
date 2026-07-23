@@ -130,21 +130,37 @@ describe("getReviewThreads", () => {
     expect(review.map((thread) => thread.chatId)).toEqual(["waiting", "unread"])
   })
 
-  test("orders by turn-end time (response received), not send time", () => {
+  test("activity time is the later of send-time and turn-end-time (oldest first here)", () => {
     const data = makeData([
-      // Sent long ago but the turn only just came back → freshest, goes last.
+      // Sent long ago but the turn only just came back → fresh (900), sorts last.
       makeChatRow({ chatId: "sent-early-finished-late", title: "A", unread: true, lastMessageAt: 100, lastTurnEndedAt: 900 }),
-      // Sent recently but finished a while ago → waiting on you longest, leads.
+      // Sent recently, older turn end → send-time wins (800).
       makeChatRow({ chatId: "sent-late-finished-early", title: "B", unread: true, lastMessageAt: 800, lastTurnEndedAt: 400 }),
       // No completed turn yet → falls back to send-time activity (600).
       makeChatRow({ chatId: "no-turn-end", title: "C", unread: true, lastMessageAt: 600 }),
     ])
     const review = getReviewThreads(flattenSidebarThreads(data))
     expect(review.map((thread) => thread.chatId)).toEqual([
-      "sent-late-finished-early", // 400
-      "no-turn-end",              // 600 (fallback)
+      "no-turn-end",              // 600
+      "sent-late-finished-early", // 800
       "sent-early-finished-late", // 900
     ])
+  })
+})
+
+describe("flattenSidebarThreads", () => {
+  test("lastActivityAt = max(lastMessageAt, lastTurnEndedAt), else creation time", () => {
+    const data = makeData([
+      makeChatRow({ chatId: "finished-after-send", title: "A", lastMessageAt: 100, lastTurnEndedAt: 900 }),
+      makeChatRow({ chatId: "sent-after-finish", title: "B", lastMessageAt: 800, lastTurnEndedAt: 400 }),
+      makeChatRow({ chatId: "send-only", title: "C", lastMessageAt: 600 }),
+      makeChatRow({ chatId: "empty", title: "D", _creationTime: 50 }),
+    ])
+    const byId = new Map(flattenSidebarThreads(data).map((thread) => [thread.chatId, thread.lastActivityAt]))
+    expect(byId.get("finished-after-send")).toBe(900)
+    expect(byId.get("sent-after-finish")).toBe(800)
+    expect(byId.get("send-only")).toBe(600)
+    expect(byId.get("empty")).toBe(50)
   })
 })
 

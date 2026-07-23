@@ -15,6 +15,17 @@ export interface SidebarThread {
   row: SidebarChatRow
 }
 
+/**
+ * "Most recent activity" for a chat — the later of when you last sent a
+ * message and when the agent last got back to you (turn end). This is the one
+ * timestamp every section sorts/buckets by, so a chat you kicked off long ago
+ * that only just finished counts as fresh (rises in Today/Recents), not stale.
+ * Falls back to creation time for empty chats with neither timestamp.
+ */
+function activityAt(row: SidebarChatRow): number {
+  return Math.max(row.lastMessageAt ?? 0, row.lastTurnEndedAt ?? 0) || row._creationTime
+}
+
 /** Flattens the sidebar snapshot into one searchable thread list (active + archived). */
 export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
   const threads: SidebarThread[] = []
@@ -27,7 +38,7 @@ export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
           projectId: group.groupKey,
           projectTitle: group.title,
           archived,
-          lastActivityAt: row.lastMessageAt ?? row._creationTime,
+          lastActivityAt: activityAt(row),
           row,
         })
       }
@@ -39,22 +50,12 @@ export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
 }
 
 /**
- * Review and In Progress sort by when the agent last got back to you (turn
- * end = last response received), not by when you last sent a message — a chat
- * you kicked off long ago but that only just finished is "fresh", not stale.
- * Falls back to send-time activity for chats with no completed turn yet.
- */
-function getReceivedAt(thread: SidebarThread): number {
-  return thread.row.lastTurnEndedAt ?? thread.lastActivityAt
-}
-
-/**
  * Chats "ready for review" — exactly the ones that would show a status dot in
  * the sidebar as needing you: waiting on the user (plan/question) or unread.
  * Running chats (spinner, still in progress) and archived chats are excluded.
- * Special case: sorted OLDEST first by turn-end time (unlike every other
- * section) — the chat that's been waiting on you longest leads, so
- * Cmd+K → Enter clears the backlog in FIFO order.
+ * Special case: sorted OLDEST first (unlike every other section) — the chat
+ * that's been waiting on you longest leads, so Cmd+K → Enter clears the
+ * backlog in FIFO order.
  */
 export function getReviewThreads(threads: SidebarThread[]): SidebarThread[] {
   return threads
@@ -66,14 +67,14 @@ export function getReviewThreads(threads: SidebarThread[]): SidebarThread[] {
       && thread.row.status !== "running"
       && thread.row.status !== "starting"
       && (thread.row.status === "waiting_for_user" || thread.row.unread))
-    .sort((left, right) => getReceivedAt(left) - getReceivedAt(right))
+    .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
 }
 
 /**
  * Chats still working (running/starting), minus any already surfaced in the
  * exclude set (typically the review section). Special case: sorted OLDEST
- * first by turn-end time (unlike every other section) — the chat that's gone
- * longest without a response leads since it's most likely to need you next.
+ * first (unlike every other section) — the chat that's gone longest without a
+ * response leads since it's most likely to need you next.
  */
 export function getInProgressThreads(
   threads: SidebarThread[],
@@ -84,7 +85,7 @@ export function getInProgressThreads(
       !thread.archived
       && !(exclude?.has(thread.chatId))
       && (thread.row.status === "running" || thread.row.status === "starting"))
-    .sort((left, right) => getReceivedAt(left) - getReceivedAt(right))
+    .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
 }
 
 /** How many chats the "Recents" section shows. */

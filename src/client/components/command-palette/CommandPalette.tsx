@@ -61,7 +61,6 @@ import {
   searchProjects,
   searchSettingsEntries,
   searchThreadsByTitle,
-  type PaletteProject,
   type SidebarThread,
 } from "./actions"
 
@@ -173,6 +172,10 @@ export function CommandPalette({ state }: { state: KannaState }) {
   // Reference time for relative age labels ("4h", "6w"), snapped on open —
   // the palette is transient, so a per-open snapshot stays accurate enough.
   const [nowMs, setNowMs] = useState(() => Date.now())
+  // Which project the "Chats in <project>" sub-page browses. Set when a
+  // project's "Chats in…" row is chosen from search; null falls back to the
+  // active project (the sidebar's openCommandPalette("project-chats") path).
+  const [projectChatsTargetId, setProjectChatsTargetId] = useState<string | null>(null)
   const page: PalettePage | "root" = pages.length > 0 ? pages[pages.length - 1] : "root"
 
   const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
@@ -218,6 +221,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     setQuery("")
     setSelectedValue("")
     setNowMs(Date.now())
+    setProjectChatsTargetId(null)
     setOpen(true)
   }, [])
 
@@ -274,15 +278,12 @@ export function CommandPalette({ state }: { state: KannaState }) {
     navigate(`/chat/${thread.chatId}`)
   }, [close, navigate, state.handleOpenArchivedChat])
 
-  const openProject = useCallback((project: PaletteProject) => {
-    close()
-    // Selecting a project always starts a new chat in it.
-    if (project.projectId) {
-      void state.handleCreateChat(project.projectId)
-      return
-    }
-    void state.handleOpenLocalProject(project.localPath)
-  }, [close, state.handleCreateChat, state.handleOpenLocalProject])
+  // Browse a specific project's chats (from a search result's "Chats in…"
+  // row). Keeps the palette open and steps into the project-chats sub-page.
+  const openProjectChats = useCallback((targetProjectId: string) => {
+    setProjectChatsTargetId(targetProjectId)
+    pushPage("project-chats")
+  }, [pushPage])
 
   const openGitPanel = useCallback((viewMode: "changes" | "history") => {
     if (!projectId) return
@@ -301,14 +302,26 @@ export function CommandPalette({ state }: { state: KannaState }) {
     [projectId, state.sidebarData.projectGroups]
   )
 
-  // Every chat (active + archived) in the current project, most recent first —
+  // The project the "Chats in <project>" sub-page browses — the one picked from
+  // a search result, or the active project for the sidebar's deep-link.
+  const projectChatsProjectId = projectChatsTargetId ?? projectId
+
+  const projectChatsGroup = useMemo(
+    () => (projectChatsProjectId
+      ? state.sidebarData.projectGroups.find((group) => group.groupKey === projectChatsProjectId) ?? null
+      : null),
+    [projectChatsProjectId, state.sidebarData.projectGroups]
+  )
+  const projectChatsTitle = projectChatsGroup?.title ?? null
+
+  // Every chat (active + archived) in the browsed project, most recent first —
   // backs the "Chats in <project>" sub-page.
-  const currentProjectThreads = useMemo(() => {
-    if (!projectId) return []
+  const projectChatsThreads = useMemo(() => {
+    if (!projectChatsProjectId) return []
     return threads
-      .filter((thread) => thread.projectId === projectId)
+      .filter((thread) => thread.projectId === projectChatsProjectId)
       .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
-  }, [projectId, threads])
+  }, [projectChatsProjectId, threads])
 
   const actions = useMemo<PaletteAction[]>(() => {
     const list: PaletteAction[] = []
@@ -327,15 +340,12 @@ export function CommandPalette({ state }: { state: KannaState }) {
           void state.handleCreateChat(projectId)
         },
       })
-    }
-
-    if (projectId && currentProjectThreads.length > 0) {
       list.push({
         id: "project-chats",
         title: currentProjectTitle ? `Chats in ${currentProjectTitle}` : "Chats in Current Project…",
         keywords: ["threads", "history", "browse", "recent", "project chats"],
         icon: <History className={ICON_CLASS} />,
-        run: () => pushPage("project-chats"),
+        run: () => openProjectChats(projectId),
       })
     }
 
@@ -720,7 +730,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
     composer,
     currentChatGroup,
     currentChatRow,
-    currentProjectThreads.length,
     currentProjectTitle,
     editorCommandTemplate,
     editorPreset,
@@ -728,6 +737,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     navigate,
     onChatPage,
     openGitPanel,
+    openProjectChats,
     projectId,
     pushPage,
     state.activeChatId,
@@ -876,14 +886,14 @@ export function CommandPalette({ state }: { state: KannaState }) {
   // flat headers, no collapsing.
   const projectChatSections = useMemo(() => {
     if (page !== "project-chats" || trimmedQuery) return null
-    return computeSidebarThreadSections(currentProjectThreads, nowMs)
-  }, [currentProjectThreads, nowMs, page, trimmedQuery])
+    return computeSidebarThreadSections(projectChatsThreads, nowMs)
+  }, [projectChatsThreads, nowMs, page, trimmedQuery])
 
   // Typing on the sub-page collapses the groups into fuzzy search results.
   const projectChatResults = useMemo(() => {
     if (page !== "project-chats" || !trimmedQuery) return []
-    return searchThreadsByTitle(currentProjectThreads, trimmedQuery, currentProjectThreads.length)
-  }, [currentProjectThreads, page, trimmedQuery])
+    return searchThreadsByTitle(projectChatsThreads, trimmedQuery, projectChatsThreads.length)
+  }, [projectChatsThreads, page, trimmedQuery])
 
   const openInResults = useMemo(() => {
     if (page !== "open-in") return []
@@ -914,11 +924,14 @@ export function CommandPalette({ state }: { state: KannaState }) {
     for (const project of projectSearchResults) {
       map.set(`palette-project-${project.localPath}`, project.localPath)
     }
+    if (page === "project-chats" && projectChatsGroup) {
+      map.set("project-chats-new", projectChatsGroup.localPath)
+    }
     for (const group of projectResults) {
       map.set(`project-${group.groupKey}`, group.localPath)
     }
     return map
-  }, [inProgressResults, projectChatResults, projectChatSections, projectResults, projectSearchResults, reviewResults, threadResults])
+  }, [inProgressResults, page, projectChatResults, projectChatSections, projectChatsGroup, projectResults, projectSearchResults, reviewResults, threadResults])
   const footerCopyPath = selectedValue ? copyPathByValue.get(selectedValue) : undefined
 
   const inputPlaceholder = page === "models"
@@ -930,7 +943,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
         : page === "open-in"
           ? "Open project in…"
           : page === "project-chats"
-            ? `Search chats in ${currentProjectTitle ?? "project"}…`
+            ? `Search chats in ${projectChatsTitle ?? "project"}…`
             : page === "settings"
             ? "Search settings…"
             : page === "usage"
@@ -1032,18 +1045,20 @@ export function CommandPalette({ state }: { state: KannaState }) {
               </CommandGroup>
             ) : null
 
+            // One row per matched project: opens the project's chats sub-page
+            // (which itself leads with a "New Chat" item).
             const projectsGroup = projectSearchResults.length > 0 ? (
               <CommandGroup key="projects" heading="Projects">
                 {projectSearchResults.map((project) => (
                   <CommandItem
                     key={project.localPath}
                     value={`palette-project-${project.localPath}`}
-                    onSelect={() => openProject(project)}
+                    onSelect={() => openProjectChats(project.projectId)}
                   >
-                    <SquarePen className={ICON_CLASS} />
+                    <Folder className={ICON_CLASS} />
                     <span className="min-w-0 truncate">{project.title}</span>
                     <span className="ml-auto max-w-[220px] shrink-0 truncate pl-3 text-xs text-muted-foreground">
-                      {project.localPath}
+                      {formatPathWithTilde(project.localPath)}
                     </span>
                   </CommandItem>
                 ))}
@@ -1142,7 +1157,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
                 >
                   <Folder className={ICON_CLASS} />
                   <span className="min-w-0 truncate">{group.title}</span>
-                  <span className="ml-auto max-w-[220px] shrink-0 truncate pl-3 text-xs text-muted-foreground">{group.localPath}</span>
+                  <span className="ml-auto max-w-[220px] shrink-0 truncate pl-3 text-xs text-muted-foreground">{formatPathWithTilde(group.localPath)}</span>
                 </CommandItem>
               ))}
               {!trimmedQuery || scorePaletteItem(trimmedQuery, "New Project…", ["create", "add"]) > 0 ? (
@@ -1162,7 +1177,25 @@ export function CommandPalette({ state }: { state: KannaState }) {
           ) : null}
 
           {page === "project-chats" ? (
-            projectChatSections ? (
+            <>
+              <CommandGroup>
+                <CommandItem
+                  value="project-chats-new"
+                  onSelect={() => {
+                    close()
+                    if (projectChatsProjectId) void state.handleCreateChat(projectChatsProjectId)
+                  }}
+                >
+                  <SquarePen className={ICON_CLASS} />
+                  <span>New Chat</span>
+                  {projectChatsGroup ? (
+                    <span className="ml-auto max-w-[220px] shrink-0 truncate pl-3 text-xs text-muted-foreground">
+                      {formatPathWithTilde(projectChatsGroup.localPath)}
+                    </span>
+                  ) : null}
+                </CommandItem>
+              </CommandGroup>
+              {projectChatSections ? (
               // Browsing: the sidebar Chats tab's grouping — In Progress,
               // Review, date buckets, archived last — as flat headed groups.
               [
@@ -1186,7 +1219,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
                   </CommandGroup>
                 ))
             ) : (
-              <CommandGroup heading={currentProjectTitle ? `Chats in ${currentProjectTitle}` : "Project Chats"}>
+              <CommandGroup heading={projectChatsTitle ? `Chats in ${projectChatsTitle}` : "Project Chats"}>
                 {projectChatResults.map((thread) => (
                   <ThreadItem
                     key={thread.chatId}
@@ -1197,7 +1230,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
                   />
                 ))}
               </CommandGroup>
-            )
+              )}
+            </>
           ) : null}
 
           {page === "open-in" ? (

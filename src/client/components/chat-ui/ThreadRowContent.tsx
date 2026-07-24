@@ -66,10 +66,12 @@ export function ThreadRowContent({
    */
   trailingLabel?: string | null
   /**
-   * Hover actions swapped in place of the trailing label, mirroring ChatRow:
-   * label hidden on mobile / fades out on desktop hover, actions always
-   * visible on mobile / revealed on hover. Requires a `group` class on the
-   * row container. Don't nest inside a <button> row — use a clickable div.
+   * Hover actions swapped in place of the trailing label: label hidden on
+   * mobile / fades out on desktop hover, actions always visible on mobile /
+   * revealed on desktop hover. The reveal is scoped to the icon group itself
+   * (a right-anchored `peer/actions`), so on desktop the actions only appear
+   * when the icons are hovered — not the trailing label or the rest of the
+   * row. Don't nest inside a <button> row — use a clickable div.
    */
   hoverActions?: ReactNode
 }) {
@@ -107,11 +109,15 @@ export function ThreadRowContent({
       ) : null}
       {hoverActions ? (
         <span className="ml-auto relative flex h-6 min-w-12 shrink-0 items-center justify-end pl-3 text-xs">
-          <span className="hidden md:flex max-w-[140px] items-center truncate text-muted-foreground transition-opacity group-hover:opacity-0">
-            {trailingLabel !== undefined ? trailingLabel ?? "" : thread.projectTitle}
-          </span>
-          <span className="absolute inset-0 flex items-center justify-end gap-0 opacity-100 md:opacity-0 md:group-hover:opacity-100">
+          {/* z-10 + pointer-events-none on the label: while the label's opacity
+              transition runs, opacity<1 creates a stacking context that would
+              otherwise lift the later-DOM label above the icons and steal the
+              hover mid-fade, oscillating the peer-hover state (flicker). */}
+          <span className="peer/actions absolute inset-y-0 right-0 z-10 flex items-center justify-end gap-0 opacity-100 md:opacity-0 md:hover:opacity-100">
             {hoverActions}
+          </span>
+          <span className="pointer-events-none hidden md:flex max-w-[140px] items-center truncate text-muted-foreground transition-opacity peer-hover/actions:opacity-0">
+            {trailingLabel !== undefined ? trailingLabel ?? "" : thread.projectTitle}
           </span>
         </span>
       ) : (

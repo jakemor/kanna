@@ -117,6 +117,41 @@ describe("DiffStore", () => {
     expect(lastMessage).toBe("Update app\n\nOnly app changes")
   })
 
+  test("commits a deletion that is already staged (e.g. an agent ran git rm)", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await writeFile(path.join(repoRoot, "gone.txt"), "delete me\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+
+    // Stage the deletion out-of-band, the way a coding agent would.
+    await run(["git", "rm", "--quiet", "gone.txt"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const result = await store.commitFiles({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      paths: ["app.txt", "gone.txt"],
+      summary: "Commit staged deletion",
+      mode: "commit_only",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: "commit_only",
+    })
+    expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Commit staged deletion")
+    expect((await run(["git", "status", "--porcelain"], repoRoot)).trim()).toBe("")
+
+    const snapshot = store.getProjectSnapshot("project-1")
+    expect(snapshot.files).toHaveLength(0)
+  })
+
   test("commit_and_push publishes an unpublished branch", async () => {
     const repoRoot = await createRepo()
     const remoteRoot = await createBareRemote()

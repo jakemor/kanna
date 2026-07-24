@@ -11,79 +11,17 @@ import {
   Terminal,
 } from "lucide-react"
 import { APP_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
-import type { FsListResult, LocalProjectSummary, LocalProjectsSnapshot } from "../../shared/types"
+import type { LocalProjectsSnapshot } from "../../shared/types"
 import type { SocketStatus } from "../app/socket"
 import { PageHeader } from "../app/PageHeader"
 import { getPathBasename } from "../lib/formatters"
+import { filterProjects, groupProjectsByRecency } from "../lib/project-groups"
 import { cn } from "../lib/utils"
-import { NewProjectModal } from "./NewProjectModal"
+import { openCommandPalette } from "./command-palette/CommandPalette"
 import { Button } from "./ui/button"
 import { CopyButton } from "./ui/copy-button"
 import { Input } from "./ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip"
-
-const DAY_MS = 24 * 60 * 60 * 1_000
-
-export interface ProjectRecencyGroup {
-  key: "recent" | "last-30-days" | "last-90-days" | "older"
-  title: string
-  projects: LocalProjectSummary[]
-}
-
-function compareProjectsAlphabetically(a: LocalProjectSummary, b: LocalProjectSummary) {
-  return getPathBasename(a.localPath).localeCompare(getPathBasename(b.localPath), undefined, {
-    sensitivity: "base",
-  })
-}
-
-function compareProjectsByModifiedAt(a: LocalProjectSummary, b: LocalProjectSummary) {
-  return (b.folderModifiedAt ?? 0) - (a.folderModifiedAt ?? 0)
-}
-
-export function filterProjects(projects: LocalProjectSummary[], search: string) {
-  const query = search.trim().toLocaleLowerCase()
-  if (!query) return projects
-
-  return projects.filter((project) => (
-    project.title.toLocaleLowerCase().includes(query)
-    || project.localPath.toLocaleLowerCase().includes(query)
-  ))
-}
-
-export function groupProjectsByRecency(
-  projects: LocalProjectSummary[],
-  nowMs: number = Date.now()
-): ProjectRecencyGroup[] {
-  const groups: ProjectRecencyGroup[] = [
-    { key: "recent", title: "Recent", projects: [] },
-    { key: "last-30-days", title: "Last 30 days", projects: [] },
-    { key: "last-90-days", title: "Last 90 days", projects: [] },
-    { key: "older", title: "Older", projects: [] },
-  ]
-
-  for (const project of projects) {
-    const ageMs = project.folderModifiedAt === undefined
-      ? Number.POSITIVE_INFINITY
-      : Math.max(0, nowMs - project.folderModifiedAt)
-
-    if (ageMs < 7 * DAY_MS) {
-      groups[0].projects.push(project)
-    } else if (ageMs < 30 * DAY_MS) {
-      groups[1].projects.push(project)
-    } else if (ageMs < 90 * DAY_MS) {
-      groups[2].projects.push(project)
-    } else {
-      groups[3].projects.push(project)
-    }
-  }
-
-  groups[0].projects.sort(compareProjectsByModifiedAt)
-  groups[1].projects.sort(compareProjectsByModifiedAt)
-  groups[2].projects.sort(compareProjectsAlphabetically)
-  groups[3].projects.sort(compareProjectsAlphabetically)
-
-  return groups.filter((group) => group.projects.length > 0)
-}
 
 interface LocalDevProps {
   connectionStatus: SocketStatus
@@ -91,12 +29,7 @@ interface LocalDevProps {
   snapshot: LocalProjectsSnapshot | null
   startingLocalPath: string | null
   commandError: string | null
-  newProjectOpen: boolean
-  onNewProjectOpenChange: (open: boolean) => void
   onOpenProject: (localPath: string) => Promise<void>
-  onCreateProject: (project: { mode: "existing" | "clone"; localPath: string; fallbackPath?: string; title: string; cloneUrl?: string }) => Promise<void>
-  onListDirectory: (path?: string, nearest?: boolean) => Promise<FsListResult>
-  onMakeDirectory: (path: string) => Promise<FsListResult>
 }
 
 function CodeBlock({ children }: { children: string }) {
@@ -219,12 +152,7 @@ export function LocalDev({
   snapshot,
   startingLocalPath,
   commandError,
-  newProjectOpen,
-  onNewProjectOpenChange,
   onOpenProject,
-  onCreateProject,
-  onListDirectory,
-  onMakeDirectory,
 }: LocalDevProps) {
   const projects = useMemo(() => snapshot?.projects ?? [], [snapshot?.projects])
   const [projectSearch, setProjectSearch] = useState("")
@@ -334,7 +262,7 @@ export function LocalDev({
                 variant="default"
                 size="sm"
                 className="rounded-lg"
-                onClick={() => onNewProjectOpenChange(true)}
+                onClick={() => openCommandPalette("add-project")}
               >
                 <Plus className="size-3.5" data-icon="inline-start" />
                 Project
@@ -384,14 +312,6 @@ export function LocalDev({
           </div>
         </>
       )}
-
-      <NewProjectModal
-        open={newProjectOpen}
-        onOpenChange={onNewProjectOpenChange}
-        onConfirm={(project) => onCreateProject(project)}
-        listDirectory={onListDirectory}
-        makeDirectory={onMakeDirectory}
-      />
 
       <div className="py-4 text-center">
         <span className="text-xs text-muted-foreground/50">v{SDK_CLIENT_APP.split("/")[1]}</span>

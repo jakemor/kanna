@@ -158,13 +158,10 @@ export interface KannaState {
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
-  addProjectModalOpen: boolean
   openSidebar: () => void
   closeSidebar: () => void
   collapseSidebar: () => void
   expandSidebar: () => void
-  openAddProjectModal: () => void
-  closeAddProjectModal: () => void
   loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
   handleForkChat: (chat: SidebarChatRow) => Promise<void>
@@ -237,7 +234,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
@@ -589,7 +585,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     const command: Parameters<typeof socket.command>[0] = intent.project.mode === "clone" && intent.project.cloneUrl
       ? { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
-      : { type: "project.open", localPath: intent.project.localPath }
+      : intent.project.mode === "create"
+        ? { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
+        : { type: "project.open", localPath: intent.project.localPath }
     const result = await socket.command<{ projectId: string; localPath?: string }>(command)
     return { projectId: result.projectId, localPath: result.localPath ?? intent.project.localPath }
   }, [socket])
@@ -609,8 +607,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
       await createChatForProject(projectId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
-      // Re-throw for clone operations so the modal can show the error inline
-      if (intent.kind === "project_request" && intent.project.mode === "clone") {
+      // Re-throw project requests so the command palette can show the
+      // failure inline (clone/create/open rows).
+      if (intent.kind === "project_request") {
         throw error
       }
     } finally {
@@ -811,8 +810,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
   const collapseSidebar = useCallback(() => setSidebarCollapsed(true), [])
   const expandSidebar = useCallback(() => setSidebarCollapsed(false), [])
-  const openAddProjectModal = useCallback(() => setAddProjectModalOpen(true), [])
-  const closeAddProjectModal = useCallback(() => setAddProjectModalOpen(false), [])
 
   return {
     socket,
@@ -851,13 +848,10 @@ export function useKannaState(activeChatId: string | null): KannaState {
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
-    addProjectModalOpen,
     openSidebar,
     closeSidebar,
     collapseSidebar,
     expandSidebar,
-    openAddProjectModal,
-    closeAddProjectModal,
     loadOlderHistory,
     handleCreateChat,
     handleForkChat,

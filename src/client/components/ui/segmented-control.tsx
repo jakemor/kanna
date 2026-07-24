@@ -60,7 +60,7 @@ export function SegmentedControl<T extends string>({
     <div
       ref={containerRef}
       className={cn(
-        "relative inline-flex items-center rounded-lg border border-border p-[3px] ",
+        "relative inline-flex items-center rounded-lg border border-border p-[3px] bg-slate-200 dark:bg-transparent",
         className,
       )}
     >
@@ -69,7 +69,7 @@ export function SegmentedControl<T extends string>({
           aria-hidden
           className={cn(
             "pointer-events-none absolute top-[3px] bottom-[3px] rounded-[4px] border",
-            "bg-white dark:bg-muted border-slate-300 dark:border-white/10 bg-slate-200",
+            "bg-white dark:bg-muted border-slate-300 dark:border-white/10",
             hasIndicator.current && "transition-[left,width] duration-200 ease-in-out",
           )}
           style={{ left: indicator.left, width: indicator.width }}

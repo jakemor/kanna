@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
@@ -73,6 +73,7 @@ const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
 }
 
 const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
+  devbox: false,
   analyticsEnabled: true,
   browserSettingsMigrated: false,
   theme: "system",
@@ -121,6 +122,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
     },
   },
   newSidebarEnabled: false,
+  newProjectsDirectory: "~/Kanna",
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }
@@ -797,6 +799,62 @@ describe("ws-router", () => {
     }
   })
 
+  test("project.create initializes the directory, acks the resolved path, and tracks analytics", async () => {
+    const analyticsEvents: string[] = []
+    const state = createEmptyState()
+    const parentPath = await mkdtemp(path.join(tmpdir(), "kanna-router-create-"))
+    const projectPath = path.join(parentPath, "brand-new")
+
+    try {
+      const router = createTestRouter({
+        store: createFakeStore({
+          state,
+          openProject: async (localPath: string, title?: string) => {
+            const project = {
+              id: "project-created",
+              localPath,
+              title: title ?? "Project",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              deletedAt: null,
+            }
+            state.projectsById.set(project.id, project as never)
+            state.projectIdsByPath.set(localPath, project.id)
+            return project
+          },
+        }),
+        analytics: {
+          track: (eventName: string) => {
+            analyticsEvents.push(eventName)
+          },
+          trackLaunch: () => {},
+        },
+      })
+      const ws = new FakeWebSocket()
+
+      await router.handleMessage(
+        ws as never,
+        JSON.stringify({
+          v: 1,
+          type: "command",
+          id: "project-create-1",
+          command: { type: "project.create", localPath: projectPath, title: "brand-new" },
+        })
+      )
+
+      const ack = ws.sent.find((message) => {
+        const parsed = message as { type?: string; id?: string }
+        return parsed.type === "ack" && parsed.id === "project-create-1"
+      }) as { result?: { projectId: string; localPath: string } } | undefined
+      expect(ack?.result).toEqual({ projectId: "project-created", localPath: projectPath })
+      // The directory exists and was git-initialized (it was brand-new).
+      expect((await stat(path.join(projectPath, ".git"))).isDirectory()).toBe(true)
+      expect(analyticsEvents).toEqual(["project_opened"])
+    } finally {
+      await rm(parentPath, { recursive: true, force: true })
+    }
+  })
+
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
     const router = createTestRouter({
       terminals: {
@@ -829,6 +887,114 @@ describe("ws-router", () => {
         id: "terminal-input-1",
       },
     ])
+  })
+
+  test("terminal.create with projectId null spawns a home-directory terminal", async () => {
+    const created: Array<{ projectPath: string; terminalId: string }> = []
+    const router = createTestRouter({
+      store: createFakeStore({ getProject: () => null }),
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+        createTerminal: (args: { projectPath: string; terminalId: string }) => {
+          created.push({ projectPath: args.projectPath, terminalId: args.terminalId })
+          return { terminalId: args.terminalId }
+        },
+      } as never,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "terminal-create-home",
+        command: {
+          type: "terminal.create",
+          projectId: null,
+          terminalId: "home",
+          cols: 80,
+          rows: 24,
+          scrollback: 1_000,
+        },
+      })
+    )
+
+    expect(created).toEqual([{ projectPath: homedir(), terminalId: "home" }])
+    expect(ws.sent[0]).toMatchObject({ type: "ack", id: "terminal-create-home" })
+
+    // A string projectId still resolves through the store (unknown → error).
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "terminal-create-unknown",
+        command: {
+          type: "terminal.create",
+          projectId: "no-such-project",
+          terminalId: "t2",
+          cols: 80,
+          rows: 24,
+          scrollback: 1_000,
+        },
+      })
+    )
+    expect(created.length).toBe(1)
+    expect(ws.sent[1]).toMatchObject({ type: "error", id: "terminal-create-unknown" })
+  })
+
+  test("terminal.close pushes the null snapshot even when the subscribe-time snapshot was null", async () => {
+    // Regression: a pane subscribes before its session exists (signature
+    // "null"), creates, then clears (close). The post-close null snapshot
+    // must not be deduped away — it's what tells the pane to recreate.
+    const sessions = new Map<string, { terminalId: string }>()
+    const router = createTestRouter({
+      terminals: {
+        getSnapshot: (terminalId: string) => sessions.get(terminalId) ?? null,
+        onEvent: () => () => {},
+        createTerminal: (args: { terminalId: string }) => {
+          const snapshot = { terminalId: args.terminalId }
+          sessions.set(args.terminalId, snapshot)
+          return snapshot
+        },
+        close: (terminalId: string) => {
+          sessions.delete(terminalId)
+        },
+      } as never,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "subscribe", id: "term-sub", topic: { type: "terminal", terminalId: "t1" } })
+    )
+    expect(ws.sent[0]).toMatchObject({ type: "snapshot", id: "term-sub", snapshot: { type: "terminal", data: null } })
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "create-t1",
+        command: { type: "terminal.create", projectId: null, terminalId: "t1", cols: 80, rows: 24, scrollback: 1_000 },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "command", id: "close-t1", command: { type: "terminal.close", terminalId: "t1" } })
+    )
+
+    const closeIndex = ws.sent.findIndex((envelope) => (envelope as { id?: string }).id === "close-t1")
+    expect(closeIndex).toBeGreaterThan(-1)
+    const nullPushesAfterClose = ws.sent.slice(closeIndex).filter((envelope) => {
+      const candidate = envelope as { type?: string; id?: string; snapshot?: { type?: string; data?: unknown } }
+      return candidate.type === "snapshot" && candidate.id === "term-sub" && candidate.snapshot?.data === null
+    })
+    expect(nullPushesAfterClose.length).toBe(1)
   })
 
   test("subscribes and unsubscribes chat topics", async () => {

@@ -74,8 +74,10 @@ export type TerminalEvent =
 
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
+  | { type: "project.create"; localPath: string; title?: string }
   | { type: "project.rename"; projectId: string; title: string }
   | { type: "project.clone"; cloneUrl: string; localPath: string; fallbackPath?: string; title: string }
+  | { type: "github.listRecentRepos" }
   | { type: "project.remove"; projectId: string }
   | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
   | { type: "project.readDiffPatch"; projectId: string; path: string }
@@ -210,7 +212,8 @@ export type ClientCommand =
       chatId: string
       queuedMessageId: string
     }
-  | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
+  /** projectId null → a home-directory terminal (dev-box full-screen Terminal page). */
+  | { type: "terminal.create"; projectId: string | null; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
   | { type: "terminal.close"; terminalId: string }

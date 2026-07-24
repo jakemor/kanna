@@ -40,6 +40,7 @@
     "prepare:export-viewer-release-assets": "bun run ./scripts/prepare-export-viewer-release-assets.ts",
     "check": "tsc --noEmit && bun run build:client && bun run build:export-viewer",
     "dev": "bun run ./scripts/dev.ts",
+    "dev:cloud": "KANNA_DEVBOX_UI=1 bun run ./scripts/dev.ts",
     "dev:client": "vite --host 0.0.0.0 --port 5174",
     "dev:server": "bun run ./scripts/dev-server.ts --no-open --port 5175",
     "install:dev": "bun install && bun run build && bun install -g .",

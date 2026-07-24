@@ -4,11 +4,13 @@ import {
   abbreviateHomePath,
   classifyBrowserInput,
   filterDirEntries,
+  isValidNewProjectName,
   joinDirPath,
   parseRepoRef,
+  parseRepoRefFromUrl,
   pathBasename,
   resolveCloneDestination,
-} from "./NewProjectModal"
+} from "./project-fs"
 
 describe("classifyBrowserInput", () => {
   test("detects git repos (URLs and owner/repo shorthand)", () => {
@@ -35,27 +37,17 @@ describe("classifyBrowserInput", () => {
 describe("resolveCloneDestination", () => {
   const repo = parseRepoRef("jakemor/kanna")!
 
-  test("clones directly into an empty current folder, titled after it", () => {
-    const dest = resolveCloneDestination({ path: "/home/jake/my-app", entries: [] }, repo)
-    expect(dest).toEqual({
-      localPath: "/home/jake/my-app",
-      fallbackPath: "/home/jake/my-app/kanna",
-      title: "my-app",
-      direct: true,
+  test("clones to a repo-named folder inside the new-projects directory", () => {
+    expect(resolveCloneDestination("~/Kanna", repo)).toEqual({
+      localPath: "~/Kanna/kanna",
+      fallbackPath: "~/Kanna/jakemor-kanna",
+      title: "kanna",
     })
   })
 
-  test("clones to a repo-named subfolder when the current folder has contents", () => {
-    const dest = resolveCloneDestination(
-      { path: "/home/jake/Projects", entries: [{ name: "other", kind: "dir" as const }] },
-      repo
-    )
-    expect(dest).toEqual({
-      localPath: "/home/jake/Projects/kanna",
-      fallbackPath: "/home/jake/Projects/jakemor-kanna",
-      title: "kanna",
-      direct: false,
-    })
+  test("falls back to owner-repo when the repo name is taken", () => {
+    const dest = resolveCloneDestination("/home/jake/Projects", repo)
+    expect(dest.fallbackPath).toBe("/home/jake/Projects/jakemor-kanna")
   })
 })
 
@@ -125,6 +117,51 @@ describe("parseRepoRef", () => {
     expect(parseRepoRef("kanna")).toBeNull()
     expect(parseRepoRef("a/b/c")).toBeNull()
     expect(parseRepoRef("https://example.com/owner/repo")).toBeNull()
+  })
+})
+
+describe("parseRepoRefFromUrl", () => {
+  test("parses full URLs (https and ssh)", () => {
+    expect(parseRepoRefFromUrl("https://github.com/jakemor/kanna")).toEqual({
+      host: "github.com",
+      owner: "jakemor",
+      repo: "kanna",
+      cloneUrl: "https://github.com/jakemor/kanna.git",
+    })
+    expect(parseRepoRefFromUrl("git@github.com:jakemor/kanna.git")?.repo).toBe("kanna")
+  })
+
+  test("parses scheme-less host URLs — the host makes them unambiguous", () => {
+    expect(parseRepoRefFromUrl("github.com/jakemor/kanna")).toEqual({
+      host: "github.com",
+      owner: "jakemor",
+      repo: "kanna",
+      cloneUrl: "https://github.com/jakemor/kanna.git",
+    })
+    expect(parseRepoRefFromUrl("gitlab.com/acme/widgets")?.host).toBe("gitlab.com")
+    expect(parseRepoRefFromUrl("www.github.com/jakemor/kanna")?.repo).toBe("kanna")
+  })
+
+  test("rejects owner/repo shorthand — the root palette must not misfire on slashes", () => {
+    expect(parseRepoRefFromUrl("jakemor/kanna")).toBeNull()
+    expect(parseRepoRefFromUrl("src/components")).toBeNull()
+    expect(parseRepoRefFromUrl("kanna")).toBeNull()
+    expect(parseRepoRefFromUrl("")).toBeNull()
+    expect(parseRepoRefFromUrl("example.com/owner/repo")).toBeNull()
+  })
+})
+
+describe("isValidNewProjectName", () => {
+  test("accepts ordinary names", () => {
+    expect(isValidNewProjectName("todo-list")).toBe(true)
+    expect(isValidNewProjectName("  my app  ")).toBe(true)
+  })
+
+  test("rejects empty and separator-containing names", () => {
+    expect(isValidNewProjectName("")).toBe(false)
+    expect(isValidNewProjectName("   ")).toBe(false)
+    expect(isValidNewProjectName("a/b")).toBe(false)
+    expect(isValidNewProjectName("a\\b")).toBe(false)
   })
 })
 

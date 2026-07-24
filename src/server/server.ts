@@ -94,6 +94,11 @@ export interface StartKannaServerOptions {
    * /ws upgrade.
    */
   cloud?: CloudRuntime | null
+  /**
+   * This machine is a cloud dev-box (`kanna --cloud`). Surfaced to the client
+   * through the app-settings snapshot to unlock dev-box-only UI.
+   */
+  directCloud?: boolean
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
@@ -127,7 +132,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
   const keybindings = new KeybindingsManager()
-  const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
+  // Dev-box UI flag: the real thing is `kanna --cloud`; KANNA_DEVBOX_UI=1 is
+  // the dev-mode override (`bun run dev:cloud`) so the UI is developable
+  // without a cloud identity.
+  const devboxUi = Boolean(options.directCloud) || process.env.KANNA_DEVBOX_UI === "1"
+  const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"), { devbox: devboxUi })
   await appSettings.initialize()
   await keybindings.initialize()
   const analytics = new KannaAnalyticsReporter({

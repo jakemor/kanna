@@ -110,6 +110,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Used when opening transcript links or files from the git diff menu",
     keywords: ["cursor", "xcode", "windsurf", "vscode", "command template"],
   },
+  newProjectsDirectory: {
+    sectionId: "general",
+    title: "New Projects Directory",
+    description: "Where cloned and newly created projects are placed",
+    keywords: ["clone", "create", "folder", "destination", "add project", "path"],
+  },
   terminalScrollback: {
     sectionId: "general",
     title: "Terminal Scrollback",

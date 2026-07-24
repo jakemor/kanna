@@ -180,7 +180,8 @@ export function getNextMeasuredInputHeight(previousHeight: number, measuredHeigh
 }
 
 export interface ProjectRequest {
-  mode: "existing" | "clone"
+  /** "existing" opens (mkdir -p) in place; "create" also git-inits an empty dir; "clone" runs git clone. */
+  mode: "existing" | "clone" | "create"
   localPath: string
   fallbackPath?: string
   title: string

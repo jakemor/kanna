@@ -111,6 +111,12 @@ interface DirtyPathEntry {
   previousPath?: string
   changeType: ChatDiffFile["changeType"]
   isUntracked: boolean
+  /**
+   * True when the entry still has worktree (unstaged) changes. False means the
+   * change is already fully staged — e.g. an agent ran `git rm`/`git add` — so
+   * a `git add` pathspec may no longer match anything on disk or in the index.
+   */
+  hasUnstagedChanges: boolean
 }
 
 
@@ -171,6 +177,9 @@ function createCommitFailure(mode: DiffCommitMode, detail: string): DiffCommitRe
   if (normalized.includes("ignored by one of your .gitignore files")) {
     title = "Ignored files cannot be staged"
     message = "One or more selected paths are ignored by .gitignore. Unignore them or remove them from the commit selection."
+  } else if (normalized.includes("did not match any files")) {
+    title = "Selection out of date"
+    message = "A selected file no longer matches the repository state — it may have just been changed by an agent or another tool. Review the refreshed changes and try again."
   }
 
   return {
@@ -786,6 +795,7 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
     const value = line.slice(3)
     if (!value) continue
     const isUntracked = statusCode === "??"
+    const hasUnstagedChanges = isUntracked || statusCode[1] !== " "
     const isRename = statusCode.includes("R")
     const isDelete = statusCode.includes("D")
     const isAdd = statusCode.includes("A") || isUntracked
@@ -805,6 +815,7 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
           previousPath: previousPath || undefined,
           changeType,
           isUntracked,
+          hasUnstagedChanges,
         })
       }
       continue
@@ -814,6 +825,7 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
       path: value,
       changeType,
       isUntracked,
+      hasUnstagedChanges,
     })
   }
   return entries.sort((left, right) => left.path.localeCompare(right.path))
@@ -2228,6 +2240,9 @@ export class DiffStore {
     const currentDirtyPathsByPath = new Map(currentDirtyEntries.map((entry) => [entry.path, entry]))
     const missingPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.has(relativePath))
     if (missingPaths.length > 0) {
+      // The selection is stale (e.g. an agent committed or reverted the file
+      // since the sidebar snapshot) — refresh so the sidebar catches up.
+      await this.refreshSnapshot(args.projectId, args.projectPath)
       throw new Error(`File is no longer changed: ${missingPaths[0]}`)
     }
 
@@ -2235,7 +2250,15 @@ export class DiffStore {
     // not overflow the OS argv size limit.
     const toPathspecStdin = (paths: string[]) => paths.join(String.fromCharCode(0))
 
-    const trackedPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.get(relativePath)?.isUntracked)
+    // Entries whose change is already fully staged (e.g. an agent ran
+    // `git rm`/`git add`) are skipped here: a staged deletion exists in
+    // neither the worktree nor the index, so a `git add` pathspec would fail
+    // with "did not match any files". `git commit --only` below still matches
+    // them against HEAD and commits the staged state.
+    const trackedPaths = normalizedPaths.filter((relativePath) => {
+      const entry = currentDirtyPathsByPath.get(relativePath)
+      return entry ? !entry.isUntracked && entry.hasUnstagedChanges : false
+    })
     if (trackedPaths.length > 0) {
       const addTrackedResult = await runGit(
         ["add", "-u", "--pathspec-from-file=-", "--pathspec-file-nul"],
@@ -2243,6 +2266,7 @@ export class DiffStore {
         { stdin: toPathspecStdin(trackedPaths) }
       )
       if (addTrackedResult.exitCode !== 0) {
+        await this.refreshSnapshot(args.projectId, args.projectPath)
         return createCommitFailure(args.mode, formatGitFailure(addTrackedResult))
       }
     }
@@ -2255,6 +2279,7 @@ export class DiffStore {
         { stdin: toPathspecStdin(untrackedPaths) }
       )
       if (addUntrackedResult.exitCode !== 0) {
+        await this.refreshSnapshot(args.projectId, args.projectPath)
         return createCommitFailure(args.mode, formatGitFailure(addUntrackedResult))
       }
     }
@@ -2267,6 +2292,7 @@ export class DiffStore {
 
     const commitResult = await runGit(commitArgs, repo.repoRoot, { stdin: toPathspecStdin(normalizedPaths) })
     if (commitResult.exitCode !== 0) {
+      await this.refreshSnapshot(args.projectId, args.projectPath)
       return createCommitFailure(args.mode, formatGitFailure(commitResult))
     }
 

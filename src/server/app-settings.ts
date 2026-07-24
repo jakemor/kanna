@@ -11,6 +11,7 @@ import {
   type ProviderPreferenceInput,
 } from "../shared/provider-preferences"
 import {
+  DEFAULT_NEW_PROJECTS_DIRECTORY,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
@@ -43,9 +44,11 @@ interface AppSettingsFile {
     pi?: ProviderPreferenceInput
   }
   newSidebarEnabled?: unknown
+  newProjectsDirectory?: unknown
 }
 
-interface AppSettingsState extends AppSettingsSnapshot {
+// devbox is a server-runtime fact (the --cloud flag), not settings state.
+interface AppSettingsState extends Omit<AppSettingsSnapshot, "devbox"> {
   analyticsUserId: string
 }
 
@@ -145,11 +148,13 @@ function toFilePayload(state: AppSettingsState) {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
+    newProjectsDirectory: state.newProjectsDirectory,
   }
 }
 
-function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
+function toSnapshot(state: AppSettingsState, devbox = false): AppSettingsSnapshot {
   return {
+    devbox,
     analyticsEnabled: state.analyticsEnabled,
     browserSettingsMigrated: state.browserSettingsMigrated,
     theme: state.theme,
@@ -160,6 +165,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
+    newProjectsDirectory: state.newProjectsDirectory,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -200,6 +206,14 @@ function normalizeAppSettings(
     warnings.push("newSidebarEnabled must be a boolean")
   }
 
+  const rawNewProjectsDirectory = typeof source?.newProjectsDirectory === "string"
+    ? source.newProjectsDirectory.trim()
+    : ""
+  const newProjectsDirectory = rawNewProjectsDirectory || DEFAULT_NEW_PROJECTS_DIRECTORY
+  if (source?.newProjectsDirectory !== undefined && !rawNewProjectsDirectory) {
+    warnings.push("newProjectsDirectory must be a non-empty string")
+  }
+
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
   const state: AppSettingsState = {
     analyticsEnabled,
@@ -219,6 +233,7 @@ function normalizeAppSettings(
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     newSidebarEnabled,
+    newProjectsDirectory,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -248,6 +263,9 @@ function toComparablePayload(source: AppSettingsFile) {
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
     newSidebarEnabled: source.newSidebarEnabled,
+    newProjectsDirectory: typeof source.newProjectsDirectory === "string"
+      ? source.newProjectsDirectory.trim()
+      : source.newProjectsDirectory,
   }
 }
 
@@ -298,10 +316,13 @@ export class AppSettingsManager {
   private watcher: FSWatcher | null = null
   private state: AppSettingsState
   private readonly listeners = new Set<(snapshot: AppSettingsSnapshot) => void>()
+  /** Server-computed snapshot fields — never read from or written to the file. */
+  private readonly extras: { devbox: boolean }
 
-  constructor(filePath = getSettingsFilePath(homedir())) {
+  constructor(filePath = getSettingsFilePath(homedir()), extras: { devbox?: boolean } = {}) {
     this.filePath = filePath
     this.state = normalizeAppSettings(undefined, filePath).payload
+    this.extras = { devbox: extras.devbox === true }
   }
 
   async initialize() {
@@ -317,7 +338,7 @@ export class AppSettingsManager {
   }
 
   getSnapshot() {
-    return toSnapshot(this.state)
+    return toSnapshot(this.state, this.extras.devbox)
   }
 
   getState() {
@@ -349,7 +370,7 @@ export class AppSettingsManager {
     await mkdir(path.dirname(this.filePath), { recursive: true })
     await writeFile(this.filePath, `${JSON.stringify(toFilePayload(nextState), null, 2)}\n`, "utf8")
     this.setState(nextState)
-    return toSnapshot(nextState)
+    return toSnapshot(nextState, this.extras.devbox)
   }
 
   private async readState(options?: { persistNormalized?: boolean }) {
@@ -384,7 +405,7 @@ export class AppSettingsManager {
 
   private setState(state: AppSettingsState) {
     this.state = state
-    const snapshot = toSnapshot(state)
+    const snapshot = toSnapshot(state, this.extras.devbox)
     for (const listener of this.listeners) {
       listener(snapshot)
     }

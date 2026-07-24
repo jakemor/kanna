@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
-import { createDirectory, listDirectory, resolveClonePath } from "./paths"
+import { createDirectory, initializeProjectDirectory, listDirectory, resolveClonePath } from "./paths"
 
 let root: string
 
@@ -104,6 +104,51 @@ describe("createDirectory", () => {
 
   test("rejects paths that are files", async () => {
     expect(createDirectory(path.join(root, "zeta.txt"))).rejects.toThrow()
+  })
+})
+
+describe("initializeProjectDirectory", () => {
+  async function isGitRepo(dir: string) {
+    try {
+      return (await stat(path.join(dir, ".git"))).isDirectory()
+    } catch {
+      return false
+    }
+  }
+
+  test("creates a missing directory and git-inits it", async () => {
+    const target = path.join(root, "init", "brand-new")
+    const resolved = await initializeProjectDirectory(target)
+    expect(resolved).toBe(target)
+    expect(await isGitRepo(target)).toBe(true)
+  })
+
+  test("git-inits an existing empty directory", async () => {
+    const target = path.join(root, "init-empty")
+    await mkdir(target)
+    await initializeProjectDirectory(target)
+    expect(await isGitRepo(target)).toBe(true)
+  })
+
+  test("leaves an existing non-empty directory untouched", async () => {
+    const target = path.join(root, "init-nonempty")
+    await mkdir(target)
+    await writeFile(path.join(target, "notes.txt"), "hi")
+    await initializeProjectDirectory(target)
+    expect(await isGitRepo(target)).toBe(false)
+  })
+
+  test("never re-inits an existing repo", async () => {
+    const target = path.join(root, "init-repo")
+    await initializeProjectDirectory(target)
+    // A repo dir contains .git, so a second call must take the non-empty path.
+    const resolved = await initializeProjectDirectory(target)
+    expect(resolved).toBe(target)
+    expect(await isGitRepo(target)).toBe(true)
+  })
+
+  test("rejects paths that are files", async () => {
+    expect(initializeProjectDirectory(path.join(root, "zeta.txt"))).rejects.toThrow()
   })
 })
 

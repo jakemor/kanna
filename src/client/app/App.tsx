@@ -17,6 +17,7 @@ import { KannaSidebar } from "./KannaSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import { SettingsPage } from "./SettingsPage"
+import { TerminalPage } from "./TerminalPage"
 import { useKannaState } from "./useKannaState"
 import type { AppSettingsSnapshot } from "../../shared/types"
 import { VERSION_SEEN_STORAGE_KEY } from "../lib/storageKeys"
@@ -236,9 +237,6 @@ function KannaLayout() {
   const handleRestoreChat = useCallback((chatId: string) => {
     void state.handleRestoreChat(chatId)
   }, [state.handleRestoreChat])
-  const handleOpenAddProjectModal = useCallback(() => {
-    state.openAddProjectModal()
-  }, [state.openAddProjectModal])
   const handleSidebarDeleteChat = useCallback((chat: Parameters<typeof state.handleDeleteChat>[0]) => {
     void state.handleDeleteChat(chat)
   }, [state.handleDeleteChat])
@@ -280,7 +278,6 @@ function KannaLayout() {
       onOpenArchivedChat={handleOpenArchivedChat}
       onRestoreChat={handleRestoreChat}
       onDeleteChat={handleSidebarDeleteChat}
-      onOpenAddProjectModal={handleOpenAddProjectModal}
       onCopyPath={handleSidebarCopyPath}
       onOpenExternalPath={handleSidebarOpenExternalPath}
       onRenameProject={handleSidebarRenameProject}
@@ -292,7 +289,6 @@ function KannaLayout() {
     />
   ), [
     handleOpenChangelog,
-    handleOpenAddProjectModal,
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarArchiveChat,
@@ -406,6 +402,7 @@ export function App() {
             <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
             <Route path="/settings/:sectionId" element={<SettingsPage />} />
             <Route path="/chat/:chatId" element={<ChatPage />} />
+            <Route path="/terminal" element={<TerminalPage />} />
           </Route>
         </Routes>
       </AppDialogProvider>

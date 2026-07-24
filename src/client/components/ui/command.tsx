@@ -80,7 +80,10 @@ const CommandInput = React.forwardRef<
         type="button"
         aria-label="Back"
         onClick={onBack}
-        className="-ml-1 flex shrink-0 items-center rounded p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        // -mx-1 cancels the p-1 hit-area padding on both sides so the button
+        // occupies exactly the search icon's 16px — the input never shifts
+        // between the root (search icon) and sub-pages (back button).
+        className="-mx-1 flex shrink-0 items-center rounded p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <ArrowLeft className="h-4 w-4" />
       </button>

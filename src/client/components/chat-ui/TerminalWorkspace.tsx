@@ -9,7 +9,14 @@ import { TerminalPane } from "./TerminalPane"
 import { getMinimumTerminalWidth } from "./TerminalWorkspaceLayout"
 
 interface Props {
+  /** Layout-store key and callback identifier. */
   projectId: string
+  /**
+   * The project the shells actually run in — passed to terminal.create.
+   * Defaults to `projectId`; null spawns home-directory shells (the dev-box
+   * full-screen Terminal page, whose layout key is not a real project).
+   */
+  paneProjectId?: string | null
   layout: ProjectTerminalLayout
   socket: KannaSocket
   connectionStatus: SocketStatus
@@ -27,6 +34,7 @@ interface Props {
 
 interface TerminalWorkspacePaneProps {
   projectId: string
+  paneProjectId: string | null
   terminalId: string
   size: number
   isLast: boolean
@@ -50,6 +58,7 @@ interface TerminalWorkspacePaneProps {
 
 const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
   projectId,
+  paneProjectId,
   terminalId,
   size,
   isLast,
@@ -148,7 +157,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
           </div>
 
           <TerminalPane
-            projectId={projectId}
+            projectId={paneProjectId}
             terminalId={terminalId}
             socket={socket}
             scrollback={scrollback}
@@ -169,6 +178,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
 
 function TerminalWorkspaceImpl({
   projectId,
+  paneProjectId,
   layout,
   socket,
   connectionStatus,
@@ -279,6 +289,7 @@ function TerminalWorkspaceImpl({
               <TerminalWorkspacePane
                 key={terminalPane.id}
                 projectId={projectId}
+                paneProjectId={paneProjectId === undefined ? projectId : paneProjectId}
                 terminalId={terminalPane.id}
                 size={terminalPane.size}
                 isLast={index === layout.terminals.length - 1}

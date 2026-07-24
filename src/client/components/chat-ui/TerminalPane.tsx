@@ -7,7 +7,8 @@ import type { KannaSocket, SocketStatus } from "../../app/socket"
 import { useTheme } from "../../hooks/useTheme"
 
 interface Props {
-  projectId: string
+  /** null → a home-directory terminal (dev-box full-screen Terminal page). */
+  projectId: string | null
   terminalId: string
   socket: KannaSocket
   scrollback: number

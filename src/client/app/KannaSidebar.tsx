@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Flower, History, House, Loader2, PanelLeft, Search, X, Menu, Plus, Settings, SquarePen } from "lucide-react"
+import { Flower, Folder, House, Loader2, PanelLeft, Search, X, Menu, Plus, Settings, SquarePen, SquareTerminal } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
@@ -77,7 +77,6 @@ interface KannaSidebarProps {
   onOpenArchivedChat: (chatId: string) => void
   onRestoreChat: (chatId: string) => void
   onDeleteChat: (chat: SidebarChatRow) => void
-  onOpenAddProjectModal: () => void
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
@@ -110,7 +109,6 @@ function KannaSidebarImpl({
   onOpenArchivedChat,
   onRestoreChat,
   onDeleteChat,
-  onOpenAddProjectModal,
   onCopyPath,
   onOpenExternalPath,
   onRenameProject,
@@ -285,9 +283,8 @@ function KannaSidebarImpl({
 
       if (isSidebarModifierShortcut(resolvedKeybindings, "openAddProject", event)) {
         event.preventDefault()
-        navigate("/")
         onClose()
-        onOpenAddProjectModal()
+        openCommandPalette("add-project")
         return
       }
 
@@ -323,7 +320,7 @@ function KannaSidebarImpl({
       window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("blur", clearHints)
     }
-  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, resolvedKeybindings])
+  }, [currentProjectId, navigate, onClose, onCreateChat, resolvedKeybindings])
 
   useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
@@ -385,6 +382,7 @@ function KannaSidebarImpl({
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
   const newSidebarEnabled = useAppSettingsStore((s) => s.settings?.newSidebarEnabled !== false)
+  const devbox = useAppSettingsStore((s) => s.settings?.devbox === true)
   const newSidebarProjectsView = newSidebarEnabled && sidebarView === "projects"
 
   // New Sidebar's Projects tab hides projects with no chats and sorts by
@@ -602,16 +600,29 @@ function KannaSidebarImpl({
               className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
             >
               <SquarePen className="h-4 w-4 shrink-0" />
-              <span>New chat in…</span>
+              <span>New Chat</span>
             </button>
+            {devbox ? (
+              <button
+                type="button"
+                onClick={() => {
+                  navigate("/terminal")
+                  onClose()
+                }}
+                className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
+              >
+                <SquareTerminal className="h-4 w-4 shrink-0" />
+                <span>Terminal</span>
+              </button>
+            ) : null}
             {currentProjectGroup ? (
               <button
                 type="button"
                 onClick={() => openCommandPalette("project-chats")}
                 className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
               >
-                <History className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 truncate">Chats in {currentProjectGroup.title}</span>
+                <Folder className="h-4 w-4 shrink-0" />
+                <span className="min-w-0 truncate">{currentProjectGroup.title}</span>
               </button>
             ) : null}
           </div>

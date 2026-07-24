@@ -102,6 +102,52 @@ export async function cloneRepository(cloneUrl: string, resolvedPath: string): P
   })
 }
 
+/**
+ * Prepare a directory for a brand-new project: mkdir -p, then `git init` —
+ * but only when the directory is empty (never re-inits an existing repo or
+ * touches a folder that already has contents; those degrade to a plain open).
+ * Returns the resolved absolute path.
+ */
+export async function initializeProjectDirectory(localPath: string): Promise<string> {
+  const resolved = resolveLocalPath(localPath)
+  await mkdir(resolved, { recursive: true })
+  const info = await stat(resolved)
+  if (!info.isDirectory()) {
+    throw new Error(`Not a folder: ${resolved}`)
+  }
+
+  const entries = await readdir(resolved)
+  if (entries.length > 0) {
+    return resolved
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("git", ["init"], {
+      cwd: resolved,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+
+    let stderr = ""
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+
+    child.on("error", (err) => {
+      reject(new Error(`Failed to start git init: ${err.message}`))
+    })
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve()
+      } else {
+        reject(new Error(stderr.trim() || `git init exited with code ${code}`))
+      }
+    })
+  })
+
+  return resolved
+}
+
 const FS_LIST_ENTRY_LIMIT = 2_000
 
 function compareEntryNames(a: FsDirEntry, b: FsDirEntry) {

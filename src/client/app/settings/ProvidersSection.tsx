@@ -223,7 +223,7 @@ export function ProvidersSection({
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.claudeDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="claude"
@@ -252,7 +252,7 @@ export function ProvidersSection({
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.codexDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="codex"
@@ -279,7 +279,7 @@ export function ProvidersSection({
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.cursorDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="cursor"
@@ -302,7 +302,7 @@ export function ProvidersSection({
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.piDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="pi"
@@ -326,7 +326,7 @@ export function ProvidersSection({
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.modelRegistry} description={llmValidationDescription} alignStart>
-          <div className="flex w-full max-w-[420px] flex-col gap-3">
+          <div className="flex w-full  flex-col gap-3">
             {llmProviderError ? (
               <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 {llmProviderError}

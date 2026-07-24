@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Monitor, Moon, Sun } from "lucide-react"
 import { ANALYTICS_STATIC_EVENT_NAMES, ANALYTICS_STATIC_PROPERTY_NAMES } from "../../../shared/analytics"
 import type { EditorPreset } from "../../../shared/protocol"
+import { DEFAULT_NEW_PROJECTS_DIRECTORY } from "../../../shared/types"
 import { EDITOR_OPTIONS, EditorIcon } from "../../components/editor-icons"
 import { Button } from "../../components/ui/button"
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from "../../components/ui/dialog"
@@ -78,6 +79,8 @@ export function GeneralSection({
   const [scrollbackDraft, setScrollbackDraft] = useState(String(scrollbackLines))
   const [minColumnWidthDraft, setMinColumnWidthDraft] = useState(String(minColumnWidth))
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
+  const newProjectsDirectory = appSettings?.newProjectsDirectory ?? DEFAULT_NEW_PROJECTS_DIRECTORY
+  const [newProjectsDirectoryDraft, setNewProjectsDirectoryDraft] = useState(newProjectsDirectory)
   const [appSettingsError, setAppSettingsError] = useState<string | null>(null)
   const [analyticsDialogOpen, setAnalyticsDialogOpen] = useState(false)
 
@@ -107,6 +110,10 @@ export function GeneralSection({
     setEditorCommandDraft(editorCommandTemplate)
   }, [editorCommandTemplate])
 
+  useEffect(() => {
+    setNewProjectsDirectoryDraft(newProjectsDirectory)
+  }, [newProjectsDirectory])
+
   function commitScrollback() {
     const nextValue = Number(scrollbackDraft)
     if (!Number.isFinite(nextValue)) {
@@ -135,6 +142,19 @@ export function GeneralSection({
     setEditorCommandTemplate(editorCommandDraft)
     void handleWriteAppSettings({ editor: { commandTemplate: editorCommandDraft } }).catch((error) => {
       setAppSettingsError(error instanceof Error ? error.message : "Unable to save editor settings.")
+    })
+  }
+
+  function commitNewProjectsDirectory() {
+    const trimmed = newProjectsDirectoryDraft.trim()
+    if (trimmed === newProjectsDirectory) {
+      setNewProjectsDirectoryDraft(newProjectsDirectory)
+      return
+    }
+    // The server normalizes an empty value back to the default; the snapshot
+    // round-trips into the draft via the effect above.
+    void handleWriteAppSettings({ newProjectsDirectory: trimmed || DEFAULT_NEW_PROJECTS_DIRECTORY }).catch((error) => {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save the new projects directory.")
     })
   }
 
@@ -326,6 +346,24 @@ export function GeneralSection({
             </div>
           </div>
         ) : null}
+
+        <SettingsRow def={SETTINGS_ROWS.newProjectsDirectory}>
+          <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">
+            <Input
+              type="text"
+              value={newProjectsDirectoryDraft}
+              onChange={(event) => setNewProjectsDirectoryDraft(event.target.value)}
+              onBlur={commitNewProjectsDirectory}
+              onKeyDown={(event) => handleSettingsInputKeyDown(event, commitNewProjectsDirectory)}
+              spellCheck={false}
+              autoComplete="off"
+              className="w-full font-mono md:w-64"
+            />
+            <div className="text-left text-xs text-muted-foreground md:text-right">
+              Created on first use{newProjectsDirectory === DEFAULT_NEW_PROJECTS_DIRECTORY ? " (default)" : ""}
+            </div>
+          </div>
+        </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.terminalScrollback}>
           <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">

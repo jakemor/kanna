@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun"
+import { homedir } from "node:os"
 import { PROTOCOL_VERSION } from "../shared/types"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
@@ -12,7 +13,8 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { cloneRepository, createDirectory, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { cloneRepository, createDirectory, ensureProjectDirectory, initializeProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { listRecentGitHubRepos } from "./github"
 import { applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
@@ -528,7 +530,14 @@ export function createWsRouter({
     }
   }
 
-  function pushTerminalSnapshot(terminalId: string) {
+  /**
+   * `force` skips the dedupe compare (the new signature is still recorded).
+   * Needed on explicit close: a pane that subscribed before its session
+   * existed has signature "null" from that first push, and the post-close
+   * snapshot is "null" again — without force the "session gone" push would
+   * be swallowed and the pane would never recreate.
+   */
+  function pushTerminalSnapshot(terminalId: string, options?: { force?: boolean }) {
     for (const ws of sockets) {
       const snapshotSignatures = ensureSnapshotSignatures(ws)
       for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -536,7 +545,7 @@ export function createWsRouter({
         const envelope = createEnvelope(id, topic)
         if (envelope.type !== "snapshot") continue
         const signature = JSON.stringify(envelope.snapshot)
-        if (snapshotSignatures.get(id) === signature) continue
+        if (!options?.force && snapshotSignatures.get(id) === signature) continue
         snapshotSignatures.set(id, signature)
         send(ws, envelope)
       }
@@ -854,6 +863,23 @@ export function createWsRouter({
             resolvedAnalytics.track("project_opened")
           }
           await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
+        }
+        case "project.create": {
+          const resolved = await initializeProjectDirectory(command.localPath)
+          const existingProjectId = store.state.projectIdsByPath.get(resolved)
+          const project = await store.openProject(resolved, command.title)
+          await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id, localPath: resolved } })
+          if (!existingProjectId) {
+            resolvedAnalytics.track("project_opened")
+          }
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
+        }
+        case "github.listRecentRepos": {
+          const result = await listRecentGitHubRepos()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "project.rename": {
@@ -1210,12 +1236,20 @@ export function createWsRouter({
           return
         }
         case "terminal.create": {
-          const project = store.getProject(command.projectId)
-          if (!project) {
-            throw new Error("Project not found")
+          // projectId null → the dev-box home terminal (full-screen Terminal
+          // page): a shell at $HOME instead of a project directory.
+          let projectPath: string
+          if (command.projectId === null) {
+            projectPath = homedir()
+          } else {
+            const project = store.getProject(command.projectId)
+            if (!project) {
+              throw new Error("Project not found")
+            }
+            projectPath = project.localPath
           }
           const snapshot = terminals.createTerminal({
-            projectPath: project.localPath,
+            projectPath,
             terminalId: command.terminalId,
             cols: command.cols,
             rows: command.rows,
@@ -1237,7 +1271,7 @@ export function createWsRouter({
         case "terminal.close": {
           terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          pushTerminalSnapshot(command.terminalId)
+          pushTerminalSnapshot(command.terminalId, { force: true })
           return
         }
       }

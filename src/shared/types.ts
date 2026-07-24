@@ -863,6 +863,29 @@ export interface FsListResult {
   missingSuffix?: string
 }
 
+/** Default for `newProjectsDirectory` — expanded server-side at use time. */
+export const DEFAULT_NEW_PROJECTS_DIRECTORY = "~/Kanna"
+
+/** One repository from the signed-in user's GitHub account (via the local `gh` CLI). */
+export interface GitHubRepoSummary {
+  /** e.g. "owner/repo". */
+  nameWithOwner: string
+  description: string | null
+  /** ISO 8601 timestamp of the last push, or null when unknown. */
+  pushedAt: string | null
+  isPrivate: boolean
+  owner: string
+}
+
+export interface GitHubRecentReposResult {
+  /** False when the `gh` CLI is missing or unauthenticated. */
+  available: boolean
+  /** Active gh account login, when known. */
+  login?: string
+  /** Flat list across personal + org repos, sorted by recency (most recent push first). */
+  repos: GitHubRepoSummary[]
+}
+
 export interface AppSettingsSnapshot {
   analyticsEnabled: boolean
   browserSettingsMigrated: boolean
@@ -881,8 +904,16 @@ export interface AppSettingsSnapshot {
   providerDefaults: ChatProviderPreferences
   /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
   newSidebarEnabled: boolean
+  /** Base directory where cloned and newly created projects are placed. */
+  newProjectsDirectory: string
   warning: string | null
   filePathDisplay: string
+  /**
+   * Server-computed, never persisted: this machine is a cloud dev-box
+   * (`kanna --cloud`, or KANNA_DEVBOX_UI=1 in dev). Unlocks dev-box-only UI
+   * like the full-screen home Terminal page.
+   */
+  devbox: boolean
 }
 
 export interface AppSettingsPatch {
@@ -892,6 +923,7 @@ export interface AppSettingsPatch {
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
   newSidebarEnabled?: boolean
+  newProjectsDirectory?: string
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference

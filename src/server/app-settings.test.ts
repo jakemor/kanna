@@ -20,6 +20,7 @@ async function createTempFilePath() {
 
 function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettingsSnapshot> = {}): AppSettingsSnapshot {
   return {
+    devbox: false,
     analyticsEnabled: true,
     browserSettingsMigrated: false,
     theme: "system",
@@ -68,6 +69,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
       },
     },
     newSidebarEnabled: true,
+    newProjectsDirectory: "~/Kanna",
     warning: null,
     filePathDisplay: filePath,
     ...overrides,
@@ -82,6 +84,30 @@ describe("readAppSettingsSnapshot", () => {
     expect(snapshot).toEqual(expectedSettingsSnapshot(filePath))
   })
 
+  test("devbox extra is server-computed: in every snapshot, never persisted", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath, { devbox: true })
+    await manager.initialize()
+    try {
+      expect(manager.getSnapshot().devbox).toBe(true)
+
+      // Survives a settings write and is present on the returned snapshot…
+      const written = await manager.writePatch({ theme: "dark" })
+      expect(written.devbox).toBe(true)
+
+      // …but never lands in the file.
+      const raw = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>
+      expect("devbox" in raw).toBe(false)
+    } finally {
+      manager.dispose()
+    }
+
+    // Default (no extras) is false.
+    const plain = new AppSettingsManager(filePath)
+    expect(plain.getSnapshot().devbox).toBe(false)
+    plain.dispose()
+  })
+
   test("returns a warning when the file contains invalid json", async () => {
     const filePath = await createTempFilePath()
     await writeFile(filePath, "{not-json", "utf8")
@@ -89,6 +115,46 @@ describe("readAppSettingsSnapshot", () => {
     const snapshot = await readAppSettingsSnapshot(filePath)
     expect(snapshot.analyticsEnabled).toBe(true)
     expect(snapshot.warning).toContain("invalid JSON")
+  })
+
+  test("newProjectsDirectory defaults to ~/Kanna, trims, and warns on invalid values", async () => {
+    const filePath = await createTempFilePath()
+
+    // Missing → default, no warning.
+    expect((await readAppSettingsSnapshot(filePath)).newProjectsDirectory).toBe("~/Kanna")
+
+    // Custom value trims.
+    await writeFile(filePath, JSON.stringify({ newProjectsDirectory: "  ~/Dev/Projects  " }), "utf8")
+    const custom = await readAppSettingsSnapshot(filePath)
+    expect(custom.newProjectsDirectory).toBe("~/Dev/Projects")
+    expect(custom.warning).toBeNull()
+
+    // Wrong type → default + warning.
+    await writeFile(filePath, JSON.stringify({ newProjectsDirectory: 42 }), "utf8")
+    const invalid = await readAppSettingsSnapshot(filePath)
+    expect(invalid.newProjectsDirectory).toBe("~/Kanna")
+    expect(invalid.warning).toContain("newProjectsDirectory")
+
+    // Empty string → default + warning.
+    await writeFile(filePath, JSON.stringify({ newProjectsDirectory: "  " }), "utf8")
+    const empty = await readAppSettingsSnapshot(filePath)
+    expect(empty.newProjectsDirectory).toBe("~/Kanna")
+    expect(empty.warning).toContain("newProjectsDirectory")
+  })
+
+  test("newProjectsDirectory survives a writePatch round-trip and lands in the file", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+    try {
+      const snapshot = await manager.writePatch({ newProjectsDirectory: "~/Dev" })
+      expect(snapshot.newProjectsDirectory).toBe("~/Dev")
+
+      const raw = JSON.parse(await readFile(filePath, "utf8")) as { newProjectsDirectory: string }
+      expect(raw.newProjectsDirectory).toBe("~/Dev")
+    } finally {
+      manager.dispose()
+    }
   })
 })
 

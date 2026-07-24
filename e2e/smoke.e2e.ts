@@ -11,9 +11,10 @@ const APP_VERSION = (JSON.parse(readFileSync(path.join(ROOT_DIR, "package.json")
 
 /**
  * Boots the real production server (Bun + dist/client) with an isolated HOME
- * and drives it through a browser: app shell, WebSocket round trip, the Add
- * Project folder browser (fs.list → project.open → sidebar snapshot), and the
- * board/settings routes. No agent turns — those need provider credentials.
+ * and drives it through a browser: app shell, WebSocket round trip, the
+ * command palette's Add Project browser (fs.list → project.open → sidebar
+ * snapshot), and the settings route. No agent turns — those need provider
+ * credentials.
  */
 
 const PORT = 43119
@@ -78,17 +79,22 @@ test("serves the app shell and connects the socket", async ({ page }) => {
   await expect(page.getByText("Connected", { exact: true })).toBeVisible({ timeout: 15_000 })
 })
 
-test("adds a project through the folder browser", async ({ page }) => {
+test("adds a project through the command palette browser", async ({ page }) => {
   await page.goto(BASE_URL)
-  // The home page's "Project" button opens the Add Project folder browser.
+  // The home page's "Project" button opens the palette's Add Project page.
   await page.getByRole("button", { name: "Project", exact: true }).click()
-  await expect(page.getByText("Add Project")).toBeVisible()
+  const dialog = page.getByRole("dialog")
+  await expect(dialog.getByText("Choose Existing…")).toBeVisible()
+  await dialog.getByText("Choose Existing…").click()
 
-  // Jump straight to the demo project directory via the path input, then add it.
-  const input = page.getByRole("dialog").getByRole("textbox")
+  // Jump straight to the demo project directory via a typed path…
+  const input = dialog.getByRole("combobox")
   await input.fill("~/Projects/demo-app")
   await input.press("Enter")
-  await page.getByRole("button", { name: 'Add "demo-app"' }).click()
+
+  // …then open it as a project via the footer's "⌘↵ Open" button (the
+  // pinned "Open demo-app" row is highlighted, so the footer targets it).
+  await dialog.getByRole("button", { name: /Open demo-app/ }).click()
 
   // The project lands in the sidebar via a sidebar snapshot broadcast.
   await expect(page.getByText("demo-app").first()).toBeVisible({ timeout: 15_000 })
@@ -97,11 +103,6 @@ test("adds a project through the folder browser", async ({ page }) => {
 test("renders the settings page", async ({ page }) => {
   await page.goto(`${BASE_URL}/settings/appearance`)
   await expect(page.getByText("Settings", { exact: true }).first()).toBeVisible()
-})
-
-test("renders the project board", async ({ page }) => {
-  await page.goto(`${BASE_URL}/board`)
-  await expect(page.getByText("demo-app").first()).toBeVisible({ timeout: 15_000 })
 })
 
 test("health endpoint responds", async () => {

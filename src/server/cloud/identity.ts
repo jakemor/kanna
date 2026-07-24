@@ -9,6 +9,15 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { getCloudFilePath } from "../../shared/branding"
 import { DEFAULT_CLOUD_CONTROL_URL } from "../../shared/cloud-api"
+import { PROD_SERVER_PORT } from "../../shared/ports"
+
+/**
+ * How this machine is reachable from the proxy:
+ *  - "tunnel" (default): via its named Cloudflare tunnel (cloudflared connector).
+ *  - "direct": the proxy forwards straight to `tunnelHost` (an E2B dev-box's
+ *    public sandbox URL) — no connector; liveness is a plain heartbeat loop.
+ */
+export type CloudConnectMode = "tunnel" | "direct"
 
 export interface CloudIdentity {
   /** Control-plane base URL, e.g. "https://kanna.sh/api/cloud". */
@@ -21,12 +30,18 @@ export interface CloudIdentity {
   subdomain: string
   /** e.g. "https://jakemor-mbp.kanna.sh" */
   appOrigin: string
-  /** Connector credential for this machine's named Cloudflare tunnel. */
+  /** Connector credential for this machine's named Cloudflare tunnel. Empty in direct mode. */
   tunnelToken: string
-  /** Permanent tunnel hostname, e.g. "tun-<machineId>.kanna.sh". */
+  /**
+   * Public hostname this machine serves on: the permanent tunnel hostname
+   * ("tun-<machineId>.kanna.sh") in tunnel mode, or the sandbox host
+   * ("3210-<sandboxId>.e2b.app") in direct mode.
+   */
   tunnelHost: string
   /** Sticky flag: bring this machine online on every plain `kanna` run. */
   enabled: boolean
+  /** Absent means "tunnel" (every pre-devbox cloud.json in the wild). */
+  mode?: CloudConnectMode
 }
 
 function normalizeString(value: unknown) {
@@ -40,6 +55,7 @@ function normalizeString(value: unknown) {
 export function normalizeCloudIdentity(
   value: unknown,
   warn: (message: string) => void = () => {},
+  env: Record<string, string | undefined> = process.env,
 ): CloudIdentity | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     warn("cloud.json is not an object — ignoring it")
@@ -47,19 +63,27 @@ export function normalizeCloudIdentity(
   }
 
   const source = value as Record<string, unknown>
+  const mode: CloudConnectMode = source.mode === "direct" ? "direct" : "tunnel"
   const machineToken = normalizeString(source.machineToken)
   const proxySecret = normalizeString(source.proxySecret)
   const subdomain = normalizeString(source.subdomain)
   const appOrigin = normalizeString(source.appOrigin).replace(/\/$/, "")
   const tunnelToken = normalizeString(source.tunnelToken)
-  const tunnelHost = normalizeString(source.tunnelHost).replace(/^https?:\/\//, "").replace(/\/$/, "")
+  let tunnelHost = normalizeString(source.tunnelHost).replace(/^https?:\/\//, "").replace(/\/$/, "")
+
+  // A dev-box identity may omit its own host — E2B injects the sandbox id
+  // into the environment, and the app port is fixed.
+  if (!tunnelHost && mode === "direct" && env.E2B_SANDBOX_ID) {
+    tunnelHost = `${PROD_SERVER_PORT}-${env.E2B_SANDBOX_ID}.e2b.app`
+  }
 
   const missing = [
     !machineToken && "machineToken",
     !proxySecret && "proxySecret",
     !subdomain && "subdomain",
     !appOrigin && "appOrigin",
-    !tunnelToken && "tunnelToken",
+    // Direct mode has no connector, so no connector credential.
+    mode !== "direct" && !tunnelToken && "tunnelToken",
     !tunnelHost && "tunnelHost",
   ].filter(Boolean)
   if (missing.length > 0) {
@@ -76,6 +100,8 @@ export function normalizeCloudIdentity(
     tunnelToken,
     tunnelHost,
     enabled: source.enabled !== false,
+    // Keep tunnel-mode files byte-stable: only direct mode writes the field.
+    ...(mode === "direct" ? { mode } : {}),
   }
 }
 

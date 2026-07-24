@@ -29,7 +29,7 @@ import type { Subprocess } from "bun"
 import { PROXY_AUTH_HEADER, type CloudWsEndpointResponse } from "../../shared/cloud-api"
 import { startKannaServer } from "../server"
 import { createCloudApiClient } from "./api-client"
-import type { CloudIdentity } from "./identity"
+import { normalizeCloudIdentity, type CloudIdentity } from "./identity"
 import { createCloudRuntime, type CloudRuntime } from "./index"
 
 const KANNA_ROOT = path.resolve(import.meta.dir, "..", "..", "..")
@@ -38,6 +38,9 @@ const SESSION_TOKEN = "wire-e2e-session-token"
 const GITHUB_LOGIN = "wiretest"
 const SUBDOMAIN = `${GITHUB_LOGIN}-mbp`
 const KANNA_PORT = 4372
+/** Second real kanna server: the dev-box (direct mode, no connector). */
+const DEVBOX_SUBDOMAIN = `${GITHUB_LOGIN}-box`
+const DEVBOX_KANNA_PORT = 4373
 
 const missing = [
   !existsSync(path.join(SITE_ROOT, "package.json")) && "../kanna-site checkout",
@@ -54,12 +57,53 @@ let cloudRuntime: CloudRuntime | null = null
 let identity: CloudIdentity | null = null
 let dataDir = ""
 
+// Dev-box side (second real kanna server, direct mode).
+let devboxStop: (() => Promise<void>) | null = null
+let devboxRuntime: CloudRuntime | null = null
+let devboxIdentity: CloudIdentity | null = null
+let devboxDataDir = ""
+
 // Fake Cloudflare API: records the tunnel/DNS lifecycle calls.
 let fakeCf: ReturnType<typeof Bun.serve> | null = null
 const cfCalls: Array<{ method: string; path: string }> = []
 
+// Fake E2B (API + envd): records the sandbox lifecycle and captures the
+// cloud.json the worker injects through the envd files endpoint.
+let fakeE2b: ReturnType<typeof Bun.serve> | null = null
+const e2bCalls: Array<{ method: string; path: string }> = []
+let injectedCloudJson: Record<string, unknown> | null = null
+
 // The DI'd connector records what it was started with.
 const connectorStarts: Array<{ localUrl: string; token: string }> = []
+
+function startFakeE2b() {
+  fakeE2b = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url)
+      e2bCalls.push({ method: req.method, path: url.pathname + url.search })
+      if (url.pathname === "/sandboxes" && req.method === "POST") {
+        return Response.json(
+          { sandboxID: "wire-sbx", envdAccessToken: "wire-envd-token" },
+          { status: 201 },
+        )
+      }
+      if (url.pathname.startsWith("/sandboxes/") && req.method === "DELETE") {
+        return new Response(null, { status: 204 })
+      }
+      if (url.pathname === "/files" && req.method === "POST") {
+        const form = await req.formData()
+        const file = form.get("file")
+        if (file instanceof Blob) {
+          injectedCloudJson = JSON.parse(await file.text()) as Record<string, unknown>
+        }
+        return Response.json([{ name: "cloud.json" }])
+      }
+      return Response.json({ error: "unexpected e2b call" }, { status: 500 })
+    },
+  })
+}
 
 function startFakeCf() {
   fakeCf = Bun.serve({
@@ -94,6 +138,11 @@ async function startHarness() {
       // pointed straight at the kanna server, exactly where the real tunnel
       // would deliver the bytes.
       "--tunnel-origin-override", `http://127.0.0.1:${KANNA_PORT}`,
+      // Same trick for dev-boxes: instead of https://3210-<sbx>.e2b.app, the
+      // proxy delivers straight to the direct-mode kanna server.
+      "--e2b-api-base", `http://127.0.0.1:${fakeE2b!.port}`,
+      "--e2b-origin-override", `http://127.0.0.1:${DEVBOX_KANNA_PORT}`,
+      "--e2b-envd-origin-override", `http://127.0.0.1:${fakeE2b!.port}`,
     ],
     { cwd: SITE_ROOT, stdout: "pipe", stderr: "inherit" },
   )
@@ -137,19 +186,26 @@ async function waitFor(condition: () => Promise<boolean> | boolean, timeoutMs = 
 describe.if(missing.length === 0)("kanna ↔ kanna-site wire e2e (named tunnels)", () => {
   beforeAll(async () => {
     startFakeCf()
+    startFakeE2b()
     const harnessPort = await startHarness()
     controlBase = `http://127.0.0.1:${harnessPort}`
 
     dataDir = await mkdtemp(path.join(tmpdir(), "kanna-wire-e2e-"))
+    devboxDataDir = await mkdtemp(path.join(tmpdir(), "kanna-wire-e2e-devbox-"))
   }, 90_000)
 
   afterAll(async () => {
     await cloudRuntime?.stop()
     await kannaStop?.()
+    await devboxRuntime?.stop()
+    await devboxStop?.()
     harness?.kill()
     fakeCf?.stop(true)
-    if (dataDir) {
-      await rm(dataDir, { recursive: true, force: true })
+    fakeE2b?.stop(true)
+    for (const dir of [dataDir, devboxDataDir]) {
+      if (dir) {
+        await rm(dir, { recursive: true, force: true })
+      }
     }
   })
 
@@ -332,6 +388,162 @@ describe.if(missing.length === 0)("kanna ↔ kanna-site wire e2e (named tunnels)
 
     const response = await proxyFetch("/")
     expect(response.status).toBe(404)
+  })
+
+  // -------------------------------------------------------------------------
+  // Dev-box (E2B) flow: the worker provisions a sandbox and injects a
+  // complete cloud.json; a REAL kanna server boots from that exact identity
+  // in direct mode (what `kanna --cloud` does inside the box) — no
+  // connector, heartbeat-loop liveness, proxied straight to the server.
+  // -------------------------------------------------------------------------
+
+  test("dashboard: create dev-box → sandbox + injected identity, no Cloudflare, no pairing", async () => {
+    cfCalls.length = 0
+    e2bCalls.length = 0
+    const response = await proxyFetch("/api/cloud/machines", {
+      method: "POST",
+      host: "kanna.sh",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subdomain: DEVBOX_SUBDOMAIN, kind: "e2b" }),
+    })
+    expect(response.status).toBe(201)
+    const payload = await response.json() as {
+      machine: { kind?: string; paired: boolean }
+      pairing?: unknown
+    }
+    expect(payload.machine.kind).toBe("e2b")
+    expect(payload.machine.paired).toBe(true)
+    expect(payload.pairing).toBeUndefined()
+
+    expect(cfCalls.length).toBe(0)
+    expect(e2bCalls.map((call) => `${call.method} ${call.path.split("?")[0]}`)).toEqual([
+      "POST /sandboxes",
+      "POST /files",
+    ])
+    expect(injectedCloudJson).not.toBeNull()
+  })
+
+  test("dev-box: real kanna boots direct mode from the injected cloud.json → heartbeat-only online", async () => {
+    // The injected file must parse as a valid identity through the SAME
+    // normalizer `kanna --cloud` uses at boot. Only controlUrl is swapped:
+    // the worker writes the real https://kanna.sh/api/cloud, the test talks
+    // to the harness.
+    const parsed = normalizeCloudIdentity(injectedCloudJson, (message) => {
+      throw new Error(`injected cloud.json rejected: ${message}`)
+    })
+    if (!parsed) throw new Error("injected cloud.json did not normalize")
+    expect(parsed.mode).toBe("direct")
+    expect(parsed.tunnelToken).toBe("")
+    expect(parsed.tunnelHost).toBe("3210-wire-sbx.e2b.app")
+    expect(parsed.subdomain).toBe(DEVBOX_SUBDOMAIN)
+    devboxIdentity = { ...parsed, controlUrl: `${controlBase}/api/cloud` }
+
+    devboxRuntime = createCloudRuntime(devboxIdentity, {
+      apiClient: createCloudApiClient({ controlUrl: devboxIdentity.controlUrl }),
+      supervisorDeps: {
+        startTunnelImpl: async () => {
+          throw new Error("direct mode must never start a tunnel connector")
+        },
+      },
+    })
+
+    const server = await startKannaServer({
+      dataDir: devboxDataDir,
+      port: DEVBOX_KANNA_PORT,
+      strictPort: true,
+      cloud: devboxRuntime,
+      trustProxy: true,
+    })
+    devboxStop = server.stop
+    devboxRuntime.start({ localUrl: `http://127.0.0.1:${server.port}` })
+
+    await waitFor(async () => {
+      const response = await proxyFetch("/__cloud/machines", { host: `${DEVBOX_SUBDOMAIN}.kanna.sh` })
+      if (response.status !== 200) return false
+      const payload = await response.json() as {
+        machines: Array<{ subdomain: string; online: boolean; kind?: string }>
+      }
+      const devbox = payload.machines.find((machine) => machine.subdomain === DEVBOX_SUBDOMAIN)
+      return devbox?.online === true && devbox.kind === "e2b"
+    })
+  }, 30_000)
+
+  test("browser: dev-box app through the proxy; ws-endpoint → sandbox-host WS → sidebar snapshot", async () => {
+    if (!devboxIdentity) throw new Error("dev-box did not boot")
+
+    const app = await proxyFetch("/", { host: `${DEVBOX_SUBDOMAIN}.kanna.sh` })
+    expect(app.status).toBe(200)
+    expect((await app.text()).toLowerCase()).toContain("kanna")
+
+    const endpointResponse = await proxyFetch("/api/cloud/ws-endpoint", {
+      host: `${DEVBOX_SUBDOMAIN}.kanna.sh`,
+    })
+    expect(endpointResponse.status).toBe(200)
+    const endpoint = await endpointResponse.json() as CloudWsEndpointResponse
+    expect(endpoint.wsUrl).toBe("wss://3210-wire-sbx.e2b.app/ws")
+    expect(typeof endpoint.connectToken).toBe("string")
+
+    // In production the browser dials the sandbox host and E2B's ingress
+    // delivers it to this server; here we dial the server directly while
+    // simulating the sandbox Host + page Origin — same guard path.
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${DEVBOX_KANNA_PORT}/ws?token=${endpoint.connectToken}`,
+      { headers: { host: devboxIdentity.tunnelHost, origin: devboxIdentity.appOrigin } } as unknown as string[],
+    )
+    const snapshot = await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no snapshot within 10s")), 10_000)
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify({ v: 1, type: "subscribe", id: "wire-devbox", topic: { type: "sidebar" } }))
+      })
+      socket.addEventListener("message", (event) => {
+        const payload = JSON.parse(String(event.data)) as { type?: string; id?: string }
+        if (payload.type === "snapshot" && payload.id === "wire-devbox") {
+          clearTimeout(timer)
+          resolve(payload)
+        }
+      })
+      socket.addEventListener("error", () => {
+        clearTimeout(timer)
+        reject(new Error("websocket error"))
+      })
+    })
+    socket.close()
+    expect(snapshot).toBeTruthy()
+
+    // Raw sandbox-host traffic (no proxy header) is locked down like a tunnel.
+    const rawApp = await fetch(`http://127.0.0.1:${DEVBOX_KANNA_PORT}/`, {
+      headers: { host: devboxIdentity.tunnelHost },
+    })
+    expect(rawApp.status).toBe(404)
+    const rawHealth = await fetch(`http://127.0.0.1:${DEVBOX_KANNA_PORT}/health`, {
+      headers: { host: devboxIdentity.tunnelHost },
+    })
+    expect(rawHealth.status).toBe(200)
+  }, 20_000)
+
+  test("dashboard: delete dev-box → sandbox killed, proxy forgets it", async () => {
+    // Find the dev-box id via the dashboard list.
+    const list = await proxyFetch("/api/cloud/machines", { host: "kanna.sh" })
+    const machines = (await list.json() as { machines: Array<{ id: string; subdomain: string }> }).machines
+    const devbox = machines.find((machine) => machine.subdomain === DEVBOX_SUBDOMAIN)
+    if (!devbox) throw new Error("dev-box missing from dashboard list")
+
+    e2bCalls.length = 0
+    cfCalls.length = 0
+    const response = await proxyFetch(`/api/cloud/machines/${devbox.id}`, {
+      method: "DELETE",
+      host: "kanna.sh",
+    })
+    expect(response.status).toBe(200)
+    expect(e2bCalls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "DELETE /sandboxes/wire-sbx",
+    ])
+    expect(cfCalls.length).toBe(0)
+
+    await devboxRuntime?.stop()
+    devboxRuntime = null
+    const after = await proxyFetch("/", { host: `${DEVBOX_SUBDOMAIN}.kanna.sh` })
+    expect(after.status).toBe(404)
   })
 })
 

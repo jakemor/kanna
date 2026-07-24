@@ -6,6 +6,11 @@
 
 import { createCloudApiClient, type CloudApiClient } from "./api-client"
 import { createConnectTokenManager, type ConnectTokenManager } from "./connect-token"
+import {
+  startCloudHeartbeatLoop,
+  type CloudHeartbeatLoop,
+  type HeartbeatLoopDeps,
+} from "./heartbeat-loop"
 import type { CloudIdentity } from "./identity"
 import {
   startCloudTunnelSupervisor,
@@ -34,6 +39,7 @@ export interface CloudRuntime {
 export interface CloudRuntimeDeps {
   apiClient?: CloudApiClient
   supervisorDeps?: TunnelSupervisorDeps
+  heartbeatDeps?: HeartbeatLoopDeps
 }
 
 export function createCloudRuntime(
@@ -43,13 +49,28 @@ export function createCloudRuntime(
   const apiClient = deps.apiClient ?? createCloudApiClient({ controlUrl: identity.controlUrl })
   const connectTokens = createConnectTokenManager()
   let supervisor: CloudTunnelSupervisor | null = null
+  let heartbeatLoop: CloudHeartbeatLoop | null = null
 
   return {
     identity,
     connectTokens,
 
     start(args) {
-      if (supervisor) return
+      if (supervisor || heartbeatLoop) return
+      if (identity.mode === "direct") {
+        // Dev-box (E2B): the proxy reaches us via our public sandbox URL — no
+        // connector to run, just keep the control plane's liveness fresh.
+        heartbeatLoop = startCloudHeartbeatLoop({
+          localUrl: args.localUrl,
+          identity,
+          apiClient,
+          log: args.log,
+          warn: args.warn,
+          onUp: args.onTunnelUp,
+          deps: deps.heartbeatDeps,
+        })
+        return
+      }
       supervisor = startCloudTunnelSupervisor({
         localUrl: args.localUrl,
         identity,
@@ -62,9 +83,11 @@ export function createCloudRuntime(
     },
 
     async stop() {
-      const wasRunning = supervisor !== null
+      const wasRunning = supervisor !== null || heartbeatLoop !== null
       supervisor?.stop()
       supervisor = null
+      heartbeatLoop?.stop()
+      heartbeatLoop = null
 
       if (wasRunning) {
         // Graceful offline signal, capped so shutdown never hangs on it.

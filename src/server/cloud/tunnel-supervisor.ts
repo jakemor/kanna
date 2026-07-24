@@ -57,7 +57,7 @@ export interface TunnelSupervisorArgs {
   deps?: TunnelSupervisorDeps
 }
 
-function defaultSleep(ms: number, signal: AbortSignal) {
+export function defaultSleep(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve) => {
     if (signal.aborted) {
       resolve()

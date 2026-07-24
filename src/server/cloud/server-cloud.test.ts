@@ -104,6 +104,26 @@ describe("server cloud integration", () => {
     expect(cloud.connectTokens.validate(payload.connectToken as string)).toBe(true)
   })
 
+  test("ws-endpoint on a direct-mode dev-box points at the sandbox host", async () => {
+    const cloud = fakeCloudRuntime()
+    cloud.identity = {
+      ...IDENTITY,
+      tunnelToken: "",
+      tunnelHost: "3210-sbx123.e2b.app",
+      mode: "direct",
+    }
+    const server = await startCloudServer({ port: 4368, cloud })
+    const base = `http://127.0.0.1:${server.port}`
+
+    const proxied = await fetch(`${base}${CLOUD_WS_ENDPOINT_PATH}`, {
+      headers: { host: "3210-sbx123.e2b.app", [PROXY_AUTH_HEADER]: PROXY_SECRET },
+    })
+    expect(proxied.status).toBe(200)
+    const payload = await proxied.json() as CloudWsEndpointResponse
+    expect(payload.wsUrl).toBe("wss://3210-sbx123.e2b.app/ws")
+    expect(cloud.connectTokens.validate(payload.connectToken as string)).toBe(true)
+  })
+
   test("proxied requests bypass password auth; local ones don't", async () => {
     const server = await startCloudServer({
       port: 4364,

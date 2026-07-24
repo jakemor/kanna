@@ -146,6 +146,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -161,6 +162,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: true,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -176,6 +178,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -191,6 +194,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -206,6 +210,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -221,6 +226,7 @@ describe("parseArgs", () => {
         password: "secret",
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -246,6 +252,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -261,6 +268,7 @@ describe("parseArgs", () => {
         password: null,
         strictPort: false,
         noCloud: false,
+        directCloud: false,
       },
     })
   })
@@ -600,6 +608,23 @@ describe("parseArgs pair subcommand", () => {
       expect(parsed.options.noCloud).toBe(true)
     }
   })
+
+  test("--cloud sets directCloud and binds 0.0.0.0", () => {
+    const parsed = parseArgs(["--cloud", "--no-open"])
+    expect(parsed.kind).toBe("run")
+    if (parsed.kind === "run") {
+      expect(parsed.options.directCloud).toBe(true)
+      expect(parsed.options.host).toBe("0.0.0.0")
+    }
+  })
+
+  test("--cloud conflicts with --no-cloud, share modes, and host overrides", () => {
+    expect(() => parseArgs(["--cloud", "--no-cloud"])).toThrow("--no-cloud")
+    expect(() => parseArgs(["--cloud", "--share"])).toThrow("--share")
+    expect(() => parseArgs(["--cloud", "--cloudflared", "tok"])).toThrow("--cloudflared")
+    expect(() => parseArgs(["--cloud", "--host", "10.0.0.5"])).toThrow("--host")
+    expect(() => parseArgs(["--cloud", "--remote"])).toThrow("--remote")
+  })
 })
 
 describe("runCli cloud", () => {
@@ -724,6 +749,44 @@ describe("runCli cloud", () => {
     const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
     expect(serverOptions.cloud ?? null).toBeNull()
     expect(calls.log.some((line) => line.includes("cloud:"))).toBe(false)
+  })
+
+  test("--cloud without an identity exits 1", async () => {
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => null,
+      createCloudRuntimeImpl: () => {
+        throw new Error("should not create a cloud runtime without an identity")
+      },
+    })
+
+    const result = await runCli(["--no-open", "--cloud"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 1 })
+    expect(calls.startServer).toEqual([])
+    expect(calls.warn.some((line) => line.includes("--cloud needs a provisioned cloud identity"))).toBe(true)
+  })
+
+  test("--cloud forces direct mode and overrides a sticky disable", async () => {
+    const fake = createFakeCloudRuntime()
+    const identitiesSeen: unknown[] = []
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY, enabled: false }),
+      createCloudRuntimeImpl: (identity) => {
+        identitiesSeen.push(identity)
+        return fake.runtime
+      },
+    })
+
+    const result = await runCli(["--no-open", "--cloud"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(identitiesSeen).toEqual([{ ...CLOUD_IDENTITY, mode: "direct", enabled: true }])
+    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown; host?: string }
+    expect(serverOptions.cloud).toBe(fake.runtime)
+    expect(serverOptions.trustProxy).toBe(true)
+    expect(serverOptions.host).toBe("0.0.0.0")
+    expect(fake.calls.starts.length).toBe(1)
+    if (result.kind === "started") await result.stop()
   })
 })
 

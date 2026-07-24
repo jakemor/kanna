@@ -1,5 +1,5 @@
 import commandScore from "command-score"
-import type { LocalProjectSummary, SidebarData } from "../../../shared/types"
+import type { SidebarProjectGroup } from "../../../shared/types"
 import type { SidebarThread } from "../../lib/thread-sections"
 import {
   listAllSettingsRowDefs,
@@ -68,8 +68,8 @@ export function searchThreadsByTitle(threads: SidebarThread[], query: string, li
 }
 
 export interface PaletteProject {
-  /** Sidebar project id; null when the project hasn't been opened yet. */
-  projectId: string | null
+  /** Sidebar project id. */
+  projectId: string
   title: string
   localPath: string
   /** Most recent active chat to jump to; null means selecting starts a new chat. */
@@ -78,19 +78,17 @@ export interface PaletteProject {
 }
 
 /**
- * All openable projects: sidebar project groups first (jump to their most
- * recent chat), then local projects that aren't in the sidebar yet
- * (selecting opens the project with a fresh chat).
+ * Projects to show in the command palette — an exact mirror of the new
+ * sidebar's Projects section: only groups with at least one unarchived chat,
+ * sorted by most-recent chat activity (descending). Tombstoned/removed
+ * projects never reach here because the server drops them from the sidebar
+ * snapshot. Kept in lockstep with `projectActivity` in LocalProjectsSection.
  */
-export function flattenPaletteProjects(
-  data: SidebarData,
-  localProjects: LocalProjectSummary[]
-): PaletteProject[] {
+export function flattenVisibleProjectGroups(groups: SidebarProjectGroup[]): PaletteProject[] {
   const projects: PaletteProject[] = []
-  const seenPaths = new Set<string>()
 
-  for (const group of data.projectGroups) {
-    seenPaths.add(group.localPath)
+  for (const group of groups) {
+    if (group.chats.length === 0) continue
     let mostRecentChatId: string | null = null
     let lastActivityAt = 0
     for (const chat of group.chats) {
@@ -109,19 +107,7 @@ export function flattenPaletteProjects(
     })
   }
 
-  for (const project of localProjects) {
-    if (seenPaths.has(project.localPath)) continue
-    seenPaths.add(project.localPath)
-    projects.push({
-      projectId: null,
-      title: project.title,
-      localPath: project.localPath,
-      mostRecentChatId: null,
-      lastActivityAt: project.lastOpenedAt ?? project.folderModifiedAt ?? 0,
-    })
-  }
-
-  return projects
+  return projects.sort((left, right) => right.lastActivityAt - left.lastActivityAt)
 }
 
 export interface ScoredProject extends PaletteProject {

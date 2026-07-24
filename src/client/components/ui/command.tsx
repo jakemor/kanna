@@ -1,7 +1,7 @@
 import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { Command as CommandPrimitive } from "cmdk"
-import { Search } from "lucide-react"
+import { ArrowLeft, Search } from "lucide-react"
 import { cn } from "../../lib/utils"
 import { FOCUS_FALLBACK_IGNORE_ATTRIBUTE, RESTORE_CHAT_INPUT_FOCUS_EVENT } from "../../app/chatFocusPolicy"
 
@@ -69,10 +69,24 @@ function CommandDialog({
 
 const CommandInput = React.forwardRef<
   React.ComponentRef<typeof CommandPrimitive.Input>,
-  React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
->(({ className, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input> & {
+    /** When set, the leading icon becomes a clickable back arrow (used on sub-pages). */
+    onBack?: () => void
+  }
+>(({ className, onBack, ...props }, ref) => (
   <div className="flex items-center gap-2 border-b border-border px-3.5" cmdk-input-wrapper="">
-    <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+    {onBack ? (
+      <button
+        type="button"
+        aria-label="Back"
+        onClick={onBack}
+        className="-ml-1 flex shrink-0 items-center rounded p-1 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <ArrowLeft className="h-4 w-4" />
+      </button>
+    ) : (
+      <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+    )}
     <CommandPrimitive.Input
       ref={ref}
       className={cn(

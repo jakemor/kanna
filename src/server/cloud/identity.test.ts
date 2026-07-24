@@ -114,3 +114,68 @@ describe("normalizeCloudIdentity", () => {
     expect(normalized?.enabled).toBe(false)
   })
 })
+
+describe("direct mode (dev-boxes)", () => {
+  const DIRECT_SOURCE = {
+    machineToken: "t",
+    proxySecret: "p",
+    subdomain: "s-box",
+    appOrigin: "https://s-box.kanna.sh",
+    tunnelToken: "",
+    tunnelHost: "3210-sbx123.e2b.app",
+    mode: "direct",
+  }
+
+  test("accepts an empty tunnelToken and keeps mode", () => {
+    const normalized = normalizeCloudIdentity(DIRECT_SOURCE, () => {}, {})
+    expect(normalized).toEqual({
+      controlUrl: DEFAULT_CLOUD_CONTROL_URL,
+      machineToken: "t",
+      proxySecret: "p",
+      subdomain: "s-box",
+      appOrigin: "https://s-box.kanna.sh",
+      tunnelToken: "",
+      tunnelHost: "3210-sbx123.e2b.app",
+      enabled: true,
+      mode: "direct",
+    })
+  })
+
+  test("derives tunnelHost from E2B_SANDBOX_ID when the file omits it", () => {
+    const normalized = normalizeCloudIdentity(
+      { ...DIRECT_SOURCE, tunnelHost: "" },
+      () => {},
+      { E2B_SANDBOX_ID: "sbx456" },
+    )
+    expect(normalized?.tunnelHost).toBe("3210-sbx456.e2b.app")
+  })
+
+  test("no tunnelHost and no sandbox env → null", () => {
+    const warnings: string[] = []
+    expect(
+      normalizeCloudIdentity({ ...DIRECT_SOURCE, tunnelHost: "" }, (m) => warnings.push(m), {}),
+    ).toBeNull()
+    expect(warnings[0]).toContain("tunnelHost")
+  })
+
+  test("tunnel mode ignores E2B_SANDBOX_ID and still requires tunnelToken", () => {
+    const warnings: string[] = []
+    expect(
+      normalizeCloudIdentity(
+        { ...DIRECT_SOURCE, mode: undefined, tunnelHost: "" },
+        (m) => warnings.push(m),
+        { E2B_SANDBOX_ID: "sbx456" },
+      ),
+    ).toBeNull()
+    expect(warnings[0]).toContain("tunnelToken")
+    expect(warnings[0]).toContain("tunnelHost")
+  })
+
+  test("direct identity round-trips through the file", async () => {
+    const filePath = await tempFilePath()
+    const identity = normalizeCloudIdentity(DIRECT_SOURCE, () => {}, {})
+    if (!identity) throw new Error("expected identity")
+    await writeCloudIdentity(identity, filePath)
+    expect(await readCloudIdentity(filePath)).toEqual(identity)
+  })
+})

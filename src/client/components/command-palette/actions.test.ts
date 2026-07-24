@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import type { LocalProjectSummary, SidebarChatRow, SidebarData } from "../../../shared/types"
+import type { SidebarChatRow, SidebarData } from "../../../shared/types"
 import {
-  flattenPaletteProjects,
+  flattenVisibleProjectGroups,
   flattenSidebarThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
@@ -104,52 +104,32 @@ describe("searchThreadsByTitle", () => {
   })
 })
 
-describe("flattenPaletteProjects", () => {
-  const localProjects: LocalProjectSummary[] = [
-    {
-      localPath: "/Users/jake/Projects/kanna",
-      title: "Kanna (saved)",
-      source: "saved",
-      chatCount: 3,
-    },
-    {
-      localPath: "/Users/jake/Projects/fresh",
-      title: "Fresh",
-      source: "discovered",
-      lastOpenedAt: 50,
-      chatCount: 0,
-    },
-  ]
-
+describe("flattenVisibleProjectGroups", () => {
   test("sidebar projects point at their most recent chat", () => {
-    const projects = flattenPaletteProjects(makeSidebarData(), localProjects)
+    const projects = flattenVisibleProjectGroups(makeSidebarData().projectGroups)
     const kanna = projects.find((project) => project.projectId === "project-a")
     expect(kanna?.mostRecentChatId).toBe("chat-2")
     expect(kanna?.title).toBe("Kanna")
   })
 
-  test("sidebar projects with no active chats have no target chat", () => {
+  test("excludes projects with no unarchived chats (archived-only or empty)", () => {
     const data = makeSidebarData()
     data.projectGroups[0].chats = []
-    const projects = flattenPaletteProjects(data, [])
-    const kanna = projects.find((project) => project.projectId === "project-a")
-    expect(kanna?.mostRecentChatId).toBeNull()
+    const projects = flattenVisibleProjectGroups(data.projectGroups)
+    // project-a has only archived chats now → dropped entirely, mirroring the sidebar.
+    expect(projects.map((project) => project.projectId)).toEqual(["project-b"])
   })
 
-  test("local projects are included once, deduped against sidebar paths", () => {
-    const projects = flattenPaletteProjects(makeSidebarData(), localProjects)
-    // /Projects/kanna already exists as a sidebar group — the local copy is skipped.
-    expect(projects.filter((project) => project.localPath.endsWith("/kanna"))).toHaveLength(1)
-
-    const fresh = projects.find((project) => project.localPath.endsWith("/fresh"))
-    expect(fresh?.projectId).toBeNull()
-    expect(fresh?.mostRecentChatId).toBeNull()
+  test("sorts by most recent chat activity, descending", () => {
+    // project-a's newest chat is at 900, project-b's at 600.
+    const projects = flattenVisibleProjectGroups(makeSidebarData().projectGroups)
+    expect(projects.map((project) => project.projectId)).toEqual(["project-a", "project-b"])
   })
 })
 
 describe("searchProjects", () => {
   test("matches by title and path, empty query returns nothing", () => {
-    const projects = flattenPaletteProjects(makeSidebarData(), [])
+    const projects = flattenVisibleProjectGroups(makeSidebarData().projectGroups)
     expect(searchProjects(projects, "")).toEqual([])
     expect(searchProjects(projects, "kanna").map((project) => project.projectId)).toEqual(["project-a"])
     expect(searchProjects(projects, "superwall").map((project) => project.projectId)).toEqual(["project-b"])

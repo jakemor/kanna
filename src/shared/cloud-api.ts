@@ -138,6 +138,12 @@ export interface CloudMachineSummary {
   online: boolean
   /** Unix ms of the last heartbeat, null if never seen / gracefully offline. */
   lastSeenAt: number | null
+  /**
+   * "local" — user hardware behind a named tunnel; "e2b" — a cloud dev-box
+   * sandbox that auto-pauses when idle and wakes on traffic. Absent from
+   * responses that predate dev-boxes → treat as "local".
+   */
+  kind?: "local" | "e2b"
 }
 
 /** `GET /__cloud/machines` — the signed-in account's machines. */

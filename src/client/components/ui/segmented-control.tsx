@@ -1,4 +1,4 @@
-import { type ReactNode, isValidElement } from "react"
+import { type ReactNode, isValidElement, useLayoutEffect, useRef, useState } from "react"
 import type { LucideIcon } from "lucide-react"
 import { cn } from "../../lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip"
@@ -35,13 +35,46 @@ export function SegmentedControl<T extends string>({
   className,
   optionClassName,
 }: SegmentedControlProps<T>) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const buttonRefs = useRef(new Map<T, HTMLButtonElement>())
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null)
+  // Skip the transition on first paint / when there's no prior position, so the
+  // indicator only animates when moving between segments (not when appearing).
+  const hasIndicator = useRef(false)
+
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    const active = buttonRefs.current.get(value)
+    if (!container || !active) {
+      setIndicator(null)
+      hasIndicator.current = false
+      return
+    }
+    const containerRect = container.getBoundingClientRect()
+    const rect = active.getBoundingClientRect()
+    setIndicator({ left: rect.left - containerRect.left, width: rect.width })
+    hasIndicator.current = true
+  }, [value, options, size])
+
   return (
     <div
+      ref={containerRef}
       className={cn(
-        "inline-flex items-center rounded-lg border border-border p-[3px] ",
+        "relative inline-flex items-center rounded-lg border border-border p-[3px] ",
         className,
       )}
     >
+      {indicator && (
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute top-[3px] bottom-[3px] rounded-[4px] border",
+            "bg-white dark:bg-muted border-slate-300 dark:border-white/10 bg-slate-200",
+            hasIndicator.current && "transition-[left,width] duration-200 ease-in-out",
+          )}
+          style={{ left: indicator.left, width: indicator.width }}
+        />
+      )}
       {options.map((option) => {
         const isActive = option.value === value
         const icon = option.icon
@@ -54,17 +87,21 @@ export function SegmentedControl<T extends string>({
         const button = (
           <button
             key={option.value}
+            ref={(el) => {
+              if (el) buttonRefs.current.set(option.value, el)
+              else buttonRefs.current.delete(option.value)
+            }}
             type="button"
             onClick={() => onValueChange(option.value)}
             disabled={option.disabled}
             aria-pressed={isActive}
             className={cn(
-              "rounded-[4px] border transition-colors",
+              "relative z-10 rounded-[4px] border border-transparent transition-colors",
               icon ? "grid grid-cols-[auto_auto] items-center gap-2" : "inline-flex items-center",
               sizeClasses[size],
               isActive
-                ? "bg-white dark:bg-muted text-slate-900 dark:text-slate-200 border-slate-300 dark:border-white/10 bg-slate-200 "
-                : "border-transparent text-slate-800 hover:text-slate-900 dark:text-muted-foreground dark:hover:text-foreground",
+                ? "text-slate-900 dark:text-slate-200"
+                : "text-slate-800 hover:text-slate-900 dark:text-muted-foreground dark:hover:text-foreground",
               option.disabled && "opacity-50 pointer-events-none",
               optionClassName,
             )}

@@ -7,8 +7,10 @@ import {
   Check,
   Copy,
   ExternalLink,
+  EyeOff,
   FlaskConical,
   Folder,
+  FolderOpen,
   Gauge,
   GitBranch,
   GitFork,
@@ -36,6 +38,7 @@ import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
 import { PROVIDER_ICONS } from "../chat-ui/ChatPreferenceControls"
+import { projectActivity } from "../chat-ui/sidebar/LocalProjectsSection"
 import { ThreadRowContent } from "../chat-ui/ThreadRowContent"
 import { UsageSection } from "../../app/settings/UsageSection"
 import { getOpenAppItems, openAppValue, OpenAppIcon } from "../open-external-menu"
@@ -51,7 +54,7 @@ import {
 import {
   computeSidebarThreadSections,
   computeThreadSections,
-  flattenPaletteProjects,
+  flattenVisibleProjectGroups,
   flattenSidebarThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
@@ -188,19 +191,23 @@ export function CommandPalette({ state }: { state: KannaState }) {
   const onChatPage = Boolean(state.activeChatId)
   const projectId = state.activeProjectId
   const isMac = (state.localProjects?.machine.platform ?? "darwin") === "darwin"
-  const currentChatRow = useMemo(() => {
+  // The active chat's row plus the project group that owns it (for the
+  // "Hide <project>" action, which needs the group key + title).
+  const currentChat = useMemo(() => {
     if (!state.activeChatId) return null
     for (const group of state.sidebarData.projectGroups) {
       const row = group.chats.find((chat) => chat.chatId === state.activeChatId)
-      if (row) return row
+      if (row) return { row, group }
     }
     return null
   }, [state.activeChatId, state.sidebarData])
+  const currentChatRow = currentChat?.row ?? null
+  const currentChatGroup = currentChat?.group ?? null
 
   const threads = useMemo(() => flattenSidebarThreads(state.sidebarData), [state.sidebarData])
   const paletteProjects = useMemo(
-    () => flattenPaletteProjects(state.sidebarData, state.localProjects?.projects ?? []),
-    [state.localProjects, state.sidebarData]
+    () => flattenVisibleProjectGroups(state.sidebarData.projectGroups),
+    [state.sidebarData]
   )
   const settingsEntries = useMemo(() => getSettingsPaletteEntries(), [])
 
@@ -357,8 +364,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
 
     list.push({
       id: "go-home",
-      title: "Go to Projects",
-      keywords: ["home", "navigate", "local projects"],
+      title: "All Projects",
+      keywords: ["home", "navigate", "local projects", "go to projects"],
       icon: <House className={ICON_CLASS} />,
       run: () => {
         close()
@@ -455,6 +462,40 @@ export function CommandPalette({ state }: { state: KannaState }) {
         shortcut: chatShortcuts("openInEditor"),
         run: () => pushPage("open-in"),
       })
+      // Each destination is also a directly searchable action (surfaced only
+      // while typing, so the empty root list stays curated) — no need to step
+      // through the "Open in…" sub-page to reach e.g. Finder or Cursor. Xcode
+      // and Windsurf are intentionally omitted here; a few icons are swapped
+      // for palette-specific ones (harness Cursor glyph, folder-open, terminal).
+      const CursorIcon = PROVIDER_ICONS.cursor
+      const openInItems = getOpenAppItems({ editorPreset, isMac, includeFinder: true, includeTerminal: true })
+        .filter((item) => item.value !== "editor:xcode" && item.value !== "editor:windsurf")
+      for (const item of openInItems) {
+        const icon = item.value === "editor:cursor"
+          ? <CursorIcon className={ICON_CLASS} />
+          : item.value === "finder"
+            ? <FolderOpen className={ICON_CLASS} />
+            : item.value === "terminal"
+              ? <SquareTerminal className={ICON_CLASS} />
+              : <OpenAppIcon value={item.value} isMac={isMac} className={ICON_CLASS} />
+        list.push({
+          id: `open-${item.value}`,
+          title: `Open in ${item.label}`,
+          keywords: ["open in", "editor", "external", "reveal", item.label],
+          icon,
+          searchOnly: true,
+          run: () => {
+            close()
+            openAppValue({
+              value: item.value,
+              editorCommandTemplate,
+              onOpenExternal: (action, editor) => {
+                void state.handleOpenExternal(action, editor)
+              },
+            })
+          },
+        })
+      }
       if (state.navbarLocalPath) {
         const projectPath = state.navbarLocalPath
         list.push({
@@ -503,6 +544,18 @@ export function CommandPalette({ state }: { state: KannaState }) {
           run: () => {
             close()
             void state.handleArchiveChat(currentChatRow)
+          },
+        })
+      }
+      if (currentChatGroup) {
+        list.push({
+          id: "hide-project",
+          title: `Hide ${currentChatGroup.title}`,
+          keywords: ["hide", "project", "remove", "sidebar", currentChatGroup.title],
+          icon: <EyeOff className={ICON_CLASS} />,
+          run: () => {
+            close()
+            void state.handleHideProject(currentChatGroup.groupKey)
           },
         })
       }
@@ -665,9 +718,13 @@ export function CommandPalette({ state }: { state: KannaState }) {
   }, [
     close,
     composer,
+    currentChatGroup,
     currentChatRow,
     currentProjectThreads.length,
     currentProjectTitle,
+    editorCommandTemplate,
+    editorPreset,
+    isMac,
     navigate,
     onChatPage,
     openGitPanel,
@@ -680,6 +737,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
     state.handleCopyPath,
     state.handleCreateChat,
     state.handleForkChat,
+    state.handleHideProject,
+    state.handleOpenExternal,
     state.handleShareChat,
     state.handleWriteAppSettings,
     state.keybindings,
@@ -797,9 +856,13 @@ export function CommandPalette({ state }: { state: KannaState }) {
       .map((entry) => entry.provider)
   }, [page, state.availableProviders, trimmedQuery])
 
+  // Same set + order as the new sidebar's Projects section (visible groups by
+  // recent activity); typing re-ranks by fuzzy score.
   const projectResults = useMemo(() => {
     if (page !== "new-thread") return []
     const groups = state.sidebarData.projectGroups
+      .filter((group) => group.chats.length > 0)
+      .sort((left, right) => projectActivity(right) - projectActivity(left))
     if (!trimmedQuery) return groups
     return groups
       .map((group) => ({ group, score: scorePaletteItem(trimmedQuery, group.title, [group.localPath]) }))
@@ -916,6 +979,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
           value={query}
           onValueChange={setQuery}
           placeholder={inputPlaceholder}
+          onBack={pages.length > 0 ? popPage : undefined}
           autoFocus
         />
         <CommandList ref={listRef} className={footerCopyPath ? "pb-[42px]" : undefined}>
@@ -976,10 +1040,10 @@ export function CommandPalette({ state }: { state: KannaState }) {
                     value={`palette-project-${project.localPath}`}
                     onSelect={() => openProject(project)}
                   >
-                    <Folder className={ICON_CLASS} />
+                    <SquarePen className={ICON_CLASS} />
                     <span className="min-w-0 truncate">{project.title}</span>
-                    <span className="ml-auto shrink-0 pl-3 text-xs text-muted-foreground">
-                      New chat
+                    <span className="ml-auto max-w-[220px] shrink-0 truncate pl-3 text-xs text-muted-foreground">
+                      {project.localPath}
                     </span>
                   </CommandItem>
                 ))}

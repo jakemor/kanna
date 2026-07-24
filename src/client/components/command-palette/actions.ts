@@ -13,6 +13,7 @@ import {
 // Thread flattening + section logic (Review / In Progress / Recents) lives in
 // the canonical lib/thread-sections module, shared with the sidebar.
 export {
+  computeSidebarThreadSections,
   computeThreadSections,
   flattenSidebarThreads,
   getInProgressThreads,
@@ -20,6 +21,8 @@ export {
   getReviewThreads,
   RECENT_THREADS_LIMIT,
   type SidebarThread,
+  type SidebarThreadSections,
+  type ThreadDateBucket,
   type ThreadSections,
 } from "../../lib/thread-sections"
 

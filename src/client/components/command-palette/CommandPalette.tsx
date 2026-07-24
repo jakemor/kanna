@@ -49,6 +49,7 @@ import {
   CommandList,
 } from "../ui/command"
 import {
+  computeSidebarThreadSections,
   computeThreadSections,
   flattenPaletteProjects,
   flattenSidebarThreads,
@@ -807,9 +808,17 @@ export function CommandPalette({ state }: { state: KannaState }) {
       .map((entry) => entry.group)
   }, [page, state.sidebarData.projectGroups, trimmedQuery])
 
+  // "Chats in <project>" sub-page, empty query: the same grouping as the
+  // sidebar's Chats tab (In Progress, Review, date buckets, archived last) —
+  // flat headers, no collapsing.
+  const projectChatSections = useMemo(() => {
+    if (page !== "project-chats" || trimmedQuery) return null
+    return computeSidebarThreadSections(currentProjectThreads, nowMs)
+  }, [currentProjectThreads, nowMs, page, trimmedQuery])
+
+  // Typing on the sub-page collapses the groups into fuzzy search results.
   const projectChatResults = useMemo(() => {
-    if (page !== "project-chats") return []
-    if (!trimmedQuery) return currentProjectThreads
+    if (page !== "project-chats" || !trimmedQuery) return []
     return searchThreadsByTitle(currentProjectThreads, trimmedQuery, currentProjectThreads.length)
   }, [currentProjectThreads, page, trimmedQuery])
 
@@ -828,7 +837,15 @@ export function CommandPalette({ state }: { state: KannaState }) {
   // project rows). Drives the sticky "⌘C Copy path" footer + shortcut.
   const copyPathByValue = useMemo(() => {
     const map = new Map<string, string>()
-    for (const thread of [...reviewResults, ...inProgressResults, ...threadResults, ...projectChatResults]) {
+    const projectChatSectionThreads = projectChatSections
+      ? [
+        ...projectChatSections.inProgress,
+        ...projectChatSections.review,
+        ...projectChatSections.buckets.flatMap((bucket) => bucket.threads),
+        ...projectChatSections.archived,
+      ]
+      : []
+    for (const thread of [...reviewResults, ...inProgressResults, ...threadResults, ...projectChatSectionThreads, ...projectChatResults]) {
       map.set(`thread-${thread.chatId}`, thread.row.localPath)
     }
     for (const project of projectSearchResults) {
@@ -838,7 +855,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
       map.set(`project-${group.groupKey}`, group.localPath)
     }
     return map
-  }, [inProgressResults, projectChatResults, projectResults, projectSearchResults, reviewResults, threadResults])
+  }, [inProgressResults, projectChatResults, projectChatSections, projectResults, projectSearchResults, reviewResults, threadResults])
   const footerCopyPath = selectedValue ? copyPathByValue.get(selectedValue) : undefined
 
   const inputPlaceholder = page === "models"
@@ -1081,17 +1098,42 @@ export function CommandPalette({ state }: { state: KannaState }) {
           ) : null}
 
           {page === "project-chats" ? (
-            <CommandGroup heading={currentProjectTitle ? `Chats in ${currentProjectTitle}` : "Project Chats"}>
-              {projectChatResults.map((thread) => (
-                <ThreadItem
-                  key={thread.chatId}
-                  thread={thread}
-                  onSelect={openThread}
-                  showStatus
-                  trailingLabel={formatSidebarAgeLabel(thread.lastActivityAt, nowMs)}
-                />
-              ))}
-            </CommandGroup>
+            projectChatSections ? (
+              // Browsing: the sidebar Chats tab's grouping — In Progress,
+              // Review, date buckets, archived last — as flat headed groups.
+              [
+                { key: "in-progress", label: "In Progress", threads: projectChatSections.inProgress },
+                { key: "review", label: "Review", threads: projectChatSections.review },
+                ...projectChatSections.buckets.map((bucket) => ({ key: bucket.key, label: bucket.label, threads: bucket.threads })),
+                { key: "archived", label: "Archived", threads: projectChatSections.archived },
+              ]
+                .filter((group) => group.threads.length > 0)
+                .map((group) => (
+                  <CommandGroup key={group.key} heading={group.label}>
+                    {group.threads.map((thread) => (
+                      <ThreadItem
+                        key={thread.chatId}
+                        thread={thread}
+                        onSelect={openThread}
+                        showStatus
+                        trailingLabel={formatSidebarAgeLabel(thread.lastActivityAt, nowMs)}
+                      />
+                    ))}
+                  </CommandGroup>
+                ))
+            ) : (
+              <CommandGroup heading={currentProjectTitle ? `Chats in ${currentProjectTitle}` : "Project Chats"}>
+                {projectChatResults.map((thread) => (
+                  <ThreadItem
+                    key={thread.chatId}
+                    thread={thread}
+                    onSelect={openThread}
+                    showStatus
+                    trailingLabel={formatSidebarAgeLabel(thread.lastActivityAt, nowMs)}
+                  />
+                ))}
+              </CommandGroup>
+            )
           ) : null}
 
           {page === "open-in" ? (

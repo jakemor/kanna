@@ -556,7 +556,7 @@ function KannaSidebarImpl({
                   navigate("/")
                   onClose()
                 }}
-              className="hidden md:inline-flex h-10 w-auto rounded-lg px-1.5 hover:!border-border/0"
+              className="hidden md:inline-flex h-10 w-auto rounded-lg px-1.5 pl-2 hover:!border-border/0"
               title={newSidebarEnabled ? "Search" : "New project"}
             >
               {newSidebarEnabled ? <Search className="size-4" /> : <Plus className="size-4" />}

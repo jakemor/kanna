@@ -256,6 +256,21 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     },
   })
 
+  // opencode's model list IS its credentialed providers, so adding a
+  // credential changes the catalog. This watches the snapshot rather than
+  // using onSignedIn, because opencode signs in through a terminal dialog on
+  // the client — no server-driven flow fires that hook. Comparing the account
+  // string (the connected-provider list) also catches a *second* provider
+  // being added while already signed in.
+  let lastOpenCodeAccount: string | null = null
+  providerAuth.onChange((snapshot) => {
+    const opencode = snapshot.services.find((service) => service.service === "opencode")
+    const account = opencode?.authStatus === "signed_in" ? opencode.account ?? "" : null
+    if (account === lastOpenCodeAccount) return
+    lastOpenCodeAccount = account
+    void agent.refreshOpenCodeModelCatalog({ force: true }).catch(() => undefined)
+  })
+
   router = createWsRouter({
     store,
     diffStore,

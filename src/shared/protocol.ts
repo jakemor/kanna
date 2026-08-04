@@ -115,7 +115,9 @@ export type ClientCommand =
   | { type: "settings.writeAppSettingsPatch"; patch: AppSettingsPatch }
   | { type: "settings.readLlmProvider" }
   | { type: "usage.refresh"; force?: boolean }
-  | { type: "auth.refresh"; force?: boolean }
+  // `service` narrows the probe to one CLI — a full refresh spawns every
+  // harness's status command, which is far too heavy to poll.
+  | { type: "auth.refresh"; force?: boolean; service?: AuthServiceId }
   /** Install (or update to the latest version of) a service's CLI. */
   | { type: "auth.install"; service: AuthServiceId }
   | { type: "auth.login.start"; service: AuthServiceId }

@@ -11,6 +11,7 @@ import {
   type ProviderAuthSnapshot,
 } from "../shared/types"
 import { compareVersions } from "./cli-runtime"
+import { parseOpenCodeAuthList, parseOpenCodeVersion } from "./opencode-acp"
 import { resolveCommandPath as defaultResolveCommandPath } from "./process-utils"
 
 // ---------------------------------------------------------------------------
@@ -41,12 +42,14 @@ const CLI_BINARIES: Record<Exclude<AuthServiceId, "openrouter">, string> = {
   claude: "claude",
   codex: "codex",
   cursor: "cursor-agent",
+  opencode: "opencode",
   gh: "gh",
 }
 
 const NPM_PACKAGES: Partial<Record<AuthServiceId, string>> = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
+  opencode: "opencode-ai",
 }
 
 const CODEX_DEVICE_AUTH_HINT =
@@ -422,6 +425,7 @@ export class ProviderAuthManager {
       service === "claude" ? parseClaudeVersion(versionOutput)
       : service === "codex" ? parseCodexVersion(versionOutput)
       : service === "cursor" ? parseCursorVersion(versionResult.stdout)
+      : service === "opencode" ? parseOpenCodeVersion(versionOutput)
       : parseGhVersion(versionOutput)
 
     let authStatus: AuthServiceSnapshot["authStatus"] = "signed_out"
@@ -453,6 +457,21 @@ export class ProviderAuthManager {
       } else if (isUnknownCliSyntax(`${result.stderr}\n${result.stdout}`)) {
         authStatus = "outdated"
         statusDetail = `Codex ${version ?? "(unknown version)"} is too old for Kanna — update it to continue.`
+      } else {
+        authStatus = "signed_out"
+      }
+    } else if (service === "opencode") {
+      // opencode stores per-provider credentials rather than one account, so
+      // "signed in" means at least one credential exists. The account line
+      // lists which providers are connected (e.g. "Anthropic, OpenCode Zen").
+      const result = await this.deps.exec([binaryPath, "auth", "list"], { timeoutMs: 20_000 })
+      const parsed = parseOpenCodeAuthList(`${result.stdout}\n${result.stderr}`)
+      if (result.code !== 0) {
+        authStatus = "error"
+        statusDetail = truncateOutput(result.stderr || result.stdout)
+      } else if (parsed.providers.length > 0) {
+        authStatus = "signed_in"
+        account = parsed.providers.join(", ")
       } else {
         authStatus = "signed_out"
       }
@@ -575,6 +594,13 @@ export class ProviderAuthManager {
       if (this.resolvePath("bun")) return `bun add -g ${pkg}`
       throw new Error("Neither npm nor bun is available to install the package.")
     }
+    if (service === "opencode") {
+      // Native installer (per-user, no root) matches how claude/cursor are
+      // handled; an existing install self-updates via `opencode upgrade`.
+      const existing = this.resolvePath(CLI_BINARIES.opencode)
+      if (existing) return `${shellQuote(existing)} upgrade`
+      return "curl -fsSL https://opencode.ai/install | bash"
+    }
     if (service === "cursor") {
       const existing = this.resolvePath(CLI_BINARIES.cursor)
       if (existing) return `${shellQuote(existing)} update`
@@ -610,6 +636,13 @@ export class ProviderAuthManager {
   startLogin(service: AuthServiceId): void {
     if (service === "openrouter") {
       throw new Error("Use the OpenRouter OAuth flow (auth.openrouter.start).")
+    }
+    if (service === "opencode") {
+      // `opencode auth login` is an interactive picker over ~100 providers,
+      // several of which finish in a browser. The client runs the real CLI in
+      // a terminal dialog and polls `auth.refresh` for the credential instead
+      // (see OpenCodeSignInDialog), so there is no server-driven flow here.
+      throw new Error("opencode signs in through its terminal dialog.")
     }
     this.teardownFlow(service)
 

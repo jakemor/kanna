@@ -924,7 +924,11 @@ export function createWsRouter({
         }
         case "auth.refresh": {
           if (providerAuth) {
-            await providerAuth.refresh({ force: command.force ?? false })
+            if (command.service) {
+              await providerAuth.probeService(command.service)
+            } else {
+              await providerAuth.refresh({ force: command.force ?? false })
+            }
             send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: providerAuth.getSnapshot() })
           } else {
             send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { services: [] } })

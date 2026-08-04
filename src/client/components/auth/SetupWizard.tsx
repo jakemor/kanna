@@ -22,7 +22,13 @@ type SetupStep = (typeof BASE_STEPS)[number] | "cloud" | "done"
 /** Auto-advance delay after a skippable step connects — long enough to see the ✓ land. */
 const AUTO_ADVANCE_MS = 900
 
-const AGENT_SERVICES: AuthServiceId[] = ["claude", "codex", "cursor"]
+const AGENT_SERVICES: AuthServiceId[] = ["claude", "codex", "cursor", "opencode"]
+
+/** Cards that carry a pill in the agents step. */
+const AGENT_BADGES: Partial<Record<AuthServiceId, string>> = {
+  // opencode ships free models, so it's the fastest card to get running.
+  opencode: "Recommended",
+}
 
 function StepHeading({ title, description }: { title: string; description: string }) {
   return (
@@ -264,7 +270,12 @@ export function SetupWizard() {
               />
               <div className="mt-8 space-y-3">
                 {services.agents.map((service) => (
-                  <AuthCard key={service.service} service={service} socket={socket} />
+                  <AuthCard
+                    key={service.service}
+                    service={service}
+                    socket={socket}
+                    badge={AGENT_BADGES[service.service]}
+                  />
                 ))}
               </div>
               <StepFooter

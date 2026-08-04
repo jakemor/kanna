@@ -141,13 +141,14 @@ export function getSetupStatus(snapshot: ProviderAuthSnapshot | null): SetupStat
   const services = snapshot?.services ?? []
   const byId = new Map(services.map((service) => [service.service, service]))
   const isConnected = (id: AuthServiceId) => byId.get(id)?.authStatus === "signed_in"
-  const relevant: AuthServiceId[] = ["claude", "codex", "cursor", "gh", "openrouter"]
+  const relevant: AuthServiceId[] = ["claude", "codex", "cursor", "opencode", "gh", "openrouter"]
   const resolved = services.length > 0 && relevant.every((id) => {
     const status = byId.get(id)?.authStatus
     return status !== undefined && status !== "unknown"
   })
   const githubConnected = isConnected("gh")
-  const anyAgentConnected = isConnected("claude") || isConnected("codex") || isConnected("cursor")
+  const anyAgentConnected =
+    isConnected("claude") || isConnected("codex") || isConnected("cursor") || isConnected("opencode")
   const openRouterConnected = isConnected("openrouter")
   return {
     resolved,

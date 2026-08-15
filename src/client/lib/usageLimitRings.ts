@@ -1,5 +1,8 @@
 import {
   deriveModelLabel,
+  FIVE_HOUR_WINDOW_MINUTES,
+  usageLevel,
+  WEEKLY_WINDOW_MINUTES,
   type AgentProvider,
   type ProviderUsageSnapshot,
   type UsageLimitWindow,
@@ -9,14 +12,13 @@ import {
 /** Providers whose plan limits render as rings in the chat input. */
 export const LIMIT_RING_PROVIDERS: ReadonlySet<AgentProvider> = new Set(["claude", "codex"])
 
-const FIVE_HOUR_WINDOW_MINUTES = 300
-const WEEKLY_WINDOW_MINUTES = 10_080
-
 export interface LimitRingSlot {
   key: "session" | "weekly"
   /** Fallback title shown until the provider reports this window. */
   label: string
   window: UsageLimitWindow | null
+  /** A second window that also caps this slot, when the ring shows a model lane. */
+  alsoApplies: UsageLimitWindow | null
 }
 
 export interface LimitRingSelection {
@@ -56,18 +58,24 @@ function isSession(window: UsageLimitWindow): boolean {
   return window.id === "five_hour"
 }
 
-/** Claude's seven_day_opus/_sonnet keys are per-model, so they cannot serve as the account-wide fallback. */
-function selectWeeklyWindow(
+/** Preference order: the selected model's lane, the account-wide window, then any weekly window. */
+function selectWeeklyWindows(
   windows: UsageLimitWindow[],
   selectedModel: string | null,
-): UsageLimitWindow | null {
-  const scoped = windows.find(
-    (window) => window.modelLabel && isWeekly(window) && modelScopeMatches(window.modelLabel, selectedModel),
-  )
-  if (scoped) return scoped
-  return windows.find(
-    (window) => !window.modelLabel && isWeekly(window) && !window.id.startsWith("seven_day_"),
+): { window: UsageLimitWindow | null; alsoApplies: UsageLimitWindow | null } {
+  const weeklyWindows = windows.filter(isWeekly)
+  // Claude's seven_day_opus/_sonnet keys are per-model even in caches written before they carried a modelLabel.
+  const accountWide = weeklyWindows.find(
+    (window) => !window.modelLabel && !window.id.startsWith("seven_day_"),
   ) ?? null
+  const scoped = weeklyWindows.find(
+    (window) => window.modelLabel && modelScopeMatches(window.modelLabel, selectedModel),
+  ) ?? null
+  const window = scoped ?? accountWide ?? weeklyWindows[0] ?? null
+  return {
+    window,
+    alsoApplies: window && accountWide && window !== accountWide ? accountWide : null,
+  }
 }
 
 function selectSessionWindow(windows: UsageLimitWindow[]): UsageLimitWindow | null {
@@ -85,13 +93,13 @@ export function selectLimitRingWindows(
   const weekly: LimitRingSlot = {
     key: "weekly",
     label: "Weekly limit",
-    window: selectWeeklyWindow(windows, selectedModel),
+    ...selectWeeklyWindows(windows, selectedModel),
   }
   if (provider === "claude") {
     return {
       snapshot: providerSnapshot,
       slots: [
-        { key: "session", label: "5-hour limit", window: selectSessionWindow(windows) },
+        { key: "session", label: "5-hour limit", window: selectSessionWindow(windows), alsoApplies: null },
         weekly,
       ],
     }
@@ -107,10 +115,13 @@ export function limitRingRemainingPercent(usedPercent: number | null): number | 
   return Math.max(0, Math.min(100, 100 - usedPercent))
 }
 
-/** Thresholds must stay in step with the Usage page bars. */
+const RING_LEVEL_CLASSES = {
+  unknown: "text-muted-foreground/40",
+  ok: "text-emerald-500",
+  warn: "text-amber-500",
+  danger: "text-red-500",
+} as const
+
 export function limitRingColorClass(usedPercent: number | null): string {
-  if (usedPercent === null) return "text-muted-foreground/40"
-  if (usedPercent >= 90) return "text-red-500"
-  if (usedPercent >= 75) return "text-amber-500"
-  return "text-emerald-500"
+  return RING_LEVEL_CLASSES[usageLevel(usedPercent)]
 }

@@ -65,6 +65,7 @@ interface AppSettingsFile {
     pi?: ProviderPreferenceInput
   }
   newSidebarEnabled?: unknown
+  usageLimitIndicatorsEnabled?: unknown
   newProjectsDirectory?: unknown
   setupShown?: unknown
   setupCompleted?: unknown
@@ -187,6 +188,7 @@ function toFilePayload(state: AppSettingsState) {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
+    usageLimitIndicatorsEnabled: state.usageLimitIndicatorsEnabled,
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -216,6 +218,7 @@ function toSnapshot(
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
+    usageLimitIndicatorsEnabled: state.usageLimitIndicatorsEnabled,
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -260,6 +263,13 @@ function normalizeAppSettings(
     warnings.push("newSidebarEnabled must be a boolean")
   }
 
+  const usageLimitIndicatorsEnabled = typeof source?.usageLimitIndicatorsEnabled === "boolean"
+    ? source.usageLimitIndicatorsEnabled
+    : true
+  if (source?.usageLimitIndicatorsEnabled !== undefined && typeof source.usageLimitIndicatorsEnabled !== "boolean") {
+    warnings.push("usageLimitIndicatorsEnabled must be a boolean")
+  }
+
   const rawNewProjectsDirectory = typeof source?.newProjectsDirectory === "string"
     ? source.newProjectsDirectory.trim()
     : ""
@@ -302,6 +312,7 @@ function normalizeAppSettings(
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     newSidebarEnabled,
+    usageLimitIndicatorsEnabled,
     newProjectsDirectory,
     // Onboarding markers default to false so a machine that has never run the
     // wizard still gets it; once set they stay set for every browser.
@@ -341,6 +352,7 @@ function toComparablePayload(source: AppSettingsFile) {
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
     newSidebarEnabled: source.newSidebarEnabled,
+    usageLimitIndicatorsEnabled: source.usageLimitIndicatorsEnabled,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"
       ? source.newProjectsDirectory.trim()
       : source.newProjectsDirectory,

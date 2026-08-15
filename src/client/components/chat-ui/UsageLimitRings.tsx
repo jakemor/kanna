@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import type { AgentProvider, UsageLimitWindow, UsageLimitsSnapshot } from "../../../shared/types"
+import { useNavigate } from "react-router-dom"
+import type { AgentProvider, UsageLimitWindow } from "../../../shared/types"
 import { formatUntil } from "../../lib/formatters"
 import {
   LIMIT_RING_PROVIDERS,
@@ -9,7 +9,7 @@ import {
 } from "../../lib/usageLimitRings"
 import { cn } from "../../lib/utils"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
-import { useProviderAuthStore } from "../../stores/providerAuthStore"
+import { useUsageLimitsSnapshot } from "../../stores/usageLimitsStore"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 export function useUsageLimitRingsVisible(provider: AgentProvider): boolean {
@@ -20,12 +20,16 @@ export function useUsageLimitRingsVisible(provider: AgentProvider): boolean {
 function LimitRing({
   slotLabel,
   window,
+  alsoApplies,
   unavailableDetail,
+  onOpenUsagePage,
 }: {
   /** Fallback title used until the provider reports this window. */
   slotLabel: string
   window: UsageLimitWindow | null
+  alsoApplies: UsageLimitWindow | null
   unavailableDetail: string | null
+  onOpenUsagePage: () => void
 }) {
   const remaining = limitRingRemainingPercent(window?.usedPercent ?? null)
   const radius = 9.75
@@ -33,17 +37,19 @@ function LimitRing({
   const dashOffset = circumference - ((remaining ?? 0) / 100) * circumference
   const resets = window?.resetsAt ? formatUntil(window.resetsAt) : null
   const title = window?.label ?? slotLabel
+  const alsoRemaining = limitRingRemainingPercent(alsoApplies?.usedPercent ?? null)
 
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild>
         <button
           type="button"
+          onClick={onOpenUsagePage}
           className="group inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-85"
           aria-label={
             remaining !== null
-              ? `${title}: ${Math.round(remaining)}% remaining`
-              : `${title}: no usage data`
+              ? `${title}: ${Math.round(remaining)}% remaining. Open the Usage page.`
+              : `${title}: no usage data. Open the Usage page.`
           }
         >
           <span className="relative flex h-6 w-6 items-center justify-center">
@@ -93,6 +99,11 @@ function LimitRing({
               ? `${Math.round(remaining)}% left${resets ? ` · Resets ${resets}` : ""}`
               : unavailableDetail ?? "No usage data yet."}
           </div>
+          {alsoApplies && alsoRemaining !== null ? (
+            <div className="whitespace-nowrap text-xs text-muted-foreground">
+              {`${alsoApplies.label}: ${Math.round(alsoRemaining)}% left`}
+            </div>
+          ) : null}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -107,14 +118,9 @@ export function UsageLimitRings({
   /** Selects the model-scoped weekly lane when the provider reports one. */
   model: string | null
 }) {
-  const socket = useProviderAuthStore((store) => store.socket)
+  const navigate = useNavigate()
   const visible = useUsageLimitRingsVisible(provider)
-  const [snapshot, setSnapshot] = useState<UsageLimitsSnapshot | null>(null)
-
-  useEffect(() => {
-    if (!socket || !visible) return
-    return socket.subscribe<UsageLimitsSnapshot>({ type: "usage-limits" }, setSnapshot)
-  }, [socket, visible])
+  const snapshot = useUsageLimitsSnapshot(visible)
 
   if (!visible) return null
 
@@ -128,7 +134,9 @@ export function UsageLimitRings({
           key={slot.key}
           slotLabel={slot.label}
           window={slot.window}
+          alsoApplies={slot.alsoApplies}
           unavailableDetail={unavailableDetail}
+          onOpenUsagePage={() => navigate("/settings/usage")}
         />
       ))}
     </div>

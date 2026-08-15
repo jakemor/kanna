@@ -179,6 +179,23 @@ function extractAssistantText(message: unknown): string {
     .join("")
 }
 
+/** The field is undocumented and has moved between versions, so every plausible carrier is probed. */
+function extractCursorThinkingText(value: Record<string, unknown>): string {
+  const direct = asString(value.text) ?? asString(value.thinking)
+  if (direct?.trim()) return direct
+
+  const nested = asRecord(value.thinking) ?? asRecord(value.delta) ?? asRecord(value.message)
+  const nestedText = asString(nested?.text) ?? asString(nested?.thinking)
+  if (nestedText?.trim()) return nestedText
+
+  const content = nested?.content ?? value.content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((item) => asString(asRecord(item)?.text) ?? "")
+    .join("")
+    .trim()
+}
+
 /**
  * Parse a single NDJSON line from `cursor-agent` into Kanna harness events.
  * Pure and side-effect free so it can be unit tested against captured fixtures.
@@ -224,6 +241,14 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
       const text = extractAssistantText(value.message)
       if (!text) return []
       return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
+    }
+
+    case "thinking": {
+      // This parser sees one line at a time, so joining deltas is not possible here.
+      if (asString(value.subtype) === "delta") return []
+      const text = extractCursorThinkingText(value)
+      if (!text) return []
+      return [{ type: "transcript", entry: timestamped({ kind: "thinking", text }) }]
     }
 
     case "tool_call": {
@@ -289,8 +314,7 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
       return events
     }
 
-    // "user" (prompt echo), "thinking" (reasoning), and unknown types are dropped —
-    // Kanna already records the user prompt and has no reasoning transcript kind.
+    // Kanna already records the user prompt, so the echo is dropped.
     default:
       return []
   }

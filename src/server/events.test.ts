@@ -27,6 +27,14 @@ const inputOf = (entry: TranscriptEntry) => (entry as unknown as { tool: { input
 const asResult = (entry: TranscriptEntry) => entry as unknown as { content?: unknown; isError?: boolean; structuredResult?: unknown; trimmed?: true }
 
 describe("cloneTranscriptEntriesForClient", () => {
+  test("leaves thinking text on the server and marks the entry trimmed", () => {
+    const [thinking] = call([
+      { _id: "think-1", createdAt: 1, kind: "thinking", text: "a".repeat(5000) } as TranscriptEntry,
+    ])
+
+    expect(thinking).toMatchObject({ kind: "thinking", text: "", trimmed: true })
+  })
+
   test("drops the unbounded input field of each kind that has one", () => {
     const [write, edit, remove, mcp, unknown] = call([
       toolCall("write_file", { filePath: "a.ts", content: "x".repeat(1000) }),

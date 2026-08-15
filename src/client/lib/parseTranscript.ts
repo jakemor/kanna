@@ -90,6 +90,14 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           text: entry.text,
         })
         break
+      case "thinking":
+        messages.push({
+          ...createBaseMessage(entry),
+          kind: "thinking",
+          text: entry.text,
+          trimmed: entry.trimmed,
+        })
+        break
       case "tool_call": {
         const toolCall = hydrateToolCall(entry)
         pendingToolCalls.set(entry.tool.toolId, { hydrated: toolCall, normalized: entry.tool })

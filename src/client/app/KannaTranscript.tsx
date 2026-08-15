@@ -6,6 +6,7 @@ import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage, type SessionHandoff, type SessionRestore } from "../components/messages/SystemMessage"
 import { AccountInfoMessage } from "../components/messages/AccountInfoMessage"
 import { TextMessage } from "../components/messages/TextMessage"
+import { ThinkingMessage } from "../components/messages/ThinkingMessage"
 import { AskUserQuestionMessage } from "../components/messages/AskUserQuestionMessage"
 import { ExitPlanModeMessage } from "../components/messages/ExitPlanModeMessage"
 import { TodoWriteMessage } from "../components/messages/TodoWriteMessage"
@@ -18,6 +19,14 @@ import { StatusMessage } from "../components/messages/StatusMessage"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
 import { SPECIAL_TOOL_NAMES } from "./derived"
+import {
+  DEFAULT_TRANSCRIPT_DETAIL,
+  isBlockingToolKind,
+  isSummaryVisibleToolKind,
+  showsThinking,
+  showsToolCalls,
+  type TranscriptDetail,
+} from "../lib/transcriptDetail"
 
 const SPECIAL_TOOL_NAME_SET = new Set<string>(SPECIAL_TOOL_NAMES)
 
@@ -102,7 +111,8 @@ function getTranscriptMessageRenderState(
     hideResult,
     isFinalStatus,
     nextPromptTimestamp,
-  }: Omit<TranscriptMessageRenderState, "shouldRender">
+  }: Omit<TranscriptMessageRenderState, "shouldRender">,
+  detail: TranscriptDetail
 ): TranscriptMessageRenderState {
   let shouldRender = !message.hidden
 
@@ -124,8 +134,13 @@ function getTranscriptMessageRenderState(
       case "account_info":
         shouldRender = isFirstAccount
         break
+      case "thinking":
+        shouldRender = showsThinking(detail)
+        break
       case "tool":
-        shouldRender = message.toolKind !== "todo_write" || isLatestTodoWrite
+        shouldRender = (message.toolKind !== "todo_write" || isLatestTodoWrite)
+          && (detail !== "summary" || isSummaryVisibleToolKind(message.toolKind))
+          && (showsToolCalls(detail) || isBlockingToolKind(message.toolKind))
         break
       case "result":
         shouldRender = !hideResult
@@ -158,7 +173,8 @@ function getTranscriptMessageRenderState(
 
 function buildTranscriptMessageRenderStates(
   messages: HydratedTranscriptMessage[],
-  latestToolIds: Record<string, string | null>
+  latestToolIds: Record<string, string | null>,
+  detail: TranscriptDetail
 ) {
   // The transcript always arrives whole, so the first system/account row here
   // is genuinely the chat's first.
@@ -228,21 +244,23 @@ function buildTranscriptMessageRenderStates(
       hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
       isFinalStatus: index === messages.length - 1,
       nextPromptTimestamp: message.kind === "result" ? nextPromptTimestamps[index] : undefined,
-    })
+    }, detail)
   })
 }
 
 export function buildTranscriptRenderItems(
   messages: HydratedTranscriptMessage[],
-  renderStates: TranscriptMessageRenderState[]
+  renderStates: TranscriptMessageRenderState[],
+  detail: TranscriptDetail = DEFAULT_TRANSCRIPT_DETAIL
 ): TranscriptRenderItem[] {
   const result: TranscriptRenderItem[] = []
   let index = 0
+  const groupToolCalls = detail !== "verbose"
 
   while (index < messages.length) {
     const message = messages[index]
     const renderState = renderStates[index]
-    if (renderState?.shouldRender && isCollapsibleToolCall(message)) {
+    if (groupToolCalls && renderState?.shouldRender && isCollapsibleToolCall(message)) {
       const group: HydratedTranscriptMessage[] = [message]
       const startIndex = index
       index += 1
@@ -339,6 +357,8 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
       return right.kind === "account_info" && JSON.stringify(left.accountInfo) === JSON.stringify(right.accountInfo)
     case "assistant_text":
       return right.kind === "assistant_text" && left.text === right.text
+    case "thinking":
+      return right.kind === "thinking" && left.text === right.text
     case "tool":
       return right.kind === "tool"
         && left.toolKind === right.toolKind
@@ -527,6 +547,9 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
       case "assistant_text":
         rendered = <TextMessage key={message.id} message={message} />
         break
+      case "thinking":
+        rendered = <ThinkingMessage key={message.id} message={message} />
+        break
       case "tool":
         if (message.toolKind === "ask_user_question") {
           rendered = (
@@ -663,15 +686,17 @@ export function buildResolvedTranscriptRows(
     isLoading,
     localPath,
     latestToolIds,
+    detail = DEFAULT_TRANSCRIPT_DETAIL,
   }: {
     isLoading: boolean
     localPath?: string
     latestToolIds: Record<string, string | null>
+    detail?: TranscriptDetail
     /** True when the loaded window may not include the start of the transcript. */
   }
 ): ResolvedTranscriptRow[] {
-  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds)
-  const renderItems = buildTranscriptRenderItems(messages, renderStates)
+  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds, detail)
+  const renderItems = buildTranscriptRenderItems(messages, renderStates, detail)
   const rows: ResolvedTranscriptRow[] = []
 
   for (const item of renderItems) {

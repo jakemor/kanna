@@ -105,7 +105,7 @@ describe("parseCursorLine", () => {
     expect(entries[0]).toMatchObject({ kind: "result", isError: true, subtype: "error", result: "boom" })
   })
 
-  test("prompt echo, reasoning, and malformed lines produce no entries", () => {
+  test("prompt echo, reasoning deltas, and malformed lines produce no entries", () => {
     expect(parseCursorLine(`{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}`, "composer-2.5")).toEqual([])
     expect(parseCursorLine(`{"type":"thinking","subtype":"delta"}`, "composer-2.5")).toEqual([])
     expect(parseCursorLine("not json", "composer-2.5")).toEqual([])
@@ -296,5 +296,30 @@ describe("clarifyCursorAuthError", () => {
 
   test("leaves unrelated stderr untouched", () => {
     expect(clarifyCursorAuthError("Cannot use this model: bad-model")).toBe("Cannot use this model: bad-model")
+  })
+})
+
+describe("cursor thinking events", () => {
+  test("a completed thinking event becomes a thinking entry", () => {
+    const events = parseCursorLine(
+      `{"type":"thinking","subtype":"completed","text":"Reading the router first"}`,
+      "composer-2.5"
+    )
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: "transcript", entry: { kind: "thinking", text: "Reading the router first" } })
+  })
+
+  test("reads thinking text out of a nested message payload", () => {
+    const events = parseCursorLine(
+      `{"type":"thinking","subtype":"completed","message":{"content":[{"type":"text","text":"Still reading"}]}}`,
+      "composer-2.5"
+    )
+
+    expect(events[0]).toMatchObject({ type: "transcript", entry: { kind: "thinking", text: "Still reading" } })
+  })
+
+  test("a thinking event with no readable text is dropped", () => {
+    expect(parseCursorLine(`{"type":"thinking","subtype":"completed"}`, "composer-2.5")).toEqual([])
   })
 })

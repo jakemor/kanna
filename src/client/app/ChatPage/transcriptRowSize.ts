@@ -30,6 +30,9 @@ const LINE_HEIGHT = 22
 /** Markdown blocks add separation that raw character count misses. */
 const PARAGRAPH_SPACING = 10
 
+/** Stand-in body for a thought, whose text the snapshot trims away. */
+const THINKING_BODY = 4 * LINE_HEIGHT
+
 function textHeight(text: string | undefined) {
   if (!text) return LINE_HEIGHT
   let lines = 0
@@ -54,6 +57,8 @@ export function estimateTranscriptRowSize(row: ResolvedTranscriptRow): number {
       return textHeight(message.content) + ROW_CHROME + 16
     case "assistant_text":
       return textHeight(message.text) + ROW_CHROME
+    case "thinking":
+      return TOOL_ROW + (message.text ? textHeight(message.text) : THINKING_BODY) + ROW_CHROME
     case "tool":
       return TOOL_ROW + ROW_CHROME
     case "system_init":

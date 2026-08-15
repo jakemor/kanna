@@ -473,6 +473,12 @@ export function cloneTranscriptEntriesForClient(entries: TranscriptEntry[]): Tra
       return INLINE_TOOL_KINDS.has(stripped.tool.toolKind) ? stripped : trimToolCallEntry(stripped)
     }
 
+    // Long, and shipped to every reader on every push, so the row fetches its own body instead.
+    if (entry.kind === "thinking") {
+      const { text, ...rest } = withoutDebugRaw(entry)
+      return { ...rest, text: "", trimmed: true } as TranscriptEntry
+    }
+
     if (entry.kind === "tool_result") {
       const structured = structuredToolIds.has(entry.toolId)
         ? readStructuredResult(entry.debugRaw)

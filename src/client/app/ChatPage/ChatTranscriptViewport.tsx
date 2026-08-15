@@ -20,6 +20,7 @@ import { useScrollbarGutterVar } from "../../hooks/useScrollbarGutterVar"
 import { cn } from "../../lib/utils"
 import type { ChatJumpRole } from "../../lib/chat-navigation"
 import { formatPathWithTilde, shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
+import { DEFAULT_TRANSCRIPT_DETAIL, type TranscriptDetail } from "../../lib/transcriptDetail"
 import {
   buildResolvedTranscriptRows,
   KannaTranscriptRow,
@@ -190,6 +191,8 @@ interface ChatTranscriptViewportProps {
   transcriptPaddingBottom: number
   localPath: string | null | undefined
   latestToolIds: KannaState["latestToolIds"]
+  /** The export viewer has no picker, so it stays on the default. */
+  transcriptDetail?: TranscriptDetail
   isProcessing: boolean
   runtimeStatus: string | null
   isDraining: boolean
@@ -311,6 +314,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   transcriptPaddingBottom,
   localPath,
   latestToolIds,
+  transcriptDetail = DEFAULT_TRANSCRIPT_DETAIL,
   isProcessing,
   runtimeStatus,
   isDraining,
@@ -357,7 +361,8 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     isLoading: isProcessing,
     localPath: localPath ?? undefined,
     latestToolIds,
-  }), [isProcessing, latestToolIds, localPath, messages])
+    detail: transcriptDetail,
+  }), [isProcessing, latestToolIds, localPath, messages, transcriptDetail])
   const resolvedRows = useStableResolvedRows(rawRows)
 
   useEffect(() => {

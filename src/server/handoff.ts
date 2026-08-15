@@ -159,7 +159,8 @@ function blockFromEntry(entry: TranscriptEntry): Omit<HandoffBlock, "elided"> | 
         body: entry.result.slice(0, ERROR_RESULT_MAX_CHARS),
         elidableBody: false,
       }
-    // Harness/plumbing noise the new agent doesn't need.
+    // Harness/plumbing noise the new agent doesn't need, plus the previous agent's own reasoning.
+    case "thinking":
     case "system_init":
     case "account_info":
     case "status":

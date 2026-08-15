@@ -318,6 +318,25 @@ function dynamicToolPayload(value: Record<string, unknown> | unknown[] | string 
   return { value }
 }
 
+/**
+ * Block shape varies by Codex version, so every plausible carrier is probed.
+ * Empty output is normal: Codex sends no reasoning unless the user's
+ * `model_reasoning_summary` config asks for it.
+ */
+export function reasoningItemText(item: Extract<ThreadItem, { type: "reasoning" }>): string {
+  const blocks = item.summary?.length ? item.summary : item.content ?? []
+  return blocks
+    .map((block) => {
+      if (typeof block === "string") return block
+      const record = asRecord(block)
+      if (!record) return ""
+      return typeof record.text === "string" ? record.text : ""
+    })
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .join("\n\n")
+}
+
 function webSearchQuery(item: Extract<ThreadItem, { type: "webSearch" }>): string {
   return item.query || item.action?.query || item.action?.queries?.find((query) => typeof query === "string") || ""
 }
@@ -1334,6 +1353,14 @@ export class CodexAppServerManager {
   }
 
   private handleItemCompleted(pendingTurn: PendingTurn, notification: ItemCompletedNotification) {
+    if (notification.item.type === "reasoning") {
+      const text = reasoningItemText(notification.item)
+      if (text) {
+        pendingTurn.queue.push({ type: "transcript", entry: timestamped({ kind: "thinking", text }) })
+      }
+      return
+    }
+
     if (notification.item.type === "agentMessage") {
       pendingTurn.queue.push({
         type: "transcript",

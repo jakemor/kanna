@@ -26,9 +26,11 @@ import { buildUploadErrorReport, simpleUploadError, type UploadErrorReport } fro
 import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
+import { TranscriptDetailControl } from "./TranscriptDetailControl"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
+import { transcriptDetailProvider } from "../../lib/transcriptDetail"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { overrideContextWindowMaxTokens, type ContextWindowSnapshot } from "../../lib/contextWindow"
 import {
@@ -1047,6 +1049,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onModeChange={setEffectiveMode}
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
+            trailing={chatId ? (
+              <TranscriptDetailControl
+                chatId={chatId}
+                provider={transcriptDetailProvider(activeProvider, selectedProvider)}
+              />
+            ) : null}
           />
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">

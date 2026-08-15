@@ -1412,6 +1412,7 @@ export interface AppSettingsSnapshot {
    * Off unless true, and absent when off.
    */
   widgetsPeekEnabled?: boolean
+  usageLimitIndicatorsEnabled: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1466,6 +1467,7 @@ export interface AppSettingsPatch {
   projectIconsInChats?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
+  usageLimitIndicatorsEnabled?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean
@@ -1514,6 +1516,10 @@ export interface UsageLimitWindow {
   usedPercent: number | null
   /** ISO 8601 timestamp when this window resets, or null when unknown. */
   resetsAt: string | null
+  /** Rolling window length in minutes when known (300 = 5-hour, 10080 = weekly). */
+  windowMinutes: number | null
+  /** Display label of the model this window is scoped to, or null when it covers all models. */
+  modelLabel: string | null
   /** When this specific window value was recorded (ISO 8601). */
   recordedAt: string
   /** Source of this window's value. */

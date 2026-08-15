@@ -32,6 +32,7 @@ import { shouldSteerSubmit } from "../../../shared/submit-mode"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
+import { UsageLimitRings, useUsageLimitRingsVisible } from "./UsageLimitRings"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { getChatViewer, openViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
@@ -256,6 +257,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { composerChatId, providerSwitchPending, selectedProvider } = composer
   const providerPrefs = composer.effectiveState
   const showModePicker = composer.supportsPlanMode
+  const showUsageLimitRings = useUsageLimitRingsVisible(selectedProvider)
   // What Enter does while a turn is running; ⌘/Ctrl+Enter does the other.
   const submitWhileRunning = useAppSettingsStore((store) => store.settings?.submitWhileRunning) ?? "queue"
   // Switching to a harness that isn't signed in is blocked: the pick is
@@ -1313,9 +1315,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
           />
-          {activeContextWindow ? (
+          {activeContextWindow || showUsageLimitRings ? (
             <div className="mx-[13px] flex items-center gap-2 md:hidden">
-              <ContextWindowMeter usage={activeContextWindow} />
+              {activeContextWindow ? <ContextWindowMeter usage={activeContextWindow} /> : null}
+              {showUsageLimitRings ? <UsageLimitRings provider={selectedProvider} model={providerPrefs.model} /> : null}
             </div>
           ) : null}
           <div className={controlsScrollSpacer} />
@@ -1323,7 +1326,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
         {/* right-[17px] is where the dial has always sat: right-[29px]
             pulled back by translate-x-1/2 of its own 24px. */}
-        {activeContextWindow ? (
+        {activeContextWindow || showUsageLimitRings ? (
           <div className={cn(
             "absolute inset-y-0 right-[17px] hidden items-center gap-2 md:flex",
             // Mirror the parent's own padding so this spans its *content* box.
@@ -1333,7 +1336,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             // on the row itself, in both modes.
             isStandalone ? "pt-3 pb-5" : "py-3"
           )}>
-            <ContextWindowMeter usage={activeContextWindow} />
+            {activeContextWindow ? <ContextWindowMeter usage={activeContextWindow} /> : null}
+            {showUsageLimitRings ? <UsageLimitRings provider={selectedProvider} model={providerPrefs.model} /> : null}
           </div>
         ) : null}
       </div>

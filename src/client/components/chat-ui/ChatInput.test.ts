@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
+import { MemoryRouter } from "react-router-dom"
 import { PROVIDERS } from "../../../shared/types"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
@@ -127,15 +128,19 @@ describe("trimTrailingPastedNewlines", () => {
 describe("ChatInput", () => {
   test("renders + as a native file input target after the field, on every width", () => {
     const html = renderToStaticMarkup(createElement(
-      TooltipProvider,
+      MemoryRouter,
       null,
-      createElement(ChatInput, {
-        onSubmit: async () => undefined,
-        disabled: false,
-        canCancel: false,
-        activeProvider: null,
-        availableProviders: PROVIDERS,
-      }),
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(ChatInput, {
+          onSubmit: async () => undefined,
+          disabled: false,
+          canCancel: false,
+          activeProvider: null,
+          availableProviders: PROVIDERS,
+        }),
+      ),
     ))
 
     expect(html).toContain('aria-label="Add attachment"')

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { ChevronRight } from "lucide-react"
 import type { ProviderUsageSnapshot, UsageLimitWindow, UsageLimitsSnapshot } from "../../../shared/types"
-import { PROVIDERS } from "../../../shared/types"
+import { PROVIDERS, usageLevel } from "../../../shared/types"
 import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
 import { formatRelativeTime, formatUntil } from "../../lib/formatters"
@@ -70,6 +70,12 @@ export function providerLabel(providerId: string): string {
   return PROVIDERS.find((entry) => entry.id === providerId)?.label ?? providerId
 }
 
+/** Windows whose period we recognize lead; anything else the provider reports follows, in wire order. */
+function usageWindowsForDisplay(windows: UsageLimitWindow[]): UsageLimitWindow[] {
+  const known = windows.filter((window) => window.windowMinutes != null)
+  const unknown = windows.filter((window) => window.windowMinutes == null)
+  return [...known, ...unknown]
+}
 /**
  * Classify a plan string (Claude `subscription_type` / Codex `planType`) into a
  * personal vs org-managed account scope, so the card can show whether the
@@ -85,11 +91,15 @@ function accountScopeLabel(plan: string | null): string | null {
   return null
 }
 
+const BAR_LEVEL_CLASSES = {
+  unknown: "bg-muted-foreground/40",
+  ok: "bg-emerald-500",
+  warn: "bg-amber-500",
+  danger: "bg-red-500",
+} as const
+
 function barColorClass(usedPercent: number | null): string {
-  if (usedPercent === null) return "bg-muted-foreground/40"
-  if (usedPercent >= 90) return "bg-red-500"
-  if (usedPercent >= 75) return "bg-amber-500"
-  return "bg-emerald-500"
+  return BAR_LEVEL_CLASSES[usageLevel(usedPercent)]
 }
 
 export function UsageBar({ usedPercent }: { usedPercent: number | null }) {

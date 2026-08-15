@@ -4,24 +4,9 @@ import type { ProviderUsageSnapshot, UsageLimitWindow, UsageLimitsSnapshot } fro
 import { PROVIDERS } from "../../../shared/types"
 import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
-import { formatRelativeTime } from "../../lib/formatters"
+import { formatRelativeTime, formatUntil } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
 import type { KannaState } from "../useKannaState"
-
-const MINUTE_MS = 60_000
-const HOUR_MS = 60 * MINUTE_MS
-const DAY_MS = 24 * HOUR_MS
-
-/** "in 40m" / "in 3h" / "in 2d" — future counterpart of formatRelativeTime. */
-export function formatUntil(isoTimestamp: string): string | null {
-  const timestamp = Date.parse(isoTimestamp)
-  if (!Number.isFinite(timestamp)) return null
-  const delta = timestamp - Date.now()
-  if (delta <= 0) return "now"
-  if (delta < HOUR_MS) return `in ${Math.max(1, Math.round(delta / MINUTE_MS))}m`
-  if (delta < DAY_MS) return `in ${Math.round(delta / HOUR_MS)}h`
-  return `in ${Math.round(delta / DAY_MS)}d`
-}
 
 export function formatPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—"

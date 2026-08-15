@@ -71,6 +71,7 @@ interface AppSettingsFile {
   widgetsPeekEnabled?: unknown
   disablePreconfiguredMcp?: unknown
   cloudSetupDismissed?: unknown
+  usageLimitIndicatorsEnabled?: unknown
   newProjectsDirectory?: unknown
   setupShown?: unknown
   setupCompleted?: unknown
@@ -199,6 +200,7 @@ function toFilePayload(state: AppSettingsState) {
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
     ...(state.disablePreconfiguredMcp === true ? { disablePreconfiguredMcp: true } : {}),
     ...(state.cloudSetupDismissed === true ? { cloudSetupDismissed: true } : {}),
+    usageLimitIndicatorsEnabled: state.usageLimitIndicatorsEnabled,
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -234,6 +236,7 @@ function toSnapshot(
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
     ...(state.disablePreconfiguredMcp === true ? { disablePreconfiguredMcp: true } : {}),
     ...(state.cloudSetupDismissed === true ? { cloudSetupDismissed: true } : {}),
+    usageLimitIndicatorsEnabled: state.usageLimitIndicatorsEnabled,
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -276,6 +279,13 @@ function normalizeAppSettings(
     : true
   if (source?.newSidebarEnabled !== undefined && typeof source.newSidebarEnabled !== "boolean") {
     warnings.push("newSidebarEnabled must be a boolean")
+  }
+
+  const usageLimitIndicatorsEnabled = typeof source?.usageLimitIndicatorsEnabled === "boolean"
+    ? source.usageLimitIndicatorsEnabled
+    : true
+  if (source?.usageLimitIndicatorsEnabled !== undefined && typeof source.usageLimitIndicatorsEnabled !== "boolean") {
+    warnings.push("usageLimitIndicatorsEnabled must be a boolean")
   }
 
   const rawNewProjectsDirectory = typeof source?.newProjectsDirectory === "string"
@@ -326,6 +336,7 @@ function normalizeAppSettings(
     ...(source?.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
     ...(source?.disablePreconfiguredMcp === true ? { disablePreconfiguredMcp: true } : {}),
     ...(source?.cloudSetupDismissed === true ? { cloudSetupDismissed: true } : {}),
+    usageLimitIndicatorsEnabled,
     newProjectsDirectory,
     // Onboarding markers default to false so a machine that has never run the
     // wizard still gets it; once set they stay set for every browser.
@@ -371,6 +382,7 @@ function toComparablePayload(source: AppSettingsFile) {
     widgetsPeekEnabled: source.widgetsPeekEnabled,
     disablePreconfiguredMcp: source.disablePreconfiguredMcp,
     cloudSetupDismissed: source.cloudSetupDismissed,
+    usageLimitIndicatorsEnabled: source.usageLimitIndicatorsEnabled,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"
       ? source.newProjectsDirectory.trim()
       : source.newProjectsDirectory,

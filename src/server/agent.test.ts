@@ -65,6 +65,38 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
 }
 
 describe("normalizeClaudeStreamMessage", () => {
+  test("records thinking blocks ahead of the text they precede", () => {
+    const entries = normalizeClaudeStreamMessage({
+      type: "assistant",
+      uuid: "msg-1",
+      message: {
+        content: [
+          { type: "thinking", thinking: "The router owns this", signature: "sig" },
+          { type: "text", text: "Found it." },
+        ],
+      },
+    })
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["thinking", "assistant_text"])
+    expect(entries[0]).toMatchObject({ kind: "thinking", text: "The router owns this" })
+  })
+
+  test("skips empty and redacted thinking blocks", () => {
+    const entries = normalizeClaudeStreamMessage({
+      type: "assistant",
+      uuid: "msg-1",
+      message: {
+        content: [
+          { type: "thinking", thinking: "   ", signature: "sig" },
+          { type: "redacted_thinking", data: "encrypted" },
+          { type: "text", text: "Done." },
+        ],
+      },
+    })
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["assistant_text"])
+  })
+
   test("normalizes assistant tool calls", () => {
     const entries = normalizeClaudeStreamMessage({
       type: "assistant",

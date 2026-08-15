@@ -833,3 +833,125 @@ Please check the latest error first.`,
     expect(stableState.result[0]).toBe(previousRows[0])
   })
 })
+
+describe("transcript detail", () => {
+  const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+
+  function createEditMessage(id: string): HydratedTranscriptMessage {
+    return {
+      id,
+      kind: "tool",
+      toolKind: "edit_file",
+      toolName: "Edit",
+      toolId: id,
+      input: {
+        filePath: `/repo/${id}.ts`,
+        oldString: "before",
+        newString: "after",
+      },
+      timestamp: new Date().toISOString(),
+    }
+  }
+
+  const messages: HydratedTranscriptMessage[] = [
+    {
+      id: "user-1",
+      kind: "user_prompt",
+      content: "Fix the bug",
+      timestamp: new Date().toISOString(),
+    },
+    {
+      id: "think-1",
+      kind: "thinking",
+      text: "The router owns this",
+      timestamp: new Date().toISOString(),
+    },
+    createToolMessage("tool-1"),
+    createToolMessage("tool-2"),
+    createEditMessage("edit-1"),
+    {
+      id: "assistant-1",
+      kind: "assistant_text",
+      text: "Fixed it",
+      timestamp: new Date().toISOString(),
+    },
+  ]
+
+  test("normal groups consecutive tool calls and hides thinking", () => {
+    const rows = buildResolvedTranscriptRows(messages, { isLoading: false, latestToolIds })
+
+    expect(rows.map((row) => row.kind)).toEqual(["single", "tool-group", "single"])
+    expect(rows.map((row) => row.id)).not.toContain("think-1")
+  })
+
+  test("thinking shows reasoning in place of every tool row", () => {
+    const rows = buildResolvedTranscriptRows(messages, {
+      isLoading: false,
+      latestToolIds,
+      detail: "thinking",
+    })
+
+    expect(rows.map((row) => row.id)).toEqual(["user-1", "think-1", "assistant-1"])
+    expect(rows.every((row) => row.kind === "single")).toBe(true)
+  })
+
+  test("thinking keeps a tool call the turn is blocked on", () => {
+    const question: HydratedTranscriptMessage = {
+      id: "ask-1",
+      kind: "tool",
+      toolKind: "ask_user_question",
+      toolName: "AskUserQuestion",
+      toolId: "ask-1",
+      input: {},
+      timestamp: new Date().toISOString(),
+    } as HydratedTranscriptMessage
+
+    const rows = buildResolvedTranscriptRows([...messages, question], {
+      isLoading: false,
+      latestToolIds: { ...latestToolIds, AskUserQuestion: "ask-1" },
+      detail: "thinking",
+    })
+
+    expect(rows.map((row) => row.id)).toContain("ask-1")
+  })
+
+  test("verbose gives every tool call its own row", () => {
+    const rows = buildResolvedTranscriptRows(messages, {
+      isLoading: false,
+      latestToolIds,
+      detail: "verbose",
+    })
+
+    expect(rows.every((row) => row.kind === "single")).toBe(true)
+    expect(rows.map((row) => row.id)).toEqual(["user-1", "think-1", "tool-1", "tool-2", "edit-1", "assistant-1"])
+  })
+
+  test("summary keeps file changes and drops the other tool calls", () => {
+    const rows = buildResolvedTranscriptRows(messages, {
+      isLoading: false,
+      latestToolIds,
+      detail: "summary",
+    })
+
+    expect(rows.map((row) => row.id)).toEqual(["user-1", "edit-1", "assistant-1"])
+  })
+
+  test("summary keeps a pending question, which the user still has to answer", () => {
+    const question: HydratedTranscriptMessage = {
+      id: "question-1",
+      kind: "tool",
+      toolKind: "ask_user_question",
+      toolName: "AskUserQuestion",
+      toolId: "question-1",
+      input: { questions: [] },
+      timestamp: new Date().toISOString(),
+    }
+    const rows = buildResolvedTranscriptRows([createToolMessage("tool-1"), question], {
+      isLoading: true,
+      latestToolIds: { ...latestToolIds, AskUserQuestion: "question-1" },
+      detail: "summary",
+    })
+
+    expect(rows.map((row) => row.id)).toEqual(["question-1"])
+  })
+})

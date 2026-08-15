@@ -448,6 +448,13 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
   if (message.type === "assistant" && Array.isArray(message.message?.content)) {
     const entries: TranscriptEntry[] = []
     for (const content of message.message.content) {
+      if (content.type === "thinking" && typeof content.thinking === "string" && content.thinking.trim()) {
+        entries.push(timestamped({
+          kind: "thinking",
+          messageId,
+          text: content.thinking,
+        }))
+      }
       if (content.type === "text" && typeof content.text === "string") {
         entries.push(timestamped({
           kind: "assistant_text",
@@ -733,6 +740,8 @@ async function startClaudeSession(args: {
       cwd: args.localPath,
       model: args.model,
       effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
+      // Without an explicit display, current models return thinking blocks with an empty string.
+      thinking: { type: "adaptive", display: "summarized" },
       resume: args.sessionToken ?? undefined,
       forkSession: args.forkSession,
       permissionMode: args.planMode ? "plan" : "acceptEdits",

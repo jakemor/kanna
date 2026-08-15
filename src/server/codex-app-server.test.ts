@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
-import { CodexAppServerManager } from "./codex-app-server"
+import { CodexAppServerManager, reasoningItemText } from "./codex-app-server"
 
 class FakeCodexProcess extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -2000,5 +2000,40 @@ describe("CodexAppServerManager", () => {
     const resultEvent = events.find((event) => event.type === "transcript" && event.entry.kind === "result")
     expect(resultEvent?.entry.subtype).toBe("error")
     expect(resultEvent?.entry.result).toContain("fatal: app-server crashed")
+  })
+})
+
+describe("reasoningItemText", () => {
+  test("prefers the summary blocks and joins them", () => {
+    const text = reasoningItemText({
+      type: "reasoning",
+      id: "item-1",
+      summary: [{ type: "summary_text", text: "Checked the config" }, { type: "summary_text", text: "Ran the tests" }],
+      content: [{ type: "reasoning_text", text: "unused" }],
+    })
+
+    expect(text).toBe("Checked the config\n\nRan the tests")
+  })
+
+  test("falls back to content when there is no summary", () => {
+    const text = reasoningItemText({
+      type: "reasoning",
+      id: "item-1",
+      summary: [],
+      content: ["Thought about it"],
+    })
+
+    expect(text).toBe("Thought about it")
+  })
+
+  test("returns empty when no block carries readable text", () => {
+    const text = reasoningItemText({
+      type: "reasoning",
+      id: "item-1",
+      summary: [{ type: "summary_text" }, 42],
+      content: [],
+    })
+
+    expect(text).toBe("")
   })
 })

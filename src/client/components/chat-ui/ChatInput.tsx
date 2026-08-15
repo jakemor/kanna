@@ -26,6 +26,7 @@ import { buildUploadErrorReport, simpleUploadError, type UploadErrorReport } fro
 import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
+import { TranscriptDetailControl } from "./TranscriptDetailControl"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
@@ -1047,6 +1048,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onModeChange={setEffectiveMode}
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
+            trailing={chatId ? <TranscriptDetailControl chatId={chatId} /> : null}
           />
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">

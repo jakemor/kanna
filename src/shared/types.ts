@@ -1552,6 +1552,12 @@ export interface AssistantTextEntry extends TranscriptEntryBase {
   text: string
 }
 
+/** Providers deliver reasoning under different names; each adapter normalizes to this. */
+export interface ThinkingEntry extends TranscriptEntryBase {
+  kind: "thinking"
+  text: string
+}
+
 export interface ToolCallEntry extends TranscriptEntryBase {
   kind: "tool_call"
   tool: NormalizedToolCall
@@ -1835,6 +1841,7 @@ export type TranscriptEntry =
   | SystemInitEntry
   | AccountInfoEntry
   | AssistantTextEntry
+  | ThinkingEntry
   | ToolCallEntry
   | ToolResultEntry
   | ResultEntry
@@ -1949,6 +1956,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "system_init"; model: string; tools: string[]; agents: string[]; slashCommands: string[]; mcpServers: McpServerInfo[]; provider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean; debugRaw?: string })
   | ({ kind: "account_info"; accountInfo: AccountInfo; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "thinking"; text: string; trimmed?: boolean; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "result"; success: boolean; cancelled?: boolean; result: string; durationMs: number; costUsd?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "status"; status: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_window_updated"; usage: ContextWindowUsageSnapshot; id: string; messageId?: string; timestamp: string; hidden?: boolean })

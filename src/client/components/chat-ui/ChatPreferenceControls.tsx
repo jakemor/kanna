@@ -207,6 +207,8 @@ interface ChatPreferenceControlsProps {
   mode?: ChatMode
   onModeChange?: (mode: ChatMode) => void
   includeMode?: boolean
+  /** Extra control appended to the row. */
+  trailing?: ReactNode
   className?: string
 }
 
@@ -231,6 +233,7 @@ export function ChatPreferenceControls({
   mode = "full-access",
   onModeChange,
   includeMode = true,
+  trailing,
   className,
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
@@ -483,6 +486,8 @@ export function ChatPreferenceControls({
           </InputPopover>
         )
       })() : null}
+
+      {trailing}
     </div>
   )
 }

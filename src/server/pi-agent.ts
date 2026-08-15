@@ -549,14 +549,23 @@ export class PiAgentManager {
             aborted = true
           }
 
-          const text = Array.isArray(message.content)
-            ? message.content
-              .map((block) => {
-                const blockRecord = asRecord(block)
-                return blockRecord.type === "text" && typeof blockRecord.text === "string" ? blockRecord.text : ""
-              })
-              .join("")
-            : ""
+          const blocks = Array.isArray(message.content) ? message.content.map((block) => asRecord(block)) : []
+          // Redacted thinking carries only an encrypted payload, so it is skipped.
+          const thinking = blocks
+            .map((block) => (
+              block.type === "thinking" && !block.redacted && typeof block.thinking === "string"
+                ? block.thinking
+                : ""
+            ))
+            .filter(Boolean)
+            .join("\n\n")
+          if (thinking.trim()) {
+            queue.push({ type: "transcript", entry: timestamped({ kind: "thinking", text: thinking }) })
+          }
+
+          const text = blocks
+            .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
+            .join("")
           if (text.trim()) {
             queue.push({ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) })
           }

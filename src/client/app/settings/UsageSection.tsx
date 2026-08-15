@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { ChevronRight } from "lucide-react"
 import type { ProviderUsageSnapshot, UsageLimitWindow, UsageLimitsSnapshot } from "../../../shared/types"
-import { PROVIDERS } from "../../../shared/types"
+import { PROVIDERS, usageLevel } from "../../../shared/types"
 import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
 import { formatRelativeTime, formatUntil } from "../../lib/formatters"
@@ -70,14 +70,11 @@ function providerLabel(providerId: string): string {
   return PROVIDERS.find((entry) => entry.id === providerId)?.label ?? providerId
 }
 
-function isNimbusQuillWindow(window: UsageLimitWindow): boolean {
-  return window.id === "nimbus_quill" || window.label.trim().toLowerCase() === "nimbus quill"
-}
-
+/** Windows whose period we recognize lead; anything else the provider reports follows, in wire order. */
 function usageWindowsForDisplay(windows: UsageLimitWindow[]): UsageLimitWindow[] {
-  const regularWindows = windows.filter((window) => !isNimbusQuillWindow(window))
-  const nimbusQuillWindows = windows.filter(isNimbusQuillWindow)
-  return [...regularWindows, ...nimbusQuillWindows]
+  const known = windows.filter((window) => window.windowMinutes != null)
+  const unknown = windows.filter((window) => window.windowMinutes == null)
+  return [...known, ...unknown]
 }
 
 /**
@@ -95,11 +92,15 @@ function accountScopeLabel(plan: string | null): string | null {
   return null
 }
 
+const BAR_LEVEL_CLASSES = {
+  unknown: "bg-muted-foreground/40",
+  ok: "bg-emerald-500",
+  warn: "bg-amber-500",
+  danger: "bg-red-500",
+} as const
+
 function barColorClass(usedPercent: number | null): string {
-  if (usedPercent === null) return "bg-muted-foreground/40"
-  if (usedPercent >= 90) return "bg-red-500"
-  if (usedPercent >= 75) return "bg-amber-500"
-  return "bg-emerald-500"
+  return BAR_LEVEL_CLASSES[usageLevel(usedPercent)]
 }
 
 function UsageBar({ usedPercent }: { usedPercent: number | null }) {

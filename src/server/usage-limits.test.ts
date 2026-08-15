@@ -105,6 +105,26 @@ describe("normalizeClaudeUsage", () => {
     expect(snapshot.windows[0]?.label).toBe("Seven Day Fable")
   })
 
+  test("the fixed per-model weekly keys carry their model label", () => {
+    const snapshot = normalizeClaudeUsage(
+      {
+        rate_limits_available: true,
+        rate_limits: {
+          seven_day: { utilization: 15 },
+          seven_day_opus: { utilization: 40 },
+          seven_day_sonnet: { utilization: 12 },
+          seven_day_oauth_apps: { utilization: 3 },
+        },
+      },
+      NOW,
+    )
+    const byId = new Map(snapshot.windows.map((w) => [w.id, w]))
+    expect(byId.get("seven_day_opus")?.modelLabel).toBe("Opus")
+    expect(byId.get("seven_day_sonnet")?.modelLabel).toBe("Sonnet")
+    expect(byId.get("seven_day")?.modelLabel).toBeNull()
+    expect(byId.get("seven_day_oauth_apps")?.modelLabel).toBeNull()
+  })
+
   test("API-key sessions come back unavailable", () => {
     const snapshot = normalizeClaudeUsage({ rate_limits_available: false, rate_limits: null }, NOW)
     expect(snapshot.status).toBe("unavailable")

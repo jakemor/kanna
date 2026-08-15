@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { LOG_PREFIX } from "../shared/branding"
-import { deriveModelLabel } from "../shared/types"
+import { deriveModelLabel, FIVE_HOUR_WINDOW_MINUTES, WEEKLY_WINDOW_MINUTES } from "../shared/types"
 import type {
   AgentProvider,
   ProviderUsageSnapshot,
@@ -102,14 +102,21 @@ function claudeWindowLabel(key: string): string {
   return CLAUDE_WINDOW_LABELS[key] ?? prettifyKey(key)
 }
 
-export const FIVE_HOUR_WINDOW_MINUTES = 300
-export const WEEKLY_WINDOW_MINUTES = 10_080
-
 /** Claude keys its windows by period rather than reporting a duration. */
 function claudeWindowMinutes(key: string): number | null {
   if (key === "five_hour") return FIVE_HOUR_WINDOW_MINUTES
   if (key.startsWith("seven_day")) return WEEKLY_WINDOW_MINUTES
   return null
+}
+
+/** These keyed weekly windows cover one model family, so they carry a model label like `model_scoped` entries do. */
+const CLAUDE_WINDOW_MODEL_LABELS: Record<string, string> = {
+  seven_day_opus: "Opus",
+  seven_day_sonnet: "Sonnet",
+}
+
+function claudeWindowModelLabel(key: string): string | null {
+  return CLAUDE_WINDOW_MODEL_LABELS[key] ?? null
 }
 
 /** Stable id for a model-scoped weekly window: "Fable" becomes "model_scoped:fable". */
@@ -240,7 +247,7 @@ export function normalizeClaudeUsage(
       usedPercent: clampPercent(window.utilization),
       resetsAt: window.resets_at ?? null,
       windowMinutes: claudeWindowMinutes(key),
-      modelLabel: null,
+      modelLabel: claudeWindowModelLabel(key),
       recordedAt: now,
       source,
     })
@@ -307,7 +314,7 @@ export function mergeClaudeRateLimitPush(
     usedPercent: keepPrevious ? existing.usedPercent : usedPercent,
     resetsAt: resetsAt ?? existing?.resetsAt ?? null,
     windowMinutes: claudeWindowMinutes(id),
-    modelLabel: null,
+    modelLabel: claudeWindowModelLabel(id),
     recordedAt: keepPrevious ? existing.recordedAt : now,
     source: keepPrevious ? existing.source : "turn_push",
   }

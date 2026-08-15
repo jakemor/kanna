@@ -1143,6 +1143,20 @@ export interface AppSettingsPatch {
  */
 export type UsageLimitSource = "on_demand" | "turn_push" | "cache"
 
+/** Rolling window lengths, shared by the normalizers and the UI that matches on them. */
+export const FIVE_HOUR_WINDOW_MINUTES = 300
+export const WEEKLY_WINDOW_MINUTES = 10_080
+
+/** Severity of a usage reading. Bars and rings must classify alike. */
+export type UsageLevel = "unknown" | "ok" | "warn" | "danger"
+
+export function usageLevel(usedPercent: number | null): UsageLevel {
+  if (usedPercent === null || !Number.isFinite(usedPercent)) return "unknown"
+  if (usedPercent >= 90) return "danger"
+  if (usedPercent >= 75) return "warn"
+  return "ok"
+}
+
 /** One rolling rate-limit window (e.g. Claude 5-hour, Codex weekly). */
 export interface UsageLimitWindow {
   /** Stable id within a provider (e.g. "five_hour", "seven_day_opus", "codex:primary"). */

@@ -3,6 +3,7 @@ import {
   DEFAULT_TRANSCRIPT_DETAIL,
   resolveTranscriptDetail,
   supportsThinkingDetail,
+  transcriptDetailProvider,
   transcriptDetailOptions,
 } from "./transcriptDetail"
 
@@ -37,5 +38,13 @@ describe("transcript detail by provider", () => {
       expect(resolveTranscriptDetail("verbose", provider)).toBe("verbose")
       expect(resolveTranscriptDetail("summary", provider)).toBe("summary")
     }
+  })
+
+  test("active provider wins over a staged provider", () => {
+    expect(transcriptDetailProvider("claude", "codex")).toBe("claude")
+  })
+
+  test("selected provider supplies the value before a chat starts", () => {
+    expect(transcriptDetailProvider(null, "codex")).toBe("codex")
   })
 })

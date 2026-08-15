@@ -853,6 +853,20 @@ describe("transcript detail", () => {
     }
   }
 
+  function createDeleteMessage(id: string): HydratedTranscriptMessage {
+    return {
+      id,
+      kind: "tool",
+      toolKind: "delete_file",
+      toolName: "Delete",
+      toolId: id,
+      input: {
+        filePath: `/repo/${id}.ts`,
+      },
+      timestamp: new Date().toISOString(),
+    }
+  }
+
   const messages: HydratedTranscriptMessage[] = [
     {
       id: "user-1",
@@ -934,6 +948,18 @@ describe("transcript detail", () => {
     })
 
     expect(rows.map((row) => row.id)).toEqual(["user-1", "edit-1", "assistant-1"])
+  })
+
+  test("summary keeps file deletions", () => {
+    const rows = buildResolvedTranscriptRows([
+      createDeleteMessage("delete-1"),
+    ], {
+      isLoading: false,
+      latestToolIds,
+      detail: "summary",
+    })
+
+    expect(rows.map((row) => row.id)).toEqual(["delete-1"])
   })
 
   test("summary keeps a pending question, which the user still has to answer", () => {

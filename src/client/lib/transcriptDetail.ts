@@ -45,6 +45,13 @@ export function resolveTranscriptDetail(
   return detail
 }
 
+export function transcriptDetailProvider(
+  activeProvider: AgentProvider | null,
+  selectedProvider: AgentProvider
+) {
+  return activeProvider ?? selectedProvider
+}
+
 /** Hiding one of these would leave the turn stuck with no visible way to respond, so every level keeps them. */
 const BLOCKING_TOOL_KINDS = ["ask_user_question", "exit_plan_mode"] as const
 
@@ -54,6 +61,7 @@ const SUMMARY_VISIBLE_TOOL_KINDS = new Set<string>([
   "todo_write",
   "write_file",
   "edit_file",
+  "delete_file",
 ])
 
 const BLOCKING_TOOL_KIND_SET = new Set<string>(BLOCKING_TOOL_KINDS)

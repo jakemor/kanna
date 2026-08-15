@@ -1,3 +1,5 @@
+import type { AgentProvider } from "../../shared/types"
+
 /** A view setting: every level reads the same snapshot, and the agent is never told which one is active. */
 
 export type TranscriptDetail = "summary" | "normal" | "thinking" | "verbose"
@@ -20,6 +22,27 @@ export function isTranscriptDetail(value: unknown): value is TranscriptDetail {
 
 export function showsThinking(detail: TranscriptDetail) {
   return detail === "thinking" || detail === "verbose"
+}
+
+/** Codex sends no reasoning unless the user's `model_reasoning_summary` config asks for it, so the level would hide the tool rows and put nothing back. */
+const PROVIDERS_WITHOUT_REASONING = new Set<AgentProvider>(["codex"])
+
+export function supportsThinkingDetail(provider: AgentProvider | null | undefined) {
+  return provider == null || !PROVIDERS_WITHOUT_REASONING.has(provider)
+}
+
+export function transcriptDetailOptions(provider: AgentProvider | null | undefined) {
+  if (supportsThinkingDetail(provider)) return TRANSCRIPT_DETAIL_ORDER
+  return TRANSCRIPT_DETAIL_ORDER.filter((option) => option !== "thinking")
+}
+
+/** A stored level survives a provider switch, so an unusable one falls back at read time rather than being erased. */
+export function resolveTranscriptDetail(
+  detail: TranscriptDetail,
+  provider: AgentProvider | null | undefined
+): TranscriptDetail {
+  if (detail === "thinking" && !supportsThinkingDetail(provider)) return DEFAULT_TRANSCRIPT_DETAIL
+  return detail
 }
 
 /** Hiding one of these would leave the turn stuck with no visible way to respond, so every level keeps them. */

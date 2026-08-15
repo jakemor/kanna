@@ -1048,7 +1048,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onModeChange={setEffectiveMode}
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
-            trailing={chatId ? <TranscriptDetailControl chatId={chatId} /> : null}
+            trailing={chatId ? <TranscriptDetailControl chatId={chatId} provider={selectedProvider} /> : null}
           />
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">

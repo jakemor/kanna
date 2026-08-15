@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { PROVIDERS } from "../../../shared/types"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { TooltipProvider } from "../ui/tooltip"
 import { ChatInput, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 
 function createClipboardItem(args: {
@@ -125,13 +126,17 @@ describe("trimTrailingPastedNewlines", () => {
 
 describe("ChatInput", () => {
   test("renders the mobile attachment trigger as a native file input target in the controls row", () => {
-    const html = renderToStaticMarkup(createElement(ChatInput, {
-      onSubmit: async () => undefined,
-      disabled: false,
-      canCancel: false,
-      activeProvider: null,
-      availableProviders: PROVIDERS,
-    }))
+    const html = renderToStaticMarkup(createElement(
+      TooltipProvider,
+      null,
+      createElement(ChatInput, {
+        onSubmit: async () => undefined,
+        disabled: false,
+        canCancel: false,
+        activeProvider: null,
+        availableProviders: PROVIDERS,
+      }),
+    ))
 
     expect(html).toContain('aria-label="Add attachment"')
     expect(html).toContain('type="file"')

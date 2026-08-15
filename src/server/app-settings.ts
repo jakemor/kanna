@@ -68,6 +68,7 @@ interface AppSettingsFile {
   projectIconsInChats?: unknown
   chatTabsEnabled?: unknown
   widgetsPeekEnabled?: unknown
+  usageLimitIndicatorsEnabled?: unknown
   newProjectsDirectory?: unknown
   setupShown?: unknown
   setupCompleted?: unknown
@@ -193,6 +194,7 @@ function toFilePayload(state: AppSettingsState) {
     ...(state.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    usageLimitIndicatorsEnabled: state.usageLimitIndicatorsEnabled,
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -225,6 +227,7 @@ function toSnapshot(
     ...(state.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    usageLimitIndicatorsEnabled: state.usageLimitIndicatorsEnabled,
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -267,6 +270,13 @@ function normalizeAppSettings(
     : true
   if (source?.newSidebarEnabled !== undefined && typeof source.newSidebarEnabled !== "boolean") {
     warnings.push("newSidebarEnabled must be a boolean")
+  }
+
+  const usageLimitIndicatorsEnabled = typeof source?.usageLimitIndicatorsEnabled === "boolean"
+    ? source.usageLimitIndicatorsEnabled
+    : true
+  if (source?.usageLimitIndicatorsEnabled !== undefined && typeof source.usageLimitIndicatorsEnabled !== "boolean") {
+    warnings.push("usageLimitIndicatorsEnabled must be a boolean")
   }
 
   const rawNewProjectsDirectory = typeof source?.newProjectsDirectory === "string"
@@ -314,6 +324,7 @@ function normalizeAppSettings(
     ...(source?.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
     ...(source?.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(source?.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    usageLimitIndicatorsEnabled,
     newProjectsDirectory,
     // Onboarding markers default to false so a machine that has never run the
     // wizard still gets it; once set they stay set for every browser.
@@ -356,6 +367,7 @@ function toComparablePayload(source: AppSettingsFile) {
     projectIconsInChats: source.projectIconsInChats,
     chatTabsEnabled: source.chatTabsEnabled,
     widgetsPeekEnabled: source.widgetsPeekEnabled,
+    usageLimitIndicatorsEnabled: source.usageLimitIndicatorsEnabled,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"
       ? source.newProjectsDirectory.trim()
       : source.newProjectsDirectory,

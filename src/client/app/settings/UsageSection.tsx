@@ -4,24 +4,9 @@ import type { ProviderUsageSnapshot, UsageLimitWindow, UsageLimitsSnapshot } fro
 import { PROVIDERS } from "../../../shared/types"
 import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
-import { formatRelativeTime } from "../../lib/formatters"
+import { formatRelativeTime, formatUntil } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
 import type { KannaState } from "../useKannaState"
-
-const MINUTE_MS = 60_000
-const HOUR_MS = 60 * MINUTE_MS
-const DAY_MS = 24 * HOUR_MS
-
-/** "in 40m" / "in 3h" / "in 2d" — future counterpart of formatRelativeTime. */
-function formatUntil(isoTimestamp: string): string | null {
-  const timestamp = Date.parse(isoTimestamp)
-  if (!Number.isFinite(timestamp)) return null
-  const delta = timestamp - Date.now()
-  if (delta <= 0) return "now"
-  if (delta < HOUR_MS) return `in ${Math.max(1, Math.round(delta / MINUTE_MS))}m`
-  if (delta < DAY_MS) return `in ${Math.round(delta / HOUR_MS)}h`
-  return `in ${Math.round(delta / DAY_MS)}d`
-}
 
 function formatPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—"
@@ -83,6 +68,16 @@ function creditsSummary(credits: NonNullable<ProviderUsageSnapshot["credits"]>):
 
 function providerLabel(providerId: string): string {
   return PROVIDERS.find((entry) => entry.id === providerId)?.label ?? providerId
+}
+
+function isNimbusQuillWindow(window: UsageLimitWindow): boolean {
+  return window.id === "nimbus_quill" || window.label.trim().toLowerCase() === "nimbus quill"
+}
+
+function usageWindowsForDisplay(windows: UsageLimitWindow[]): UsageLimitWindow[] {
+  const regularWindows = windows.filter((window) => !isNimbusQuillWindow(window))
+  const nimbusQuillWindows = windows.filter(isNimbusQuillWindow)
+  return [...regularWindows, ...nimbusQuillWindows]
 }
 
 /**
@@ -236,7 +231,8 @@ export function ProviderCard({
   // the same grid the expanded rows use so every bar lines up card to card. The
   // row title and the freshness stamp (which the header no longer prints) live
   // in the bar's tooltip instead.
-  const summaryWindow = snapshot.windows[0] ?? null
+  const displayWindows = usageWindowsForDisplay(snapshot.windows)
+  const summaryWindow = displayWindows[0] ?? null
   const summaryResets = summaryWindow?.resetsAt ? formatUntil(summaryWindow.resetsAt) : null
 
   const header = showBody ? (
@@ -276,7 +272,7 @@ export function ProviderCard({
   const body = showBody ? (
     hasContent ? (
       <div className="mt-4 space-y-2.5">
-        {snapshot.windows.map((window) => (
+        {displayWindows.map((window) => (
           <WindowRow key={window.id} window={window} />
         ))}
         {snapshot.credits ? (

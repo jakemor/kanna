@@ -66,10 +66,47 @@ describe("selectLimitRingWindows", () => {
     }
   })
 
-  test("claude never substitutes a fixed per-model key for the all-models weekly", () => {
-    const windows = [makeWindow("seven_day_opus", 90, WEEKLY), makeWindow("five_hour", 5, FIVE_HOUR)]
+  test("claude weekly names the account-wide window as the second cap on the model lane", () => {
+    const { slots } = selectLimitRingWindows(makeSnapshot("claude", CLAUDE_WINDOWS), "claude", "claude-fable-5")
+    expect(slots[1]?.alsoApplies?.id).toBe("seven_day")
+    expect(slots[0]?.alsoApplies).toBeNull()
+  })
+
+  test("claude weekly reports no second cap when the ring already shows the account-wide window", () => {
+    const { slots } = selectLimitRingWindows(makeSnapshot("claude", CLAUDE_WINDOWS), "claude", "claude-opus-5")
+    expect(slots[1]?.window?.id).toBe("seven_day")
+    expect(slots[1]?.alsoApplies).toBeNull()
+  })
+
+  test("a per-model weekly key fills the ring for its own model", () => {
+    const windows = [makeWindow("seven_day_opus", 90, WEEKLY, "Opus"), makeWindow("five_hour", 5, FIVE_HOUR)]
     const { slots } = selectLimitRingWindows(makeSnapshot("claude", windows), "claude", "claude-opus-5")
-    expect(slots[1]?.window).toBeNull()
+    expect(slots[1]?.window?.id).toBe("seven_day_opus")
+    expect(slots[1]?.alsoApplies).toBeNull()
+  })
+
+  test("a weekly window the selected model does not match still fills the ring", () => {
+    // The tooltip prints the window's own label, so a lane from another model reads as that lane.
+    const windows = [makeWindow("seven_day_opus", 90, WEEKLY, "Opus"), makeWindow("five_hour", 5, FIVE_HOUR)]
+    const { slots } = selectLimitRingWindows(makeSnapshot("claude", windows), "claude", "claude-sonnet-5")
+    expect(slots[1]?.window?.id).toBe("seven_day_opus")
+  })
+
+  test("a per-model key from an older cache never passes as the account-wide weekly", () => {
+    const windows = [
+      makeWindow("seven_day_opus", 90, WEEKLY),
+      makeWindow("model_scoped:fable", 17, WEEKLY, "Fable"),
+      makeWindow("five_hour", 5, FIVE_HOUR),
+    ]
+    const { slots } = selectLimitRingWindows(makeSnapshot("claude", windows), "claude", "claude-fable-5")
+    expect(slots[1]?.window?.id).toBe("model_scoped:fable")
+    expect(slots[1]?.alsoApplies).toBeNull()
+  })
+
+  test("codex fills the weekly ring from a lone model-scoped bucket", () => {
+    const windows = [makeWindow("codex_bengalfox:primary", 21, WEEKLY, "GPT 5.3 Codex Spark")]
+    const { slots } = selectLimitRingWindows(makeSnapshot("codex", windows), "codex", "gpt-5.3-codex")
+    expect(slots[0]?.window?.id).toBe("codex_bengalfox:primary")
   })
 
   test("codex shows one weekly ring, taken from the window's duration not its slot", () => {

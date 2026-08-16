@@ -42,7 +42,6 @@ export interface ResolvedSingleTranscriptRow {
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
-  isLatestCodexApproval: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
@@ -468,7 +467,6 @@ interface TranscriptSingleRowProps {
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
-  isLatestCodexApproval: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
@@ -495,7 +493,6 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   isFirstAccount,
   isLatestAskUserQuestion,
   isLatestExitPlanMode,
-  isLatestCodexApproval,
   isLatestTodoWrite,
   hideResult,
   isFinalStatus,
@@ -562,7 +559,6 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
               key={message.id}
               message={message}
               onSubmit={onCodexApprovalSubmit ?? (() => undefined)}
-              isLatest={isLatestCodexApproval}
             />
           )
           break
@@ -720,7 +716,6 @@ export function buildResolvedTranscriptRows(
       isFirstAccount: renderState.isFirstAccount,
       isLatestAskUserQuestion: item.message.id === latestToolIds.AskUserQuestion,
        isLatestExitPlanMode: item.message.id === latestToolIds.ExitPlanMode,
-       isLatestCodexApproval: item.message.id === latestToolIds.CodexApproval,
       isLatestTodoWrite: renderState.isLatestTodoWrite,
       hideResult: renderState.hideResult,
       isFinalStatus: renderState.isFinalStatus,
@@ -792,8 +787,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       restored={row.restored}
       isFirstAccount={row.isFirstAccount}
       isLatestAskUserQuestion={row.isLatestAskUserQuestion}
-       isLatestExitPlanMode={row.isLatestExitPlanMode}
-       isLatestCodexApproval={row.isLatestCodexApproval}
+      isLatestExitPlanMode={row.isLatestExitPlanMode}
       isLatestTodoWrite={row.isLatestTodoWrite}
       hideResult={row.hideResult}
       isFinalStatus={row.isFinalStatus}

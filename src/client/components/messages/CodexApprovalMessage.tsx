@@ -11,7 +11,6 @@ type ApprovalMessage = Extract<
 interface Props {
   message: ApprovalMessage
   onSubmit: (toolUseId: string, decision: "accept" | "acceptForSession" | "decline") => void
-  isLatest: boolean
 }
 
 function resultDecision(result: unknown): string | null {
@@ -20,7 +19,7 @@ function resultDecision(result: unknown): string | null {
   return typeof decision === "string" ? decision : null
 }
 
-export function CodexApprovalMessage({ message, onSubmit, isLatest }: Props) {
+export function CodexApprovalMessage({ message, onSubmit }: Props) {
   const commandApproval = message.toolKind === "codex_command_approval"
   const decision = resultDecision(message.result)
   const complete = decision !== null
@@ -51,7 +50,7 @@ export function CodexApprovalMessage({ message, onSubmit, isLatest }: Props) {
               {decision === "decline" || decision === "cancel" ? <X className="size-3" /> : <Check className="size-3" />}
               {decision === "acceptForSession" ? "Allowed for this session" : decision === "accept" ? "Allowed" : decision === "cancel" ? "Cancelled" : "Declined"}
             </div>
-          ) : isLatest ? (
+          ) : !complete ? (
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" onClick={() => onSubmit(message.toolId, "accept")}>Allow once</Button>
               <Button size="sm" variant="secondary" onClick={() => onSubmit(message.toolId, "acceptForSession")}>Allow for session</Button>

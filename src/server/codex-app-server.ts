@@ -39,6 +39,8 @@ import {
   type ItemStartedNotification,
   type JsonRpcResponse,
   type McpToolCallItem,
+  type McpServerElicitationRequestParams,
+  type McpServerElicitationRequestResponse,
   type PlanDeltaNotification,
   type ServerNotification,
   type ServerRequest,
@@ -113,7 +115,12 @@ interface PendingTurn {
           kind: "file_change"
           params: FileChangeRequestApprovalParams
         }
-  ) => Promise<CommandExecutionApprovalDecision | FileChangeApprovalDecision>
+      | {
+          requestId: CodexRequestId
+          kind: "mcp_elicitation"
+          params: McpServerElicitationRequestParams
+        }
+  ) => Promise<CommandExecutionApprovalDecision | FileChangeApprovalDecision | McpServerElicitationRequestResponse>
 }
 
 interface SessionContext {
@@ -761,7 +768,10 @@ export class CodexAppServerManager {
     try {
       await this.sendRequest(context, "initialize", {
         clientInfo: { name: "kanna_desktop", title: "Kanna", version: "0.1.0" },
-        capabilities: { experimentalApi: true },
+        capabilities: {
+          experimentalApi: true,
+          extensions: { "openai/form": {} },
+        },
       } satisfies InitializeParams)
       this.writeMessage(context, { method: "initialized" })
       return await this.sendRequest<GetAccountRateLimitsResponse>(
@@ -813,6 +823,7 @@ export class CodexAppServerManager {
       },
       capabilities: {
         experimentalApi: true,
+        extensions: { "openai/form": {} },
       },
     } satisfies InitializeParams)
     this.writeMessage(context, {
@@ -1085,6 +1096,11 @@ export class CodexAppServerManager {
                   id: parsed.id,
                   result: { decision: "cancel" },
                 })
+              } else if (parsed.method === "mcpServer/elicitation/request") {
+                this.writeMessage(context, {
+                  id: parsed.id,
+                  result: { action: "cancel", content: null },
+                })
               } else {
                 this.writeMessage(context, {
                   id: parsed.id,
@@ -1141,12 +1157,18 @@ export class CodexAppServerManager {
   private async handleServerRequest(context: SessionContext, request: ServerRequest) {
     const pendingTurn = context.pendingTurn
     if (!pendingTurn) {
-      this.writeMessage(context, {
-        id: request.id,
-        error: {
-          message: "No active turn",
-        },
-      })
+      if (request.method === "item/commandExecution/requestApproval" || request.method === "item/fileChange/requestApproval") {
+        this.writeMessage(context, { id: request.id, result: { decision: "cancel" } })
+      } else if (request.method === "mcpServer/elicitation/request") {
+        this.writeMessage(context, { id: request.id, result: { action: "cancel", content: null } })
+      } else {
+        this.writeMessage(context, {
+          id: request.id,
+          error: {
+            message: "No active turn",
+          },
+        })
+      }
       return
     }
 
@@ -1276,12 +1298,50 @@ export class CodexAppServerManager {
         requestId: request.id,
         kind: "command_execution",
         params: request.params,
-      }) ?? "decline"
+      }) as CommandExecutionApprovalDecision | undefined ?? "decline"
       this.writeMessage(context, {
         id: request.id,
         result: {
           decision,
         } satisfies CommandExecutionRequestApprovalResponse,
+      })
+      return
+    }
+
+    if (request.method === "mcpServer/elicitation/request") {
+      const elicitation = request.params.request
+      const meta = elicitation.meta
+      const persist = meta?.persist === "session" || meta?.persist === "always"
+        ? meta.persist
+        : Array.isArray(meta?.persist)
+          ? meta.persist.filter((value): value is "session" | "always" => value === "session" || value === "always")
+          : undefined
+      const tool = {
+        kind: "tool" as const,
+        toolKind: "codex_mcp_approval" as const,
+        toolName: "CodexAppApproval",
+        toolId: String(request.id),
+        input: {
+          serverName: request.params.serverName,
+          message: elicitation.message,
+          mode: elicitation.mode,
+          ...(elicitation.mode === "url" ? { url: elicitation.url } : { requestedSchema: elicitation.requestedSchema }),
+          ...(persist === "session" || persist === "always" || Array.isArray(persist) ? { persist } : {}),
+        },
+        rawInput: request.params as unknown as Record<string, unknown>,
+      }
+      pendingTurn.queue.push({
+        type: "transcript",
+        entry: timestamped({ kind: "tool_call", tool }),
+      })
+      const response = await pendingTurn.onApprovalRequest?.({
+        requestId: request.id,
+        kind: "mcp_elicitation",
+        params: request.params,
+      }) ?? { action: "decline" as const, content: null }
+      this.writeMessage(context, {
+        id: request.id,
+        result: response,
       })
       return
     }
@@ -1305,7 +1365,7 @@ export class CodexAppServerManager {
       requestId: request.id,
       kind: "file_change",
       params: request.params,
-    }) ?? "decline"
+    }) as FileChangeApprovalDecision | undefined ?? "decline"
     this.writeMessage(context, {
       id: request.id,
       result: {

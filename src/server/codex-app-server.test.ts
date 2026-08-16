@@ -1749,6 +1749,88 @@ describe("CodexAppServerManager", () => {
     })
   })
 
+  test("surfaces MCP app authorization elicitations and returns the approval action", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { turn: { id: "turn-1", status: "inProgress", error: null } },
+        })
+        child.writeServerMessage({
+          id: "elicitation-1",
+          method: "mcpServer/elicitation/request",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            serverName: "github",
+            request: {
+              mode: "url",
+              message: "GitHub needs authorization to create pull requests.",
+              url: "https://github.com/apps/example/installations/new",
+              elicitationId: "auth-1",
+              meta: {
+                codex_approval_kind: "mcp_tool_call",
+                persist: "session",
+              },
+            },
+          },
+        })
+        child.writeServerMessage({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "completed", error: null },
+          },
+        })
+      }
+    })
+
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => process as never,
+    })
+
+    await manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken: null,
+    })
+
+    const turn = await manager.startTurn({
+      chatId: "chat-1",
+      model: "gpt-5.4",
+      content: "create a pull request",
+      planMode: false,
+      onToolRequest: async () => ({}),
+      onApprovalRequest: async (request) => {
+        expect(request.kind).toBe("mcp_elicitation")
+        if (request.kind !== "mcp_elicitation") throw new Error("unexpected approval request")
+        expect(request.params.serverName).toBe("github")
+        return { action: "accept", content: null }
+      },
+    })
+
+    const events = await collectStream(turn.stream)
+    const approvalEntry = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
+    expect(approvalEntry?.entry.tool.toolKind).toBe("codex_mcp_approval")
+
+    const response = process.messages.find((message: any) => message.id === "elicitation-1")
+    expect(response).toEqual({
+      id: "elicitation-1",
+      result: {
+        action: "accept",
+        content: null,
+      },
+    })
+  })
+
   test("sends approval decisions back to the app-server", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {

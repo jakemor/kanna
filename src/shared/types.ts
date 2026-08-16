@@ -1505,6 +1505,16 @@ export interface CodexFileChangeApprovalToolCall
     grantRoot?: string
   }> { }
 
+export interface CodexMcpApprovalToolCall
+  extends ToolCallBase<"codex_mcp_approval", {
+    serverName: string
+    message: string
+    mode: "form" | "openai/form" | "url"
+    url?: string
+    requestedSchema?: Record<string, unknown>
+    persist?: "session" | "always" | Array<"session" | "always">
+  }> { }
+
 export interface McpGenericToolCall
   extends ToolCallBase<"mcp_generic", { server: string; tool: string; payload?: Record<string, unknown> }> { }
 
@@ -1527,6 +1537,7 @@ export type NormalizedToolCall =
   | SubagentTaskToolCall
   | CodexCommandApprovalToolCall
   | CodexFileChangeApprovalToolCall
+  | CodexMcpApprovalToolCall
   | McpGenericToolCall
   | UnknownToolCall
 
@@ -2049,5 +2060,10 @@ export interface ResolvedChatReadAnchor {
 
 export interface PendingToolSnapshot {
   toolUseId: string
-  toolKind: "ask_user_question" | "exit_plan_mode" | "codex_command_approval" | "codex_file_change_approval"
+  toolKind:
+    | "ask_user_question"
+    | "exit_plan_mode"
+    | "codex_command_approval"
+    | "codex_file_change_approval"
+    | "codex_mcp_approval"
 }

@@ -109,7 +109,12 @@ export function claudeToolset(autoPlan: boolean): string[] {
 interface PendingToolRequest {
   toolUseId: string
   tool: NormalizedToolCall & {
-    toolKind: "ask_user_question" | "exit_plan_mode" | "codex_command_approval" | "codex_file_change_approval"
+    toolKind:
+      | "ask_user_question"
+      | "exit_plan_mode"
+      | "codex_command_approval"
+      | "codex_file_change_approval"
+      | "codex_mcp_approval"
   }
   resolve: (result: unknown) => void
 }
@@ -329,7 +334,12 @@ export function buildPromptText(content: string, attachments: ChatAttachment[]) 
 
 function discardedToolResult(
   tool: NormalizedToolCall & {
-    toolKind: "ask_user_question" | "exit_plan_mode" | "codex_command_approval" | "codex_file_change_approval"
+    toolKind:
+      | "ask_user_question"
+      | "exit_plan_mode"
+      | "codex_command_approval"
+      | "codex_file_change_approval"
+      | "codex_mcp_approval"
   }
 ) {
   if (tool.toolKind === "ask_user_question") {
@@ -341,6 +351,10 @@ function discardedToolResult(
 
   if (tool.toolKind === "codex_command_approval" || tool.toolKind === "codex_file_change_approval") {
     return { decision: "cancel" }
+  }
+
+  if (tool.toolKind === "codex_mcp_approval") {
+    return { action: "cancel", content: null }
   }
 
   return {
@@ -1472,6 +1486,42 @@ export class AgentCoordinator {
         accessMode: args.accessMode,
         onToolRequest,
         onApprovalRequest: async (request) => {
+          if (request.kind === "mcp_elicitation") {
+            const elicitation = request.params.request
+            const persist: "session" | "always" | Array<"session" | "always"> | undefined = elicitation.meta?.persist === "session" || elicitation.meta?.persist === "always"
+              ? elicitation.meta.persist as "session" | "always"
+              : Array.isArray(elicitation.meta?.persist)
+                ? elicitation.meta.persist.filter((value): value is "session" | "always" => value === "session" || value === "always")
+                : undefined
+            const tool = {
+              kind: "tool" as const,
+              toolKind: "codex_mcp_approval" as const,
+              toolName: "CodexAppApproval",
+              toolId: String(request.requestId),
+              input: {
+                serverName: request.params.serverName,
+                message: elicitation.message,
+                mode: elicitation.mode,
+                ...(elicitation.mode === "url" ? { url: elicitation.url } : { requestedSchema: elicitation.requestedSchema }),
+                ...(persist === "session" || persist === "always" || Array.isArray(persist) ? { persist } : {}),
+              },
+              rawInput: request.params as unknown as Record<string, unknown>,
+            }
+            const result = await onToolRequest({ tool })
+            const record = result && typeof result === "object" ? result as Record<string, unknown> : {}
+            const action = record.action
+              ?? (record.decision === "accept" || record.decision === "acceptForSession" ? "accept" : record.decision)
+            return {
+              action: action === "accept" || action === "decline" || action === "cancel" ? action : "decline",
+              content: record.content && typeof record.content === "object" && !Array.isArray(record.content)
+                ? record.content as Record<string, unknown>
+                : null,
+              meta: record.meta && typeof record.meta === "object" && !Array.isArray(record.meta)
+                ? record.meta as Record<string, unknown>
+                : null,
+            }
+          }
+
           const tool = request.kind === "command_execution"
             ? {
                 kind: "tool" as const,

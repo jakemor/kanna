@@ -553,7 +553,11 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
           )
           break
         }
-        if (message.toolKind === "codex_command_approval" || message.toolKind === "codex_file_change_approval") {
+        if (
+          message.toolKind === "codex_command_approval"
+          || message.toolKind === "codex_file_change_approval"
+          || message.toolKind === "codex_mcp_approval"
+        ) {
           rendered = (
             <CodexApprovalMessage
               key={message.id}

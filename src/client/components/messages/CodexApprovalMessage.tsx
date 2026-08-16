@@ -5,7 +5,7 @@ import { cn } from "../../lib/utils"
 
 type ApprovalMessage = Extract<
   ProcessedToolCall,
-  { toolKind: "codex_command_approval" | "codex_file_change_approval" }
+  { toolKind: "codex_command_approval" | "codex_file_change_approval" | "codex_mcp_approval" }
 >
 
 interface Props {
@@ -21,14 +21,24 @@ function resultDecision(result: unknown): string | null {
 
 export function CodexApprovalMessage({ message, onSubmit }: Props) {
   const commandApproval = message.toolKind === "codex_command_approval"
+  const mcpApproval = message.toolKind === "codex_mcp_approval"
   const decision = resultDecision(message.result)
-  const complete = decision !== null
+  const action = message.result && typeof message.result === "object"
+    ? (message.result as { action?: unknown }).action
+    : null
+  const complete = decision !== null || typeof action === "string"
   const input = message.input as {
     command?: string
     cwd?: string
     reason?: string
     grantRoot?: string
+    serverName?: string
+    message?: string
+    mode?: "form" | "openai/form" | "url"
+    url?: string
+    persist?: "session" | "always" | Array<"session" | "always">
   }
+  const completedDecision = decision ?? (typeof action === "string" ? action : null)
 
   return (
     <div className={cn(
@@ -38,7 +48,23 @@ export function CodexApprovalMessage({ message, onSubmit }: Props) {
       <div className="flex items-start gap-2">
         <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
         <div className="min-w-0 flex-1">
-          <div className="font-medium">{commandApproval ? "Codex wants to run a command" : "Codex wants to change files"}</div>
+          <div className="font-medium">
+            {commandApproval
+              ? "Codex wants to run a command"
+              : mcpApproval
+                ? `${input.serverName || "An app"} needs your approval`
+                : "Codex wants to change files"}
+          </div>
+          {mcpApproval && input.message ? <div className="mt-2 text-sm text-foreground">{input.message}</div> : null}
+          {mcpApproval && input.url ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" onClick={() => {
+                if (typeof window !== "undefined") window.open(input.url, "_blank", "noopener,noreferrer")
+              }}>
+                Open authorization
+              </Button>
+            </div>
+          ) : null}
           {commandApproval && input.command ? (
             <pre className="mt-2 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-xs whitespace-pre-wrap">{input.command}</pre>
           ) : null}
@@ -47,13 +73,19 @@ export function CodexApprovalMessage({ message, onSubmit }: Props) {
           {input.reason ? <div className="mt-2 text-xs text-muted-foreground">{input.reason}</div> : null}
           {complete ? (
             <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
-              {decision === "decline" || decision === "cancel" ? <X className="size-3" /> : <Check className="size-3" />}
-              {decision === "acceptForSession" ? "Allowed for this session" : decision === "accept" ? "Allowed" : decision === "cancel" ? "Cancelled" : "Declined"}
+              {completedDecision === "decline" || completedDecision === "cancel" ? <X className="size-3" /> : <Check className="size-3" />}
+              {completedDecision === "acceptForSession" ? "Allowed for this session" : completedDecision === "accept" ? "Allowed" : completedDecision === "cancel" ? "Cancelled" : "Declined"}
             </div>
           ) : !complete ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => onSubmit(message.toolId, "accept")}>Allow once</Button>
-              <Button size="sm" variant="secondary" onClick={() => onSubmit(message.toolId, "acceptForSession")}>Allow for session</Button>
+              <Button size="sm" onClick={() => onSubmit(message.toolId, "accept")}>
+                {mcpApproval ? (input.url ? "Continue" : "Allow app") : "Allow once"}
+              </Button>
+              {!mcpApproval ? (
+                <Button size="sm" variant="secondary" onClick={() => onSubmit(message.toolId, "acceptForSession")}>
+                  Allow for session
+                </Button>
+              ) : null}
               <Button size="sm" variant="outline" onClick={() => onSubmit(message.toolId, "decline")}>Deny</Button>
             </div>
           ) : null}

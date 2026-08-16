@@ -14,6 +14,7 @@ export interface HarnessToolRequest {
       | "codex_command_approval"
       | "codex_file_change_approval"
       | "codex_mcp_approval"
+      | "codex_permissions_approval"
   }
 }
 

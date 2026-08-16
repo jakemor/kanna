@@ -5,7 +5,7 @@ import { cn } from "../../lib/utils"
 
 type ApprovalMessage = Extract<
   ProcessedToolCall,
-  { toolKind: "codex_command_approval" | "codex_file_change_approval" | "codex_mcp_approval" }
+  { toolKind: "codex_command_approval" | "codex_file_change_approval" | "codex_mcp_approval" | "codex_permissions_approval" }
 >
 
 interface Props {
@@ -22,6 +22,7 @@ function resultDecision(result: unknown): string | null {
 export function CodexApprovalMessage({ message, onSubmit }: Props) {
   const commandApproval = message.toolKind === "codex_command_approval"
   const mcpApproval = message.toolKind === "codex_mcp_approval"
+  const permissionsApproval = message.toolKind === "codex_permissions_approval"
   const decision = resultDecision(message.result)
   const action = message.result && typeof message.result === "object"
     ? (message.result as { action?: unknown }).action
@@ -37,6 +38,10 @@ export function CodexApprovalMessage({ message, onSubmit }: Props) {
     mode?: "form" | "openai/form" | "url"
     url?: string
     persist?: "session" | "always" | Array<"session" | "always">
+    permissions?: {
+      network?: { enabled?: boolean }
+      fileSystem?: { read?: string[]; write?: string[] }
+    }
   }
   const completedDecision = decision ?? (typeof action === "string" ? action : null)
 
@@ -53,6 +58,8 @@ export function CodexApprovalMessage({ message, onSubmit }: Props) {
               ? "Codex wants to run a command"
               : mcpApproval
                 ? `${input.serverName || "An app"} needs your approval`
+                : permissionsApproval
+                  ? "Codex needs additional permissions"
                 : "Codex wants to change files"}
           </div>
           {mcpApproval && input.message ? <div className="mt-2 text-sm text-foreground">{input.message}</div> : null}
@@ -63,6 +70,19 @@ export function CodexApprovalMessage({ message, onSubmit }: Props) {
               }}>
                 Open authorization
               </Button>
+            </div>
+          ) : null}
+          {permissionsApproval && input.permissions?.network?.enabled ? (
+            <div className="mt-2 text-xs text-muted-foreground">Network access</div>
+          ) : null}
+          {permissionsApproval && input.permissions?.fileSystem?.read?.length ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Read access: {input.permissions.fileSystem.read.join(", ")}
+            </div>
+          ) : null}
+          {permissionsApproval && input.permissions?.fileSystem?.write?.length ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Write access: {input.permissions.fileSystem.write.join(", ")}
             </div>
           ) : null}
           {commandApproval && input.command ? (

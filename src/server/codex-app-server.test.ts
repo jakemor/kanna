@@ -1831,6 +1831,77 @@ describe("CodexAppServerManager", () => {
     })
   })
 
+  test("returns granted permissions for permission approval requests", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { turn: { id: "turn-1", status: "inProgress", error: null } },
+        })
+        child.writeServerMessage({
+          id: "permissions-1",
+          method: "item/permissions/requestApproval",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            itemId: "permissions-call-1",
+            environmentId: "local",
+            cwd: "/tmp/project",
+            reason: "GitHub needs network access to create the pull request.",
+            permissions: {
+              network: { enabled: true },
+              fileSystem: { write: ["/tmp/project"] },
+            },
+          },
+        })
+        child.writeServerMessage({
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            turn: { id: "turn-1", status: "completed", error: null },
+          },
+        })
+      }
+    })
+
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    const turn = await manager.startTurn({
+      chatId: "chat-1",
+      model: "gpt-5.4",
+      content: "create a pull request",
+      planMode: false,
+      onToolRequest: async () => ({}),
+      onApprovalRequest: async (request) => {
+        expect(request.kind).toBe("permissions")
+        if (request.kind !== "permissions") throw new Error("unexpected approval request")
+        return { scope: "session", permissions: request.params.permissions }
+      },
+    })
+
+    const events = await collectStream(turn.stream)
+    const approvalEntry = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
+    expect(approvalEntry?.entry.tool.toolKind).toBe("codex_permissions_approval")
+    expect(process.messages.find((message: any) => message.id === "permissions-1")).toEqual({
+      id: "permissions-1",
+      result: {
+        scope: "session",
+        permissions: {
+          network: { enabled: true },
+          fileSystem: { write: ["/tmp/project"] },
+        },
+      },
+    })
+  })
+
   test("sends approval decisions back to the app-server", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {

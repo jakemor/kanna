@@ -41,6 +41,8 @@ import {
   type McpToolCallItem,
   type McpServerElicitationRequestParams,
   type McpServerElicitationRequestResponse,
+  type PermissionsRequestApprovalParams,
+  type PermissionsRequestApprovalResponse,
   type PlanDeltaNotification,
   type ServerNotification,
   type ServerRequest,
@@ -120,7 +122,12 @@ interface PendingTurn {
           kind: "mcp_elicitation"
           params: McpServerElicitationRequestParams
         }
-  ) => Promise<CommandExecutionApprovalDecision | FileChangeApprovalDecision | McpServerElicitationRequestResponse>
+      | {
+          requestId: CodexRequestId
+          kind: "permissions"
+          params: PermissionsRequestApprovalParams
+        }
+  ) => Promise<CommandExecutionApprovalDecision | FileChangeApprovalDecision | McpServerElicitationRequestResponse | PermissionsRequestApprovalResponse>
 }
 
 interface SessionContext {
@@ -1101,6 +1108,11 @@ export class CodexAppServerManager {
                   id: parsed.id,
                   result: { action: "cancel", content: null },
                 })
+              } else if (parsed.method === "item/permissions/requestApproval") {
+                this.writeMessage(context, {
+                  id: parsed.id,
+                  result: { scope: "turn", permissions: {} },
+                })
               } else {
                 this.writeMessage(context, {
                   id: parsed.id,
@@ -1161,6 +1173,8 @@ export class CodexAppServerManager {
         this.writeMessage(context, { id: request.id, result: { decision: "cancel" } })
       } else if (request.method === "mcpServer/elicitation/request") {
         this.writeMessage(context, { id: request.id, result: { action: "cancel", content: null } })
+      } else if (request.method === "item/permissions/requestApproval") {
+        this.writeMessage(context, { id: request.id, result: { scope: "turn", permissions: {} } })
       } else {
         this.writeMessage(context, {
           id: request.id,
@@ -1339,6 +1353,36 @@ export class CodexAppServerManager {
         kind: "mcp_elicitation",
         params: request.params,
       }) ?? { action: "decline" as const, content: null }
+      this.writeMessage(context, {
+        id: request.id,
+        result: response,
+      })
+      return
+    }
+
+    if (request.method === "item/permissions/requestApproval") {
+      const tool = {
+        kind: "tool" as const,
+        toolKind: "codex_permissions_approval" as const,
+        toolName: "CodexPermissionsApproval",
+        toolId: String(request.id),
+        input: {
+          reason: request.params.reason ?? undefined,
+          cwd: request.params.cwd ?? undefined,
+          environmentId: request.params.environmentId ?? undefined,
+          permissions: request.params.permissions,
+        },
+        rawInput: request.params as unknown as Record<string, unknown>,
+      }
+      pendingTurn.queue.push({
+        type: "transcript",
+        entry: timestamped({ kind: "tool_call", tool }),
+      })
+      const response = await pendingTurn.onApprovalRequest?.({
+        requestId: request.id,
+        kind: "permissions",
+        params: request.params,
+      }) ?? { scope: "turn" as const, permissions: {} }
       this.writeMessage(context, {
         id: request.id,
         result: response,

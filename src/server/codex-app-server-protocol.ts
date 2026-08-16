@@ -286,6 +286,31 @@ export interface FileChangeRequestApprovalResponse {
   decision: FileChangeApprovalDecision
 }
 
+export interface PermissionProfile {
+  network?: {
+    enabled?: boolean
+  } | null
+  fileSystem?: {
+    read?: string[]
+    write?: string[]
+  } | null
+}
+
+export interface PermissionsRequestApprovalParams {
+  threadId: string
+  turnId: string
+  itemId: string
+  environmentId?: string | null
+  cwd?: string | null
+  reason?: string | null
+  permissions: PermissionProfile
+}
+
+export interface PermissionsRequestApprovalResponse {
+  scope?: "turn" | "session"
+  permissions: PermissionProfile
+}
+
 export interface McpServerElicitationFormRequest {
   mode: "form" | "openai/form"
   message: string
@@ -369,11 +394,18 @@ export interface McpServerElicitationRequestRequest {
   params: McpServerElicitationRequestParams
 }
 
+export interface PermissionsRequestApprovalRequest {
+  id: CodexRequestId
+  method: "item/permissions/requestApproval"
+  params: PermissionsRequestApprovalParams
+}
+
 export type ServerRequest =
   | ToolRequestUserInputRequest
   | DynamicToolCallRequest
   | CommandExecutionRequestApprovalRequest
   | FileChangeRequestApprovalRequest
+  | PermissionsRequestApprovalRequest
   | McpServerElicitationRequestRequest
 
 export interface UserMessageItem {
@@ -578,6 +610,7 @@ export function isServerRequest(value: unknown): value is ServerRequest {
     || candidate.method === "item/tool/call"
     || candidate.method === "item/commandExecution/requestApproval"
     || candidate.method === "item/fileChange/requestApproval"
+    || candidate.method === "item/permissions/requestApproval"
     || candidate.method === "mcpServer/elicitation/request"
 }
 

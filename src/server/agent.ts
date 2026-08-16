@@ -115,6 +115,7 @@ interface PendingToolRequest {
       | "codex_command_approval"
       | "codex_file_change_approval"
       | "codex_mcp_approval"
+      | "codex_permissions_approval"
   }
   resolve: (result: unknown) => void
 }
@@ -340,6 +341,7 @@ function discardedToolResult(
       | "codex_command_approval"
       | "codex_file_change_approval"
       | "codex_mcp_approval"
+      | "codex_permissions_approval"
   }
 ) {
   if (tool.toolKind === "ask_user_question") {
@@ -355,6 +357,10 @@ function discardedToolResult(
 
   if (tool.toolKind === "codex_mcp_approval") {
     return { action: "cancel", content: null }
+  }
+
+  if (tool.toolKind === "codex_permissions_approval") {
+    return { scope: "turn", permissions: {} }
   }
 
   return {
@@ -1486,6 +1492,31 @@ export class AgentCoordinator {
         accessMode: args.accessMode,
         onToolRequest,
         onApprovalRequest: async (request) => {
+          if (request.kind === "permissions") {
+            const tool = {
+              kind: "tool" as const,
+              toolKind: "codex_permissions_approval" as const,
+              toolName: "CodexPermissionsApproval",
+              toolId: String(request.requestId),
+              input: {
+                reason: request.params.reason ?? undefined,
+                cwd: request.params.cwd ?? undefined,
+                environmentId: request.params.environmentId ?? undefined,
+                permissions: request.params.permissions,
+              },
+              rawInput: request.params as unknown as Record<string, unknown>,
+            }
+            const result = await onToolRequest({ tool })
+            const decision = result && typeof result === "object"
+              ? (result as { decision?: unknown }).decision
+              : result
+            const accepted = decision === "accept" || decision === "acceptForSession"
+            return {
+              scope: decision === "acceptForSession" ? "session" : "turn",
+              permissions: accepted ? request.params.permissions : {},
+            }
+          }
+
           if (request.kind === "mcp_elicitation") {
             const elicitation = request.params.request
             const persist: "session" | "always" | Array<"session" | "always"> | undefined = elicitation.meta?.persist === "session" || elicitation.meta?.persist === "always"

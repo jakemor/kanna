@@ -557,6 +557,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
           message.toolKind === "codex_command_approval"
           || message.toolKind === "codex_file_change_approval"
           || message.toolKind === "codex_mcp_approval"
+          || message.toolKind === "codex_permissions_approval"
         ) {
           rendered = (
             <CodexApprovalMessage

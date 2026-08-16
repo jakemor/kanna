@@ -1337,7 +1337,10 @@ export class AgentCoordinator {
     const onToolRequest = async (request: HarnessToolRequest): Promise<unknown> => {
       const active = this.activeTurns.get(args.chatId)
       if (!active) {
-        throw new Error("Chat turn ended unexpectedly")
+        // A provider can emit a request just as its result is being drained.
+        // There is no UI turn left to wait on in that case, so resolve it as a
+        // discarded request instead of leaving the provider's RPC hanging.
+        return discardedToolResult(request.tool)
       }
 
       active.status = "waiting_for_user"
@@ -2114,6 +2117,7 @@ export class AgentCoordinator {
 
         if (event.entry.kind === "result") {
           active.hasFinalResult = true
+          await this.discardPendingTools(active)
           if (event.entry.isError) {
             await this.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed")
           } else if (!active.cancelRequested) {
@@ -2210,6 +2214,24 @@ export class AgentCoordinator {
           this.emitStateChange(active.chatId)
         }
       }
+    }
+  }
+
+  private async discardPendingTools(active: ActiveTurn) {
+    const pendingTools = [...active.pendingTools.values()]
+    active.pendingTools.clear()
+
+    for (const pendingTool of pendingTools) {
+      const result = discardedToolResult(pendingTool.tool)
+      await this.store.appendMessage(
+        active.chatId,
+        timestamped({
+          kind: "tool_result",
+          toolId: pendingTool.toolUseId,
+          content: result,
+        })
+      )
+      pendingTool.resolve(result)
     }
   }
 

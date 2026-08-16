@@ -912,6 +912,179 @@ describe("AgentCoordinator codex integration", () => {
       .toEqual(["approval-1", "approval-2"])
   })
 
+  test("keeps a later Codex approval respondable after the first one settles", async () => {
+    let firstDecision: unknown
+    let secondDecision: unknown
+    let resolveSecondRequest!: () => void
+    const secondRequestReady = new Promise<void>((resolve) => {
+      resolveSecondRequest = resolve
+    })
+
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(args: {
+        onApprovalRequest: (request: any) => Promise<unknown>
+      }): Promise<HarnessTurn> {
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+
+          firstDecision = await args.onApprovalRequest({
+            requestId: "approval-1",
+            kind: "command_execution",
+            params: { command: "touch first.txt", cwd: "/tmp/project" },
+          })
+          resolveSecondRequest()
+          secondDecision = await args.onApprovalRequest({
+            requestId: "approval-2",
+            kind: "command_execution",
+            params: { command: "touch second.txt", cwd: "/tmp/project" },
+          })
+
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "make both changes",
+    })
+
+    await waitFor(() => coordinator.getPendingTool("chat-1")?.toolUseId === "approval-1")
+    await coordinator.respondTool({
+      type: "chat.respondTool",
+      chatId: "chat-1",
+      toolUseId: "approval-1",
+      result: { decision: "accept" },
+    })
+
+    await secondRequestReady
+    await waitFor(() => coordinator.getPendingTool("chat-1")?.toolUseId === "approval-2")
+    await coordinator.respondTool({
+      type: "chat.respondTool",
+      chatId: "chat-1",
+      toolUseId: "approval-2",
+      result: { decision: "acceptForSession" },
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+    expect(firstDecision).toBe("accept")
+    expect(secondDecision).toBe("acceptForSession")
+  })
+
+  test("declines an approval that arrives after Codex turn cleanup", async () => {
+    let pendingDecision: unknown
+    let lateDecision: unknown
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(args: {
+        onApprovalRequest: (request: any) => Promise<unknown>
+      }): Promise<HarnessTurn> {
+        async function* stream() {
+          const pendingApproval = args.onApprovalRequest({
+            requestId: "approval-pending",
+            kind: "command_execution",
+            params: { command: "touch pending.txt", cwd: "/tmp/project" },
+          })
+
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "system_init",
+              provider: "codex",
+              model: "gpt-5.4",
+              tools: [],
+              agents: [],
+              slashCommands: [],
+              mcpServers: [],
+            }),
+          }
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({
+              kind: "result",
+              subtype: "success",
+              isError: false,
+              durationMs: 0,
+              result: "",
+            }),
+          }
+
+          pendingDecision = await pendingApproval
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          lateDecision = await args.onApprovalRequest({
+            requestId: "approval-late",
+            kind: "command_execution",
+            params: { command: "touch late.txt", cwd: "/tmp/project" },
+          })
+        }
+
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "finish, then request another approval",
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+    await waitFor(() => pendingDecision !== undefined)
+    await waitFor(() => lateDecision !== undefined)
+    expect(pendingDecision).toBe("cancel")
+    expect(lateDecision).toBe("cancel")
+  })
+
   test("cancelling a waiting ask-user-question records a discarded tool result", async () => {
     let releaseInterrupt!: () => void
     const interrupted = new Promise<void>((resolve) => {

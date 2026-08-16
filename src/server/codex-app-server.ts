@@ -1069,7 +1069,32 @@ export class CodexAppServerManager {
         }
 
         if (isServerRequest(parsed)) {
-          void this.handleServerRequest(context, parsed)
+          void this.handleServerRequest(context, parsed).catch((error) => {
+            if (context.closed) return
+
+            const message = error instanceof Error ? error.message : String(error)
+            try {
+              if (
+                parsed.method === "item/commandExecution/requestApproval"
+                || parsed.method === "item/fileChange/requestApproval"
+              ) {
+                // Every approval request needs a response. A cancellation lets
+                // the app-server unwind instead of waiting forever when the
+                // chat was cleaned up while this request was in flight.
+                this.writeMessage(context, {
+                  id: parsed.id,
+                  result: { decision: "cancel" },
+                })
+              } else {
+                this.writeMessage(context, {
+                  id: parsed.id,
+                  error: { message },
+                })
+              }
+            } catch {
+              // The child may have exited between the request and fallback.
+            }
+          })
           continue
         }
 

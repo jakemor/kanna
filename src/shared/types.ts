@@ -1081,6 +1081,7 @@ export interface AppSettingsSnapshot {
   providerDefaults: ChatProviderPreferences
   /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
   newSidebarEnabled: boolean
+  usageLimitIndicatorsEnabled: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1108,6 +1109,7 @@ export interface AppSettingsPatch {
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
   newSidebarEnabled?: boolean
+  usageLimitIndicatorsEnabled?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean
@@ -1141,6 +1143,20 @@ export interface AppSettingsPatch {
  */
 export type UsageLimitSource = "on_demand" | "turn_push" | "cache"
 
+/** Rolling window lengths, shared by the normalizers and the UI that matches on them. */
+export const FIVE_HOUR_WINDOW_MINUTES = 300
+export const WEEKLY_WINDOW_MINUTES = 10_080
+
+/** Severity of a usage reading. Bars and rings must classify alike. */
+export type UsageLevel = "unknown" | "ok" | "warn" | "danger"
+
+export function usageLevel(usedPercent: number | null): UsageLevel {
+  if (usedPercent === null || !Number.isFinite(usedPercent)) return "unknown"
+  if (usedPercent >= 90) return "danger"
+  if (usedPercent >= 75) return "warn"
+  return "ok"
+}
+
 /** One rolling rate-limit window (e.g. Claude 5-hour, Codex weekly). */
 export interface UsageLimitWindow {
   /** Stable id within a provider (e.g. "five_hour", "seven_day_opus", "codex:primary"). */
@@ -1151,6 +1167,10 @@ export interface UsageLimitWindow {
   usedPercent: number | null
   /** ISO 8601 timestamp when this window resets, or null when unknown. */
   resetsAt: string | null
+  /** Rolling window length in minutes when known (300 = 5-hour, 10080 = weekly). */
+  windowMinutes: number | null
+  /** Display label of the model this window is scoped to, or null when it covers all models. */
+  modelLabel: string | null
   /** When this specific window value was recorded (ISO 8601). */
   recordedAt: string
   /** Source of this window's value. */

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { LOG_PREFIX } from "../shared/branding"
-import { deriveModelLabel } from "../shared/types"
+import { deriveModelLabel, FIVE_HOUR_WINDOW_MINUTES, WEEKLY_WINDOW_MINUTES } from "../shared/types"
 import type {
   AgentProvider,
   ProviderUsageSnapshot,
@@ -18,6 +18,13 @@ import type {
 // ---------------------------------------------------------------------------
 
 interface ClaudeUsageWindowRaw {
+  utilization?: number | null
+  resets_at?: string | null
+}
+
+/** One entry of `rate_limits.model_scoped`: a weekly window for a single model. */
+interface ClaudeModelScopedRaw {
+  display_name?: string | null
   utilization?: number | null
   resets_at?: string | null
 }
@@ -93,6 +100,29 @@ function prettifyKey(key: string): string {
 
 function claudeWindowLabel(key: string): string {
   return CLAUDE_WINDOW_LABELS[key] ?? prettifyKey(key)
+}
+
+/** Claude keys its windows by period rather than reporting a duration. */
+function claudeWindowMinutes(key: string): number | null {
+  if (key === "five_hour") return FIVE_HOUR_WINDOW_MINUTES
+  if (key.startsWith("seven_day")) return WEEKLY_WINDOW_MINUTES
+  return null
+}
+
+/** These keyed weekly windows cover one model family, so they carry a model label like `model_scoped` entries do. */
+const CLAUDE_WINDOW_MODEL_LABELS: Record<string, string> = {
+  seven_day_opus: "Opus",
+  seven_day_sonnet: "Sonnet",
+}
+
+function claudeWindowModelLabel(key: string): string | null {
+  return CLAUDE_WINDOW_MODEL_LABELS[key] ?? null
+}
+
+/** Stable id for a model-scoped weekly window: "Fable" becomes "model_scoped:fable". */
+function modelScopedWindowId(displayName: string): string {
+  const slug = displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
+  return `model_scoped:${slug || "model"}`
 }
 
 function codexWindowLabel(windowDurationMins: number | null | undefined, suffix: string): string {
@@ -186,6 +216,26 @@ export function normalizeClaudeUsage(
       }
       continue
     }
+    // Per-model weekly windows arrive as an array of {display_name,
+    // utilization, resets_at} rather than as keyed entries.
+    if (key === "model_scoped") {
+      if (!Array.isArray(value)) continue
+      for (const entry of value as ClaudeModelScopedRaw[]) {
+        const displayName = typeof entry?.display_name === "string" ? entry.display_name.trim() : ""
+        if (!displayName) continue
+        windows.push({
+          id: modelScopedWindowId(displayName),
+          label: `Weekly · ${displayName}`,
+          usedPercent: clampPercent(entry.utilization),
+          resetsAt: entry.resets_at ?? null,
+          windowMinutes: WEEKLY_WINDOW_MINUTES,
+          modelLabel: displayName,
+          recordedAt: now,
+          source,
+        })
+      }
+      continue
+    }
     // Only keyed entries shaped like windows count; the response also carries
     // non-window keys (a `limits` array, a `spend` object, booleans) we skip.
     if (!value || typeof value !== "object" || Array.isArray(value)) continue
@@ -196,6 +246,8 @@ export function normalizeClaudeUsage(
       label: claudeWindowLabel(key),
       usedPercent: clampPercent(window.utilization),
       resetsAt: window.resets_at ?? null,
+      windowMinutes: claudeWindowMinutes(key),
+      modelLabel: claudeWindowModelLabel(key),
       recordedAt: now,
       source,
     })
@@ -253,13 +305,18 @@ export function mergeClaudeRateLimitPush(
 
   const windows = [...base.windows]
   const existingIndex = windows.findIndex((w) => w.id === id)
+  const existing = windows[existingIndex]
+  // A push can carry only a reset time, so the last known figure and its own recordedAt survive it.
+  const keepPrevious = usedPercent === null && existing?.usedPercent != null
   const merged: UsageLimitWindow = {
     id,
     label: claudeWindowLabel(id),
-    usedPercent,
-    resetsAt: resetsAt ?? windows[existingIndex]?.resetsAt ?? null,
-    recordedAt: now,
-    source: "turn_push",
+    usedPercent: keepPrevious ? existing.usedPercent : usedPercent,
+    resetsAt: resetsAt ?? existing?.resetsAt ?? null,
+    windowMinutes: claudeWindowMinutes(id),
+    modelLabel: claudeWindowModelLabel(id),
+    recordedAt: keepPrevious ? existing.recordedAt : now,
+    source: keepPrevious ? existing.source : "turn_push",
   }
   if (existingIndex >= 0) {
     windows[existingIndex] = merged
@@ -283,24 +340,21 @@ function codexBucketWindows(
   now: string,
   source: UsageLimitSource,
   labelSuffix: string,
+  modelLabel: string | null,
 ): UsageLimitWindow[] {
   const windows: UsageLimitWindow[] = []
-  if (bucket.primary) {
+  // primary/secondary are positional slots, not fixed periods: a plan with one
+  // window reports it as primary whatever its duration.
+  for (const slot of ["primary", "secondary"] as const) {
+    const window = bucket[slot]
+    if (!window) continue
     windows.push({
-      id: `${keyPrefix}:primary`,
-      label: codexWindowLabel(bucket.primary.windowDurationMins, labelSuffix),
-      usedPercent: clampPercent(bucket.primary.usedPercent),
-      resetsAt: unixSecondsToIso(bucket.primary.resetsAt),
-      recordedAt: now,
-      source,
-    })
-  }
-  if (bucket.secondary) {
-    windows.push({
-      id: `${keyPrefix}:secondary`,
-      label: codexWindowLabel(bucket.secondary.windowDurationMins, labelSuffix),
-      usedPercent: clampPercent(bucket.secondary.usedPercent),
-      resetsAt: unixSecondsToIso(bucket.secondary.resetsAt),
+      id: `${keyPrefix}:${slot}`,
+      label: codexWindowLabel(window.windowDurationMins, labelSuffix),
+      usedPercent: clampPercent(window.usedPercent),
+      resetsAt: unixSecondsToIso(window.resetsAt),
+      windowMinutes: window.windowDurationMins ?? null,
+      modelLabel,
       recordedAt: now,
       source,
     })
@@ -361,14 +415,12 @@ export function normalizeCodexRateLimits(
     // model-specific lanes whose limitName is a model id — run it through the
     // shared model-label formatter so "GPT-5.3-Codex-Spark" → "GPT 5.3 Codex
     // Spark", matching the rest of the app.
+    const modelLabel = bucket.limitName ? deriveModelLabel(bucket.limitName) : null
     const suffix = !multiple
       ? ""
-      : bucket.limitName
-        ? deriveModelLabel(bucket.limitName)
-        : limitId === "codex"
-          ? "All models"
-          : limitId
-    windows.push(...codexBucketWindows(bucket, limitId, now, source, suffix))
+      : modelLabel
+        ?? (limitId === "codex" ? "All models" : limitId)
+    windows.push(...codexBucketWindows(bucket, limitId, now, source, suffix, modelLabel))
     if (!credits && bucket.credits && (bucket.credits.hasCredits || bucket.credits.unlimited)) {
       credits = {
         label: "Credits",
@@ -509,9 +561,15 @@ export class UsageLimitsManager {
           const persisted = parsed.providers?.[provider]
           if (persisted && typeof persisted === "object") {
             // Mark persisted windows as cache-sourced so the UI can show staleness.
+            // Fields added after a cache was written come back undefined.
             this.snapshots.set(provider, {
               ...persisted,
-              windows: persisted.windows?.map((w) => ({ ...w, source: "cache" as const })) ?? [],
+              windows: persisted.windows?.map((w) => ({
+                ...w,
+                windowMinutes: w.windowMinutes ?? null,
+                modelLabel: w.modelLabel ?? null,
+                source: "cache" as const,
+              })) ?? [],
               credits: persisted.credits ? { ...persisted.credits, source: "cache" } : null,
             })
           }

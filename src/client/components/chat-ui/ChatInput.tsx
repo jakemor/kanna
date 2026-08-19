@@ -27,6 +27,7 @@ import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
+import { UsageLimitRings, useUsageLimitRingsVisible } from "./UsageLimitRings"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
@@ -232,6 +233,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { composerChatId, providerSwitchPending, selectedProvider } = composer
   const providerPrefs = composer.effectiveState
   const showModePicker = composer.supportsPlanMode
+  const showUsageLimitRings = useUsageLimitRingsVisible(selectedProvider)
   // Switching to a harness that isn't signed in is blocked: the pick is
   // stashed here, a sign-in dialog opens, and the switch applies
   // automatically once the auth store reports the service signed in.
@@ -1048,17 +1050,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
           />
-          {activeContextWindow ? (
-            <div className="flex items-center md:hidden mx-[13px]">
-              <ContextWindowMeter usage={activeContextWindow} />
+          {activeContextWindow || showUsageLimitRings ? (
+            <div className="flex items-center gap-1 md:hidden mx-[13px]">
+              {activeContextWindow ? <ContextWindowMeter usage={activeContextWindow} /> : null}
+              {showUsageLimitRings ? <UsageLimitRings provider={selectedProvider} model={providerPrefs.model} /> : null}
             </div>
           ) : null}
           <div className={controlsScrollSpacer} />
         </div>
 
-        {activeContextWindow ? (
-          <div className="absolute right-[29px] top-1/2 translate-x-1/2 -translate-y-1/2 hidden md:block">
-            <ContextWindowMeter usage={activeContextWindow} />
+        {activeContextWindow || showUsageLimitRings ? (
+          <div className="absolute right-[17px] top-1/2 -translate-y-1/2 hidden md:flex items-center gap-1">
+            {activeContextWindow ? <ContextWindowMeter usage={activeContextWindow} /> : null}
+            {showUsageLimitRings ? <UsageLimitRings provider={selectedProvider} model={providerPrefs.model} /> : null}
           </div>
         ) : null}
       </div>

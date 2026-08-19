@@ -102,3 +102,13 @@ export function formatRelativeTime(isoTimestamp: string): string {
   }
   return formatRelativeAge(Date.now() - timestamp, TIMESTAMP_AGE_STYLE)
 }
+
+export function formatUntil(isoTimestamp: string): string | null {
+  const timestamp = Date.parse(isoTimestamp)
+  if (!Number.isFinite(timestamp)) return null
+  const delta = timestamp - Date.now()
+  if (delta <= 0) return "now"
+  if (delta < HOUR_MS) return `in ${Math.max(1, Math.round(delta / MINUTE_MS))}m`
+  if (delta < DAY_MS) return `in ${Math.round(delta / HOUR_MS)}h`
+  return `in ${Math.round(delta / DAY_MS)}d`
+}

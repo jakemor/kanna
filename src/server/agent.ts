@@ -22,6 +22,7 @@ import type { AnalyticsReporter } from "./analytics"
 import { NoopAnalyticsReporter } from "./analytics"
 import { CodexAppServerManager } from "./codex-app-server"
 import { CursorCliManager } from "./cursor-cli"
+import { OpenCodeAcpManager } from "./opencode-acp"
 import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { ClaudeRateLimitInfoRaw, ClaudeUsageRaw } from "./usage-limits"
@@ -46,6 +47,7 @@ import {
   applyCursorModels,
   type ClaudeSdkModelInfo,
   cursorModelIdForOptions,
+  applyOpenCodeModels,
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
@@ -189,6 +191,7 @@ interface AgentCoordinatorArgs {
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
   cursorManager?: CursorCliManager
+  openCodeManager?: OpenCodeAcpManager
   piManager?: PiAgentManager
   resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
@@ -833,6 +836,7 @@ export class AgentCoordinator {
   private readonly analytics: AnalyticsReporter
   private readonly codexManager: CodexAppServerManager
   private readonly cursorManager: CursorCliManager
+  private readonly openCodeManager: OpenCodeAcpManager
   private readonly piManager: PiAgentManager
   private readonly resolvePiConnection: () => Promise<import("./pi-agent").PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
@@ -841,6 +845,7 @@ export class AgentCoordinator {
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
+  private openCodeModelCatalogApplied = false
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
@@ -851,6 +856,7 @@ export class AgentCoordinator {
     this.analytics = args.analytics ?? NoopAnalyticsReporter
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.cursorManager = args.cursorManager ?? new CursorCliManager()
+    this.openCodeManager = args.openCodeManager ?? new OpenCodeAcpManager()
     this.piManager = args.piManager ?? new PiAgentManager()
     this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
@@ -965,6 +971,26 @@ export class AgentCoordinator {
     }
   }
 
+  /**
+   * Overlay the account's opencode model list (`opencode models`) on the
+   * catalog — the opencode analog of refreshCursorModelCatalog. Which models
+   * appear depends on the user's configured opencode providers, so failure
+   * (binary missing) is expected and quiet.
+   */
+  async refreshOpenCodeModelCatalog(options: { force?: boolean } = {}) {
+    if (options.force) this.openCodeModelCatalogApplied = false
+    if (this.openCodeModelCatalogApplied) return
+    try {
+      const models = await this.openCodeManager.listModels()
+      this.openCodeModelCatalogApplied = true
+      if (applyOpenCodeModels(models)) {
+        this.emitStateChange(undefined, { immediate: true })
+      }
+    } catch {
+      // Keep the static fallback catalog; the next opencode turn retries.
+    }
+  }
+
 
   async stopDraining(chatId: string) {
     const draining = this.drainingStreams.get(chatId)
@@ -981,6 +1007,7 @@ export class AgentCoordinator {
       claudeSession.session.close()
       this.claudeSessions.delete(chatId)
     }
+    this.openCodeManager.stopSession(chatId)
     this.piManager.closeChat(chatId)
     this.emitStateChange(chatId)
   }
@@ -1015,6 +1042,16 @@ export class AgentCoordinator {
         effort: undefined,
         serviceTier: undefined,
         planMode: false,
+        autoPlan: false,
+      }
+    }
+
+    if (provider === "opencode") {
+      return {
+        model: normalizeServerModel(provider, options.model),
+        effort: undefined,
+        serviceTier: undefined,
+        planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
         autoPlan: false,
       }
     }
@@ -1127,6 +1164,7 @@ export class AgentCoordinator {
     // resume the old thread on switch-back; kill it so the cleared session
     // token actually takes effect. Cursor spawns per turn — nothing to close.
     this.codexManager.stopSession(chatId)
+    this.openCodeManager.stopSession(chatId)
     this.piManager.closeChat(chatId)
     await this.store.setSessionToken(chatId, null)
     await this.store.setPendingForkSessionToken(chatId, null)
@@ -1178,6 +1216,24 @@ export class AgentCoordinator {
       }
       case "cursor":
         return this.checkSessionArtifactFn("cursor", { cwd: args.cwd, sessionToken: args.sessionToken }) === "missing"
+      case "opencode": {
+        // Like codex: a resume that silently became a fresh session is the
+        // signal. Preflighting here is free — the turn's own startSession
+        // reuses the warm session.
+        if (!args.sessionToken) return false
+        try {
+          const started = await this.openCodeManager.startSession({
+            chatId: args.chatId,
+            cwd: args.cwd,
+            model: args.model,
+            planMode: false,
+            sessionToken: args.sessionToken,
+          })
+          return started.resumeFellBack
+        } catch {
+          return false
+        }
+      }
       case "codex": {
         // No token → nothing to resume; a fork in progress must not be disturbed.
         if (!args.sessionToken || args.pendingForkSessionToken) return false
@@ -1413,6 +1469,21 @@ export class AgentCoordinator {
         model: args.model,
         sessionToken: chat.sessionToken,
       })
+    } else if (args.provider === "opencode") {
+      void this.refreshOpenCodeModelCatalog()
+      const started = await this.openCodeManager.startSession({
+        chatId: args.chatId,
+        cwd: project.localPath,
+        model: args.model,
+        planMode: args.planMode,
+        sessionToken: chat.sessionToken,
+      })
+      turn = await this.openCodeManager.startTurn({
+        chatId: args.chatId,
+        content: buildPromptText(wireContent, args.attachments),
+        model: args.model,
+      })
+      void started
     } else if (args.provider === "pi") {
       // A missing connection or session boot failure surfaces as an error
       // result in the turn stream (like Cursor spawn failures) rather than throwing.
@@ -1778,6 +1849,12 @@ export class AgentCoordinator {
       case "pi": {
         const skills = await this.piManager.listSkills({ chatId: command.chatId, cwd })
         return { provider: "pi", skills, origin: "live" }
+      }
+      case "opencode": {
+        // ACP pushes the command list on session/update; before the first
+        // session exists there is nothing to report.
+        const skills = command.chatId ? this.openCodeManager.listSkills(command.chatId) : null
+        return { provider: "opencode", skills: skills ?? [], origin: skills ? "live" : "filesystem" }
       }
     }
   }

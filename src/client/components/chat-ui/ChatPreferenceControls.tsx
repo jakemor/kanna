@@ -10,6 +10,7 @@ import {
   type CodexModelOptions,
   type CodexReasoningEffort,
   type CursorModelOptions,
+  type OpenCodeModelOptions,
   type PiModelOptions,
   type PiReasoningEffort,
   type ProviderCatalogEntry,
@@ -198,7 +199,7 @@ interface ChatPreferenceControlsProps {
   /** A harness switch is staged for this chat and applies on the next send. */
   providerSwitchPending?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions | OpenCodeModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void

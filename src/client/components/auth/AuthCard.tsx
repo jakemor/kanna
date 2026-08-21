@@ -7,6 +7,7 @@ import { AUTH_SERVICE_ICONS } from "../provider-icons"
 import { Button } from "../ui/button"
 import { CopyButton } from "../ui/copy-button"
 import { Input } from "../ui/input"
+import { OpenCodeSignInDialog } from "./OpenCodeSignInDialog"
 
 /** "2.1.218" → "v2.1.218"; calendar/otherwise-shaped versions pass through. */
 function displayVersion(version: string | null): string | null {
@@ -223,19 +224,29 @@ export function AuthCard({
   service,
   socket,
   className,
+  badge,
 }: {
   service: AuthServiceSnapshot
   socket: KannaSocket
   className?: string
+  /** Small pill beside the name (onboarding uses it to mark a recommendation). */
+  badge?: string
 }) {
   const Icon = AUTH_SERVICE_ICONS[service.service]
   const version = displayVersion(service.version)
   const installing = service.installState === "installing"
   const loginActive = service.login.phase !== "idle"
+  const [openCodeDialogOpen, setOpenCodeDialogOpen] = useState(false)
 
   const startLogin = () => {
     if (service.service === "openrouter") {
       void startOpenRouterOauth(socket).catch(() => undefined)
+      return
+    }
+    if (service.service === "opencode") {
+      // opencode's picker runs in a terminal inside a dialog — see
+      // OpenCodeSignInDialog for why there is no server-driven flow.
+      setOpenCodeDialogOpen(true)
       return
     }
     void socket.command({ type: "auth.login.start", service: service.service }).catch(() => undefined)
@@ -274,9 +285,22 @@ export function AuthCard({
     action = <ActionButton onClick={install}>Update to {displayVersion(service.latestVersion)}</ActionButton>
   } else if (service.authStatus === "signed_in") {
     action = (
-      <span className="flex shrink-0 items-center pr-2" title={service.account ?? "Connected"}>
-        <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-      </span>
+      <div className="flex shrink-0 items-center gap-2">
+        {/* opencode holds one credential per provider, so connecting another
+            stays useful after the first — every other service is one account. */}
+        {service.service === "opencode" ? (
+          <button
+            type="button"
+            onClick={startLogin}
+            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Add
+          </button>
+        ) : null}
+        <span className="flex items-center pr-2" title={service.account ?? "Connected"}>
+          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+        </span>
+      </div>
     )
   } else if (service.authStatus === "outdated") {
     // The installed CLI can't run the commands Kanna drives — updating is
@@ -300,6 +324,11 @@ export function AuthCard({
         <div className="flex min-w-0 items-center gap-2.5">
           <Icon className="h-4 w-4 shrink-0 text-foreground" />
           <span className="truncate text-sm font-semibold text-foreground">{service.label}</span>
+          {badge ? (
+            <span className="shrink-0 rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              {badge}
+            </span>
+          ) : null}
           {version ? (
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{version}</span>
           ) : null}
@@ -313,6 +342,14 @@ export function AuthCard({
         <div className="mt-2 text-xs text-muted-foreground">{service.statusDetail}</div>
       ) : null}
       <LoginFlowPanel service={service} socket={socket} />
+      {service.service === "opencode" ? (
+        <OpenCodeSignInDialog
+          service={service}
+          socket={socket}
+          open={openCodeDialogOpen}
+          onOpenChange={setOpenCodeDialogOpen}
+        />
+      ) : null}
     </div>
   )
 }

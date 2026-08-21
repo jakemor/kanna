@@ -236,6 +236,51 @@ export function applyCursorModels(models: ReadonlyArray<CursorCliModelInfo>): bo
   return true
 }
 
+export interface OpenCodeModelInfo {
+  id: string
+  label: string
+  contextWindowTokens?: number
+}
+
+/**
+ * Replace the opencode provider's model list with whatever `opencode models`
+ * reports for the user's configured providers. Grouped by the "provider/" half
+ * of the id so the picker doesn't interleave vendors. Returns true when the
+ * catalog changed (callers should broadcast).
+ */
+export function applyOpenCodeModels(models: ReadonlyArray<OpenCodeModelInfo>): boolean {
+  const openCodeIndex = SERVER_PROVIDERS.findIndex((provider) => provider.id === "opencode")
+  const openCodeProvider = SERVER_PROVIDERS[openCodeIndex]
+  if (!openCodeProvider) return false
+
+  const nextModels: ProviderModelOption[] = models.map((model) => ({
+    id: model.id,
+    label: model.label,
+    supportsEffort: false,
+    // `opencode models --verbose` reports each model's real context limit, so
+    // the picker can show it without a hard-coded table.
+    ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
+  }))
+  if (nextModels.length === 0) return false
+
+  // Stable sort by vendor prefix keeps each vendor's own ordering intact.
+  nextModels.sort((a, b) => a.id.slice(0, a.id.indexOf("/")).localeCompare(b.id.slice(0, b.id.indexOf("/"))))
+
+  const defaultModel = nextModels.some((model) => model.id === openCodeProvider.defaultModel)
+    ? openCodeProvider.defaultModel
+    : nextModels[0]!.id
+
+  if (
+    defaultModel === openCodeProvider.defaultModel
+    && JSON.stringify(nextModels) === JSON.stringify(openCodeProvider.models)
+  ) {
+    return false
+  }
+
+  SERVER_PROVIDERS.splice(openCodeIndex, 1, { ...openCodeProvider, defaultModel, models: nextModels })
+  return true
+}
+
 export function getServerProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
   const entry = SERVER_PROVIDERS.find((candidate) => candidate.id === provider)
   if (!entry) {
@@ -251,7 +296,12 @@ export function normalizeServerModel(provider: AgentProvider, model?: string): s
   // are whatever the harness reports at runtime (applyCursorModels /
   // applyClaudeSdkModels) — for all three, the catalog is only a picker, so
   // unknown ids pass through for the provider to validate.
-  if (provider === "pi" || provider === "cursor" || provider === "claude") {
+  if (
+    provider === "pi"
+    || provider === "cursor"
+    || provider === "claude"
+    || provider === "opencode"
+  ) {
     return normalizedModel
   }
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {

@@ -94,17 +94,40 @@ export function OpenRouterIcon({ className, ...props }: SVGProps<SVGSVGElement>)
   )
 }
 
+// Placeholder mark (terminal prompt) — swap for opencode's real logo.
+export function OpenCodeIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <rect x="2" y="3" width="20" height="18" rx="3" />
+      <path d="m7 9 3 3-3 3" />
+      <path d="M13 15h4" />
+    </svg>
+  )
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
   cursor: CursorIcon,
   pi: PiIcon,
+  opencode: OpenCodeIcon,
 }
 
 export const AUTH_SERVICE_ICONS: Record<AuthServiceId, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
   cursor: CursorIcon,
+  opencode: OpenCodeIcon,
   gh: GitHubIcon,
   openrouter: OpenRouterIcon,
 }

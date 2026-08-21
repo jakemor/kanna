@@ -107,6 +107,12 @@ describe("migrateChatPreferencesState", () => {
           planMode: false,
           autoPlan: false,
         },
+        opencode: {
+          model: "opencode/north-mini-code-free",
+          modelOptions: {},
+          planMode: false,
+          autoPlan: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {

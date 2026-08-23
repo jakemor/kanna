@@ -41,7 +41,7 @@ import { CursorCliManager } from "./cursor-cli"
 import { fetchGrokAccountUsage, GrokCliManager } from "./grok-cli"
 import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
-import type { ClaudeRateLimitInfoRaw, ClaudeUsageRaw } from "./usage-limits"
+import type { ClaudeRateLimitInfoRaw, ClaudeUsageRaw, CursorUsageRaw } from "./usage-limits"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   appendSystemMessageBlock,
@@ -1118,6 +1118,11 @@ export class AgentCoordinator {
   /** Read Codex account rate limits on demand (reuses a live app-server or probes). */
   async fetchCodexRateLimits() {
     return await this.codexManager.readAccountRateLimits(homedir())
+  }
+
+  /** Read Cursor subscription usage on demand (DashboardService RPC probe). */
+  async fetchCursorUsage(): Promise<CursorUsageRaw | null> {
+    return await this.cursorManager.readAccountUsage()
   }
 
   async fetchGrokUsage() {

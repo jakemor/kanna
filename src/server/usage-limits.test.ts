@@ -9,6 +9,8 @@ import {
   normalizeClaudeUsage,
   normalizeCodexRateLimits,
   normalizeGrokAccountUsage,
+  normalizeCursorUsageLimits,
+  type CursorUsageRaw,
 } from "./usage-limits"
 
 const NOW = "2026-07-22T10:00:00.000Z"

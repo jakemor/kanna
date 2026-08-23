@@ -245,6 +245,17 @@ describe("parseCursorModelList", () => {
   })
 })
 
+describe("CursorCliManager.readAccountUsage", () => {
+  test("delegates to the injected account-usage fetcher", async () => {
+    const fixture = { currentPeriodUsage: { enabled: true, planUsage: { autoPercentUsed: 1 } } }
+    const manager = new CursorCliManager({
+      fetchAccountUsage: async () => fixture,
+    })
+
+    await expect(manager.readAccountUsage()).resolves.toEqual(fixture)
+  })
+})
+
 describe("CursorCliManager.listModels", () => {
   test("spawns --list-models and resolves the parsed entries", async () => {
     const fake = makeFakeChild()

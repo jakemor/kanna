@@ -7,6 +7,8 @@ import type { ContextWindowUsageSnapshot } from "../shared/types"
 import { asNumber, asRecord, asString } from "../shared/json"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
+import { fetchCursorAccountUsage } from "./cursor-usage"
+import type { CursorUsageRaw } from "./usage-limits"
 import { AsyncQueue } from "./async-queue"
 import type { KannaToolHost } from "./kanna-tools"
 import { createCursorKannaTools } from "./cursor-kanna-tools"
@@ -313,8 +315,12 @@ export function clarifyCursorAuthError(detail: string): string {
 
 export class CursorCliManager {
   private readonly spawnProcess: SpawnCursorAgent
+  private readonly fetchAccountUsage: () => Promise<CursorUsageRaw | null>
 
-  constructor(args: { spawnProcess?: SpawnCursorAgent } = {}) {
+  constructor(args: {
+    spawnProcess?: SpawnCursorAgent
+    fetchAccountUsage?: () => Promise<CursorUsageRaw | null>
+  } = {}) {
     this.spawnProcess =
       args.spawnProcess ??
       (({ cwd, argv }) =>
@@ -323,6 +329,12 @@ export class CursorCliManager {
           stdio: ["pipe", "pipe", "pipe"],
           env: process.env,
         }) as unknown as CursorChildProcess)
+    this.fetchAccountUsage = args.fetchAccountUsage ?? (() => fetchCursorAccountUsage())
+  }
+
+  /** Read Cursor subscription usage limits for the signed-in account. */
+  async readAccountUsage(): Promise<CursorUsageRaw | null> {
+    return await this.fetchAccountUsage()
   }
 
   /**

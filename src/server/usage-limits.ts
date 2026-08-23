@@ -80,6 +80,58 @@ export interface CodexRateLimitsRaw {
   rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshotRaw | null | undefined> | null
 }
 
+/** Cursor `GetCurrentPeriodUsage` planUsage block (amounts in cents). */
+interface CursorPlanUsageRaw {
+  totalSpend?: number | null
+  includedSpend?: number | null
+  bonusSpend?: number | null
+  limit?: number | null
+  autoPercentUsed?: number | null
+  apiPercentUsed?: number | null
+  totalPercentUsed?: number | null
+}
+
+interface CursorSpendLimitUsageRaw {
+  limitType?: string | null
+  /** Minor currency units (cents). */
+  individualUsed?: number | null
+  /** Minor currency units (cents). */
+  individualLimit?: number | null
+  pooledLimit?: number | null
+}
+
+/** Cursor `GetCurrentPeriodUsage` response (subset). */
+export interface CursorCurrentPeriodUsageRaw {
+  billingCycleStart?: string | null
+  billingCycleEnd?: string | null
+  planUsage?: CursorPlanUsageRaw | null
+  spendLimitUsage?: CursorSpendLimitUsageRaw | null
+  enabled?: boolean | null
+}
+
+/** Cursor `GetPlanInfo` response (subset). */
+export interface CursorPlanInfoRaw {
+  planInfo?: {
+    planName?: string | null
+    includedAmountCents?: number | null
+    billingCycleEnd?: string | null
+  } | null
+}
+
+/** Cursor `GetHardLimit` response (subset). */
+export interface CursorHardLimitRaw {
+  noUsageBasedAllowed?: boolean | null
+  /** Spend cap in major currency units (dollars) when set. */
+  hardLimit?: number | null
+}
+
+/** Combined on-demand Cursor usage read (DashboardService RPCs). */
+export interface CursorUsageRaw {
+  currentPeriodUsage?: CursorCurrentPeriodUsageRaw | null
+  planInfo?: CursorPlanInfoRaw | null
+  hardLimit?: CursorHardLimitRaw | null
+}
+
 // ---------------------------------------------------------------------------
 // Label helpers
 // ---------------------------------------------------------------------------
@@ -150,6 +202,19 @@ function clampPercent(value: number | null | undefined): number | null {
 function unixSecondsToIso(seconds: number | null | undefined): string | null {
   if (seconds == null || !Number.isFinite(seconds)) return null
   return new Date(seconds * 1000).toISOString()
+}
+
+/** Cursor billing-cycle timestamps arrive as unix-ms strings from DashboardService. */
+function cursorEpochMillisToIso(value: string | number | null | undefined): string | null {
+  if (value == null) return null
+  const ms = typeof value === "string" ? Number(value) : value
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms).toISOString()
+}
+
+function cursorCentsToDollars(cents: number | null | undefined): number | null {
+  if (cents == null || !Number.isFinite(cents)) return null
+  return cents / 100
 }
 
 function latestRecordedAt(snapshot: ProviderUsageSnapshot): string | null {
@@ -545,6 +610,101 @@ export function normalizeGrokAccountUsage(
   return snapshot
 }
 
+export function normalizeCursorUsageLimits(
+  raw: CursorUsageRaw | null,
+  now: string,
+  source: UsageLimitSource = "on_demand",
+): ProviderUsageSnapshot {
+  const base: ProviderUsageSnapshot = {
+    provider: "cursor",
+    status: "unknown",
+    plan: null,
+    windows: [],
+    credits: null,
+    detail: null,
+    updatedAt: null,
+  }
+
+  if (!raw?.currentPeriodUsage) {
+    return { ...base, status: "unavailable", detail: "Could not read Cursor usage." }
+  }
+
+  const period = raw.currentPeriodUsage
+  const plan = raw.planInfo?.planInfo?.planName ?? null
+  const planUsage = period.planUsage
+
+  if (period.enabled === false || !planUsage) {
+    return {
+      ...base,
+      status: "unavailable",
+      plan,
+      detail: "Plan limits are not available for this account (sign in with cursor-agent login).",
+    }
+  }
+
+  const resetsAt = cursorEpochMillisToIso(
+    period.billingCycleEnd ?? raw.planInfo?.planInfo?.billingCycleEnd,
+  )
+
+  const windows: UsageLimitWindow[] = []
+  if (planUsage.autoPercentUsed != null) {
+    windows.push({
+      id: "cursor_models",
+      label: "Cursor Models",
+      usedPercent: clampPercent(planUsage.autoPercentUsed),
+      resetsAt,
+      recordedAt: now,
+      source,
+    })
+  }
+  if (planUsage.apiPercentUsed != null) {
+    windows.push({
+      id: "other_models",
+      label: "Other Models",
+      usedPercent: clampPercent(planUsage.apiPercentUsed),
+      resetsAt,
+      recordedAt: now,
+      source,
+    })
+  }
+
+  let credits: UsageLimitCredits | null = null
+  const hardLimit = raw.hardLimit
+  const spend = period.spendLimitUsage
+  const onDemandBlocked = hardLimit?.noUsageBasedAllowed === true
+  const usedCents = spend?.individualUsed
+  const limitCents = spend?.individualLimit
+    ?? (hardLimit?.hardLimit != null && hardLimit.hardLimit > 0 ? hardLimit.hardLimit * 100 : null)
+
+  if (!onDemandBlocked && (usedCents != null || (limitCents != null && limitCents > 0))) {
+    const usedAmount = cursorCentsToDollars(usedCents)
+    const limitAmount = cursorCentsToDollars(limitCents)
+    credits = {
+      label: "On-demand",
+      usedPercent: usedAmount != null && limitAmount != null && limitAmount > 0
+        ? clampPercent((usedAmount / limitAmount) * 100)
+        : null,
+      usedAmount,
+      limitAmount,
+      currency: "USD",
+      detail: null,
+      recordedAt: now,
+      source,
+    }
+  }
+
+  const snapshot: ProviderUsageSnapshot = {
+    ...base,
+    status: windows.length > 0 || credits ? "ok" : "unavailable",
+    plan,
+    windows,
+    credits,
+    detail: windows.length > 0 || credits ? null : "No plan limit windows reported.",
+  }
+  snapshot.updatedAt = latestRecordedAt(snapshot)
+  return snapshot
+}
+
 function staticProviderSnapshot(provider: AgentProvider): ProviderUsageSnapshot {
   if (provider === "pi") {
     return {
@@ -568,7 +728,7 @@ function staticProviderSnapshot(provider: AgentProvider): ProviderUsageSnapshot 
       updatedAt: null,
     }
   }
-  // cursor (this phase): not wired up.
+  // Cursor may stay unavailable until its CLI reports an authenticated session.
   return {
     provider,
     status: "unavailable",
@@ -599,6 +759,8 @@ export interface UsageLimitsManagerDeps {
   fetchClaudeUsage?: () => Promise<ClaudeUsageRaw | null>
   /** Fetch a fresh Codex rate-limit read, or null when unavailable. */
   fetchCodexRateLimits?: () => Promise<CodexRateLimitsRaw | null>
+  /** Fetch a fresh Cursor usage read, or null when unavailable. */
+  fetchCursorUsage?: () => Promise<CursorUsageRaw | null>
   /** Fetch Grok Build billing + subscription from cli-chat-proxy. */
   fetchGrokUsage?: () => Promise<GrokUsageRaw | null>
   now?: () => Date
@@ -627,6 +789,9 @@ export class UsageLimitsManager {
     this.snapshots.set("codex", {
       provider: "codex", status: "unknown", plan: null, windows: [], credits: null, detail: null, updatedAt: null,
     })
+    this.snapshots.set("cursor", {
+      provider: "cursor", status: "unknown", plan: null, windows: [], credits: null, detail: null, updatedAt: null,
+    })
   }
 
   private nowIso() {
@@ -639,7 +804,7 @@ export class UsageLimitsManager {
       const text = await readFile(this.filePath, "utf8")
       if (text.trim()) {
         const parsed = JSON.parse(text) as UsageLimitsFile
-        for (const provider of ["claude", "codex", "grok"] as const) {
+        for (const provider of ["claude", "codex", "cursor", "grok"] as const) {
           const persisted = parsed.providers?.[provider]
           if (persisted && typeof persisted === "object") {
             // Mark persisted windows as cache-sourced so the UI can show staleness.
@@ -705,7 +870,7 @@ export class UsageLimitsManager {
   }
 
   /**
-   * On-demand refresh of claude + codex; coalesces concurrent calls. Reads may
+   * On-demand refresh of claude, codex, cursor and grok; coalesces concurrent calls. Reads may
    * spawn short-lived harness probe processes, so non-forced calls (e.g. every
    * usage-limits subscription) are throttled to once per TTL — the explicit
    * Refresh button passes force.
@@ -723,7 +888,7 @@ export class UsageLimitsManager {
   }
 
   private async doRefresh() {
-    await Promise.all([this.refreshClaude(), this.refreshCodex(), this.refreshGrok()])
+    await Promise.all([this.refreshClaude(), this.refreshCodex(), this.refreshCursor(), this.refreshGrok()])
     this.lastRefreshAt = (this.deps.now?.() ?? new Date()).getTime()
     // Make refresh() a durable point: the persisted cache reflects this read.
     await this.persistChain
@@ -794,12 +959,43 @@ export class UsageLimitsManager {
     }
   }
 
+  private async refreshCursor() {
+    if (!this.deps.fetchCursorUsage) return
+    try {
+      const raw = await this.deps.fetchCursorUsage()
+      if (!raw) {
+        this.applyRefreshed("cursor", {
+          provider: "cursor",
+          status: "unavailable",
+          plan: null,
+          windows: [],
+          credits: null,
+          detail: "Sign in to Cursor with cursor-agent login to see limits (API-key auth has no subscription limits).",
+          updatedAt: null,
+        })
+        return
+      }
+      this.applyRefreshed("cursor", normalizeCursorUsageLimits(raw, this.nowIso()))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const isAuth = /auth|login|sign|not logged/i.test(message)
+      this.applyRefreshed("cursor", {
+        provider: "cursor", status: "unavailable", plan: null, windows: [], credits: null,
+        detail: isAuth
+          ? "Sign in to Cursor with cursor-agent login to see limits (API-key auth has no subscription limits)."
+          : `Failed to read Cursor usage: ${message}`,
+        updatedAt: null,
+      })
+    }
+  }
+
   private async persist() {
     const file: UsageLimitsFile = {
       version: 1,
       providers: {
         claude: this.snapshots.get("claude"),
         codex: this.snapshots.get("codex"),
+        cursor: this.snapshots.get("cursor"),
         grok: this.snapshots.get("grok"),
       },
     }

@@ -29,7 +29,7 @@ function makeWindow(
   }
 }
 
-function makeSnapshot(provider: "claude" | "codex", windows: UsageLimitWindow[]): UsageLimitsSnapshot {
+function makeSnapshot(provider: "claude" | "codex" | "cursor", windows: UsageLimitWindow[]): UsageLimitsSnapshot {
   const providerSnapshot: ProviderUsageSnapshot = {
     provider,
     status: "ok",
@@ -172,6 +172,22 @@ describe("selectLimitRingWindows", () => {
     expect(codex.slots[1]?.window?.id).toBe("codex:primary")
   })
 
+  test("cursor shows Cursor Models and Other Models rings", () => {
+    const { slots } = selectLimitRingWindows(
+      makeSnapshot("cursor", [
+        makeWindow("cursor_models", 11, null),
+        makeWindow("other_models", 38, null),
+      ]),
+      "cursor",
+      "composer-2.5",
+    )
+    expect(slots.map((slot) => slot.key)).toEqual(["cursor_models", "other_models"])
+    expect(slots[0]?.window?.usedPercent).toBe(11)
+    expect(slots[1]?.window?.usedPercent).toBe(38)
+    expect(slots[0]?.alsoApplies).toBeNull()
+    expect(slots[1]?.alsoApplies).toBeNull()
+  })
+
   test("missing windows keep their slot with a null window", () => {
     const empty = selectLimitRingWindows(null, "claude", "claude-fable-5")
     expect(empty.snapshot).toBeNull()
@@ -186,8 +202,8 @@ describe("selectLimitRingWindows", () => {
     expect(partial.slots[1]?.window).toBeNull()
   })
 
-  test("only claude and codex are ring providers", () => {
-    expect([...LIMIT_RING_PROVIDERS].sort()).toEqual(["claude", "codex"])
+  test("claude, codex, and cursor are ring providers", () => {
+    expect([...LIMIT_RING_PROVIDERS].sort()).toEqual(["claude", "codex", "cursor"])
     expect(selectLimitRingWindows(makeSnapshot("claude", CLAUDE_WINDOWS), "pi", null).slots).toEqual([])
   })
 })

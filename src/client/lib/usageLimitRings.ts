@@ -10,10 +10,10 @@ import {
 } from "../../shared/types"
 
 /** Providers whose plan limits render as rings in the chat input. */
-export const LIMIT_RING_PROVIDERS: ReadonlySet<AgentProvider> = new Set(["claude", "codex"])
+export const LIMIT_RING_PROVIDERS: ReadonlySet<AgentProvider> = new Set(["claude", "codex", "cursor"])
 
 export interface LimitRingSlot {
-  key: "session" | "weekly"
+  key: "session" | "weekly" | "cursor_models" | "other_models"
   /** Fallback title shown until the provider reports this window. */
   label: string
   window: UsageLimitWindow | null
@@ -82,6 +82,10 @@ function selectSessionWindow(windows: UsageLimitWindow[]): UsageLimitWindow | nu
   return windows.find(isSession) ?? null
 }
 
+function selectCursorWindow(windows: UsageLimitWindow[], id: string): UsageLimitWindow | null {
+  return windows.find((window) => window.id === id) ?? null
+}
+
 /** Windows are matched by duration, not by key: Codex reports its weekly window in the "primary" slot. */
 export function selectLimitRingWindows(
   snapshot: UsageLimitsSnapshot | null,
@@ -110,6 +114,25 @@ export function selectLimitRingWindows(
       slots: [
         { key: "session", label: "5-hour limit", window: selectSessionWindow(windows), alsoApplies: null },
         weekly,
+      ],
+    }
+  }
+  if (provider === "cursor") {
+    return {
+      snapshot: providerSnapshot,
+      slots: [
+        {
+          key: "cursor_models",
+          label: "Cursor Models",
+          window: selectCursorWindow(windows, "cursor_models"),
+          alsoApplies: null,
+        },
+        {
+          key: "other_models",
+          label: "Other Models",
+          window: selectCursorWindow(windows, "other_models"),
+          alsoApplies: null,
+        },
       ],
     }
   }

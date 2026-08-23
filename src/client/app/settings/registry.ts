@@ -147,8 +147,8 @@ export const SETTINGS_ROWS = defineRows({
   usageLimitIndicators: {
     sectionId: "general",
     title: "Usage Limit Indicators",
-    description: "Show plan-limit rings next to the chat input's context meter for Claude Code and Codex",
-    keywords: ["rate limit", "5-hour", "weekly", "quota", "meter", "ring", "composer"],
+    description: "Show plan-limit rings next to the chat input's context meter for Claude Code, Codex, and Cursor",
+    keywords: ["rate limit", "5-hour", "weekly", "quota", "meter", "ring", "composer", "cursor models"],
   },
   anonymousAnalytics: {
     sectionId: "general",

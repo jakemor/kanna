@@ -311,6 +311,51 @@ describe("normalizeCodexRateLimits", () => {
   })
 })
 
+describe("normalizeCursorUsageLimits", () => {
+  test("maps Cursor Models / Other Models windows from a Pro account fixture", () => {
+    const snapshot = normalizeCursorUsageLimits(loadCursorFixture("cursor-usage-pro.json"), NOW)
+
+    expect(snapshot.status).toBe("ok")
+    expect(snapshot.plan).toBe("Pro")
+    expect(snapshot.windows.map((w) => w.id)).toEqual(["cursor_models", "other_models"])
+    expect(snapshot.windows[0]).toMatchObject({
+      label: "Cursor Models",
+      usedPercent: 10.96,
+      resetsAt: CURSOR_RESETS_AT,
+      windowMinutes: null,
+      modelLabel: null,
+      recordedAt: NOW,
+      source: "on_demand",
+    })
+    expect(snapshot.windows[1]).toMatchObject({
+      label: "Other Models",
+      usedPercent: 37.644444444444446,
+      resetsAt: CURSOR_RESETS_AT,
+      windowMinutes: null,
+      modelLabel: null,
+    })
+    expect(snapshot.credits).toBeNull()
+    expect(snapshot.updatedAt).toBe(NOW)
+  })
+
+  test("renders on-demand spend when the account has an individual cap", () => {
+    const snapshot = normalizeCursorUsageLimits(loadCursorFixture("cursor-usage-ondemand.json"), NOW)
+
+    expect(snapshot.credits).toMatchObject({
+      label: "On-demand",
+      usedAmount: 12.5,
+      limitAmount: 50,
+      usedPercent: 25,
+      currency: "USD",
+    })
+  })
+
+  test("missing usage payload is unavailable", () => {
+    expect(normalizeCursorUsageLimits(null, NOW).status).toBe("unavailable")
+    expect(normalizeCursorUsageLimits({ planInfo: { planInfo: { planName: "Pro" } } }, NOW).status)
+      .toBe("unavailable")
+  })
+})
 describe("mergeCodexRateLimitPush", () => {
   test("overlays pushed windows onto the previous full read", () => {
     const prev = normalizeCodexRateLimits(

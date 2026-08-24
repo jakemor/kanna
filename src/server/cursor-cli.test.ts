@@ -66,6 +66,24 @@ describe("parseCursorLine", () => {
       .toMatchObject({ kind: "tool_call", tool: { toolKind: "todo_write", input: { todos: [{ content: "step", status: "pending" }] } } })
   })
 
+  test("normalizes Cursor's protobuf-style todo statuses", () => {
+    const entry = firstEntry(`{"type":"tool_call","subtype":"started","call_id":"t-2","tool_call":{"updateTodosToolCall":{"args":{"todos":[{"id":"1","content":"Investigate","status":"TODO_STATUS_COMPLETED","dependencies":[]},{"id":"2","content":"Fix","status":"TODO_STATUS_IN_PROGRESS","dependencies":[]},{"id":"3","content":"Verify","status":"TODO_STATUS_PENDING","dependencies":[]}]}}},"session_id":"s"}`)
+
+    expect(entry).toMatchObject({
+      kind: "tool_call",
+      tool: {
+        toolKind: "todo_write",
+        input: {
+          todos: [
+            { content: "Investigate", status: "completed", activeForm: "Investigate" },
+            { content: "Fix", status: "in_progress", activeForm: "Fix" },
+            { content: "Verify", status: "pending", activeForm: "Verify" },
+          ],
+        },
+      },
+    })
+  })
+
   test("an unmapped tool falls through to unknown_tool rather than being dropped", () => {
     const line = `{"type":"tool_call","subtype":"started","call_id":"u-1","tool_call":{"mysteryToolCall":{"args":{"foo":"bar"}}},"session_id":"s"}`
     expect(firstEntry(line)).toMatchObject({ kind: "tool_call", tool: { toolKind: "unknown_tool" } })

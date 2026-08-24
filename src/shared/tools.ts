@@ -15,6 +15,43 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
+/**
+ * Providers do not all use Claude's lowercase TodoWrite status values. Cursor
+ * currently emits protobuf-style `TODO_STATUS_*` names, so normalize at the
+ * shared boundary before the UI sees them. Unknown values stay visible as
+ * pending work instead of making the transcript renderer throw.
+ */
+export function normalizeTodoStatus(value: unknown): TodoItem["status"] {
+  if (typeof value !== "string") return "pending"
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/^todo_status_/, "")
+    .replace(/[\s-]+/g, "_")
+
+  if (normalized === "completed" || normalized === "in_progress" || normalized === "pending") {
+    return normalized
+  }
+  return "pending"
+}
+
+function normalizeTodoItems(value: unknown): TodoItem[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap((item) => {
+    const record = asRecord(item)
+    if (!record) return []
+
+    const content = typeof record.content === "string" ? record.content : ""
+    return [{
+      content,
+      status: normalizeTodoStatus(record.status),
+      activeForm: typeof record.activeForm === "string" ? record.activeForm : content,
+    }]
+  })
+}
+
 export function normalizeToolCall(args: {
   toolName: string
   toolId: string
@@ -61,7 +98,7 @@ export function normalizeToolCall(args: {
         toolName,
         toolId,
         input: {
-          todos: Array.isArray(input.todos) ? (input.todos as TodoItem[]) : [],
+          todos: normalizeTodoItems(input.todos),
         },
         rawInput: input,
       }

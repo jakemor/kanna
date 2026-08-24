@@ -725,6 +725,8 @@ export function normalizeCursorUsageLimits(
       label: "Cursor Models",
       usedPercent: clampPercent(planUsage.autoPercentUsed),
       resetsAt,
+      windowMinutes: null,
+      modelLabel: null,
       recordedAt: now,
       source,
     })
@@ -735,6 +737,8 @@ export function normalizeCursorUsageLimits(
       label: "Other Models",
       usedPercent: clampPercent(planUsage.apiPercentUsed),
       resetsAt,
+      windowMinutes: null,
+      modelLabel: null,
       recordedAt: now,
       source,
     })

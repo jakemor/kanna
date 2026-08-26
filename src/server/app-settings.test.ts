@@ -77,6 +77,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
       },
     },
     newSidebarEnabled: true,
+    usageLimitIndicatorsEnabled: true,
     newProjectsDirectory: "~/Kanna",
     warning: null,
     filePathDisplay: filePath,

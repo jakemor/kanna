@@ -32,6 +32,64 @@ describe("parseLocalFileLink", () => {
     })
   })
 
+  test("decodes a percent-encoded absolute file path", () => {
+    expect(parseLocalFileLink("/Users/example/My%20Project/report.xlsx")).toEqual({
+      path: "/Users/example/My Project/report.xlsx",
+    })
+  })
+
+  test("decodes the path without disturbing line selectors", () => {
+    expect(parseLocalFileLink("/Users/example/My%20Project/app.ts#L12")).toEqual({
+      path: "/Users/example/My Project/app.ts",
+      line: 12,
+      column: undefined,
+    })
+    expect(parseLocalFileLink("/Users/example/My%20Project/app.ts:12:3")).toEqual({
+      path: "/Users/example/My Project/app.ts",
+      line: 12,
+      column: 3,
+    })
+  })
+
+  test("does not treat encoded selector characters as line selectors", () => {
+    expect(parseLocalFileLink("/tmp/report%23L12.ts")).toEqual({
+      path: "/tmp/report#L12.ts",
+    })
+    expect(parseLocalFileLink("/tmp/report%3A12")).toEqual({
+      path: "/tmp/report:12",
+    })
+  })
+
+  test("decodes percent encoding only once", () => {
+    expect(parseLocalFileLink("/tmp/percent%2520name.txt")).toEqual({
+      path: "/tmp/percent%20name.txt",
+    })
+  })
+
+  test("preserves a path with malformed percent encoding", () => {
+    expect(parseLocalFileLink("/tmp/100%done.txt")).toEqual({
+      path: "/tmp/100%done.txt",
+    })
+  })
+
+  test("preserves encoded separators and NUL bytes", () => {
+    expect(parseLocalFileLink("/tmp/encoded%2Fslash.txt")).toEqual({
+      path: "/tmp/encoded%2Fslash.txt",
+    })
+    expect(parseLocalFileLink("/tmp/encoded%5Cbackslash.txt")).toEqual({
+      path: "/tmp/encoded%5Cbackslash.txt",
+    })
+    expect(parseLocalFileLink("/tmp/encoded%00nul.txt")).toEqual({
+      path: "/tmp/encoded%00nul.txt",
+    })
+  })
+
+  test("decodes a percent-encoded Unicode file name", () => {
+    expect(parseLocalFileLink("/tmp/caf%C3%A9.txt")).toEqual({
+      path: "/tmp/café.txt",
+    })
+  })
+
   test("parses an absolute file path with a line suffix", () => {
     expect(parseLocalFileLink("/Users/jake/Kanna/superwall-agent/scripts/e2b-proxy.mjs:1")).toEqual({
       path: "/Users/jake/Kanna/superwall-agent/scripts/e2b-proxy.mjs",
@@ -48,7 +106,7 @@ describe("parseLocalFileLink", () => {
     })
   })
 
-  test("parses same-origin absolute file urls with a line suffix", () => {
+  test("parses same-origin absolute file urls", () => {
     const originalWindow = globalThis.window
     Object.defineProperty(globalThis, "window", {
       value: {
@@ -65,6 +123,9 @@ describe("parseLocalFileLink", () => {
         line: 1,
         column: undefined,
       })
+      expect(parseLocalFileLink("http://localhost:9000/Users/example/My%20Project/report.xlsx")).toEqual({
+        path: "/Users/example/My Project/report.xlsx",
+      })
     } finally {
       Object.defineProperty(globalThis, "window", {
         value: originalWindow,
@@ -75,6 +136,7 @@ describe("parseLocalFileLink", () => {
 
   test("does not treat web links as local file links", () => {
     expect(parseLocalFileLink("https://example.com")).toBeNull()
+    expect(parseLocalFileLink("https://example.com/My%20Project/report.xlsx")).toBeNull()
   })
 })
 

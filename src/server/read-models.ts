@@ -72,8 +72,11 @@ function canForkChat(
   // Cursor has no fork/branch primitive, so forking would silently start a fresh session.
   if (chat.provider === "cursor") return false
   if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
-  if (activeStatuses.has(chat.id)) return false
-  if (drainingChatIds.has(chat.id)) return false
+  // A chat with a turn in flight forks from its last completed turn, so it
+  // needs one: a chat still inside its very first turn has no branch point.
+  if (activeStatuses.has(chat.id) || drainingChatIds.has(chat.id)) {
+    return chat.lastTurnEndedAt != null
+  }
   return true
 }
 

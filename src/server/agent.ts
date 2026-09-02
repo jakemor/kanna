@@ -1835,9 +1835,6 @@ export class AgentCoordinator {
 
   async forkChat(chatId: string) {
     const chat = this.store.requireChat(chatId)
-    if (this.activeTurns.has(chatId) || this.drainingStreams.has(chatId)) {
-      throw new Error("Chat must be idle before forking")
-    }
     if (!chat.provider) {
       throw new Error("Chat must have a provider before forking")
     }
@@ -1845,7 +1842,12 @@ export class AgentCoordinator {
       throw new Error("Chat has no session to fork")
     }
 
-    const forked = await this.store.forkChat(chatId)
+    // A running chat is forkable: the fork branches from the last completed
+    // turn, leaving the turn in flight out of the copy so it never inherits
+    // tool calls whose results have not arrived. Nothing here touches the
+    // source's turn — it keeps running.
+    const running = this.activeTurns.has(chatId) || this.drainingStreams.has(chatId)
+    const forked = await this.store.forkChat(chatId, { atLastCompletedTurn: running })
     this.analytics.track("chat_created")
     return { chatId: forked.id }
   }

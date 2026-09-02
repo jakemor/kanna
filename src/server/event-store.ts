@@ -152,6 +152,56 @@ function isAgentAuthoredEntry(entry: TranscriptEntry) {
     || entry.kind === "result"
 }
 
+/**
+ * Index just past the last completed turn in a transcript, or 0 when no turn
+ * has finished yet. A turn closes with a `result` entry, or with `interrupted`
+ * when it was cancelled (Claude emits that instead of a result), so everything
+ * after the last of those belongs to a turn still in flight.
+ *
+ * Used to fork a chat mid-turn: the fork branches from the last settled point
+ * rather than inheriting a turn whose tool calls have no results yet.
+ */
+export function findLastCompletedTurnEnd(entries: TranscriptEntry[]) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const kind = entries[index]!.kind
+    if (kind === "result" || kind === "interrupted") return index + 1
+  }
+  return 0
+}
+
+/**
+ * Re-derive the sidebar preview fields from a fork's copied transcript. Forks
+ * of an idle chat inherit these from the source record instead (it is the same
+ * conversation), but a fork taken mid-turn drops the running turn, so the
+ * source's fields would advertise a prompt the fork does not contain.
+ *
+ * Mirrors `applyMessageMetadata`, which derives the same fields on append.
+ */
+function summarizeForkedTranscript(entries: TranscriptEntry[]) {
+  const summary: {
+    lastUserMessagePreview?: string
+    lastAgentMessagePreview?: string
+    lastAgentMessagePreviewAt?: number
+    lastAgentMessageAt?: number
+  } = {}
+  for (const entry of entries) {
+    if (entry.kind === "user_prompt" && !entry.hidden) {
+      const preview = buildChatMessagePreview(entry.content)
+      if (preview) summary.lastUserMessagePreview = preview
+    } else if (entry.kind === "assistant_text" && !entry.hidden) {
+      const preview = buildChatMessagePreview(entry.text)
+      if (preview) {
+        summary.lastAgentMessagePreview = preview
+        summary.lastAgentMessagePreviewAt = entry.createdAt
+      }
+    }
+    if (isAgentAuthoredEntry(entry)) {
+      summary.lastAgentMessageAt = Math.max(summary.lastAgentMessageAt ?? 0, entry.createdAt)
+    }
+  }
+  return summary
+}
+
 function normalizeSidebarProjectOrder(value: unknown) {
   if (!Array.isArray(value)) {
     return []
@@ -1145,12 +1195,48 @@ export class EventStore {
     return this.state.chatsById.get(chatId)!
   }
 
-  async forkChat(sourceChatId: string) {
+  /**
+   * Copy a chat into a new one that resumes the same native session.
+   *
+   * `atLastCompletedTurn` trims the copied transcript to the last settled turn.
+   * That is how a chat with a turn in flight is forked: the fork starts from a
+   * conversation whose tool calls all have their results, and the source keeps
+   * running undisturbed.
+   */
+  async forkChat(sourceChatId: string, options?: { atLastCompletedTurn?: boolean }) {
     const sourceChat = this.requireChat(sourceChatId)
     const sourceSessionToken = sourceChat.sessionToken ?? sourceChat.pendingForkSessionToken ?? null
     if (!sourceChat.provider || !sourceSessionToken) {
       throw new Error("Chat cannot be forked")
     }
+
+    // Resolved before anything is written: a mid-turn fork of a chat whose
+    // first turn is still running has no settled branch point, and refusing
+    // here means it leaves no half-built chat behind.
+    const allEntries = this.getMessages(sourceChatId)
+    const branchPoint = options?.atLastCompletedTurn
+      ? findLastCompletedTurnEnd(allEntries)
+      : allEntries.length
+    if (branchPoint === 0 && allEntries.length > 0) {
+      throw new Error("Chat has no completed turn to fork from yet")
+    }
+    const droppedRunningTurn = branchPoint < allEntries.length
+
+    // A fork of an idle chat inherits these from the source record — same
+    // conversation, so the same counts and previews. A fork taken mid-turn left
+    // that turn behind, so its numbers come from the copied transcript instead.
+    const inherited = droppedRunningTurn
+      ? {
+          turnCount: Math.max(0, (sourceChat.turnCount ?? 0) - 1),
+          ...summarizeForkedTranscript(allEntries.slice(0, branchPoint)),
+        }
+      : {
+          turnCount: sourceChat.turnCount,
+          lastUserMessagePreview: sourceChat.lastUserMessagePreview,
+          lastAgentMessagePreview: sourceChat.lastAgentMessagePreview,
+          lastAgentMessagePreviewAt: sourceChat.lastAgentMessagePreviewAt,
+          lastAgentMessageAt: sourceChat.lastAgentMessageAt,
+        }
 
     const chatId = crypto.randomUUID()
     const createdAt = Date.now()
@@ -1182,7 +1268,8 @@ export class EventStore {
 
     // The fork gets its own copy of any images, and its entries point at
     // that copy, so deleting the source later does not blank its screenshots.
-    const sourceEntries = this.getMessages(sourceChatId)
+    const sourceEntries = allEntries
+      .slice(0, branchPoint)
       .map((entry) => retargetEntryMediaUrls(entry, sourceChatId, chatId))
     if (sourceEntries.length > 0) {
       const transcriptPath = this.transcriptPath(chatId)
@@ -1201,16 +1288,16 @@ export class EventStore {
           // The fork's conversation *is* the source's, so it inherits its turns
           // too — a fork of a twenty-turn chat has twenty turns behind it, and
           // starting the count from zero would read as a fresh chat.
-          if (sourceChat.turnCount) chat.turnCount = sourceChat.turnCount
-          if (sourceChat.lastUserMessagePreview) chat.lastUserMessagePreview = sourceChat.lastUserMessagePreview
-          if (sourceChat.lastAgentMessagePreview) {
-            chat.lastAgentMessagePreview = sourceChat.lastAgentMessagePreview
-            chat.lastAgentMessagePreviewAt = sourceChat.lastAgentMessagePreviewAt
+          if (inherited.turnCount) chat.turnCount = inherited.turnCount
+          if (inherited.lastUserMessagePreview) chat.lastUserMessagePreview = inherited.lastUserMessagePreview
+          if (inherited.lastAgentMessagePreview) {
+            chat.lastAgentMessagePreview = inherited.lastAgentMessagePreview
+            chat.lastAgentMessagePreviewAt = inherited.lastAgentMessagePreviewAt
           }
           // Same transcript, so the same last-agent-activity timestamp a
           // reload would derive from it.
-          if (sourceChat.lastAgentMessageAt != null) {
-            chat.lastAgentMessageAt = Math.max(chat.lastAgentMessageAt ?? 0, sourceChat.lastAgentMessageAt)
+          if (inherited.lastAgentMessageAt != null) {
+            chat.lastAgentMessageAt = Math.max(chat.lastAgentMessageAt ?? 0, inherited.lastAgentMessageAt)
           }
         }
         this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries))

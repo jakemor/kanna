@@ -26,10 +26,24 @@ async function createTempDataDir() {
   return dir
 }
 
-function entry(kind: "user_prompt" | "assistant_text", createdAt: number, extra: Record<string, unknown> = {}): TranscriptEntry {
+function entry(
+  kind: "user_prompt" | "assistant_text" | "result",
+  createdAt: number,
+  extra: Record<string, unknown> = {},
+): TranscriptEntry {
   const base = { _id: `${kind}-${createdAt}`, createdAt }
   if (kind === "user_prompt") {
     return { ...base, kind, content: String(extra.content ?? "") }
+  }
+  if (kind === "result") {
+    return {
+      ...base,
+      kind,
+      subtype: "success",
+      isError: false,
+      durationMs: Number(extra.durationMs ?? 0),
+      result: String(extra.result ?? ""),
+    }
   }
   return { ...base, kind, text: String(extra.content ?? extra.text ?? "") }
 }
@@ -837,6 +851,65 @@ describe("EventStore", () => {
     expect(forked.lastMessageAt).toBe(source.createdAt + 2)
     expect(forked.hasMessages).toBe(true)
     expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id))
+  })
+
+  test("forking mid-turn branches from the last completed turn", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const source = await store.createChat(project.id)
+    await store.setChatProvider(source.id, "claude")
+    await store.setSessionToken(source.id, "session-1")
+
+    // A turn that finished.
+    await store.recordTurnStarted(source.id)
+    await store.appendMessage(source.id, entry("user_prompt", 1_000, { content: "analyze this" }))
+    await store.appendMessage(source.id, entry("assistant_text", 2_000, { text: "analysis done" }))
+    await store.appendMessage(source.id, entry("result", 3_000, { result: "ok", durationMs: 5 }))
+    await store.recordTurnFinished(source.id)
+
+    // …and one still running: a prompt and a reply whose tool results haven't landed.
+    await store.recordTurnStarted(source.id)
+    await store.appendMessage(source.id, entry("user_prompt", 4_000, { content: "now refactor it" }))
+    await store.appendMessage(source.id, entry("assistant_text", 5_000, { text: "starting the refactor" }))
+
+    const forked = await store.forkChat(source.id, { atLastCompletedTurn: true })
+
+    // The copy stops at the completed turn's result — the in-flight prompt and
+    // its half-written reply stay behind with the source.
+    expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id).slice(0, 3))
+    expect(forked.lastMessageAt).toBe(3_000)
+    // Previews describe the branch point, not the turn the fork left behind.
+    expect(forked.lastUserMessagePreview).toBe("analyze this")
+    expect(forked.lastAgentMessagePreview).toBe("analysis done")
+    expect(forked.lastAgentMessageAt).toBe(3_000)
+    expect(forked.turnCount).toBe(1)
+    // The source is untouched: its turn is still running.
+    expect(store.getMessages(source.id)).toHaveLength(5)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getMessages(forked.id)).toHaveLength(3)
+  })
+
+  test("refuses a mid-turn fork when no turn has completed yet", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const source = await store.createChat(project.id)
+    await store.setChatProvider(source.id, "claude")
+    await store.setSessionToken(source.id, "session-1")
+    await store.recordTurnStarted(source.id)
+    await store.appendMessage(source.id, entry("user_prompt", 1_000, { content: "first ever prompt" }))
+
+    const chatsBefore = store.listChatsByProject(project.id).length
+    await expect(store.forkChat(source.id, { atLastCompletedTurn: true })).rejects.toThrow(/no completed turn/)
+    // The refusal happens before anything is written — no half-built fork.
+    expect(store.listChatsByProject(project.id).length).toBe(chatsBefore)
   })
 
   test("lastAgentMessageAt tracks agent entries mid-turn, ignoring user prompts", async () => {

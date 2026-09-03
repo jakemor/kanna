@@ -110,6 +110,14 @@ export function getEffectiveComposerState(
         planMode: composerState.planMode,
         autoPlan: composerState.autoPlan,
       }
+    case "opencode":
+      return {
+        provider: "opencode",
+        model: providerDefaults.opencode.model,
+        modelOptions: { ...providerDefaults.opencode.modelOptions },
+        planMode: composerState.planMode,
+        autoPlan: composerState.autoPlan,
+      }
     default:
       return assertNever(activeProvider)
   }

@@ -11,6 +11,7 @@ import {
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
   normalizeCursorModelId,
+  normalizeOpenCodeModelId,
   normalizePiModelId,
   normalizePiReasoningEffort,
   supportsClaudeMaxReasoningEffort,
@@ -20,6 +21,7 @@ import {
   type ClaudeModelOptions,
   type CodexModelOptions,
   type CursorModelOptions,
+  type OpenCodeModelOptions,
   type PiModelOptions,
   type ProviderPreference,
 } from "./types"
@@ -113,6 +115,17 @@ export function normalizeCursorPreference(value?: ProviderPreferenceInput): Prov
   }
 }
 
+export function normalizeOpenCodePreference(
+  value?: ProviderPreferenceInput
+): ProviderPreference<OpenCodeModelOptions> {
+  return {
+    model: normalizeOpenCodeModelId(modelIdFromInput(value)),
+    modelOptions: {},
+    planMode: value?.planMode === true,
+    autoPlan: false,
+  }
+}
+
 export function normalizePiPreference(value?: ProviderPreferenceInput): ProviderPreference<PiModelOptions> {
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   return {
@@ -137,6 +150,7 @@ export const PROVIDER_NORMALIZERS: {
   codex: normalizeCodexPreference,
   cursor: normalizeCursorPreference,
   pi: normalizePiPreference,
+  opencode: normalizeOpenCodePreference,
 }
 
 export function normalizeProviderPreference<TProvider extends AgentProvider>(
@@ -154,6 +168,7 @@ export function normalizeProviderDefaults(
     codex: normalizeCodexPreference(value?.codex),
     cursor: normalizeCursorPreference(value?.cursor),
     pi: normalizePiPreference(value?.pi),
+    opencode: normalizeOpenCodePreference(value?.opencode),
   }
 }
 
@@ -202,6 +217,14 @@ export function mergeProviderDefaultsPatch(
       modelOptions: {
         ...current.pi.modelOptions,
         ...patch?.pi?.modelOptions,
+      },
+    },
+    opencode: {
+      ...current.opencode,
+      ...patch?.opencode,
+      modelOptions: {
+        ...current.opencode.modelOptions,
+        ...patch?.opencode?.modelOptions,
       },
     },
   }

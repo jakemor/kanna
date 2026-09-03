@@ -133,6 +133,12 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
       autoPlan: false,
     },
+    opencode: {
+      model: "opencode/north-mini-code-free",
+      modelOptions: {},
+      planMode: false,
+      autoPlan: false,
+    },
   },
   newSidebarEnabled: false,
   newProjectsDirectory: "~/Kanna",

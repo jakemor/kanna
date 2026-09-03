@@ -24,7 +24,7 @@ function service(
 
 function snapshotWith(status: AuthServiceSnapshot["authStatus"]): ProviderAuthSnapshot {
   return {
-    services: (["claude", "codex", "cursor", "gh", "openrouter"] as const).map((id) =>
+    services: (["claude", "codex", "cursor", "opencode", "gh", "openrouter"] as const).map((id) =>
       service(id, status),
     ),
   }

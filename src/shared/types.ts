@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex" | "cursor" | "pi"
+export type AgentProvider = "claude" | "codex" | "cursor" | "pi" | "opencode"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -270,11 +270,17 @@ export interface PiModelOptions {
   reasoningEffort: PiReasoningEffort
 }
 
+// opencode selects a model per session over ACP (session/set_config_option),
+// and exposes neither a reasoning-effort dial nor a fast tier of its own — the
+// chosen "provider/model" id carries everything.
+export interface OpenCodeModelOptions {}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
   cursor: CursorModelOptions
   pi: PiModelOptions
+  opencode: OpenCodeModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -326,6 +332,7 @@ export type ChatProviderPreferences = {
   codex: ProviderPreference<CodexModelOptions>
   cursor: ProviderPreference<CursorModelOptions>
   pi: ProviderPreference<PiModelOptions>
+  opencode: ProviderPreference<OpenCodeModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -346,6 +353,11 @@ export const DEFAULT_CODEX_MODEL_OPTIONS = {
 export const DEFAULT_CURSOR_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CursorModelOptions
+
+export const DEFAULT_OPENCODE_MODEL_OPTIONS = {} as const satisfies OpenCodeModelOptions
+
+/** Free on OpenCode Zen, so a fresh install can run a turn without auth. */
+export const DEFAULT_OPENCODE_MODEL = "opencode/north-mini-code-free"
 
 export const DEFAULT_PI_MODEL = "~anthropic/claude-fable-latest"
 
@@ -657,6 +669,20 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     models: piModelOptionsFromFaves(DEFAULT_PI_FAVE_MODELS),
     efforts: [...PI_REASONING_OPTIONS],
   },
+  {
+    // opencode speaks ACP (`opencode acp`). Plan mode is the session's
+    // build/plan config option. Static fallback only — the real list comes from
+    // `opencode models` (see applyOpenCodeModels in provider-catalog).
+    id: "opencode",
+    label: "opencode",
+    defaultModel: DEFAULT_OPENCODE_MODEL,
+    supportsPlanMode: true,
+    supportsAutoPlanMode: false,
+    models: [
+      { id: DEFAULT_OPENCODE_MODEL, label: "North Mini Code Free", supportsEffort: false },
+    ],
+    efforts: [],
+  },
 ]
 
 export function getProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
@@ -693,6 +719,9 @@ export function normalizeProviderModelId(
 ): string {
   if (provider === "pi") {
     return normalizePiModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
+  }
+  if (provider === "opencode") {
+    return normalizeOpenCodeModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
   }
   if (provider === "cursor") {
     return normalizeCursorModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
@@ -732,6 +761,14 @@ export function normalizeCursorModelId(modelId?: string, fallbackModelId = "comp
   const trimmed = typeof modelId === "string" ? modelId.trim() : ""
   const base = trimmed.endsWith("-fast") ? trimmed.slice(0, -"-fast".length) : trimmed
   return base || fallbackModelId
+}
+
+// opencode's model list is the account's configured providers, discovered at
+// runtime (`opencode models` -> applyOpenCodeModels), so unknown ids pass
+// through instead of clamping to the static catalog.
+export function normalizeOpenCodeModelId(modelId?: string, fallbackModelId = DEFAULT_OPENCODE_MODEL): string {
+  const trimmed = typeof modelId === "string" ? modelId.trim() : ""
+  return trimmed || fallbackModelId
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -1154,6 +1191,7 @@ export interface AppSettingsPatch {
     pi?: Partial<Omit<ProviderPreference<PiModelOptions>, "modelOptions">> & {
       modelOptions?: Partial<PiModelOptions>
     }
+    opencode?: Partial<ProviderPreference<OpenCodeModelOptions>>
   }
 }
 
@@ -1238,14 +1276,15 @@ export interface UsageLimitsSnapshot {
 // the coding-agent CLIs (claude, codex, cursor-agent), gh, and OpenRouter.
 // ---------------------------------------------------------------------------
 
-export type AuthServiceId = "claude" | "codex" | "cursor" | "gh" | "openrouter"
+export type AuthServiceId = "claude" | "codex" | "cursor" | "opencode" | "gh" | "openrouter"
 
-export const AUTH_SERVICE_ORDER: AuthServiceId[] = ["claude", "codex", "cursor", "gh", "openrouter"]
+export const AUTH_SERVICE_ORDER: AuthServiceId[] = ["claude", "codex", "cursor", "opencode", "gh", "openrouter"]
 
 export const AUTH_SERVICE_LABELS: Record<AuthServiceId, string> = {
   claude: "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
+  opencode: "opencode",
   gh: "GitHub",
   openrouter: "OpenRouter",
 }
@@ -1309,7 +1348,14 @@ export interface ProviderAuthSnapshot {
  * OpenAI-compatible endpoint — don't conflate it with the OpenRouter card).
  */
 export function authServiceForProvider(provider: AgentProvider): AuthServiceId | null {
-  if (provider === "claude" || provider === "codex" || provider === "cursor") return provider
+  if (
+    provider === "claude"
+    || provider === "codex"
+    || provider === "cursor"
+    || provider === "opencode"
+  ) {
+    return provider
+  }
   return null
 }
 

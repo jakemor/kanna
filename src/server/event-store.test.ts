@@ -216,6 +216,36 @@ describe("EventStore", () => {
     expect(reloaded.getChat(chat.id)?.unread).toBe(true)
   })
 
+  test("records who named a chat, and forgets automation once a person renames it", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    expect(store.getChat(chat.id)?.titleSource).toBeUndefined()
+
+    await store.renameChat(chat.id, "Investigate Slack thread", { source: "auto" })
+    expect(store.getChat(chat.id)?.titleSource).toBe("auto")
+
+    await store.renameChat(chat.id, "Web SDK paywall event", { source: "refined" })
+    expect(store.getChat(chat.id)?.titleSource).toBe("refined")
+
+    await store.compact()
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getChat(chat.id)?.titleSource).toBe("refined")
+
+    await reloaded.renameChat(chat.id, "My name for it")
+    expect(reloaded.getChat(chat.id)?.titleSource).toBeUndefined()
+
+    // Same text, now hand-typed: the source has to change even though the
+    // title did not, or automation would still think it owns the name.
+    await reloaded.renameChat(chat.id, "Auto name", { source: "auto" })
+    await reloaded.renameChat(chat.id, "Auto name")
+    expect(reloaded.getChat(chat.id)?.titleSource).toBeUndefined()
+  })
+
   test("stores and resolves a read anchor across restart", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)

@@ -9,7 +9,7 @@ const TITLE_SCHEMA = {
   additionalProperties: false,
 } as const
 
-function normalizeGeneratedTitle(value: unknown): string | null {
+export function normalizeGeneratedTitle(value: unknown): string | null {
   if (typeof value !== "string") return null
   const normalized = value.replace(/\s+/g, " ").trim().slice(0, 80)
   if (!normalized || normalized === "New Chat") return null

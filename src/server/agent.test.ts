@@ -13,8 +13,53 @@ import {
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
+import type { RefineChatTitleArgs } from "./refine-title"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+
+/** A codex manager whose turn says one thing and finishes — enough to title. */
+function createTitleTurnCodexManager(assistantText: string) {
+  return {
+    async startSession() {},
+    async startTurn(): Promise<HarnessTurn> {
+      async function* stream() {
+        yield {
+          type: "transcript" as const,
+          entry: timestamped({
+            kind: "system_init",
+            provider: "codex",
+            model: "gpt-5.4",
+            tools: [],
+            agents: [],
+            slashCommands: [],
+            mcpServers: [],
+          }),
+        }
+        yield {
+          type: "transcript" as const,
+          entry: timestamped({ kind: "assistant_text", text: assistantText }),
+        }
+        yield {
+          type: "transcript" as const,
+          entry: timestamped({
+            kind: "result",
+            subtype: "success",
+            isError: false,
+            durationMs: 0,
+            result: "",
+          }),
+        }
+      }
+
+      return {
+        provider: "codex",
+        stream: stream(),
+        interrupt: async () => {},
+        close: () => {},
+      }
+    },
+  }
+}
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()
@@ -370,6 +415,7 @@ describe("AgentCoordinator codex integration", () => {
           failureMessage: null,
         }
       },
+      refineTitle: async () => ({ title: null, failureMessage: null }),
     })
 
     await coordinator.send({
@@ -441,6 +487,7 @@ describe("AgentCoordinator codex integration", () => {
           failureMessage: null,
         }
       },
+      refineTitle: async () => ({ title: null, failureMessage: null }),
     })
 
     await coordinator.send({
@@ -526,6 +573,140 @@ describe("AgentCoordinator codex integration", () => {
     expect(backgroundErrors).toEqual([
       "[title-generation] chat chat-1 failed provider title generation: claude failed conversation title generation: Not authenticated",
     ])
+  })
+
+  test("renames a generic auto title once the first turn shows what the chat is about", async () => {
+    const store = createFakeStore()
+    const refineCalls: RefineChatTitleArgs[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: createTitleTurnCodexManager("The web SDK never fires the paywall event.") as never,
+      generateTitle: async () => ({
+        title: "Investigate Slack Thread",
+        usedFallback: false,
+        failureMessage: null,
+      }),
+      refineTitle: async (args) => {
+        refineCalls.push(args)
+        return { title: "Web SDK paywall event", failureMessage: null }
+      },
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "look at this slack thread",
+      model: "gpt-5.4",
+    })
+
+    await waitFor(() => store.chat.title === "Web SDK paywall event")
+    expect(store.chat.titleSource).toBe("refined")
+    // It judges the generated title, not the optimistic first-message one.
+    expect(refineCalls[0]?.currentTitle).toBe("Investigate Slack Thread")
+    expect(refineCalls[0]?.digest).toContain("look at this slack thread")
+    expect(refineCalls[0]?.digest).toContain("The web SDK never fires the paywall event.")
+  })
+
+  test("keeps the auto title when the refiner says it is already specific", async () => {
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: createTitleTurnCodexManager("Fixed it.") as never,
+      generateTitle: async () => ({
+        title: "Web SDK paywall event",
+        usedFallback: false,
+        failureMessage: null,
+      }),
+      refineTitle: async () => ({ title: null, failureMessage: null }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "the paywall event never fires",
+      model: "gpt-5.4",
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+    expect(store.chat.title).toBe("Web SDK paywall event")
+    expect(store.chat.titleSource).toBe("auto")
+  })
+
+  test("never refines a title the user typed", async () => {
+    const store = createFakeStore()
+    let refineCalls = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: createTitleTurnCodexManager("Done.") as never,
+      generateTitle: async () => ({
+        title: "Investigate Slack Thread",
+        usedFallback: false,
+        failureMessage: null,
+      }),
+      refineTitle: async () => {
+        refineCalls += 1
+        return { title: "Web SDK paywall event", failureMessage: null }
+      },
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "look at this slack thread",
+      model: "gpt-5.4",
+    })
+    await store.renameChat("chat-1", "Manual title")
+
+    await waitFor(() => store.turnFinishedCount === 1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(store.chat.title).toBe("Manual title")
+    expect(refineCalls).toBe(0)
+  })
+
+  test("only refines the first turn of a chat", async () => {
+    const store = createFakeStore()
+    let refineCalls = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: createTitleTurnCodexManager("Done.") as never,
+      generateTitle: async () => ({
+        title: "Investigate Slack Thread",
+        usedFallback: false,
+        failureMessage: null,
+      }),
+      refineTitle: async () => {
+        refineCalls += 1
+        return { title: null, failureMessage: null }
+      },
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "look at this slack thread",
+      model: "gpt-5.4",
+    })
+    await waitFor(() => refineCalls === 1)
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "and now fix it",
+      model: "gpt-5.4",
+    })
+    await waitFor(() => store.turnFinishedCount === 2)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(refineCalls).toBe(1)
   })
 
   test("binds codex provider and reuses the session token on later turns", async () => {
@@ -2378,6 +2559,8 @@ function createFakeChat(id: string, projectId: string, title = "New Chat") {
     id,
     projectId,
     title,
+    titleSource: undefined as "auto" | "refined" | undefined,
+    turnCount: 0,
     provider: null as "claude" | "codex" | null,
     planMode: false,
     autoPlan: false,
@@ -2427,13 +2610,20 @@ function createFakeStore(options?: {
     async setAutoPlan(chatId: string, autoPlan: boolean) {
       requireChat(chatId).autoPlan = autoPlan
     },
-    async renameChat(chatId: string, title: string) {
-      requireChat(chatId).title = title
+    async renameChat(chatId: string, title: string, options?: { source?: "auto" | "refined" }) {
+      const target = requireChat(chatId)
+      target.title = title
+      target.titleSource = options?.source
     },
     async appendMessage(_chatId: string, entry: TranscriptEntry) {
       this.messages.push(entry)
     },
-    async recordTurnStarted() {},
+    getTranscriptHeaders() {
+      return this.messages
+    },
+    async recordTurnStarted(chatId: string) {
+      requireChat(chatId).turnCount += 1
+    },
     async recordTurnFinished() {
       this.turnFinishedCount += 1
     },

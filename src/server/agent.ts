@@ -25,6 +25,12 @@ import { CodexAppServerManager } from "./codex-app-server"
 import { CursorCliManager } from "./cursor-cli"
 import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
+import {
+  type RefineChatTitleArgs,
+  type RefineChatTitleResult,
+  buildTurnDigest,
+  refineChatTitleDetailed,
+} from "./refine-title"
 import type { ClaudeRateLimitInfoRaw, ClaudeUsageRaw } from "./usage-limits"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
@@ -193,6 +199,7 @@ interface AgentCoordinatorArgs {
   piManager?: PiAgentManager
   resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
+  refineTitle?: (args: RefineChatTitleArgs) => Promise<RefineChatTitleResult>
   startClaudeSession?: (args: {
     localPath: string
     model: string
@@ -853,11 +860,16 @@ export class AgentCoordinator {
   private readonly piManager: PiAgentManager
   private readonly resolvePiConnection: () => Promise<import("./pi-agent").PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
+  private readonly refineTitle: (args: RefineChatTitleArgs) => Promise<RefineChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
+  /** First-message title generation still in flight, keyed by chat. */
+  private readonly pendingTitleGeneration = new Map<string, Promise<void>>()
+  /** Chats the post-turn title refiner has already looked at this process. */
+  private readonly refinedTitles = new Set<string>()
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
@@ -871,6 +883,7 @@ export class AgentCoordinator {
     this.piManager = args.piManager ?? new PiAgentManager()
     this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
+    this.refineTitle = args.refineTitle ?? refineChatTitleDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
   }
@@ -1286,7 +1299,7 @@ export class AgentCoordinator {
     const optimisticTitle = shouldGenerateTitle ? fallbackTitleFromMessage(args.content) : null
 
     if (optimisticTitle) {
-      await this.store.renameChat(args.chatId, optimisticTitle)
+      await this.store.renameChat(args.chatId, optimisticTitle, { source: "auto" })
     }
 
     const project = this.store.getProject(chat.projectId)
@@ -1333,7 +1346,20 @@ export class AgentCoordinator {
     await this.store.recordTurnStarted(args.chatId, args.model)
 
     if (shouldGenerateTitle) {
-      void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
+      // Held so the post-turn refiner judges the generated title rather than
+      // racing it — the two run against the same first turn.
+      const generation = this.generateTitleInBackground(
+        args.chatId,
+        args.content,
+        project.localPath,
+        optimisticTitle ?? "New Chat"
+      )
+      this.pendingTitleGeneration.set(args.chatId, generation)
+      void generation.finally(() => {
+        if (this.pendingTitleGeneration.get(args.chatId) === generation) {
+          this.pendingTitleGeneration.delete(args.chatId)
+        }
+      })
     }
 
     const onToolRequest = async (request: HarnessToolRequest): Promise<unknown> => {
@@ -1979,6 +2005,7 @@ export class AgentCoordinator {
             await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(session.chatId)
+            void this.maybeRefineTitleAfterTurn(session.chatId)
           }
           this.activeTurns.delete(session.chatId)
           if (!active.cancelRequested) {
@@ -2037,12 +2064,66 @@ export class AgentCoordinator {
       const chat = this.store.requireChat(chatId)
       if (chat.title !== expectedCurrentTitle) return
 
-      await this.store.renameChat(chatId, result.title)
+      await this.store.renameChat(chatId, result.title, { source: "auto" })
       this.emitStateChange(chatId)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       this.reportBackgroundError?.(
         `[title-generation] chat ${chatId} failed background title generation: ${message}`
+      )
+    }
+  }
+
+  /**
+   * Second look at the title once the chat's first turn has landed.
+   *
+   * The original is generated from the opening message alone, so it names
+   * whatever the user opened with ("Investigate Slack thread") rather than what
+   * the chat turned out to be about (the web SDK bug in that thread). Now that
+   * there's a turn to read, give a small model the chance to say the title is
+   * too generic to find later and replace it — most of the time it keeps it.
+   *
+   * Only ever fires on the first successful turn of a chat whose title we
+   * generated ourselves: a hand-typed name is never touched.
+   */
+  private async maybeRefineTitleAfterTurn(chatId: string) {
+    if (this.refinedTitles.has(chatId)) return
+    try {
+      // Judge the generated title, not the placeholder it replaces.
+      await this.pendingTitleGeneration.get(chatId)
+
+      const chat = this.store.getChat(chatId)
+      if (!chat || chat.titleSource !== "auto") return
+      if ((chat.turnCount ?? 0) !== 1) return
+      const project = this.store.getProject(chat.projectId)
+      if (!project) return
+
+      const digest = buildTurnDigest(this.store.getTranscriptHeaders(chatId))
+      if (!digest) return
+
+      this.refinedTitles.add(chatId)
+      const result = await this.refineTitle({
+        currentTitle: chat.title,
+        digest,
+        cwd: project.localPath,
+      })
+      if (result.failureMessage) {
+        this.reportBackgroundError?.(
+          `[title-refinement] chat ${chatId} failed provider title refinement: ${result.failureMessage}`
+        )
+      }
+      if (!result.title) return
+
+      // The user may have renamed it while we were thinking; their name wins.
+      const current = this.store.getChat(chatId)
+      if (!current || current.titleSource !== "auto" || current.title !== chat.title) return
+
+      await this.store.renameChat(chatId, result.title, { source: "refined" })
+      this.emitStateChange(chatId)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.reportBackgroundError?.(
+        `[title-refinement] chat ${chatId} failed background title refinement: ${message}`
       )
     }
   }
@@ -2080,6 +2161,7 @@ export class AgentCoordinator {
             await this.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed")
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
+            void this.maybeRefineTitleAfterTurn(active.chatId)
           }
           // Remove from activeTurns as soon as the result arrives so the UI
           // transitions to idle immediately. The stream may still be open

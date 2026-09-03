@@ -33,6 +33,13 @@ export interface ChatRecord {
   id: string
   projectId: string
   title: string
+  /**
+   * Where the current title came from. "auto" — generated from the opening
+   * message before any work happened, so the post-turn refiner is allowed to
+   * replace it. "refined" — the refiner has already had its look. Absent means
+   * a person named it (or a fork inherited it), and nothing renames it again.
+   */
+  titleSource?: "auto" | "refined"
   createdAt: number
   updatedAt: number
   deletedAt?: number
@@ -212,6 +219,12 @@ export type ChatEvent =
       timestamp: number
       chatId: string
       title: string
+      /**
+       * Who named it. Absent means the user did, which is the only answer old
+       * logs can give and the one that keeps automation off a hand-typed name.
+       * See `ChatRecord.titleSource`.
+       */
+      source?: "auto" | "refined"
     }
   | {
       v: 2

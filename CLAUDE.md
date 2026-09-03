@@ -41,6 +41,12 @@ React client (src/client)
 - Provider adapters normalize three different wire protocols into
   `HarnessEvent`s (`harness-types.ts`). Claude runs through the Agent SDK in
   `agent.ts` directly; codex/cursor/pi produce `HarnessTurn`s.
+- Chat titles are generated twice: once from the opening message
+  (`generate-title.ts`, optimistic fallback first), then once more after the
+  first turn finishes (`refine-title.ts`), where a small model may replace a
+  title too generic to find the chat by. `ChatRecord.titleSource` gates the
+  second pass — a rename with no source is a person typing, and nothing
+  automatic touches the title again.
 - Transcripts are append-only JSONL per chat (`transcripts/<chatId>.jsonl`)
   with a small LRU cache in the EventStore. `debugRaw` (raw provider JSON) is
   stamped only on `system_init` — the one entry with a raw JSON view. Tool

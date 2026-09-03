@@ -691,6 +691,13 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.title = event.title
+        // A rename with no source is a person typing, and it takes the title
+        // out of automation's hands for good.
+        if (event.source) {
+          chat.titleSource = event.source
+        } else {
+          delete chat.titleSource
+        }
         chat.updatedAt = event.timestamp
         break
       }
@@ -1229,17 +1236,23 @@ export class EventStore {
     return this.state.chatsById.get(chatId)!
   }
 
-  async renameChat(chatId: string, title: string) {
+  /**
+   * `source` records who named the chat: omit it for a user rename, which is
+   * final, or pass "auto"/"refined" for a generated one, which the post-turn
+   * refiner is still allowed to revisit.
+   */
+  async renameChat(chatId: string, title: string, options?: { source?: "auto" | "refined" }) {
     const trimmed = title.trim()
     if (!trimmed) return
     const chat = this.requireChat(chatId)
-    if (chat.title === trimmed) return
+    if (chat.title === trimmed && chat.titleSource === options?.source) return
     const event: ChatEvent = {
       v: STORE_VERSION,
       type: "chat_renamed",
       timestamp: Date.now(),
       chatId,
       title: trimmed,
+      ...(options?.source ? { source: options.source } : {}),
     }
     await this.append(this.chatsLogPath, event)
   }
@@ -1888,6 +1901,15 @@ export class EventStore {
     return entries.map((entry) => entry.trimmed
       ? mergeTranscriptPayload({ ...entry }, payloads.get(entry._id))
       : { ...entry })
+  }
+
+  /**
+   * The transcript in header form — tool bodies left in the sidecar. For
+   * readers that only need to know *what* happened (titles, summaries), not
+   * what the tools returned.
+   */
+  getTranscriptHeaders(chatId: string) {
+    return cloneTranscriptEntries(this.getTranscriptEntries(chatId))
   }
 
   getQueuedMessages(chatId: string) {

@@ -10,6 +10,7 @@ import {
   normalizeClaudeContextUsage,
   normalizeClaudeStreamMessage,
   normalizeClaudeUsageSnapshot,
+  RESUME_AFTER_RESTART_MESSAGE,
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
@@ -2373,6 +2374,132 @@ describe("session restore on lost native session", () => {
   })
 })
 
+describe("AgentCoordinator restart resume", () => {
+  test("shutdown cancels running turns and marks their chats for resume", async () => {
+    const events = new AsyncEventQueue<any>()
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(): Promise<HarnessTurn> {
+        return {
+          provider: "codex",
+          stream: events,
+          interrupt: async () => {},
+          close: () => events.close(),
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "long running task",
+    })
+    await waitFor(() => coordinator.activeTurns.has("chat-1"))
+
+    await coordinator.interruptForShutdown()
+
+    expect(store.chat.resumePending).toBe(true)
+    expect(coordinator.activeTurns.size).toBe(0)
+    // The turn is still cancelled like any other, so a chat that never gets
+    // resumed reads exactly as it does today.
+    expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(true)
+  })
+
+  test("a user-initiated cancel leaves no resume marker", async () => {
+    const events = new AsyncEventQueue<any>()
+    const fakeCodexManager = {
+      async startSession() {},
+      async startTurn(): Promise<HarnessTurn> {
+        return {
+          provider: "codex",
+          stream: events,
+          interrupt: async () => {},
+          close: () => events.close(),
+        }
+      },
+    }
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "long running task",
+    })
+    await waitFor(() => coordinator.activeTurns.has("chat-1"))
+
+    await coordinator.cancel("chat-1")
+
+    expect(store.chat.resumePending).toBeUndefined()
+  })
+
+  test("resuming an interrupted turn sends a wire-only continuation, not a user prompt", async () => {
+    const events = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+    const store = createFakeStore()
+    store.chat.provider = "claude"
+    store.chat.sessionToken = "session-1"
+    store.chat.resumePending = true
+    store.chat.lastModel = "opus"
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      checkSessionArtifact: () => "present" as SessionArtifactStatus,
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async (content: string) => {
+          prompts.push(content)
+        },
+      }),
+    })
+
+    expect(await coordinator.resumeInterruptedTurn("chat-1")).toBe(true)
+
+    expect(prompts).toEqual([RESUME_AFTER_RESTART_MESSAGE])
+    // Nobody typed anything, so nothing lands in the transcript as if they had.
+    expect(store.messages.some((entry) => entry.kind === "user_prompt")).toBe(false)
+    expect(coordinator.activeTurns.has("chat-1")).toBe(true)
+  })
+
+  test("does not resume a chat with no session to resume into", async () => {
+    const store = createFakeStore()
+    store.chat.provider = "claude"
+    store.chat.resumePending = true
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        throw new Error("Should not start a session")
+      },
+    })
+
+    expect(await coordinator.resumeInterruptedTurn("chat-1")).toBe(false)
+    expect(store.messages).toEqual([])
+  })
+})
+
 function createFakeChat(id: string, projectId: string, title = "New Chat") {
   return {
     id,
@@ -2383,6 +2510,9 @@ function createFakeChat(id: string, projectId: string, title = "New Chat") {
     autoPlan: false,
     sessionToken: null as string | null,
     pendingForkSessionToken: null as string | null,
+    resumePending: undefined as boolean | undefined,
+    lastModel: undefined as string | undefined,
+    deletedAt: undefined as number | undefined,
   }
 }
 
@@ -2441,6 +2571,14 @@ function createFakeStore(options?: {
       throw new Error("Did not expect turn failure")
     },
     async recordTurnCancelled() {},
+    async setTurnResumePending(chatId: string, pending: boolean) {
+      const target = requireChat(chatId)
+      if (pending) {
+        target.resumePending = true
+      } else {
+        delete target.resumePending
+      }
+    },
     async setSessionToken(chatId: string, sessionToken: string | null) {
       requireChat(chatId).sessionToken = sessionToken
     },

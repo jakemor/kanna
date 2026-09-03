@@ -24,6 +24,7 @@ import { DiffStore } from "./diff-store"
 import { WorktreeProbe } from "./worktree-probe"
 import { TurnFileTracker } from "./worktree-snapshot"
 import { backfillTouchedFileBases } from "./touched-file-backfill"
+import { resumeInterruptedTurns } from "./resume-turns"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
 import { clearGitHubRepoCache } from "./github"
@@ -346,7 +347,27 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       await router.broadcastSnapshots()
     }
   }
+  // Chats that were mid-turn when Kanna last exited pick up where they left
+  // off. Not awaited — each resume starts a harness process, and boot should
+  // not wait on them; chained onto the GC sweep so a chat about to be archived
+  // or deleted for staleness isn't resumed on its way out.
   void runStartupGc()
+    .then(() => resumeInterruptedTurns({
+      store,
+      agent,
+      onError: (chatId, error) => {
+        console.warn(`${LOG_PREFIX} could not resume chat ${chatId} after restart:`, error)
+      },
+    }))
+    .then(async (resumedChatIds) => {
+      if (resumedChatIds.length > 0) {
+        console.log(`${LOG_PREFIX} resumed ${resumedChatIds.length} chat(s) interrupted by the last shutdown`)
+        await router.broadcastSnapshots()
+      }
+    })
+    .catch((error) => {
+      console.warn(`${LOG_PREFIX} resuming interrupted chats failed:`, error)
+    })
 
   // Then keep sweeping for the lifetime of the (potentially months-long)
   // process: empties every minute, deletes daily, archives every 6 hours.
@@ -661,9 +682,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     clearInterval(staleChatAutoArchiveInterval)
     clearInterval(staleChatDeleteInterval)
     worktreeProbe.stop()
-    for (const chatId of [...agent.activeTurns.keys()]) {
-      await agent.cancel(chatId)
-    }
+    // Cancels every in-flight turn *and* marks its chat, so the next boot
+    // restarts the work instead of leaving it interrupted (see resume-turns.ts).
+    await agent.interruptForShutdown()
     router.dispose()
     providerAuth.dispose()
     usageLimits.dispose()

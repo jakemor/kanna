@@ -839,6 +839,35 @@ describe("EventStore", () => {
     expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id))
   })
 
+  test("the resume marker survives a restart and a compaction", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.recordTurnStarted(chat.id)
+    await store.setTurnResumePending(chat.id, true)
+    // Shutdown cancels the turn like any other cancel; the marker is what tells
+    // the next boot the difference.
+    await store.recordTurnCancelled(chat.id)
+    expect(store.requireChat(chat.id).resumePending).toBe(true)
+    expect(store.requireChat(chat.id).lastTurnOutcome).toBe("cancelled")
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(chat.id).resumePending).toBe(true)
+
+    // Cleared by the boot that acts on it, and the clear sticks the same way.
+    await reloaded.setTurnResumePending(chat.id, false)
+    await reloaded.compact()
+    expect(reloaded.requireChat(chat.id).resumePending).toBeUndefined()
+
+    const afterCompaction = new EventStore(dataDir)
+    await afterCompaction.initialize()
+    expect(afterCompaction.requireChat(chat.id).resumePending).toBeUndefined()
+  })
+
   test("lastAgentMessageAt tracks agent entries mid-turn, ignoring user prompts", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)

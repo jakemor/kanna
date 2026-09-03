@@ -233,6 +233,18 @@ const STEERED_MESSAGE_PREFIX = `<system-message>
 The user would like to inform you of something while you continue to work. Acknowledge receipt immediately with a text response, then continue with the task at hand, incorporating the user's feedback if needed.
 </system-message>`
 
+/**
+ * Wire-only prompt that restarts a turn Kanna killed by shutting down (see
+ * `AgentCoordinator.resumeInterruptedTurn`). The harness session carries the
+ * original prompt and the work already done, so this only has to say what
+ * happened and warn that the last thing it was doing may be half-finished —
+ * the process died mid-tool-call as often as not.
+ */
+export const RESUME_AFTER_RESTART_MESSAGE = `<system-message>
+Kanna restarted while you were working on this, so your process was stopped mid-task and is now back up. Continue the task you were on from where it left off.
+Whatever you were doing last may not have completed — re-check the state of any file you were editing and any command you had running before assuming it finished.
+</system-message>`
+
 interface SendMessageOptions {
   provider?: AgentProvider
   model?: string
@@ -1831,6 +1843,75 @@ export class AgentCoordinator {
     }
     const scanned = findSkillByName(scanCodexSkills({ cwd }), name)
     return scanned?.path ? { name: scanned.name, path: scanned.path } : undefined
+  }
+
+  /**
+   * Cancel every in-flight turn because Kanna itself is going down, marking
+   * each chat so the next boot picks the work back up (`resumeInterruptedTurn`).
+   *
+   * Everything a user-initiated cancel does still happens — the harness is
+   * interrupted, the pending tool call is discarded, the transcript gets its
+   * `interrupted` entry — so a chat that never gets resumed reads exactly as it
+   * does today. The marker is written first: a shutdown that dies partway
+   * through leaves a chat resumable-but-not-cancelled, which the resume pass
+   * handles, rather than cancelled-but-forgotten, which it can't.
+   */
+  async interruptForShutdown() {
+    for (const chatId of [...this.activeTurns.keys()]) {
+      try {
+        await this.store.setTurnResumePending(chatId, true)
+      } catch {
+        // Best effort — a chat we can't mark still gets cancelled cleanly.
+      }
+      await this.cancel(chatId)
+    }
+  }
+
+  /**
+   * Restart a turn that the previous process cut short by shutting down.
+   *
+   * The prompt is wire-only (`appendUserPrompt: false`), so the transcript
+   * shows the interrupted turn picking back up rather than a user message
+   * nobody typed. Resuming leans on the harness session having survived: it
+   * holds the original prompt and everything the turn did before it died, so
+   * "carry on" is all that has to be said. When the session is gone,
+   * `startTurnForChat`'s own recovery notices and rebuilds the context from our
+   * transcript first (`prepareSessionRestore`), which is exactly what's wanted.
+   *
+   * Returns whether a turn was actually started.
+   */
+  async resumeInterruptedTurn(chatId: string) {
+    const chat = this.store.getChat(chatId)
+    if (!chat || chat.deletedAt) return false
+    if (!chat.provider) return false
+    if (this.activeTurns.has(chatId)) return false
+    // No session to resume into means the harness never got far enough to have
+    // context worth continuing; a bare "carry on" would be sent into an empty
+    // session, so leave the chat interrupted instead.
+    if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
+
+    // Everything the chat record remembers about how the turn was running:
+    // the model it actually ran with plus the two persisted modes. Reasoning
+    // effort and fast mode are picked in the composer and never stored server
+    // side, so the resumed turn falls back to the provider defaults for those.
+    const settings = this.getProviderSettings(chat.provider, {
+      model: chat.lastModel,
+      planMode: chat.planMode,
+      autoPlan: chat.autoPlan,
+    })
+    await this.startTurnForChat({
+      chatId,
+      provider: chat.provider,
+      content: RESUME_AFTER_RESTART_MESSAGE,
+      attachments: [],
+      model: settings.model,
+      effort: settings.effort,
+      serviceTier: settings.serviceTier,
+      planMode: settings.planMode,
+      autoPlan: settings.autoPlan,
+      appendUserPrompt: false,
+    })
+    return true
   }
 
   async forkChat(chatId: string) {

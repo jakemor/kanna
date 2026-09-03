@@ -210,6 +210,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "pending_fork_session_token_set":
       return 6
     case "turn_cancelled":
+    case "turn_resume_pending_set":
       return 7
     case "turn_finished":
     case "turn_failed":
@@ -859,6 +860,16 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         chat.lastTurnOutcome = "cancelled"
         chat.lastTurnEndedAt = event.timestamp
+        break
+      }
+      case "turn_resume_pending_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        if (event.pending) {
+          chat.resumePending = true
+        } else {
+          delete chat.resumePending
+        }
         break
       }
       case "session_token_set": {
@@ -1824,6 +1835,25 @@ export class EventStore {
     }
     await this.append(this.turnsLogPath, event)
     this.onTurnEnded?.(chatId)
+  }
+
+  /**
+   * Flag (or clear) a chat whose turn Kanna cut short by shutting down, so the
+   * next process can pick it back up. Deliberately does not touch `updatedAt`:
+   * it's bookkeeping about the process, not activity in the chat, and bumping
+   * it would shuffle the sidebar on every boot.
+   */
+  async setTurnResumePending(chatId: string, pending: boolean) {
+    const chat = this.requireChat(chatId)
+    if (Boolean(chat.resumePending) === pending) return
+    const event: TurnEvent = {
+      v: STORE_VERSION,
+      type: "turn_resume_pending_set",
+      timestamp: Date.now(),
+      chatId,
+      pending,
+    }
+    await this.append(this.turnsLogPath, event)
   }
 
   async setSessionToken(chatId: string, sessionToken: string | null) {

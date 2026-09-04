@@ -76,6 +76,8 @@ const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
 
 const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   devbox: false,
+  installedTerminals: null,
+  installedEditors: null,
   analyticsEnabled: true,
   browserSettingsMigrated: false,
   setupShown: false,

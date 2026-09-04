@@ -4,6 +4,7 @@ import { ANALYTICS_STATIC_EVENT_NAMES, ANALYTICS_STATIC_PROPERTY_NAMES } from ".
 import type { EditorPreset } from "../../../shared/protocol"
 import { DEFAULT_NEW_PROJECTS_DIRECTORY } from "../../../shared/types"
 import { EDITOR_OPTIONS, EditorIcon } from "../../components/editor-icons"
+import { useInstalledEditors } from "../../components/open-external-menu"
 import { Button } from "../../components/ui/button"
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from "../../components/ui/dialog"
 import { Input } from "../../components/ui/input"
@@ -71,6 +72,7 @@ export function GeneralSection({
   const scrollbackLines = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
   const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
+  const installedEditors = useInstalledEditors()
   const editorCommandTemplate = useTerminalPreferencesStore((store) => store.editorCommandTemplate)
   const setScrollbackLines = useTerminalPreferencesStore((store) => store.setScrollbackLines)
   const setMinColumnWidth = useTerminalPreferencesStore((store) => store.setMinColumnWidth)
@@ -330,14 +332,24 @@ export function GeneralSection({
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {EDITOR_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    <span className="flex items-center gap-2">
-                      <EditorIcon preset={option.value} className="h-4 w-4 shrink-0" />
-                      <span>{option.label}</span>
-                    </span>
-                  </SelectItem>
-                ))}
+                {EDITOR_OPTIONS.map((option) => {
+                  // Listed but not selectable when it isn't on this machine —
+                  // picking it would only make every "Open in" fail later.
+                  const installed = !installedEditors || option.value === "custom" || installedEditors.includes(option.value)
+                  return (
+                    <SelectItem key={option.value} value={option.value} disabled={!installed}>
+                      <span className="flex items-center gap-2">
+                        <EditorIcon preset={option.value} className={`h-4 w-4 shrink-0${installed ? "" : " opacity-40 grayscale"}`} />
+                        <span className={installed ? undefined : "text-muted-foreground"}>{option.label}</span>
+                        {installed ? null : (
+                          <span className="ml-auto shrink-0 rounded-full border border-border/70 px-1.5 py-px text-[10px] leading-4 font-medium text-muted-foreground">
+                            Not installed
+                          </span>
+                        )}
+                      </span>
+                    </SelectItem>
+                  )
+                })}
               </SelectGroup>
             </SelectContent>
           </Select>

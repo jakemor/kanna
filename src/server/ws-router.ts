@@ -83,6 +83,8 @@ interface CreateWsRouterArgs {
     validate: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   }
   refreshDiscovery: () => Promise<DiscoveredProject[]>
+  /** Re-probe which editors are installed; results reach clients via app-settings. */
+  refreshInstalledEditors?: () => void
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
   updateManager: UpdateManager | null
@@ -183,6 +185,7 @@ export function createWsRouter({
   analytics,
   llmProvider,
   refreshDiscovery,
+  refreshInstalledEditors,
   getDiscoveredProjects,
   machineDisplayName,
   updateManager,
@@ -1831,6 +1834,11 @@ export function createWsRouter({
         // TTL-respecting probe pushes fresh results to all subscribers.
         if (parsed.topic.type === "provider-auth" && providerAuth) {
           void providerAuth.refresh().catch(() => undefined)
+        }
+        // And for installed editors: cached until its TTL lapses, so an editor
+        // installed while Kanna ran shows up on the next page load.
+        if (parsed.topic.type === "app-settings") {
+          refreshInstalledEditors?.()
         }
         return
       }

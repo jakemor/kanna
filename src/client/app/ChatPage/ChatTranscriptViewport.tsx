@@ -48,7 +48,7 @@ import {
   CHAT_NAVBAR_OFFSET_PX,
   EMPTY_STATE_TEXT,
 } from "./utils"
-import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
+import type { EditorOpenSettings, EditorPreset, OpenExternalAction, TerminalPreset } from "../../../shared/protocol"
 import type { TranscriptOutlineEntry } from "../../../shared/types"
 /**
  * How close to the bottom counts as "at the end", as a fraction of viewport
@@ -207,7 +207,7 @@ interface ChatTranscriptViewportProps {
   /** When provided, the empty state shows live harness usage cards. */
   socket?: KannaSocket
   emptyStateProjectPath?: string | null
-  onOpenProjectExternal?: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
+  onOpenProjectExternal?: (action: OpenExternalAction, editor?: EditorOpenSettings, terminal?: TerminalPreset) => void
   editorPreset?: EditorPreset
   editorCommandTemplate?: string
   platform?: NodeJS.Platform

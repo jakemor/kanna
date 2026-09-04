@@ -19,6 +19,8 @@ import { AgentCoordinator } from "./agent"
 import { CodexAppServerManager } from "./codex-app-server"
 import { KannaAnalyticsReporter } from "./analytics"
 import { AppSettingsManager } from "./app-settings"
+import { refreshInstalledEditors } from "./editor-detection"
+import { refreshInstalledTerminals } from "./terminal-detection"
 import { UsageLimitsManager } from "./usage-limits"
 import { DiffStore } from "./diff-store"
 import { WorktreeProbe } from "./worktree-probe"
@@ -210,6 +212,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const devboxUi = Boolean(options.directCloud) || process.env.KANNA_DEVBOX_UI === "1"
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"), { devbox: devboxUi })
   await appSettings.initialize()
+  // Which editors this machine has, for the "Open in…" menus. Deliberately not
+  // awaited: it shells out per editor, and the menus render fine (nothing
+  // greyed out) until the result lands.
+  void refreshInstalledEditors(appSettings)
+  void refreshInstalledTerminals(appSettings)
   await keybindings.initialize()
   const analytics = new KannaAnalyticsReporter({
     settings: appSettings,
@@ -288,6 +295,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       validate: validateLlmProviderCredentials,
     },
     refreshDiscovery,
+    refreshInstalledEditors: () => {
+      void refreshInstalledEditors(appSettings)
+  void refreshInstalledTerminals(appSettings)
+    },
     getDiscoveredProjects: () => discoveredProjects,
     machineDisplayName,
     updateManager,

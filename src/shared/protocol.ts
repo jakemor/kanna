@@ -19,9 +19,10 @@ import type {
   UpdateSnapshot,
   UsageLimitsSnapshot,
   EditorPreset,
+  TerminalPreset,
 } from "./types"
 
-export type { EditorPreset }
+export type { EditorPreset, TerminalPreset }
 
 export interface EditorOpenSettings {
   preset: EditorPreset
@@ -178,6 +179,8 @@ export type ClientCommand =
       line?: number
       column?: number
       editor?: EditorOpenSettings
+      /** For `open_terminal`: which emulator. Omitted means this machine's default. */
+      terminal?: TerminalPreset
     }
   | { type: "chat.create"; projectId: string }
   | { type: "chat.fork"; chatId: string }

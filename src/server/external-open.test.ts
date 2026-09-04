@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildDefaultOpenCommand, buildEditorCommand, buildPreviewCommand, tokenizeCommandTemplate } from "./external-open"
+import { buildDefaultOpenCommand, buildEditorCommand, buildPreviewCommand, buildTerminalCommand, tokenizeCommandTemplate } from "./external-open"
 
 describe("tokenizeCommandTemplate", () => {
   test("keeps quoted arguments together", () => {
@@ -25,6 +25,22 @@ describe("buildEditorCommand", () => {
     ).toEqual({
       command: "code",
       args: ["--goto", "/Users/jake/Projects/kanna/src/client/app/App.tsx:12:3"],
+    })
+  })
+
+  test("gives Zed the location on the path, since it has no --goto", () => {
+    expect(
+      buildEditorCommand({
+        localPath: "/Users/jake/Projects/kanna/src/client/app/App.tsx",
+        isDirectory: false,
+        line: 12,
+        column: 3,
+        editor: { preset: "zed", commandTemplate: "zed {path}" },
+        platform: "linux",
+      })
+    ).toEqual({
+      command: "zed",
+      args: ["/Users/jake/Projects/kanna/src/client/app/App.tsx:12:3"],
     })
   })
 
@@ -108,5 +124,38 @@ describe("buildDefaultOpenCommand", () => {
       command: "xdg-open",
       args: ["/tmp/mock.png"],
     })
+  })
+})
+
+describe("buildTerminalCommand", () => {
+  test("gives each emulator the working directory in its own syntax", () => {
+    // Same directory, four spellings — the reason this is a table and not a flag.
+    expect(buildTerminalCommand({ preset: "ghostty", localPath: "/repo", platform: "linux" }))
+      .toEqual({ command: "ghostty", args: ["--working-directory", "/repo"] })
+    expect(buildTerminalCommand({ preset: "wezterm", localPath: "/repo", platform: "linux" }))
+      .toEqual({ command: "wezterm", args: ["start", "--cwd", "/repo"] })
+    expect(buildTerminalCommand({ preset: "kitty", localPath: "/repo", platform: "linux" }))
+      .toEqual({ command: "kitty", args: ["--directory", "/repo"] })
+    expect(buildTerminalCommand({ preset: "alacritty", localPath: "/repo", platform: "linux" }))
+      .toEqual({ command: "alacritty", args: ["--working-directory", "/repo"] })
+  })
+
+  test("refuses a macOS-only terminal elsewhere", () => {
+    // iTerm has no Linux build, so there is no CLI to fall back to.
+    expect(() => buildTerminalCommand({ preset: "iterm", localPath: "/repo", platform: "linux" }))
+      .toThrow("iTerm is only available on macOS")
+  })
+
+  test("builds a Windows command for a named emulator", () => {
+    // The Windows open path has its own Windows Terminal / cmd fallback; a
+    // named choice has to beat it, or picking Alacritty opens something else.
+    expect(buildTerminalCommand({ preset: "alacritty", localPath: "C:\\repo", platform: "win32" }))
+      .toEqual({ command: "alacritty", args: ["--working-directory", "C:\\repo"] })
+  })
+
+  test("defaults to Terminal.app on macOS when no emulator is named", () => {
+    // The behaviour the menu had before terminals were detected at all.
+    expect(buildTerminalCommand({ localPath: "/repo", platform: "darwin" }))
+      .toEqual({ command: "open", args: ["-a", "Terminal", "/repo"] })
   })
 })

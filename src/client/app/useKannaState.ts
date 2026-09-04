@@ -6,6 +6,7 @@ import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../stores/chatPre
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { useEffectiveEditorPreset } from "../components/open-external-menu"
 import { useChatInputStore } from "../stores/chatInputStore"
 import {
   findSidebarChat,
@@ -57,7 +58,7 @@ import { useChatReadAnchor, type ChatReadAnchorState, type ReadAnchorLayoutSourc
 import { useSendMessage } from "./useSendMessage"
 import { useShareExport } from "./useShareExport"
 import { useUpdateRestart } from "./useUpdateRestart"
-import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
+import type { EditorOpenSettings, OpenExternalAction, TerminalPreset } from "../../shared/protocol"
 
 export {
   getUiUpdateReadinessPath,
@@ -243,7 +244,7 @@ export interface KannaState {
   handleHideProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
-  handleOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings) => Promise<void>
+  handleOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings, terminal?: TerminalPreset) => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
   handleOpenLocalLink: (target: OpenLocalLinkTarget, action?: OpenExternalAction, editor?: EditorOpenSettings) => Promise<void>
   handleCompose: () => void
@@ -293,7 +294,12 @@ export function useKannaState(activeChatId: string | null): KannaState {
     projectId: null,
     diffs: null,
   })
-  const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
+  // Not the raw preference: every plain "Open in X" in the app names the
+  // editor the navbar button would open, which is the one you last picked
+  // there and never one this machine doesn't have.
+  const editorLabel = getEditorPresetLabel(
+    useEffectiveEditorPreset(useTerminalPreferencesStore((store) => store.editorPreset))
+  )
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 

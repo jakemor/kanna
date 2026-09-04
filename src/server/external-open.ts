@@ -2,6 +2,8 @@ import { stat } from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
 import type { ClientCommand, EditorOpenSettings, EditorPreset } from "../shared/protocol"
+import { EDITOR_SPECS, isEditorPreset } from "../shared/editor-presets"
+import { TERMINAL_SPECS, type TerminalPreset } from "../shared/terminal-presets"
 import { resolveLocalPath } from "./paths"
 import { canOpenMacApp, hasCommand, spawnDetached } from "./process-utils"
 
@@ -73,10 +75,12 @@ export async function openExternal(command: OpenExternalCommand) {
       return
     }
     if (command.action === "open_terminal") {
-      if (!canOpenMacApp("Terminal")) {
-        throw new Error("Terminal is not installed")
-      }
-      await spawnDetached("open", ["-a", "Terminal", resolvedPath])
+      const terminalCommand = buildTerminalCommand({
+        preset: command.terminal,
+        localPath: resolvedPath,
+        platform,
+      })
+      await spawnDetached(terminalCommand.command, terminalCommand.args)
       return
     }
   }
@@ -99,6 +103,13 @@ export async function openExternal(command: OpenExternalCommand) {
       return
     }
     if (command.action === "open_terminal") {
+      // A named emulator wins over the Windows Terminal / cmd fallback, the
+      // same way it does on Linux — the menu only offers one when it found it.
+      if (command.terminal) {
+        const named = buildTerminalCommand({ preset: command.terminal, localPath: resolvedPath, platform })
+        await spawnDetached(named.command, named.args)
+        return
+      }
       if (hasCommand("wt")) {
         await spawnDetached("wt", ["-d", resolvedPath])
         return
@@ -126,6 +137,11 @@ export async function openExternal(command: OpenExternalCommand) {
     return
   }
   if (command.action === "open_terminal") {
+    if (command.terminal) {
+      const named = buildTerminalCommand({ preset: command.terminal, localPath: resolvedPath, platform })
+      await spawnDetached(named.command, named.args)
+      return
+    }
     for (const terminalCommand of ["x-terminal-emulator", "gnome-terminal", "konsole"]) {
       if (!hasCommand(terminalCommand)) continue
       if (terminalCommand === "gnome-terminal") {
@@ -159,6 +175,69 @@ export function buildEditorCommand(args: {
     })
   }
   return buildPresetEditorCommand(args, editor.preset)
+}
+
+/**
+ * Launch a specific terminal emulator in a directory. Each one takes its
+ * working directory differently, and on macOS the GUI-only ones have to go
+ * through `open` — Ghostty's own --help says as much.
+ */
+export function buildTerminalCommand(args: {
+  preset?: TerminalPreset
+  localPath: string
+  platform: NodeJS.Platform
+}): CommandSpec {
+  const { localPath, platform } = args
+  const preset = args.preset ?? (platform === "darwin" ? "terminal" : undefined)
+  if (!preset) {
+    throw new Error("No terminal specified")
+  }
+  const spec = TERMINAL_SPECS[preset]
+
+  if (platform === "darwin") {
+    if (!canOpenMacApp(spec.macApp)) {
+      // Fall through to the CLI when one exists — a Homebrew install without
+      // an app bundle still works.
+      if (!spec.cli || !hasCommand(spec.cli)) {
+        throw new Error(`${spec.label} is not installed`)
+      }
+      return buildTerminalCliCommand(preset, spec.cli, localPath)
+    }
+    switch (preset) {
+      // Terminal, iTerm, Warp and Hyper open a path handed to them directly.
+      case "terminal":
+      case "iterm":
+      case "warp":
+      case "hyper":
+        return { command: "open", args: ["-a", spec.macApp, localPath] }
+      // The rest want the directory as a launch flag, and `-n` so a running
+      // instance still gets a new window in the right place.
+      case "ghostty":
+        return { command: "open", args: ["-na", spec.macApp, "--args", `--working-directory=${localPath}`] }
+      case "wezterm":
+        return { command: "open", args: ["-na", spec.macApp, "--args", "start", "--cwd", localPath] }
+      case "kitty":
+        return { command: "open", args: ["-na", spec.macApp, "--args", "--directory", localPath] }
+      case "alacritty":
+        return { command: "open", args: ["-na", spec.macApp, "--args", "--working-directory", localPath] }
+    }
+  }
+
+  if (!spec.cli) {
+    throw new Error(`${spec.label} is only available on macOS`)
+  }
+  return buildTerminalCliCommand(preset, spec.cli, localPath)
+}
+
+function buildTerminalCliCommand(preset: TerminalPreset, cli: string, localPath: string): CommandSpec {
+  switch (preset) {
+    case "wezterm":
+      return { command: cli, args: ["start", "--cwd", localPath] }
+    case "kitty":
+      return { command: cli, args: ["--directory", localPath] }
+    default:
+      return { command: cli, args: ["--working-directory", localPath] }
+  }
 }
 
 export function buildPreviewCommand(args: {
@@ -212,41 +291,24 @@ function buildPresetEditorCommand(
   if (args.isDirectory || !args.line) {
     return { command: opener.command, args: [...opener.args, args.localPath] }
   }
+  // Zed takes the location as part of the path; the VS Code family wants it
+  // behind --goto.
+  if (preset === "zed") {
+    return { command: opener.command, args: [...opener.args, gotoTarget] }
+  }
   return { command: opener.command, args: [...opener.args, "--goto", gotoTarget] }
 }
 
 function resolveEditorExecutable(preset: Exclude<EditorPreset, "custom">, platform: NodeJS.Platform) {
-  if (preset === "cursor") {
-    if (hasCommand("cursor")) return { command: "cursor", args: [] }
-    if (platform === "darwin" && canOpenMacApp("Cursor")) return { command: "open", args: ["-a", "Cursor"] }
-  }
-  if (preset === "vscode") {
-    if (hasCommand("code")) return { command: "code", args: [] }
-    if (platform === "darwin" && canOpenMacApp("Visual Studio Code")) return { command: "open", args: ["-a", "Visual Studio Code"] }
-  }
-  if (preset === "windsurf") {
-    if (hasCommand("windsurf")) return { command: "windsurf", args: [] }
-    if (platform === "darwin" && canOpenMacApp("Windsurf")) return { command: "open", args: ["-a", "Windsurf"] }
-  }
-  if (preset === "xcode") {
-    if (hasCommand("xed")) return { command: "xed", args: [] }
-    if (platform === "darwin" && canOpenMacApp("Xcode")) return { command: "open", args: ["-a", "Xcode"] }
-  }
-
+  const spec = EDITOR_SPECS[preset]
+  if (hasCommand(spec.cli)) return { command: spec.cli, args: [] }
   if (platform === "darwin") {
-    switch (preset) {
-      case "cursor":
-        throw new Error("Cursor is not installed")
-      case "vscode":
-        throw new Error("Visual Studio Code is not installed")
-      case "windsurf":
-        throw new Error("Windsurf is not installed")
-      case "xcode":
-        throw new Error("Xcode is not installed")
-    }
+    if (canOpenMacApp(spec.macApp)) return { command: "open", args: ["-a", spec.macApp] }
+    // Only macOS can say for sure that an app is absent; elsewhere fall
+    // through to the CLI and let the spawn report what went wrong.
+    throw new Error(`${spec.label} is not installed`)
   }
-
-  return { command: preset === "vscode" ? "code" : preset === "xcode" ? "xed" : preset, args: [] }
+  return { command: spec.cli, args: [] }
 }
 
 function buildCustomEditorCommand(args: {
@@ -332,14 +394,5 @@ function normalizeEditorSettings(editor: EditorOpenSettings): EditorOpenSettings
 }
 
 function normalizeEditorPreset(preset: EditorPreset): EditorPreset {
-  switch (preset) {
-    case "vscode":
-    case "xcode":
-    case "windsurf":
-    case "custom":
-    case "cursor":
-      return preset
-    default:
-      return DEFAULT_EDITOR_SETTINGS.preset
-  }
+  return isEditorPreset(preset) ? preset : DEFAULT_EDITOR_SETTINGS.preset
 }

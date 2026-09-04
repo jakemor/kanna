@@ -14,6 +14,8 @@ import type { AnalyticsReporter } from "./analytics"
 import { createCloudRuntime, type CloudRuntime } from "./cloud"
 import { readCloudIdentity, type CloudIdentity } from "./cloud/identity"
 import { runPairCommand, type PairCommandArgs, type PairAction } from "./cloud/pair-command"
+import { parseApiKeyList, readApiKeyFile } from "./api/keys"
+import { API_ROUTE_PREFIX } from "./api/routes"
 
 export interface CliOptions {
   port: number
@@ -31,6 +33,12 @@ export interface CliOptions {
    * ingress can reach the server. Hook for future dev-box-only features.
    */
   directCloud: boolean
+  /** Mount the remote REST API at /api/v1 (`--api`). Always needs keys. */
+  api: boolean
+  /** Keys given inline with `--api-key`. Merged with `apiKeyFile` at startup. */
+  apiKeys: string[]
+  /** Path from `--api-key-file`; read at startup, one key per line. */
+  apiKeyFile: string | null
 }
 
 export interface CliUpdateOptions {
@@ -83,6 +91,7 @@ export interface CliRuntimeDeps {
   createCloudRuntimeImpl?: (identity: CloudIdentity) => CloudRuntime
   probeExistingInstanceImpl?: (port: number) => Promise<ExistingInstance | null>
   slimTranscriptsImpl?: (log: (message: string) => void) => Promise<SlimTranscriptsStats>
+  readApiKeyFileImpl?: (filePath: string) => Promise<string[]>
 }
 
 export interface UpdateInstallAttemptResult {
@@ -125,6 +134,29 @@ function throwShareConflict(share: Exclude<ShareMode, false>, hostFlag: "--host"
   throw new Error(`${getShareCliFlag(share)} cannot be used with ${hostFlag}`)
 }
 
+/**
+ * Read `--flag=value` or `--flag value`. Every other flag here takes the
+ * space-separated form only; the API key flags accept both because `=` is what
+ * you reach for when the value is a secret being pasted in.
+ *
+ * Returns the value plus how many argv entries it consumed.
+ */
+function readFlagValue(argv: string[], index: number, flag: string): { value: string; consumed: number } {
+  const arg = argv[index]!
+  if (arg.startsWith(`${flag}=`)) {
+    const value = arg.slice(flag.length + 1)
+    if (!value) throw new Error(`Missing value for ${flag}`)
+    return { value, consumed: 0 }
+  }
+  const next = argv[index + 1]
+  if (!next || next.startsWith("-")) throw new Error(`Missing value for ${flag}`)
+  return { value: next, consumed: 1 }
+}
+
+function matchesFlag(arg: string, flag: string) {
+  return arg === flag || arg.startsWith(`${flag}=`)
+}
+
 function printHelp() {
   console.log(`${APP_NAME} — local-only project chat UI
 
@@ -144,6 +176,10 @@ Options:
   --cloudflared <token>
                        Run a named Cloudflare tunnel from a token
   --password <secret>  Require a password before loading the app
+  --api                Serve the remote REST API at /api/v1 (needs a key flag)
+  --api-key=<k1,k2>    API keys, comma separated
+  --api-key-file=<path>
+                       Read API keys from a file, one per line
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
   --no-cloud           Skip bringing a paired machine online for this run
@@ -197,6 +233,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let strictPort = false
   let noCloud = false
   let directCloud = false
+  let api = false
+  let apiKeys: string[] = []
+  let apiKeyFile: string | null = null
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -268,7 +307,34 @@ export function parseArgs(argv: string[]): ParsedArgs {
       strictPort = true
       continue
     }
+    if (arg === "--api") {
+      api = true
+      continue
+    }
+    if (matchesFlag(arg, "--api-key-file")) {
+      const { value, consumed } = readFlagValue(argv, index, "--api-key-file")
+      apiKeyFile = value
+      index += consumed
+      continue
+    }
+    if (matchesFlag(arg, "--api-key")) {
+      const { value, consumed } = readFlagValue(argv, index, "--api-key")
+      // Repeating the flag adds to the set rather than replacing it.
+      apiKeys = [...new Set([...apiKeys, ...parseApiKeyList(value)])]
+      index += consumed
+      continue
+    }
     if (!arg.startsWith("-")) throw new Error(`Unexpected positional argument: ${arg}`)
+  }
+
+  // The API is credential-only — there is no session, origin check or browser
+  // login in front of it — so refuse to mount it without keys rather than
+  // quietly serving an open one.
+  if (api && apiKeys.length === 0 && !apiKeyFile) {
+    throw new Error("--api requires --api-key=<key[,key]> or --api-key-file=<path>")
+  }
+  if (!api && (apiKeys.length > 0 || apiKeyFile)) {
+    throw new Error("--api-key and --api-key-file require --api")
   }
 
   if (directCloud) {
@@ -290,6 +356,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       strictPort,
       noCloud,
       directCloud,
+      api,
+      apiKeys,
+      apiKeyFile,
     },
   }
 }
@@ -413,6 +482,25 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 1 }
   }
 
+  // Resolve API keys before anything slow: a bad key file is a config error
+  // and should fail on the spot, not after a self-update round trip.
+  let apiKeys = runOptions.apiKeys
+  if (runOptions.api) {
+    if (runOptions.apiKeyFile) {
+      try {
+        const fromFile = await (deps.readApiKeyFileImpl ?? readApiKeyFile)(runOptions.apiKeyFile)
+        apiKeys = [...new Set([...apiKeys, ...fromFile])]
+      } catch (error) {
+        deps.warn(`${LOG_PREFIX} ${error instanceof Error ? error.message : String(error)}`)
+        return { kind: "exited", code: 1 }
+      }
+    }
+    if (apiKeys.length === 0) {
+      deps.warn(`${LOG_PREFIX} --api needs at least one key; none were found`)
+      return { kind: "exited", code: 1 }
+    }
+  }
+
   const shouldRestart = await maybeSelfUpdate(argv, deps)
   if (shouldRestart !== null) {
     return { kind: "restarting", reason: shouldRestart }
@@ -438,6 +526,21 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   // fingerprint (e.g. dev profile) keeps the try-next-port behavior.
   const existing = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(runOptions.port)
   if (existing) {
+    // This run is not going to start a server, so its --api flags cannot take
+    // effect. Saying nothing would exit 0 and leave the caller believing the
+    // API is up: a script would go straight on to a /api/v1 request and get a
+    // 404 from an instance that never had the API mounted.
+    if (runOptions.api) {
+      if (!existing.api) {
+        deps.warn(`${LOG_PREFIX} kanna is already running at ${existing.localUrl} without the API`)
+        deps.warn(`${LOG_PREFIX} restart that instance with --api to serve ${API_ROUTE_PREFIX}`)
+        return { kind: "exited", code: 1 }
+      }
+      // It does serve the API, but with the key set it was started with —
+      // this run's keys were never loaded, so don't imply otherwise.
+      deps.warn(`${LOG_PREFIX} kanna is already running with the API enabled; it kept its own keys, and this run's --api-key was not applied`)
+    }
+
     const hostedUrl = identity?.enabled ? identity.appOrigin : null
     deps.log(`${LOG_PREFIX} kanna is already running at ${existing.localUrl}${hostedUrl ? ` (and ${hostedUrl})` : ""}`)
     if (hostedUrl) {
@@ -463,6 +566,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 
   const started = await deps.startServer({
     ...runOptions,
+    apiKeys,
     trustProxy: isShareEnabled(runOptions.share) || cloudRuntime !== null,
     cloud: cloudRuntime,
     // Unpaired but cloud-capable: the sidebar can claim this machine in one
@@ -486,6 +590,16 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 
   deps.log(`${LOG_PREFIX} listening on http://${bindHost}:${port}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
+
+  if (runOptions.api) {
+    const keyCount = `${apiKeys.length} key${apiKeys.length === 1 ? "" : "s"}`
+    deps.log(`${LOG_PREFIX} REST API on http://${bindHost}:${port}${API_ROUTE_PREFIX} (${keyCount})`)
+    if (bindHost !== "127.0.0.1") {
+      // Worth saying out loud: bound off loopback, the only thing between the
+      // network and full read/write on every chat is the key.
+      deps.warn(`${LOG_PREFIX} the API is reachable from the network — the API key is its only protection`)
+    }
+  }
 
   if (isShareEnabled(runOptions.share)) {
     try {

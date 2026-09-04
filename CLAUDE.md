@@ -75,6 +75,41 @@ React client (src/client)
   chat). When a bug report or request does not say which one it is about,
   ask before touching code. A fix on the wrong platform is wasted work.
 
+## Remote REST API (`src/server/api/`)
+
+- Off by default. `kanna --api --api-key=<k1,k2>` (or `--api-key-file=<path>`,
+  one key per line) mounts `/api/v1`. Pair with the existing `--remote` to
+  reach it off-loopback. `--api` without keys is a startup error — the API
+  has no session, origin check or login in front of it, so an unkeyed one
+  would be wide open.
+- `routes.ts` calls the same `EventStore` and `AgentCoordinator` the socket
+  does, then `broadcastSnapshots()`, so a chat created over HTTP shows up in
+  a connected browser straight away. It deliberately does *not* reuse
+  ws-router's `handleCommand`, which is bound to a socket — when you change
+  the semantics of `chat.send`, `chat.delete` or `project.open` there, check
+  whether the matching route needs the same change — including the analytics
+  event, which the routes emit to the same reporter.
+- Anything a request can name that the harness looks up later must be
+  validated at the route. `provider` in particular: an unknown one only
+  surfaces when the turn is set up, and for a queued prompt that is after the
+  202, in `dequeueAndStartQueuedMessage` — which removes the queued message
+  before the catalog lookup throws, so the prompt would be acknowledged and
+  then silently dropped.
+- Prompts are async: `POST /chats/:id/messages` answers 202 and the caller
+  polls `GET /chats/:id`. A turn runs far longer than any HTTP client will
+  wait. `queued: true` means it landed behind a running turn.
+- The route claims `/api/v1` even when the API is unmounted, answering a JSON
+  404 — otherwise the SPA fallback returns index.html with a 200 and a client
+  cannot tell the API is off (same reason `/__cloud` 404s explicitly).
+- A valid key substitutes for the `--password` session on `/api/v1` only;
+  every other `/api/` route still needs the cookie. Raw cloud-tunnel traffic
+  (`requestClass === "untrusted"`) still sees nothing but `/health` and `/ws`,
+  so the API is not reachable through a paired machine's tunnel by design.
+- `/health` reports `api`, so a second `kanna --api` against an already-running
+  instance can tell that its flags will not take effect: it exits 1 asking for
+  a restart when that instance has no API, and warns that this run's keys were
+  not applied when it does.
+
 ## Cloud contract
 
 - `src/shared/cloud-api.ts` is the wire contract with the hosted control

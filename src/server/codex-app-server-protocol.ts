@@ -146,12 +146,21 @@ export interface ThreadStartResponse {
 export type ThreadResumeResponse = ThreadStartResponse
 export type ThreadForkResponse = ThreadStartResponse
 
+/**
+ * Shape codex uses for every error it reports — the `error` notification and
+ * the error on a failed turn are the same struct. `message` is often only a
+ * summary; `codexErrorInfo` carries the specific cause.
+ */
+export interface CodexError {
+  message?: string
+  codexErrorInfo?: string
+  additionalDetails?: unknown
+}
+
 export interface TurnSummary {
   id: string
   status: "inProgress" | "completed" | "failed" | "interrupted"
-  error: {
-    message?: string
-  } | null
+  error: CodexError | null
 }
 
 export interface TurnStartResponse {
@@ -475,11 +484,12 @@ export interface ItemCompletedNotification {
 }
 
 export interface ErrorNotification {
-  error: {
-    message: string
-    codexErrorInfo?: string
-    additionalDetails?: unknown
-  }
+  error: CodexError
+  /**
+   * True while codex is still retrying on its own — the turn has not failed
+   * and `error.message` is a progress notice ("Reconnecting... 2/5"), not the
+   * outcome. Only `willRetry: false` is terminal.
+   */
   willRetry: boolean
   threadId?: string
   turnId?: string

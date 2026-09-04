@@ -14,7 +14,7 @@ import {
 import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
-import { cn } from "../../lib/utils"
+import { cn, generateUUID } from "../../lib/utils"
 import { useComposer } from "../../hooks/useComposer"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useVoiceRecorder } from "../../hooks/useVoiceRecorder"
@@ -540,7 +540,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!file) break
 
       activeUploadsRef.current += 1
-      const tempId = crypto.randomUUID()
+      // Not crypto.randomUUID(): that is secure-context only, so it is
+      // undefined when Kanna is opened over plain http on a LAN/Tailscale
+      // hostname, and every upload would throw before it started.
+      const tempId = generateUUID()
       const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined
       const generation = uploadGenerationRef.current
 

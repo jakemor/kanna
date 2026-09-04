@@ -1694,6 +1694,19 @@ export class AgentCoordinator {
       planMode: command.planMode,
       autoPlan: command.autoPlan,
     })
+    if (command.steer) {
+      // The same path as "Send now" on a queued message, so the two can't
+      // drift. One thing it has to absorb: the turn can end while the message
+      // was being queued, in which case the drain has already started it —
+      // the outcome steering wanted, just not by this call.
+      try {
+        await this.steer({ type: "message.steer", chatId: command.chatId, queuedMessageId: queuedMessage.id })
+      } catch (error) {
+        const drained = !this.store.getQueuedMessage(command.chatId, queuedMessage.id)
+          && this.activeTurns.has(command.chatId)
+        if (!drained) throw error
+      }
+    }
     return { queuedMessageId: queuedMessage.id }
   }
 

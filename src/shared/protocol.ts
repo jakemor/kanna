@@ -298,6 +298,13 @@ export type ClientCommand =
       modelOptions?: ModelOptions
       planMode?: boolean
       autoPlan?: boolean
+      /**
+       * Interrupt the running turn and deliver this message now, instead of
+       * leaving it queued — the same as "Send now" on a queued message, folded
+       * into one command so the coordinator can absorb the turn ending in
+       * between (in which case the message has already started).
+       */
+      steer?: boolean
     }
   | {
       type: "message.steer"

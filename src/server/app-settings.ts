@@ -24,6 +24,7 @@ import {
   type ChatSoundPreference,
   type DefaultProviderPreference,
   type EditorPreset,
+  type SubmitWhileRunning,
 } from "../shared/types"
 
 interface AppSettingsFile {
@@ -33,6 +34,7 @@ interface AppSettingsFile {
   theme?: unknown
   chatSoundPreference?: unknown
   chatSoundId?: unknown
+  submitWhileRunning?: unknown
   terminal?: {
     scrollbackLines?: unknown
     minColumnWidth?: unknown
@@ -79,6 +81,9 @@ const MAX_TERMINAL_MIN_COLUMN_WIDTH = 900
 const DEFAULT_EDITOR_PRESET: EditorPreset = "cursor"
 const DEFAULT_CHAT_SOUND_PREFERENCE: ChatSoundPreference = "always"
 const DEFAULT_CHAT_SOUND_ID: ChatSoundId = "funk"
+// Queue by default: interrupting a running turn is the rarer, more disruptive
+// intent, so it is the one you reach for deliberately.
+const DEFAULT_SUBMIT_WHILE_RUNNING: SubmitWhileRunning = "queue"
 
 function createAnalyticsUserId() {
   return `anon_${randomUUID()}`
@@ -130,6 +135,10 @@ function normalizeChatSoundId(value: unknown): ChatSoundId {
   }
 }
 
+function normalizeSubmitWhileRunning(value: unknown): SubmitWhileRunning {
+  return value === "steer" ? "steer" : DEFAULT_SUBMIT_WHILE_RUNNING
+}
+
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
   return value === "claude" || value === "codex" || value === "cursor" || value === "pi" || value === "last_used"
     ? value
@@ -155,6 +164,7 @@ function toFilePayload(state: AppSettingsState) {
     theme: state.theme,
     chatSoundPreference: state.chatSoundPreference,
     chatSoundId: state.chatSoundId,
+    submitWhileRunning: state.submitWhileRunning,
     terminal: state.terminal,
     editor: state.editor,
     transcript: state.transcript,
@@ -176,6 +186,7 @@ function toSnapshot(state: AppSettingsState, devbox = false): AppSettingsSnapsho
     theme: state.theme,
     chatSoundPreference: state.chatSoundPreference,
     chatSoundId: state.chatSoundId,
+    submitWhileRunning: state.submitWhileRunning,
     terminal: state.terminal,
     editor: state.editor,
     transcript: state.transcript,
@@ -242,6 +253,7 @@ function normalizeAppSettings(
     theme: normalizeTheme(source?.theme),
     chatSoundPreference: normalizeChatSoundPreference(source?.chatSoundPreference),
     chatSoundId: normalizeChatSoundId(source?.chatSoundId),
+    submitWhileRunning: normalizeSubmitWhileRunning(source?.submitWhileRunning),
     terminal: {
       scrollbackLines: clampNumber(source?.terminal?.scrollbackLines, DEFAULT_TERMINAL_SCROLLBACK, MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK),
       minColumnWidth: clampNumber(source?.terminal?.minColumnWidth, DEFAULT_TERMINAL_MIN_COLUMN_WIDTH, MIN_TERMINAL_MIN_COLUMN_WIDTH, MAX_TERMINAL_MIN_COLUMN_WIDTH),
@@ -292,6 +304,7 @@ function toComparablePayload(source: AppSettingsFile) {
     theme: source.theme,
     chatSoundPreference: source.chatSoundPreference,
     chatSoundId: source.chatSoundId,
+    submitWhileRunning: source.submitWhileRunning,
     terminal: source.terminal,
     editor: source.editor,
     transcript: source.transcript,

@@ -7,6 +7,12 @@ export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
 export type ChatSoundId = "blow" | "bottle" | "frog" | "funk" | "glass" | "ping" | "pop" | "purr" | "tink"
 export type DefaultProviderPreference = "last_used" | AgentProvider
+/**
+ * What pressing Enter does while a turn is running: hold the message until the
+ * turn ends, or interrupt and deliver it now. The modifier (⌘/Ctrl+Enter) always
+ * does the other one, so either is one keystroke away whatever the default.
+ */
+export type SubmitWhileRunning = "queue" | "steer"
 export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
 export const DEFAULT_OPENAI_SDK_MODEL = "gpt-5.4-mini"
 export const DEFAULT_OPENROUTER_SDK_MODEL = "moonshotai/kimi-k2.5:nitro"
@@ -1105,6 +1111,8 @@ export interface AppSettingsSnapshot {
     windowAssistantMessages: number
   }
   defaultProvider: DefaultProviderPreference
+  /** Default action for Enter while a turn is running. ⌘Enter does the other. */
+  submitWhileRunning: SubmitWhileRunning
   providerDefaults: ChatProviderPreferences
   /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
   newSidebarEnabled: boolean
@@ -1134,6 +1142,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
+  submitWhileRunning?: SubmitWhileRunning
   newSidebarEnabled?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean

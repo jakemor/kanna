@@ -1784,6 +1784,104 @@ describe("AgentCoordinator claude integration", () => {
     events.close()
   })
 
+  test("enqueue with steer goes through the same path as Send now on a queued message", async () => {
+    const events = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async (content: string) => {
+          prompts.push(content)
+        },
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first prompt",
+      model: "claude-opus-4-1",
+    })
+    await coordinator.enqueue({
+      type: "message.enqueue",
+      chatId: "chat-1",
+      content: "actually, do this instead",
+      steer: true,
+    })
+
+    // Interrupted and re-prompted straight away, with the steer block —
+    // exactly what steer() does, because it is steer().
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toContain("actually, do this instead")
+    expect(prompts[1]).toContain("<system-message>")
+    expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(true)
+    expect(store.getQueuedMessages()).toEqual([])
+
+    events.close()
+  })
+
+  test("enqueue with steer is not an error when the queue drained first", async () => {
+    // The race the flag exists for: the turn ends while the message is being
+    // queued, the drain starts it, and steer() finds nothing to steer. The
+    // message is running — which is what was asked for — so that is success.
+    const events = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+    const store = createFakeStore()
+    // Simulate the drain: the message is gone by the time steer() looks.
+    const enqueueMessage = store.enqueueMessage.bind(store)
+    store.enqueueMessage = async (chatId: string, message: any) => {
+      const queued = await enqueueMessage(chatId, message)
+      await store.removeQueuedMessage(chatId, queued.id)
+      return queued
+    }
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async (content: string) => {
+          prompts.push(content)
+        },
+      }),
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first prompt",
+      model: "claude-opus-4-1",
+    })
+    await expect(coordinator.enqueue({
+      type: "message.enqueue",
+      chatId: "chat-1",
+      content: "late steer",
+      steer: true,
+    })).resolves.toEqual({ queuedMessageId: expect.any(String) })
+
+    // Nothing was double-sent and the running turn was left alone.
+    expect(prompts).toEqual(["first prompt"])
+    expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(false)
+
+    events.close()
+  })
+
   test("escape mid-turn does not surface the SDK's interrupt error result", async () => {
     const events = new AsyncEventQueue<any>()
     const store = createFakeStore()

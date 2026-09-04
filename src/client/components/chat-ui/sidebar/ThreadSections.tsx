@@ -27,7 +27,7 @@ import { ThreadRow } from "./ThreadRow"
  * aligned with the buckets'. `onArchiveAll` adds the "…" button and a
  * matching right-click menu with Archive All.
  */
-function SectionHeader({
+export function SectionHeader({
   label,
   onToggle,
   isExpanded,

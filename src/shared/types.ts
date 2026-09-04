@@ -917,6 +917,12 @@ export interface SidebarChatRow {
    * whichever one caused it. Drives the muted (non-pulsing) sidebar dot.
    */
   uncommittedWork?: boolean
+  /**
+   * When the chat was archived. Set only on rows in `archivedChats`, and only
+   * the archive list reads it — sorting "recently archived" by last message
+   * would order by the conversation's age instead of by when it was put away.
+   */
+  archivedAt?: number
   hasAutomation: boolean
   canFork?: boolean
 }

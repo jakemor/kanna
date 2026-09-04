@@ -3,11 +3,10 @@ import { ArrowLeft, Flower, House, Loader2, PanelLeft, Search, Plus, Settings, S
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
 import { buildChatJumpLocationState, type ChatJumpRole } from "../lib/chat-navigation"
-import { formatSidebarAgeLabel } from "../lib/formatters"
-import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn, normalizeChatId } from "../lib/utils"
+import { ArchivedChatsDialog } from "../components/chat-ui/sidebar/ArchivedChatsDialog"
+import { ArchivedSection } from "../components/chat-ui/sidebar/ArchivedSection"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { FocusModePill } from "../components/chat-ui/sidebar/FocusModePill"
 import { projectActivity } from "./kannaStateHelpers"
@@ -30,6 +29,7 @@ import {
 } from "./sidebarNumberJump"
 import { SIDEBAR_VIEW_STORAGE_KEY, SIDEBAR_WIDTH_STORAGE_KEY } from "../lib/storageKeys"
 import { useAppSettingsStore } from "../stores/appSettingsStore"
+import { usePendingSendStore } from "../stores/pendingSendStore"
 import { useSidebarData } from "../stores/sidebarStore"
 import {
   focusSidebarData,
@@ -63,7 +63,13 @@ function persistSidebarWidth(width: number) {
   window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
 }
 
-function readStoredSidebarView(): SidebarView {
+/**
+ * The list view to start in. Only ever Chats or Projects: Archived is somewhere
+ * you visit and get returned from (see `leaveArchivedView`), so it is never
+ * persisted — and what's stored is exactly the view Archived hands you back to,
+ * across reloads as well as within a session.
+ */
+function readStoredSidebarView(): Exclude<SidebarView, "archived"> {
   if (typeof window === "undefined") return "recents"
   return window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY) === "projects" ? "projects" : "recents"
 }
@@ -163,13 +169,53 @@ function KannaSidebarImpl({
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  // Which project's archived chats the dialog is showing, if any. The
+  // workspace-wide list is the sidebar's own Archived view, not this.
   const [archivedProjectId, setArchivedProjectId] = useState<string | null>(null)
   const [sidebarView, setSidebarView] = useState<SidebarView>(readStoredSidebarView)
+  // Where Archived hands you back to. Held in a ref because nothing renders it
+  // — it is read at the moment you leave, which can be from a store
+  // subscription rather than a render.
+  const returnViewRef = useRef<Exclude<SidebarView, "archived">>(readStoredSidebarView())
 
   const changeSidebarView = useCallback((view: SidebarView) => {
     setSidebarView(view)
+    if (view === "archived") return
+    returnViewRef.current = view
     if (typeof window !== "undefined") window.localStorage.setItem(SIDEBAR_VIEW_STORAGE_KEY, view)
   }, [])
+
+  /**
+   * Leave the Archived view for the one you were in before it — a no-op from
+   * anywhere else, so callers don't have to check where they are.
+   *
+   * The archive is where finished work goes, so anything that puts a chat back
+   * into circulation has ended your visit: sending a prompt (which unarchives
+   * the chat server-side, or was a new chat that was never in this list) and
+   * restoring one. Staying put would leave you looking at a list the chat you
+   * just acted on has dropped out of.
+   */
+  const leaveArchivedView = useCallback(() => {
+    setSidebarView((current) => (current === "archived" ? returnViewRef.current : current))
+  }, [])
+
+  const handleRestoreChat = useCallback((chatId: string) => {
+    leaveArchivedView()
+    onRestoreChat(chatId)
+  }, [leaveArchivedView, onRestoreChat])
+
+  // Sends come from the composer, which is not in this tree — the pending-send
+  // store is the one place both sides already meet. Subscribed only while the
+  // Archived view is up, so every other view pays nothing for this.
+  useEffect(() => {
+    if (sidebarView !== "archived") return
+    return usePendingSendStore.subscribe((state, previous) => {
+      if (state.sentAt === previous.sentAt) return
+      const started = Object.keys(state.sentAt)
+        .some((chatId) => state.sentAt[chatId] !== previous.sentAt[chatId])
+      if (started) leaveArchivedView()
+    })
+  }, [leaveArchivedView, sidebarView])
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const visibleChats = useMemo(
     () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups),
@@ -302,11 +348,11 @@ function KannaSidebarImpl({
         onOpenExternalPath={onOpenExternalPath}
         onForkChat={onForkChat}
         onArchiveChat={onArchiveChat}
-        onRestoreChat={onRestoreChat}
+        onRestoreChat={handleRestoreChat}
         onDeleteChat={onDeleteChat}
       />
     )
-  }, [activeChatId, editorLabel, nowMs, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onRestoreChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, threadByChatId, visibleIndexByChatId])
+  }, [activeChatId, editorLabel, nowMs, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, handleRestoreChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, threadByChatId, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -723,7 +769,10 @@ function KannaSidebarImpl({
               </div>
             ) : null}
 
-            {!isConnecting && (
+            {/* Not in the Archived view: there, "no conversations yet" would sit
+                above a list of the conversations you archived, and the view
+                states its own emptiness anyway. */}
+            {!isConnecting && sidebarView !== "archived" && (
               (!hasVisibleChats && data.projectGroups.length === 0)
               // A focused project with no chats: say so, rather than leave the
               // list blank under a pill naming the project.
@@ -740,7 +789,26 @@ function KannaSidebarImpl({
                 nowMs={nowMs}
                 onSelectChat={selectChat}
                 onOpenArchivedChat={onOpenArchivedChat}
-                onRestoreChat={onRestoreChat}
+                onRestoreChat={handleRestoreChat}
+                onCreateChat={onCreateChat}
+                onRenameChat={onRenameChat}
+                onShareChat={onShareChat}
+                onForkChat={onForkChat}
+                onArchiveChat={onArchiveChat}
+                onDeleteChat={onDeleteChat}
+                onCopyPath={onCopyPath}
+                onOpenExternalPath={onOpenExternalPath}
+              />
+            ) : null}
+
+            {newSidebarEnabled && sidebarView === "archived" ? (
+              <ArchivedSection
+                threads={threads}
+                activeChatId={activeChatId}
+                editorLabel={editorLabel}
+                nowMs={nowMs}
+                onOpenArchivedChat={onOpenArchivedChat}
+                onRestoreChat={handleRestoreChat}
                 onCreateChat={onCreateChat}
                 onRenameChat={onRenameChat}
                 onShareChat={onShareChat}
@@ -862,43 +930,17 @@ function KannaSidebarImpl({
         />
       </div>
 
-      <Dialog
+      <ArchivedChatsDialog
         open={Boolean(archivedProject)}
+        description={archivedProject?.localPath}
+        chats={archivedProject?.archivedChats ?? []}
+        nowMs={nowMs}
         onOpenChange={(dialogOpen) => {
           if (!dialogOpen) setArchivedProjectId(null)
         }}
-      >
-        <DialogContent size="md">
-          <DialogHeader>
-            <DialogTitle>Archived Chats</DialogTitle>
-            <DialogDescription>
-              {archivedProject?.localPath ?? ""}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogBody className="space-y-1">
-            {archivedProject?.archivedChats?.length ? (
-              archivedProject.archivedChats.map((chat) => (
-                <button
-                  key={chat.chatId}
-                  type="button"
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/0 px-3 py-2 text-left transition-colors hover:border-border hover:bg-muted"
-                  onClick={() => {
-                    onOpenArchivedChat(chat.chatId)
-                    setArchivedProjectId(null)
-                  }}
-                >
-                  <span className="min-w-0 truncate text-sm">{chat.title}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)}
-                  </span>
-                </button>
-              ))
-            ) : (
-              <p className="px-1 py-3 text-sm text-muted-foreground">No archived chats</p>
-            )}
-          </DialogBody>
-        </DialogContent>
-      </Dialog>
+        onOpenChat={onOpenArchivedChat}
+        onRestoreChat={handleRestoreChat}
+      />
     </>
   )
 }

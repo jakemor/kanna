@@ -1,28 +1,28 @@
-import { Folder, ListFilter, MessageCircle } from "lucide-react"
+import { Archive, Folder, ListFilter, MessageCircle } from "lucide-react"
 import { InputPopover, PopoverMenuItem } from "../ChatPreferenceControls"
 
 /** Which view the sidebar shows when the recent-chats Labs mode is enabled. */
-export type SidebarView = "recents" | "projects"
+export type SidebarView = "recents" | "projects" | "archived"
 
 /**
- * One row's text: the view's name with what it's grouped by trailing it inline
- * — two rows in a picker this small read better on one line each.
+ * One row's text: the name with its qualifier trailing it inline — rows in a
+ * picker this small read better on one line each.
  *
  * Same treatment as `PopoverMenuItem`'s own `description` subtitle. The weight
  * has to be stated: unlike that slot, this sits *inside* the label, so it would
  * otherwise inherit its medium weight and read as part of the name.
  */
-function ViewLabel({ name, grouping }: { name: string; grouping: string }) {
+function ViewLabel({ name, detail }: { name: string; detail: string }) {
   return (
     <span className="flex items-baseline gap-1.5">
       <span>{name}</span>
-      <span className="text-xs font-normal text-muted-foreground">grouped by {grouping}</span>
+      <span className="text-xs font-normal text-muted-foreground">{detail}</span>
     </span>
   )
 }
 
 /**
- * Swaps the sidebar between its Chats and Projects views.
+ * Swaps the sidebar between its Chats, Projects and Archived views.
  *
  * Sits at the right end of the New Chat row — one fixed spot that doesn't move
  * with the view or with which section happens to render first. The odd width
@@ -54,7 +54,7 @@ export function SidebarViewSwitcher({
             }}
             selected={view === "recents"}
             icon={<MessageCircle className="h-4 w-4" />}
-            label={<ViewLabel name="Chats" grouping="relevance" />}
+            label={<ViewLabel name="Chats" detail="grouped by relevance" />}
           />
           <PopoverMenuItem
             onClick={() => {
@@ -63,7 +63,16 @@ export function SidebarViewSwitcher({
             }}
             selected={view === "projects"}
             icon={<Folder className="h-4 w-4" />}
-            label={<ViewLabel name="Projects" grouping="recency" />}
+            label={<ViewLabel name="Projects" detail="grouped by recency" />}
+          />
+          <PopoverMenuItem
+            onClick={() => {
+              close()
+              onChange("archived")
+            }}
+            selected={view === "archived"}
+            icon={<Archive className="h-4 w-4" />}
+            label={<ViewLabel name="Archived" detail="recently archived" />}
           />
         </>
       )}

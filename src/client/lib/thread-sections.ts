@@ -523,12 +523,33 @@ export function computeSidebarThreadSections(
     !thread.archived
     && thread.row.lastMessageAt != null
     && !excludeIds.has(thread.chatId))
-  const archived = threads
+  return {
+    inProgress,
+    review,
+    relevant,
+    buckets: computeThreadDateBuckets(rest, nowMs),
+    archived: getArchivedThreads(threads),
+  }
+}
+
+/**
+ * Archived chats, most recently *archived* first.
+ *
+ * Sorted by `archivedAt` rather than by activity, unlike every other section:
+ * this list answers "what did I just put away", and archiving a long-dormant
+ * chat should put it on top rather than back where its age would bury it. Rows
+ * archived before the field existed fall back to their activity.
+ */
+export function getArchivedThreads(threads: SidebarThread[]): SidebarThread[] {
+  return threads
     // Archived chats that never got a message are hidden everywhere (the
     // server also filters them out of the snapshot; this is defense in depth).
     .filter((thread) => thread.archived && thread.row.lastMessageAt != null)
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
-  return { inProgress, review, relevant, buckets: computeThreadDateBuckets(rest, nowMs), archived }
+    .sort((left, right) => archivedSortKey(right) - archivedSortKey(left))
+}
+
+function archivedSortKey(thread: SidebarThread) {
+  return thread.row.archivedAt ?? thread.lastActivityAt
 }
 
 /**

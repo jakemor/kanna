@@ -276,3 +276,20 @@ describe("getEffectiveComposerState", () => {
     expect(effective.planMode).toBe(true)
   })
 })
+
+describe("getEffectiveComposerState", () => {
+  test("prefers the chat's own model over the provider default when the provider is realigned", () => {
+    // A stored state for another provider is realigned to the session's
+    // provider. With the chat's last model known, that is what it realigns
+    // to — not the settings default, which the chat may never have used.
+    const stored: ComposerState = {
+      provider: "codex",
+      model: "gpt-5.5",
+      modelOptions: { reasoningEffort: "low", fastMode: false },
+      planMode: false,
+      autoPlan: false,
+    }
+    expect(getEffectiveComposerState(stored, "claude", providerDefaults, "opus").model).toBe("opus")
+    expect(getEffectiveComposerState(stored, "claude", providerDefaults).model).toBe(providerDefaults.claude.model)
+  })
+})

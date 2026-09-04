@@ -21,7 +21,7 @@ import { useVoiceRecorder } from "../../hooks/useVoiceRecorder"
 import { RecordingWaveform } from "./RecordingWaveform"
 import { useShallow } from "zustand/react/shallow"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import { abbreviatePathHead, formatPathWithTilde } from "../../lib/pathUtils"
 import { copyTextToClipboard } from "../../lib/clipboard"
@@ -474,8 +474,13 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setValue((current) => (current === "" ? current : ""))
   }, [chatId, storedDraft])
 
+  // Only the new-chat composer gets an eager entry. An existing chat is left
+  // without one until the user changes something, so its state keeps deriving
+  // from what the server says it last ran with (useComposer's seed) rather
+  // than being pinned to whatever the defaults were at mount — which, after a
+  // reload, silently moved every chat onto the default model.
   useEffect(() => {
-    initializeComposerForChat(composerChatId)
+    if (composerChatId === NEW_CHAT_COMPOSER_ID) initializeComposerForChat(composerChatId)
   }, [composerChatId, initializeComposerForChat])
 
   useEffect(() => {

@@ -11,8 +11,33 @@ import {
 import {
   NEW_CHAT_COMPOSER_ID,
   useChatPreferencesStore,
+  type ComposerSeed,
   type ComposerState,
 } from "../stores/chatPreferencesStore"
+import { useSidebarStore } from "../stores/sidebarStore"
+
+/**
+ * The chat's own record of what it last ran with, from the sidebar snapshot.
+ * Nothing about the composer is persisted on this side, so after a reload (or
+ * on another device) this is the only thing that knows the chat wasn't on the
+ * default model.
+ */
+function useChatComposerSeed(chatId: string | null): ComposerSeed | null {
+  const row = useSidebarStore((store) => {
+    if (!chatId) return null
+    for (const group of store.data.projectGroups) {
+      const chat = group.chats.find((candidate) => candidate.chatId === chatId)
+      if (chat) return chat
+    }
+    return null
+  })
+  const provider = row?.provider ?? null
+  const model = row?.model
+  return useMemo(
+    () => (provider ? { provider, ...(model ? { model } : {}) } : null),
+    [provider, model]
+  )
+}
 
 export interface ComposerController extends ComposerView {
   /** Availability + current values of the per-model option controls. */
@@ -53,14 +78,15 @@ export function useComposer(args: {
 }): ComposerController {
   const { chatId, activeProvider, availableProviders } = args
   const composerChatId = chatId ?? NEW_CHAT_COMPOSER_ID
+  const seed = useChatComposerSeed(chatId)
   const storedComposerState = useChatPreferencesStore((store) => store.chatStates[composerChatId])
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
   const providerSwitchRequested = useChatPreferencesStore(
     (store) => Boolean(store.pendingProviderSwitches[composerChatId])
   )
   const composerState = useMemo(
-    () => storedComposerState ?? useChatPreferencesStore.getState().getComposerState(composerChatId),
-    [composerChatId, storedComposerState]
+    () => storedComposerState ?? useChatPreferencesStore.getState().getComposerState(composerChatId, seed),
+    [composerChatId, seed, storedComposerState]
   )
 
   // Housekeeping: once the server confirms the switch (the chat's session
@@ -79,8 +105,9 @@ export function useComposer(args: {
       composerState,
       providerDefaults,
       providerSwitchRequested,
+      chatModel: seed && seed.provider === activeProvider ? seed.model : undefined,
     }),
-    [activeProvider, availableProviders, chatId, composerState, providerDefaults, providerSwitchRequested]
+    [activeProvider, availableProviders, chatId, composerState, providerDefaults, providerSwitchRequested, seed]
   )
 
   const updateEffectiveState = useCallback((transform: (state: ComposerState) => ComposerState) => {

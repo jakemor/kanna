@@ -151,6 +151,18 @@ describe("parseArgs", () => {
     })
   })
 
+  test("uses the isolated rc default port", () => {
+    process.env.KANNA_RUNTIME_PROFILE = "rc"
+
+    expect(parseArgs([])).toMatchObject({ kind: "run", options: { port: 3211 } })
+  })
+
+  test("parses chat import environments", () => {
+    expect(parseArgs(["import-chats", "dev"])).toEqual({ kind: "import-chats", source: "dev" })
+    expect(parseArgs(["import-chats", "rc"])).toEqual({ kind: "import-chats", source: "rc" })
+    expect(parseArgs(["import-chats", "prd"])).toEqual({ kind: "import-chats", source: "prod" })
+  })
+
   test("parses strict port mode", () => {
     expect(parseArgs(["--strict-port"])).toEqual({
       kind: "run",
@@ -304,6 +316,36 @@ describe("compareVersions", () => {
     expect(compareVersions("0.3.0", "0.3.1")).toBe(-1)
     expect(compareVersions("1.0.0", "0.9.9")).toBe(1)
   })
+
+  test("orders release candidates", () => {
+    expect(compareVersions("0.66.0-rc.1", "0.66.0-rc.2")).toBe(-1)
+    expect(compareVersions("0.66.0-rc.2", "0.66.0-rc.1")).toBe(1)
+    expect(compareVersions("0.66.0-rc.1", "0.66.0-rc.1")).toBe(0)
+    // Numerically, so rc.10 is newer than rc.9 rather than sorting as a string.
+    expect(compareVersions("0.66.0-rc.9", "0.66.0-rc.10")).toBe(-1)
+    // The release part still dominates the prerelease tag.
+    expect(compareVersions("0.66.0-rc.9", "0.66.1-rc.1")).toBe(-1)
+  })
+
+  test("ranks a prerelease below the release it leads up to", () => {
+    expect(compareVersions("0.66.0-rc.1", "0.66.0")).toBe(-1)
+    expect(compareVersions("0.66.0", "0.66.0-rc.1")).toBe(1)
+    // Fewer identifiers sort lower.
+    expect(compareVersions("0.66.0-rc.1", "0.66.0-rc.1.1")).toBe(-1)
+  })
+
+  test("keeps nightly builds level with their base version", () => {
+    // A nightly is cut from main *after* its base shipped. Ranking it below
+    // the base (as semver would) would make the stable updater reinstall over
+    // it on every launch; it should hold until a later release supersedes it.
+    expect(compareVersions("0.66.0-nightly.abc1234", "0.66.0")).toBe(0)
+    expect(compareVersions("0.66.0-nightly.abc1234", "0.66.1")).toBe(-1)
+    expect(compareVersions("0.66.0-nightly.abc1234", "0.65.9")).toBe(1)
+  })
+
+  test("ignores build metadata", () => {
+    expect(compareVersions("0.66.0+build.5", "0.66.0")).toBe(0)
+  })
 })
 
 describe("classifyInstallVersionFailure", () => {
@@ -364,6 +406,49 @@ describe("runCli", () => {
     await runCli(["--port", "4000", "--no-open"], deps)
 
     expect(calls.log).toContain("[kanna] data dir: ~/.kanna-dev/data")
+  })
+
+  test("imports chats into the active environment", async () => {
+    process.env.KANNA_RUNTIME_PROFILE = "rc"
+    const imports: unknown[] = []
+    const probedPorts: number[] = []
+    const { calls, deps } = createDeps({
+      probeExistingInstanceImpl: async (port) => {
+        probedPorts.push(port)
+        return null
+      },
+      importChatsImpl: async (options) => {
+        imports.push(options)
+        return { added: 3, updated: 2, projectsAdded: 1 }
+      },
+    })
+
+    const result = await runCli(["import-chats", "dev"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(probedPorts).toEqual([3211, 5175])
+    expect(imports).toEqual([{ sourceProfile: "dev", targetProfile: "rc" }])
+    expect(calls.log).toContain("[kanna] imported chats dev → rc: 3 added, 2 updated, 1 projects added")
+    expect(calls.fetchLatestVersion).toEqual([])
+    expect(calls.startServer).toEqual([])
+  })
+
+  test("refuses to import while the destination is running", async () => {
+    process.env.KANNA_RUNTIME_PROFILE = "dev"
+    let imported = false
+    const { calls, deps } = createDeps({
+      probeExistingInstanceImpl: async (port) => ({ localUrl: `http://localhost:${port}`, port }),
+      importChatsImpl: async () => {
+        imported = true
+        return { added: 0, updated: 0, projectsAdded: 0 }
+      },
+    })
+
+    const result = await runCli(["import-chats", "prd"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 1 })
+    expect(imported).toBe(false)
+    expect(calls.warn.some((line) => line.includes("http://localhost:5175"))).toBe(true)
   })
 
   test("fails fast on unsupported Bun versions", async () => {
@@ -865,4 +950,3 @@ describe("runCli single-instance guard + hosted open", () => {
     if (result.kind === "started") await result.stop()
   })
 })
-

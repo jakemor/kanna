@@ -3,6 +3,7 @@ import {
   getDataDir,
   getDataDirDisplay,
   getDataRootName,
+  getCliCommand,
   getKeybindingsFilePath,
   getKeybindingsFilePathDisplay,
   getRuntimeProfile,
@@ -27,5 +28,17 @@ describe("runtime profile helpers", () => {
     expect(getDataDirDisplay(env)).toBe("~/.kanna-dev/data")
     expect(getKeybindingsFilePath("/tmp/home", env)).toBe("/tmp/home/.kanna-dev/keybindings.json")
     expect(getKeybindingsFilePathDisplay(env)).toBe("~/.kanna-dev/keybindings.json")
+  })
+
+  test("switches to isolated paths and command name for the rc profile", () => {
+    const env = { KANNA_RUNTIME_PROFILE: "rc" }
+
+    expect(getRuntimeProfile(env)).toBe("rc")
+    expect(getDataRootName(env)).toBe(".kanna-rc")
+    expect(getDataDir("/tmp/home", env)).toBe("/tmp/home/.kanna-rc/data")
+    expect(getDataDirDisplay(env)).toBe("~/.kanna-rc/data")
+    expect(getKeybindingsFilePath("/tmp/home", env)).toBe("/tmp/home/.kanna-rc/keybindings.json")
+    expect(getKeybindingsFilePathDisplay(env)).toBe("~/.kanna-rc/keybindings.json")
+    expect(getCliCommand(env)).toBe("kanna-rc")
   })
 })

@@ -1,12 +1,13 @@
 import process from "node:process"
 import { spawnSync } from "node:child_process"
 import { hasCommand, spawnDetached } from "./process-utils"
-import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
+import { APP_NAME, getCliCommand, getDataDirDisplay, getRuntimeProfile, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
+import type { RuntimeProfile } from "../shared/branding"
 import type { ShareMode } from "../shared/share"
 import { assertNoHostOverride, getShareCliFlag, isShareEnabled, isTokenShareMode } from "../shared/share"
 import type { UpdateInstallErrorCode } from "../shared/types"
 import { repairBunGlobalManifest, type NightlyInstallResult } from "./nightly"
-import { PROD_SERVER_PORT } from "../shared/ports"
+import { DEV_SERVER_PORT, PROD_SERVER_PORT, RC_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareTunnel } from "./share"
 import { probeExistingInstance, type ExistingInstance } from "./instance"
@@ -83,6 +84,7 @@ export interface CliRuntimeDeps {
   createCloudRuntimeImpl?: (identity: CloudIdentity) => CloudRuntime
   probeExistingInstanceImpl?: (port: number) => Promise<ExistingInstance | null>
   slimTranscriptsImpl?: (log: (message: string) => void) => Promise<SlimTranscriptsStats>
+  importChatsImpl?: typeof import("./chat-import").importChats
 }
 
 export interface UpdateInstallAttemptResult {
@@ -96,6 +98,7 @@ type ParsedArgs =
   | { kind: "run"; options: CliOptions }
   | { kind: "pair"; args: PairCommandArgs }
   | { kind: "slim-transcripts" }
+  | { kind: "import-chats"; source: RuntimeProfile }
   | { kind: "help" }
   | { kind: "version" }
 
@@ -126,18 +129,22 @@ function throwShareConflict(share: Exclude<ShareMode, false>, hostFlag: "--host"
 }
 
 function printHelp() {
+  const command = getCliCommand()
+  const defaultPort = getDefaultServerPort()
   console.log(`${APP_NAME} — local-only project chat UI
 
 Usage:
-  ${CLI_COMMAND} [options]
-  ${CLI_COMMAND} pair          Claim this machine on kanna.sh (prints a link + QR) and start
-  ${CLI_COMMAND} pair <code>   Same, using a code from https://kanna.sh/machines
-  ${CLI_COMMAND} pair --status|--disable|--enable|--remove
-  ${CLI_COMMAND} slim-transcripts
-                       Rewrite stored transcripts without raw tool payloads (stop ${CLI_COMMAND} first)
+  ${command} [options]
+  ${command} pair          Claim this machine on kanna.sh (prints a link + QR) and start
+  ${command} pair <code>   Same, using a code from https://kanna.sh/machines
+  ${command} pair --status|--disable|--enable|--remove
+  ${command} slim-transcripts
+                       Rewrite stored transcripts without raw tool payloads (stop ${command} first)
+  ${command} import-chats <dev|rc|prd>
+                       Import/sync chats from another environment (stop ${command} first)
 
 Options:
-  --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
+  --port <number>      Port to listen on (default: ${defaultPort})
   --host <host>        Bind to a specific host or IP
   --remote             Shortcut for --host 0.0.0.0
   --share              Create a public Cloudflare quick tunnel with terminal QR
@@ -168,7 +175,7 @@ function parsePairArgs(argv: string[]): ParsedArgs {
     } else if (!arg.startsWith("-") && pairingCode === null) {
       pairingCode = arg
     } else {
-      throw new Error(`Unexpected argument for ${CLI_COMMAND} pair: ${arg}`)
+      throw new Error(`Unexpected argument for ${getCliCommand()} pair: ${arg}`)
     }
   }
 
@@ -183,11 +190,23 @@ export function parseArgs(argv: string[]): ParsedArgs {
     return parsePairArgs(argv.slice(1))
   }
   if (argv[0] === "slim-transcripts") {
-    if (argv.length > 1) throw new Error(`Unexpected argument for ${CLI_COMMAND} slim-transcripts: ${argv[1]}`)
+    if (argv.length > 1) throw new Error(`Unexpected argument for ${getCliCommand()} slim-transcripts: ${argv[1]}`)
     return { kind: "slim-transcripts" }
   }
+  if (argv[0] === "import-chats") {
+    if (argv.length !== 2) throw new Error(`Usage: ${getCliCommand()} import-chats <dev|rc|prd>`)
+    const value = argv[1]!
+    const normalized = value.trim().toLowerCase()
+    const source = normalized === "prd" || normalized === "prod"
+      ? "prod"
+      : normalized === "dev" || normalized === "rc"
+        ? normalized
+        : null
+    if (!source) throw new Error(`Unknown chat environment: ${value} (expected dev, rc, or prd)`)
+    return { kind: "import-chats", source }
+  }
 
-  let port = PROD_SERVER_PORT
+  let port = getDefaultServerPort()
   let host = "127.0.0.1"
   let openBrowser = true
   let share: ShareMode = false
@@ -294,29 +313,93 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 }
 
-export function compareVersions(currentVersion: string, latestVersion: string) {
-  const currentParts = normalizeVersion(currentVersion)
-  const latestParts = normalizeVersion(latestVersion)
-  const length = Math.max(currentParts.length, latestParts.length)
-
-  for (let index = 0; index < length; index += 1) {
-    const current = currentParts[index] ?? 0
-    const latest = latestParts[index] ?? 0
-    if (current === latest) continue
-    return current < latest ? -1 : 1
-  }
-
-  return 0
+export function getDefaultServerPort(profile = getRuntimeProfile()) {
+  return profile === "rc" ? RC_SERVER_PORT : PROD_SERVER_PORT
 }
 
-function normalizeVersion(version: string) {
-  return version
-    .trim()
-    .replace(/^v/i, "")
-    .split("-")[0]
+function getProfileServerPort(profile: RuntimeProfile) {
+  return profile === "dev" ? DEV_SERVER_PORT : getDefaultServerPort(profile)
+}
+
+/**
+ * Semver precedence: numeric release parts first, then prerelease tags, so
+ * "0.66.0-rc.1" < "0.66.0-rc.2" < "0.66.0". Release candidates depend on that
+ * ordering — comparing only the release part makes every candidate for a base
+ * version equal, so an RC would never see a newer RC as an update.
+ *
+ * Nightly builds are the deliberate exception. "<base>-nightly.<sha>" is cut
+ * from main *after* <base> shipped, so ranking it below <base> (as semver
+ * would) makes the stable updater reinstall over it on every launch. Treating
+ * a nightly as its base version keeps it in place until a later release
+ * genuinely supersedes it — the behavior nightly.ts already documents.
+ */
+export function compareVersions(currentVersion: string, latestVersion: string) {
+  const current = parseVersion(currentVersion)
+  const latest = parseVersion(latestVersion)
+  const length = Math.max(current.release.length, latest.release.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const currentPart = current.release[index] ?? 0
+    const latestPart = latest.release[index] ?? 0
+    if (currentPart === latestPart) continue
+    return currentPart < latestPart ? -1 : 1
+  }
+
+  return comparePrerelease(current.prerelease, latest.prerelease)
+}
+
+interface ParsedVersion {
+  release: number[]
+  /** null for a plain release, and for nightly builds (see compareVersions). */
+  prerelease: string[] | null
+}
+
+function parseVersion(version: string): ParsedVersion {
+  // Build metadata ("+<sha>") never participates in precedence.
+  const withoutBuild = version.trim().replace(/^v/i, "").split("+")[0] ?? ""
+  const separator = withoutBuild.indexOf("-")
+  const releasePart = separator === -1 ? withoutBuild : withoutBuild.slice(0, separator)
+  const prereleasePart = separator === -1 ? "" : withoutBuild.slice(separator + 1)
+
+  const release = releasePart
     .split(".")
     .map((part) => Number.parseInt(part, 10))
     .filter((part) => Number.isFinite(part))
+  const identifiers = prereleasePart ? prereleasePart.split(".") : []
+
+  return {
+    release,
+    prerelease: identifiers.length === 0 || identifiers[0] === "nightly" ? null : identifiers,
+  }
+}
+
+function comparePrerelease(current: string[] | null, latest: string[] | null) {
+  if (current === null && latest === null) return 0
+  // A prerelease sorts below the release it leads up to.
+  if (current === null) return 1
+  if (latest === null) return -1
+
+  const length = Math.max(current.length, latest.length)
+  for (let index = 0; index < length; index += 1) {
+    const currentPart = current[index]
+    const latestPart = latest[index]
+    // A shorter identifier list sorts lower ("rc.1" < "rc.1.1").
+    if (currentPart === undefined) return -1
+    if (latestPart === undefined) return 1
+    if (currentPart === latestPart) continue
+
+    const currentNumeric = /^\d+$/.test(currentPart)
+    const latestNumeric = /^\d+$/.test(latestPart)
+    // Numeric identifiers compare numerically and rank below alphanumeric ones.
+    if (currentNumeric && latestNumeric) {
+      return Number(currentPart) < Number(latestPart) ? -1 : 1
+    }
+    if (currentNumeric) return -1
+    if (latestNumeric) return 1
+    return currentPart < latestPart ? -1 : 1
+  }
+
+  return 0
 }
 
 async function maybeSelfUpdate(_argv: string[], deps: CliRuntimeDeps) {
@@ -378,7 +461,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     // Successful pairing flows straight into a normal run — the machine
     // comes online immediately and the hosted URL opens once the tunnel
     // connects. From then on any plain `kanna` does the same (sticky).
-    deps.log(`${LOG_PREFIX} starting ${CLI_COMMAND}…`)
+    deps.log(`${LOG_PREFIX} starting ${getCliCommand()}…`)
     parsedArgs = parseArgs([])
   }
 
@@ -387,9 +470,9 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     // Its own boot sweep already covered this data dir, so refusing costs
     // nothing; the check only sees the default port, so a dev instance on
     // another port is on the user.
-    const running = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(PROD_SERVER_PORT)
+    const running = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(getDefaultServerPort())
     if (running) {
-      deps.warn(`${LOG_PREFIX} ${CLI_COMMAND} is running at ${running.localUrl}; stop it before slimming transcripts`)
+      deps.warn(`${LOG_PREFIX} ${getCliCommand()} is running at ${running.localUrl}; stop it before slimming transcripts`)
       return { kind: "exited", code: 1 }
     }
     const stats = await (deps.slimTranscriptsImpl ?? slimTranscripts)(deps.log)
@@ -400,6 +483,36 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         : `${LOG_PREFIX} ${stats.chats} transcripts checked, nothing to slim`
     )
     return { kind: "exited", code: 0 }
+  }
+
+  if (parsedArgs.kind === "import-chats") {
+    const targetProfile = getRuntimeProfile()
+    if (parsedArgs.source === targetProfile) {
+      deps.warn(`${LOG_PREFIX} source and destination environments are both ${targetProfile === "prod" ? "prd" : targetProfile}`)
+      return { kind: "exited", code: 1 }
+    }
+    const running = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(getProfileServerPort(targetProfile))
+    if (running) {
+      deps.warn(`${LOG_PREFIX} ${getCliCommand()} is running at ${running.localUrl}; stop it before importing chats`)
+      return { kind: "exited", code: 1 }
+    }
+    const sourceRunning = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(getProfileServerPort(parsedArgs.source))
+    if (sourceRunning) {
+      const sourceLabel = parsedArgs.source === "prod" ? "prd" : parsedArgs.source
+      deps.warn(`${LOG_PREFIX} source environment ${sourceLabel} is running at ${sourceRunning.localUrl}; stop it before importing chats`)
+      return { kind: "exited", code: 1 }
+    }
+    try {
+      const importChatsImpl = deps.importChatsImpl ?? (await import("./chat-import")).importChats
+      const stats = await importChatsImpl({ sourceProfile: parsedArgs.source, targetProfile })
+      const sourceLabel = parsedArgs.source === "prod" ? "prd" : parsedArgs.source
+      const targetLabel = targetProfile === "prod" ? "prd" : targetProfile
+      deps.log(`${LOG_PREFIX} imported chats ${sourceLabel} → ${targetLabel}: ${stats.added} added, ${stats.updated} updated, ${stats.projectsAdded} projects added`)
+      return { kind: "exited", code: 0 }
+    } catch (error) {
+      deps.warn(`${LOG_PREFIX} chat import failed: ${error instanceof Error ? error.message : String(error)}`)
+      return { kind: "exited", code: 1 }
+    }
   }
 
   if (parsedArgs.kind !== "run") {
@@ -441,7 +554,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     const hostedUrl = identity?.enabled ? identity.appOrigin : null
     deps.log(`${LOG_PREFIX} kanna is already running at ${existing.localUrl}${hostedUrl ? ` (and ${hostedUrl})` : ""}`)
     if (hostedUrl) {
-      deps.log(`${LOG_PREFIX} if the hosted URL shows offline, restart the running ${CLI_COMMAND} to pick up the pairing`)
+      deps.log(`${LOG_PREFIX} if the hosted URL shows offline, restart the running ${getCliCommand()} to pick up the pairing`)
     }
     if (runOptions.openBrowser && !suppressOpenBrowser) {
       deps.openUrl(hostedUrl ?? existing.localUrl)
@@ -475,7 +588,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       installVersion: deps.installVersion,
       installNightly: deps.installNightly,
       argv,
-      command: CLI_COMMAND,
+      command: getCliCommand(),
     },
   })
   const { port, stop } = started
@@ -534,7 +647,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     })
     // The supervisor logs `cloud: connected (…)` when the tunnel is live —
     // that's also when the browser opens.
-    deps.log(`${LOG_PREFIX} cloud: waiting for ${runtime.identity.appOrigin} to come online… (disable with \`${CLI_COMMAND} pair --disable\`)`)
+    deps.log(`${LOG_PREFIX} cloud: waiting for ${runtime.identity.appOrigin} to come online… (disable with \`${getCliCommand()} pair --disable\`)`)
   }
 
   if (runOptions.openBrowser && !isShareEnabled(runOptions.share) && !suppressOpenBrowser && !cloudRuntime) {

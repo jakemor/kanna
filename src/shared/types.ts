@@ -569,6 +569,16 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     supportsAutoPlanMode: false,
     models: [
       {
+        id: "gpt-6-astra",
+        label: "GPT-6 Astra",
+        supportsEffort: true,
+        supportedReasoningEfforts: GPT_5_6_REASONING_OPTIONS,
+        // OpenAI's Codex docs recommend high as the everyday default for this
+        // model, where the 5.6 family defaults to medium.
+        defaultReasoningEffort: "high",
+        supportsFastMode: true,
+      },
+      {
         id: "gpt-5.6-sol",
         label: "GPT-5.6 Sol",
         supportsEffort: true,

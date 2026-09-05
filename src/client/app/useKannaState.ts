@@ -616,11 +616,14 @@ export function useKannaState(activeChatId: string | null): KannaState {
     ? "starting"
     : null
   const effectiveRuntimeStatus = optimisticRuntimeStatus ?? runtime?.status ?? null
-  // Outside a chat snapshot (new-chat composer, settings) the pi catalog is
-  // derived from the same fave models the server applies, so both always match.
+  // Outside a chat snapshot (new-chat composer, settings) the catalog is the
+  // live one the app-settings snapshot carries, so runtime-discovered models
+  // show before any chat is opened; the static list covers a cold start. The
+  // pi catalog is derived from the same fave models the server applies, so
+  // both always match.
   const fallbackProviders = useMemo(
-    () => withPiFaveModels(PROVIDERS, llmProvider?.faveModels ?? []),
-    [llmProvider?.faveModels]
+    () => withPiFaveModels(appSettings?.availableProviders ?? PROVIDERS, llmProvider?.faveModels ?? []),
+    [appSettings?.availableProviders, llmProvider?.faveModels]
   )
   const availableProviders = activeChatSnapshot?.availableProviders ?? fallbackProviders
   const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)

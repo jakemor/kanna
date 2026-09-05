@@ -6,6 +6,7 @@ import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, Upd
 import { PROTOCOL_VERSION } from "../shared/types"
 import { findTranscriptWindowStart } from "../shared/transcript-window"
 import { createEmptyState } from "./events"
+import { SERVER_PROVIDERS, applyCodexModels, resetServerProvidersForTests } from "./provider-catalog"
 import {
   assertSafeSkillId,
   assertSafeSkillSource,
@@ -639,7 +640,8 @@ describe("ws-router", () => {
         id: "app-settings-sub-1",
         snapshot: {
           type: "app-settings",
-          data: DEFAULT_APP_SETTINGS_SNAPSHOT,
+          // The live provider catalog rides along for pickers outside a chat.
+          data: { ...DEFAULT_APP_SETTINGS_SNAPSHOT, availableProviders: SERVER_PROVIDERS },
         },
       },
       {
@@ -650,6 +652,7 @@ describe("ws-router", () => {
           type: "app-settings",
           data: {
             ...DEFAULT_APP_SETTINGS_SNAPSHOT,
+            availableProviders: SERVER_PROVIDERS,
             theme: "dark",
             terminal: {
               ...DEFAULT_APP_SETTINGS_SNAPSHOT.terminal,
@@ -2428,5 +2431,38 @@ describe("transcript windows", () => {
     expect(data.incremental).toBe(true)
     expect(data.startIndex).toBe(8)
     expect(data.messages.map((entry) => entry._id)).toEqual(["b3"])
+  })
+
+  test("the provider catalog rides a cached span's first push and every change, nothing else", async () => {
+    const router = createWindowedRouter([...turn(1), ...turn(2), ...turn(3)])
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    const providersOf = (index: number) =>
+      (chatData(ws, index) as { availableProviders?: Array<{ id: string; models: Array<{ id: string }> }> }).availableProviders
+
+    try {
+      await router.handleMessage(ws as never, JSON.stringify({
+        v: 1, type: "subscribe", id: "sub",
+        topic: { type: "chat", chatId: "chat-1", cachedSpan: { start: 3, end: 8, endEntryId: "a3" } },
+      }))
+      // The client's cache may hold an old catalog, so the incremental first
+      // push carries the current one.
+      expect(chatData(ws, 0).incremental).toBe(true)
+      expect(providersOf(0)?.map((provider) => provider.id)).toEqual(["claude", "codex", "cursor", "pi"])
+
+      // Unchanged catalog: no later push repeats it.
+      await router.broadcastSnapshots()
+      for (let index = 1; index < ws.sent.length; index += 1) {
+        expect(providersOf(index)).toBeUndefined()
+      }
+
+      // A model discovered at runtime reaches the open chat.
+      expect(applyCodexModels([{ model: "gpt-6-astra", displayName: "GPT-6-Astra" }])).toBe(true)
+      await router.broadcastSnapshots()
+      const last = providersOf(ws.sent.length - 1)
+      expect(last?.find((provider) => provider.id === "codex")?.models.map((model) => model.id)).toEqual(["gpt-6-astra"])
+    } finally {
+      resetServerProvidersForTests()
+    }
   })
 })

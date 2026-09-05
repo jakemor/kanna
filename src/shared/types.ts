@@ -1182,6 +1182,13 @@ export interface AppSettingsSnapshot {
    * like the full-screen home Terminal page.
    */
   devbox: boolean
+  /**
+   * Server-computed, never persisted: the live provider catalog, the same
+   * list chat snapshots carry. Pickers outside a chat (new-chat composer,
+   * settings defaults) read it so runtime-discovered models show there too.
+   * Absent from older servers; clients fall back to the static PROVIDERS.
+   */
+  availableProviders?: ProviderCatalogEntry[]
 }
 
 export interface AppSettingsPatch {

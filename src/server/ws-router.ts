@@ -15,7 +15,7 @@ import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import { cloneRepository, createDirectory, ensureProjectDirectory, initializeProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
 import { listRecentGitHubRepos } from "./github"
-import { applyPiFaveModels } from "./provider-catalog"
+import { SERVER_PROVIDERS, applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
@@ -65,6 +65,12 @@ export interface ClientState {
    * against.
    */
   chatOutlineCounts?: Map<string, number>
+  /**
+   * Serialized provider catalog last sent per chat subscription. The catalog
+   * changes at runtime (models discovered from the harnesses), so an
+   * incremental push carries it whenever this differs from what is current.
+   */
+  chatProvidersSent?: Map<string, string>
   protectedDraftChatIds?: Set<string>
 }
 
@@ -162,6 +168,14 @@ function ensureChatEntrySpans(ws: ServerWebSocket<ClientState>) {
   }
 
   return ws.data.chatEntrySpans
+}
+
+function ensureChatProvidersSent(ws: ServerWebSocket<ClientState>) {
+  if (!ws.data.chatProvidersSent) {
+    ws.data.chatProvidersSent = new Map()
+  }
+
+  return ws.data.chatProvidersSent
 }
 
 function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
@@ -417,7 +431,10 @@ export function createWsRouter({
         id,
         snapshot: {
           type: "app-settings",
-          data: appSettings.getSnapshot(),
+          // The live provider catalog rides along so pickers outside a chat
+          // (new-chat composer, settings defaults) see runtime-discovered
+          // models; chat snapshots carry the same list.
+          data: { ...appSettings.getSnapshot(), availableProviders: [...SERVER_PROVIDERS] },
         },
       }
     }
@@ -691,16 +708,27 @@ export function createWsRouter({
         const data = full ? sliceChatWindow(full, getChatWindowStart(ws, id, topic.chatId)) : full
         const spans = ensureChatEntrySpans(ws)
         const outlineCounts = ensureChatOutlineCounts(ws)
+        const providersSent = ensureChatProvidersSent(ws)
         let body = toSocketChatSnapshot(data, spans.get(id))
         // The outline is a few KB and would otherwise ride every streamed
         // push; an incremental body carries it only when a prompt was added.
         const outlineCount = data?.outline?.length ?? 0
+        const providersJson = JSON.stringify(data?.availableProviders ?? null)
         if (body?.incremental) {
-          // Same for the provider catalog and the read anchor: a few KB that
-          // never change mid-chat, and the client latches both from the
-          // first full snapshot (`foldChatSnapshot` carries them forward).
-          const { availableProviders, readAnchor, ...rest } = body
+          // The read anchor never changes mid-chat, and the client latches it
+          // from the first full snapshot (`foldChatSnapshot` carries it forward).
+          const { readAnchor, ...rest } = body
           body = rest as typeof body
+          // The provider catalog is a few KB too, but it is not fixed: the
+          // server discovers models at runtime (applyCodexModels and friends).
+          // It rides an incremental push whenever this subscription has not
+          // sent this exact list — the first push after a client subscribed
+          // with a cached span, whose cache may hold an old catalog, and a
+          // change while the chat is open.
+          if (providersSent.get(id) === providersJson) {
+            const { availableProviders, ...withoutProviders } = body
+            body = withoutProviders as typeof body
+          }
           if (outlineCounts.get(id) === outlineCount) {
             const { outline, ...withoutOutline } = body
             body = withoutOutline as typeof body
@@ -716,9 +744,11 @@ export function createWsRouter({
         if (data) {
           spans.set(id, { start: data.startIndex, end: data.startIndex + data.messages.length })
           outlineCounts.set(id, outlineCount)
+          providersSent.set(id, providersJson)
         } else {
           spans.delete(id)
           outlineCounts.delete(id)
+          providersSent.delete(id)
         }
         sendSerializedSnapshot(ws, id, snapshotJson)
         continue

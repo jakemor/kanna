@@ -44,6 +44,7 @@ import {
 } from "./attribution"
 import {
   applyClaudeSdkModels,
+  applyCodexModels,
   applyCursorModels,
   type ClaudeSdkModelInfo,
   cursorModelIdForOptions,
@@ -858,6 +859,7 @@ export class AgentCoordinator {
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
+  private codexModelCatalogRefresh: Promise<void> | null = null
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
@@ -980,6 +982,33 @@ export class AgentCoordinator {
     } catch {
       // Keep the static fallback catalog; the next cursor turn retries.
     }
+  }
+
+  /**
+   * Overlay the account's live Codex model list (app-server `model/list`) on
+   * the catalog — the Codex analog of refreshCursorModelCatalog. Unlike the
+   * Cursor one this runs on every codex turn, not once: OpenAI adds models to
+   * an account without a codex upgrade, and the turn's own app-server process
+   * answers the request, so the repeat costs no extra spawn. Startup and
+   * sign-in go through a short-lived probe. Failure is expected — codex
+   * missing, signed out, or too old for model/list — so it stays quiet and
+   * the static catalog remains in place. Concurrent callers share one fetch.
+   */
+  refreshCodexModelCatalog(): Promise<void> {
+    if (this.codexModelCatalogRefresh) return this.codexModelCatalogRefresh
+    this.codexModelCatalogRefresh = (async () => {
+      try {
+        const models = await this.codexManager.listModels(homedir())
+        if (models && applyCodexModels(models)) {
+          this.emitStateChange(undefined, { immediate: true })
+        }
+      } catch {
+        // Keep the static fallback catalog; the next codex turn retries.
+      } finally {
+        this.codexModelCatalogRefresh = null
+      }
+    })()
+    return this.codexModelCatalogRefresh
   }
 
 
@@ -1456,6 +1485,8 @@ export class AgentCoordinator {
       if (chat.pendingForkSessionToken && started?.sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
       }
+      // Off the turn's critical path; the session just started answers it.
+      void this.refreshCodexModelCatalog()
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
         content: buildPromptText(wireContent, args.attachments),

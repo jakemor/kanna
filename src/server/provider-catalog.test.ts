@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
+  applyCodexModels,
   applyCursorModels,
   applyPiFaveModels,
   cursorModelIdForOptions,
@@ -180,6 +181,113 @@ describe("provider catalog normalization", () => {
 
     // Re-applying the same list reports no change.
     expect(applyCursorModels(listed)).toBe(false)
+  })
+
+  test("applyCodexModels rebuilds the codex picker from the app-server list", () => {
+    const listed = [
+      {
+        model: "gpt-6-astra",
+        displayName: "GPT-6-Astra",
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "Fast responses with lighter reasoning" },
+          { reasoningEffort: "high", description: "Greater reasoning depth for complex problems" },
+          { reasoningEffort: "xhigh", description: "" },
+          { reasoningEffort: "max", description: "Maximum reasoning depth" },
+        ],
+        serviceTiers: [{ id: "priority", name: "Fast" }],
+      },
+      {
+        model: "gpt-5.6-sol",
+        displayName: "GPT-5.6-Sol",
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low", description: "" },
+          { reasoningEffort: "medium", description: "" },
+          { reasoningEffort: "ultra", description: "Maximum reasoning with automatic task delegation" },
+        ],
+        additionalSpeedTiers: ["fast"],
+      },
+      {
+        model: "gpt-5.3-codex-spark",
+        displayName: "GPT-5.3-Codex-Spark",
+        // A default the list does not carry falls back to the first effort.
+        defaultReasoningEffort: "ultra",
+        supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "" }],
+      },
+    ]
+    expect(applyCodexModels(listed)).toBe(true)
+
+    const codex = SERVER_PROVIDERS.find((provider) => provider.id === "codex")
+    // Kanna's default survives because the account still has it.
+    expect(codex?.defaultModel).toBe("gpt-5.6-sol")
+    expect(codex?.models).toEqual([
+      {
+        id: "gpt-6-astra",
+        label: "GPT-6 Astra",
+        supportsEffort: true,
+        supportedReasoningEfforts: [
+          { id: "low", label: "Low", description: "Fast responses with lighter reasoning" },
+          { id: "high", label: "High", description: "Greater reasoning depth for complex problems" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max", description: "Maximum reasoning depth" },
+        ],
+        defaultReasoningEffort: "high",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.6-sol",
+        label: "GPT-5.6 Sol",
+        supportsEffort: true,
+        // Static aliases carry over so persisted "gpt-5.6" still resolves.
+        aliases: ["gpt-5.6"],
+        supportedReasoningEfforts: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "ultra", label: "Ultra", description: "Maximum reasoning with automatic task delegation" },
+        ],
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.3-codex-spark",
+        label: "GPT-5.3 Codex Spark",
+        supportsEffort: true,
+        supportedReasoningEfforts: [{ id: "medium", label: "Medium" }],
+        defaultReasoningEffort: "medium",
+        supportsFastMode: false,
+      },
+    ])
+
+    // Spawn-time options follow the live rows, not the static catalog.
+    expect(normalizeServerModel("codex", "gpt-6-astra")).toBe("gpt-6-astra")
+    expect(normalizeCodexModelOptions("gpt-6-astra", {
+      codex: { reasoningEffort: "ultra", fastMode: true },
+    })).toEqual({ reasoningEffort: "max", fastMode: true })
+    expect(normalizeCodexModelOptions("gpt-5.3-codex-spark", {
+      codex: { reasoningEffort: "high", fastMode: true },
+    })).toEqual({ reasoningEffort: "medium", fastMode: false })
+
+    // Re-applying the same list reports no change.
+    expect(applyCodexModels(listed)).toBe(false)
+  })
+
+  test("applyCodexModels falls back to the server default and ignores empty lists", () => {
+    expect(applyCodexModels([])).toBe(false)
+    expect(applyCodexModels([{ model: "  " }])).toBe(false)
+
+    applyCodexModels([
+      { model: "gpt-6-astra", displayName: "GPT-6-Astra" },
+      { model: "gpt-6-mini", isDefault: true },
+    ])
+    const codex = SERVER_PROVIDERS.find((provider) => provider.id === "codex")
+    expect(codex?.defaultModel).toBe("gpt-6-mini")
+    // No display name: derive one from the slug. No efforts: no selector.
+    expect(codex?.models.map((model) => [model.id, model.label, model.supportsEffort])).toEqual([
+      ["gpt-6-astra", "GPT-6 Astra", false],
+      ["gpt-6-mini", "GPT 6 Mini", false],
+    ])
   })
 
   test("applyCursorModels groups models by family and preserves CLI order within a group", () => {

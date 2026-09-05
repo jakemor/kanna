@@ -259,10 +259,13 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     trackEvent: analytics.track.bind(analytics),
     onSignedIn: (service) => {
       // A fresh sign-in unlocks usage limits (claude/codex empty-state cards
-      // flip from auth → usage) and the live Cursor model catalog.
+      // flip from auth → usage) and the live Cursor/Codex model catalogs.
       void usageLimits.refresh({ force: true }).catch(() => undefined)
       if (service === "cursor") {
         void agent.refreshCursorModelCatalog()
+      }
+      if (service === "codex") {
+        void agent.refreshCodexModelCatalog()
       }
       if (service === "gh") {
         // Never let a cached "unauthenticated" repo list outlive the sign-in
@@ -293,9 +296,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     updateManager,
     providerAuth,
   })
-  // Overlay the account's live Cursor model list on the static catalog
-  // (no-op when cursor-agent is missing or logged out); broadcasts on change.
+  // Overlay the account's live Cursor and Codex model lists on the static
+  // catalog (no-op when the CLI is missing or logged out); broadcasts on change.
   void agent.refreshCursorModelCatalog()
+  void agent.refreshCodexModelCatalog()
   // Seed the pi provider's model picker from saved fave models before the
   // first snapshots go out.
   void readLlmProviderSnapshot()

@@ -332,6 +332,65 @@ describe("CodexAppServerManager", () => {
     expect(await manager.listSkills({ chatId: "chat-unknown", cwd: "/tmp/project" })).toBeNull()
   })
 
+  test("listModels probes a throwaway app-server, pages model/list and drops hidden rows", async () => {
+    const row = (model: string, extra: Record<string, unknown> = {}) => ({
+      id: model,
+      model,
+      displayName: model,
+      description: "",
+      hidden: false,
+      isDefault: false,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "" }],
+      ...extra,
+    })
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "model/list") {
+        child.writeServerMessage(message.params.cursor === "page-2"
+          ? { id: message.id, result: { data: [row("gpt-5.6-sol")], nextCursor: null } }
+          : { id: message.id, result: { data: [row("gpt-6-astra"), row("gpt-reserve", { hidden: true })], nextCursor: "page-2" } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+
+    const models = await manager.listModels("/tmp/home")
+    expect(models?.map((model) => model.model)).toEqual(["gpt-6-astra", "gpt-5.6-sol"])
+    expect(process.messages.map((message: any) => message.method)).toEqual([
+      "initialize",
+      "initialized",
+      "model/list",
+      "model/list",
+    ])
+    expect((process.messages[2] as any).params).toEqual({})
+    expect((process.messages[3] as any).params).toEqual({ cursor: "page-2" })
+    // The probe process is torn down once the list is in.
+    expect(process.killed).toBe(true)
+  })
+
+  test("listModels reuses a live session and surfaces an old server's method-not-found", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "model/list") {
+        child.writeServerMessage({ id: message.id, error: { code: -32601, message: "method not found" } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    await expect(manager.listModels("/tmp/home")).rejects.toThrow("method not found")
+    // No second process: the chat's own app-server answered.
+    expect(process.messages.filter((message: any) => message.method === "initialize")).toHaveLength(1)
+    expect(process.killed).toBe(false)
+  })
+
   test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
     const combinations = [
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)

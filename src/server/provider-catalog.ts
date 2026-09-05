@@ -16,6 +16,7 @@ import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
   PROVIDERS,
+  codexReasoningEffortLabel,
   deriveModelLabel,
   withPiFaveModels,
   normalizeClaudeContextWindow,
@@ -163,6 +164,99 @@ export function applyPiFaveModels(faveModels: ReadonlyArray<FaveModel>): boolean
   return true
 }
 
+/** The fields of an app-server `model/list` row the catalog reads. */
+export interface CodexAppServerModelInfo {
+  /** The slug `thread/start` takes (e.g. "gpt-6-astra"). */
+  model: string
+  displayName?: string
+  isDefault?: boolean
+  defaultReasoningEffort?: string
+  supportedReasoningEfforts?: ReadonlyArray<{ reasoningEffort: string; description?: string }>
+  additionalSpeedTiers?: ReadonlyArray<string>
+  serviceTiers?: ReadonlyArray<{ id: string; name?: string }>
+}
+
+/**
+ * Picker label from the app-server's display name. It hyphenates every word
+ * ("GPT-5.6-Sol", "GPT-6-Astra"); keep the hyphen that joins the family to
+ * its version and space the rest, matching the static labels ("GPT-5.6 Sol").
+ */
+function codexModelLabel(model: CodexAppServerModelInfo): string {
+  const displayName = model.displayName?.trim()
+  if (!displayName) return deriveModelLabel(model.model)
+  return displayName.replace(/(?<!^[A-Za-z]+)-/g, " ")
+}
+
+/**
+ * Replace the codex provider's model list with the account's live list from
+ * the app-server (`model/list`) — the Codex analog of applyCursorModels. Each
+ * row carries its own effort list, default effort and speed tiers, so a model
+ * OpenAI rolls out mid-session shows up with the right controls without a
+ * Kanna release. Static catalog entries only seed aliases (legacy ids that
+ * migrate to a row). Returns true when the catalog changed (callers should
+ * broadcast).
+ */
+export function applyCodexModels(models: ReadonlyArray<CodexAppServerModelInfo>): boolean {
+  const codexIndex = SERVER_PROVIDERS.findIndex((provider) => provider.id === "codex")
+  const codexProvider = SERVER_PROVIDERS[codexIndex]
+  if (!codexProvider) return false
+
+  const staticModels = PROVIDERS.find((provider) => provider.id === "codex")?.models ?? []
+  const nextModels: ProviderModelOption[] = []
+  for (const model of models) {
+    const id = model.model.trim()
+    if (!id || nextModels.some((existing) => existing.id === id)) continue
+    const efforts = (model.supportedReasoningEfforts ?? [])
+      .map((option) => option.reasoningEffort.trim())
+      .filter((effort, index, all) => effort.length > 0 && all.indexOf(effort) === index)
+    const supportedReasoningEfforts = efforts.map((effort) => {
+      const description = model.supportedReasoningEfforts
+        ?.find((option) => option.reasoningEffort.trim() === effort)?.description?.trim()
+      return { id: effort, label: codexReasoningEffortLabel(effort), ...(description ? { description } : {}) }
+    })
+    const defaultReasoningEffort = efforts.includes(model.defaultReasoningEffort?.trim() ?? "")
+      ? model.defaultReasoningEffort!.trim()
+      : efforts[0]
+    // Kanna spawns fast mode as the "fast" service tier. Newer servers list it
+    // under serviceTiers (id "priority", named "Fast"); older ones under the
+    // deprecated additionalSpeedTiers.
+    const supportsFastMode = (model.additionalSpeedTiers ?? []).includes("fast")
+      || (model.serviceTiers ?? []).some((tier) => tier.id === "fast" || tier.id === "priority")
+    const staticOption = staticModels.find((option) => option.id === id)
+    nextModels.push({
+      id,
+      label: codexModelLabel(model),
+      supportsEffort: supportedReasoningEfforts.length > 0,
+      ...(staticOption?.aliases ? { aliases: [...staticOption.aliases] } : {}),
+      ...(supportedReasoningEfforts.length > 0 ? { supportedReasoningEfforts } : {}),
+      ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
+      supportsFastMode,
+    })
+  }
+  if (nextModels.length === 0) return false
+
+  // Keep Kanna's default when the account still has it; otherwise the
+  // server-marked default, then the first listed model.
+  const serverDefault = models.find((model) => model.isDefault)?.model.trim()
+  const defaultModel = nextModels.some((model) => model.id === codexProvider.defaultModel)
+    ? codexProvider.defaultModel
+    : nextModels.find((model) => model.id === serverDefault)?.id ?? nextModels[0]!.id
+
+  if (
+    defaultModel === codexProvider.defaultModel
+    && JSON.stringify(nextModels) === JSON.stringify(codexProvider.models)
+  ) {
+    return false
+  }
+
+  SERVER_PROVIDERS.splice(codexIndex, 1, {
+    ...codexProvider,
+    defaultModel,
+    models: nextModels,
+  })
+  return true
+}
+
 export interface CursorCliModelInfo {
   id: string
   label: string
@@ -246,18 +340,11 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
   const catalog = getServerProviderCatalog(provider)
-  const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
-  // Pi accepts arbitrary OpenRouter model ids; Cursor's and Claude's valid ids
-  // are whatever the harness reports at runtime (applyCursorModels /
-  // applyClaudeSdkModels) — for all three, the catalog is only a picker, so
+  // Pi accepts arbitrary OpenRouter model ids; the other three's valid ids are
+  // whatever the harness reports at runtime (applyClaudeSdkModels /
+  // applyCodexModels / applyCursorModels) — the catalog is only a picker, so
   // unknown ids pass through for the provider to validate.
-  if (provider === "pi" || provider === "cursor" || provider === "claude") {
-    return normalizedModel
-  }
-  if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
-    return normalizedModel
-  }
-  return catalog.defaultModel
+  return normalizeProviderModelId(provider, model, catalog.defaultModel)
 }
 
 export function normalizeClaudeModelOptions(
@@ -283,14 +370,21 @@ export function normalizeCodexModelOptions(
   legacyEffort?: string,
 ): CodexModelOptions {
   const reasoningEffort = modelOptions?.codex?.reasoningEffort
+  // The live catalog (applyCodexModels) decides what each model supports; a
+  // model it does not list keeps the static row's rules, or the shared
+  // defaults when there is none.
+  const liveModels = getServerProviderCatalog("codex").models
+  const liveOption = liveModels.find((candidate) => candidate.id === normalizeProviderModelId("codex", model))
   return {
     reasoningEffort: normalizeCodexReasoningEffort(
       model,
       isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
+      liveModels,
     ),
-    // Spawn-time gating: fast mode only reaches models that support it
-    // (per Codex docs: GPT-5.6/5.5/5.4 — not 5.3 Codex or Spark).
-    fastMode: supportsProviderFastMode("codex", model) && modelOptions?.codex?.fastMode === true,
+    // Spawn-time gating: fast mode only reaches models that advertise the
+    // tier, so a stale preference never fails a turn on a model without it.
+    fastMode: (liveOption ? Boolean(liveOption.supportsFastMode) : supportsProviderFastMode("codex", model))
+      && modelOptions?.codex?.fastMode === true,
   }
 }
 

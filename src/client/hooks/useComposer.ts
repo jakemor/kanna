@@ -107,7 +107,7 @@ export function useComposer(args: {
     // a chat whose session pinned a different harness).
     useChatPreferencesStore.getState().setComposerState(
       view.composerChatId,
-      applyModelToComposerState(view.effectiveState, modelId)
+      applyModelToComposerState(view.effectiveState, modelId, view.providerConfig)
     )
     return true
   }, [view])

@@ -203,10 +203,36 @@ export interface ProviderEffortOption {
   description?: string
 }
 
-export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+// The known efforts are listed for autocomplete only. The real set per model
+// comes from the app-server at runtime (`model/list` → applyCodexModels), so
+// any non-empty string is a valid effort and the model's own list decides.
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | (string & {})
 
 export interface CodexReasoningEffortOption extends ProviderEffortOption {
   id: CodexReasoningEffort
+}
+
+/**
+ * Efforts from lightest to heaviest. When a persisted effort is not in a
+ * model's list, normalizeCodexReasoningEffort snaps it to the nearest one
+ * here (ties go lighter): "minimal" → "low", "ultra" → "max".
+ */
+export const CODEX_REASONING_EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const
+
+const CODEX_REASONING_EFFORT_LABELS: Record<string, string> = {
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
+}
+
+/** Picker label for an effort id the app-server reports ("xhigh" → "Extra High"). */
+export function codexReasoningEffortLabel(effort: string): string {
+  return CODEX_REASONING_EFFORT_LABELS[effort] ?? titleCaseWord(effort)
 }
 
 export interface ProviderContextWindowOption {
@@ -372,8 +398,11 @@ export function normalizePiModelId(modelId?: unknown, fallbackModelId = DEFAULT_
   return trimmed || fallbackModelId
 }
 
+// Any non-empty string: the model's live effort list is the real gate (see
+// normalizeCodexReasoningEffort), so a new effort the app-server reports is
+// never rejected before it reaches that check.
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
-  return value === "minimal" || CODEX_REASONING_OPTIONS.some((option) => option.id === value)
+  return typeof value === "string" && value.trim().length > 0
 }
 
 const LEGACY_CODEX_REASONING_OPTIONS = [
@@ -561,6 +590,9 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     efforts: [...CLAUDE_REASONING_OPTIONS],
   },
   {
+    // Static fallback only — the real list is discovered at runtime via the
+    // app-server's `model/list` (see applyCodexModels in provider-catalog).
+    // Keep the aliases here: they migrate persisted ids ("gpt-5.6" → sol).
     id: "codex",
     label: "Codex",
     defaultModel: "gpt-5.6-sol",
@@ -705,12 +737,13 @@ export function normalizeProviderModelId(
     // migrate here by folding into their family's alias entry.
     const familyMatch = getProviderModelMatch(provider, modelIdFamily(modelId))
     if (familyMatch) return familyMatch.id
-    // The static catalog is only a cold-start picker — the real list comes
-    // from the harness at runtime (supportedModels → applyClaudeSdkModels),
-    // so like cursor/pi, unknown ids pass through for it to validate.
-    const trimmed = modelId.trim()
-    if (trimmed) return trimmed
   }
+  // The static catalog is only a cold-start picker — the real list comes from
+  // the harness at runtime (applyClaudeSdkModels / applyCodexModels), so like
+  // cursor/pi, unknown ids pass through for it to validate. Clamping here
+  // would turn a model the account just gained back into the old default.
+  const trimmed = modelId?.trim()
+  if (trimmed) return trimmed
   return fallbackModelId ?? getProviderCatalog(provider).defaultModel
 }
 
@@ -743,33 +776,56 @@ export function getClaudeModelOption(modelId: string): ProviderModelOption | und
   return getProviderModelOption("claude", modelId)
 }
 
-export function getCodexModelOption(modelId: string): ProviderModelOption | undefined {
-  return getProviderModelOption("codex", modelId)
+/**
+ * The catalog row for a Codex model. `models` is the live list when the
+ * caller has one (a chat snapshot's `availableProviders`, or the server
+ * catalog); the static list is the cold-start fallback.
+ */
+export function getCodexModelOption(
+  modelId: string,
+  models?: ReadonlyArray<ProviderModelOption>,
+): ProviderModelOption | undefined {
+  const normalizedModelId = normalizeCodexModelId(modelId)
+  return (models ?? getProviderCatalog("codex").models).find((candidate) => candidate.id === normalizedModelId)
 }
 
-export function getCodexReasoningOptions(modelId: string): readonly CodexReasoningEffortOption[] {
-  return getCodexModelOption(modelId)?.supportedReasoningEfforts ?? CODEX_REASONING_OPTIONS
+export function getCodexReasoningOptions(
+  modelId: string,
+  models?: ReadonlyArray<ProviderModelOption>,
+): readonly CodexReasoningEffortOption[] {
+  return getCodexModelOption(modelId, models)?.supportedReasoningEfforts ?? CODEX_REASONING_OPTIONS
 }
 
+/**
+ * Clamp an effort to what the model supports. A known effort the model lacks
+ * snaps to the nearest one in CODEX_REASONING_EFFORT_ORDER (ties go lighter),
+ * so a persisted "ultra" survives a switch to a model that stops at "max".
+ * Anything else falls back to the model's default.
+ */
 export function normalizeCodexReasoningEffort(
   modelId: string,
   effort?: unknown,
+  models?: ReadonlyArray<ProviderModelOption>,
 ): CodexReasoningEffort {
-  const normalizedModel = normalizeCodexModelId(modelId)
-  const model = getCodexModelOption(normalizedModel)
+  const model = getCodexModelOption(modelId, models)
   const supported = model?.supportedReasoningEfforts ?? CODEX_REASONING_OPTIONS
+  const fallback = model?.defaultReasoningEffort ?? DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort
 
-  if (effort === "minimal" && normalizedModel.startsWith("gpt-5.6-")) {
-    return "low"
-  }
-  if (effort === "ultra" && normalizedModel === "gpt-5.6-luna") {
-    return "max"
-  }
-  if (isCodexReasoningEffort(effort) && supported.some((option) => option.id === effort)) {
-    return effort
-  }
+  if (!isCodexReasoningEffort(effort)) return fallback
+  if (supported.some((option) => option.id === effort)) return effort
 
-  return model?.defaultReasoningEffort ?? DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort
+  const order = CODEX_REASONING_EFFORT_ORDER as readonly string[]
+  const wanted = order.indexOf(effort)
+  if (wanted === -1) return fallback
+  let nearest: { id: CodexReasoningEffort; distance: number } | undefined
+  for (const option of supported) {
+    const index = order.indexOf(option.id)
+    if (index === -1) continue
+    const distance = Math.abs(index - wanted)
+    // Strictly closer wins; on a tie the earlier (lighter) option stays.
+    if (!nearest || distance < nearest.distance) nearest = { id: option.id, distance }
+  }
+  return nearest?.id ?? fallback
 }
 
 export function supportsClaudeMaxReasoningEffort(modelId: string): boolean {

@@ -38,8 +38,17 @@ import { NEW_CHAT_COMPOSER_ID, type ComposerState } from "../stores/chatPreferen
  *   fast mode, Codex reasoning effort).
  */
 
-/** Applies a model change to a composer state, normalizing dependent options. */
-export function applyModelToComposerState(state: ComposerState, model: string): ComposerState {
+/**
+ * Applies a model change to a composer state, normalizing dependent options.
+ * `providerConfig` is the chat's live catalog entry: Codex effort lists come
+ * from the app-server at runtime, so the static fallback only applies when
+ * no snapshot has arrived yet.
+ */
+export function applyModelToComposerState(
+  state: ComposerState,
+  model: string,
+  providerConfig?: ProviderCatalogEntry,
+): ComposerState {
   if (state.provider === "codex") {
     const normalizedModel = normalizeCodexModelId(model)
     return {
@@ -47,7 +56,11 @@ export function applyModelToComposerState(state: ComposerState, model: string): 
       model: normalizedModel,
       modelOptions: {
         ...state.modelOptions,
-        reasoningEffort: normalizeCodexReasoningEffort(normalizedModel, state.modelOptions.reasoningEffort),
+        reasoningEffort: normalizeCodexReasoningEffort(
+          normalizedModel,
+          state.modelOptions.reasoningEffort,
+          providerConfig?.id === "codex" ? providerConfig.models : undefined,
+        ),
       },
     }
   }
@@ -238,7 +251,7 @@ export function deriveComposerOptionControls(
           }))
           : state.provider === "pi"
             ? [...PI_REASONING_OPTIONS]
-            : [...getCodexReasoningOptions(state.model)]
+            : [...getCodexReasoningOptions(state.model, providerConfig?.models)]
       ) as ComposerOptionChoice[],
       selectedId: modelOptions.reasoningEffort,
     }

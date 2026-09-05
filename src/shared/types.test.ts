@@ -63,7 +63,39 @@ describe("shared model normalization", () => {
     expect(normalizeCodexModelId("gpt-5.6-terra")).toBe("gpt-5.6-terra")
     expect(normalizeCodexModelId("gpt-5.6-luna")).toBe("gpt-5.6-luna")
     expect(normalizeCodexModelId("gpt-5-codex")).toBe("gpt-5.3-codex")
-    expect(normalizeCodexModelId("not-a-real-model")).toBe("gpt-5.6-sol")
+    // The real list is runtime-discovered (app-server model/list), so an id
+    // the static catalog lacks passes through instead of clamping.
+    expect(normalizeCodexModelId("gpt-6-astra")).toBe("gpt-6-astra")
+    expect(normalizeCodexModelId("  ")).toBe("gpt-5.6-sol")
+  })
+
+  test("normalizes Codex efforts against a live model list when given one", () => {
+    const live = [
+      {
+        id: "gpt-6-astra",
+        label: "GPT-6 Astra",
+        supportsEffort: true,
+        supportedReasoningEfforts: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+          { id: "max", label: "Max" },
+        ],
+        defaultReasoningEffort: "high",
+      },
+    ]
+    expect(getCodexReasoningOptions("gpt-6-astra", live).map((option) => option.id)).toEqual(["low", "high", "max"])
+    // Without a live list an unknown model falls back to the shared options.
+    expect(getCodexReasoningOptions("gpt-6-astra").map((option) => option.id)).toEqual([
+      "low", "medium", "high", "xhigh", "max", "ultra",
+    ])
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", "max", live)).toBe("max")
+    // Unsupported known efforts snap to the nearest listed one, ties lighter.
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", "ultra", live)).toBe("max")
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", "medium", live)).toBe("low")
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", "xhigh", live)).toBe("high")
+    // Unknown values take the model's default.
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", "turbo", live)).toBe("high")
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", undefined, live)).toBe("high")
   })
 
   test("exposes model-specific GPT-5.6 reasoning efforts", () => {

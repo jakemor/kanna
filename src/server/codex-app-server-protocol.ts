@@ -133,6 +133,46 @@ export interface SkillsListResponse {
   }[]
 }
 
+/** `model/list`: the models the signed-in account can run, in picker order. */
+export interface ModelListParams {
+  cursor?: string | null
+  limit?: number | null
+  includeHidden?: boolean | null
+}
+
+export interface ModelReasoningEffortOption {
+  reasoningEffort: string
+  description: string
+}
+
+export interface ModelServiceTier {
+  id: string
+  name: string
+  description: string
+}
+
+export interface CodexModelSummary {
+  id: string
+  /** The slug passed to `thread/start` (e.g. "gpt-5.6-sol"). */
+  model: string
+  displayName: string
+  description: string
+  hidden: boolean
+  isDefault: boolean
+  defaultReasoningEffort: string
+  supportedReasoningEfforts: ModelReasoningEffortOption[]
+  /** Deprecated upstream in favour of `serviceTiers`; older servers still send it. */
+  additionalSpeedTiers?: string[]
+  serviceTiers?: ModelServiceTier[]
+  defaultServiceTier?: string | null
+  upgrade?: string | null
+}
+
+export interface ModelListResponse {
+  data: CodexModelSummary[]
+  nextCursor?: string | null
+}
+
 export interface ThreadSummary {
   id: string
 }

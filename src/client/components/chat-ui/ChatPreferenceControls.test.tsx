@@ -61,6 +61,25 @@ describe("ChatPreferenceControls", () => {
     expect(html).toContain("Ultra")
   })
 
+  test("renders Astra with its Codex reasoning and fast-mode controls", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="codex"
+        model="gpt-6-astra"
+        modelOptions={{ reasoningEffort: "ultra", fastMode: true }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onModelOptionChange={() => {}}
+        includeMode={false}
+      />
+    )
+
+    expect(html).toContain("GPT-6 Astra")
+    expect(html).toContain("Ultra")
+    expect(html).toContain("Fast Mode")
+  })
+
   test("renders claude plan mode controls when enabled", () => {
     const html = renderToStaticMarkup(
       <ChatPreferenceControls

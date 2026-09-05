@@ -381,6 +381,7 @@ const LEGACY_CODEX_REASONING_OPTIONS = [
   ...CODEX_REASONING_OPTIONS.filter((option) => option.id !== "max" && option.id !== "ultra"),
 ] as const satisfies readonly ProviderEffortOption[]
 
+const GPT_6_ASTRA_REASONING_OPTIONS = [...CODEX_REASONING_OPTIONS]
 const GPT_5_6_REASONING_OPTIONS = [...CODEX_REASONING_OPTIONS]
 const GPT_5_6_LUNA_REASONING_OPTIONS = CODEX_REASONING_OPTIONS.filter((option) => option.id !== "ultra")
 
@@ -569,6 +570,14 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     supportsAutoPlanMode: false,
     models: [
       {
+        id: "gpt-6-astra",
+        label: "GPT-6 Astra",
+        supportsEffort: true,
+        supportedReasoningEfforts: GPT_6_ASTRA_REASONING_OPTIONS,
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
         id: "gpt-5.6-sol",
         label: "GPT-5.6 Sol",
         supportsEffort: true,
@@ -616,7 +625,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         aliases: ["gpt-5-codex"],
         supportedReasoningEfforts: LEGACY_CODEX_REASONING_OPTIONS,
         defaultReasoningEffort: "high",
-        // Fast mode supports GPT-5.6/5.5/5.4 only (docs: /codex/speed).
+        // Fast mode supports Astra and GPT-5.6/5.5/5.4 (docs: /codex/speed).
         supportsFastMode: false,
       },
       {

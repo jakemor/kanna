@@ -103,6 +103,13 @@ describe("provider catalog normalization", () => {
       fastMode: false,
     })
 
+    expect(normalizeCodexModelOptions("gpt-6-astra", {
+      codex: { reasoningEffort: "ultra", fastMode: true },
+    })).toEqual({
+      reasoningEffort: "ultra",
+      fastMode: true,
+    })
+
     const normalized = normalizeCodexModelOptions("gpt-5.6-terra", {
       codex: {
         reasoningEffort: "xhigh",
@@ -223,6 +230,7 @@ describe("provider catalog normalization", () => {
 
   test("normalizes server model ids through the shared alias catalog", () => {
     expect(normalizeServerModel("codex")).toBe("gpt-5.6-sol")
+    expect(normalizeServerModel("codex", "gpt-6-astra")).toBe("gpt-6-astra")
     expect(normalizeServerModel("claude", "fable")).toBe("fable")
     expect(normalizeServerModel("claude", "opus")).toBe("opus")
     // Version-pinned ids persisted by older Kanna versions fold into the alias.

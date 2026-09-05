@@ -281,7 +281,7 @@ describe("AppSettingsManager", () => {
     manager.dispose()
   })
 
-  test("normalizes GPT-5.6 reasoning levels when settings are written", async () => {
+  test("normalizes current Codex reasoning levels when settings are written", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)
     await manager.initialize()
@@ -315,6 +315,16 @@ describe("AppSettingsManager", () => {
     expect(legacy.providerDefaults.codex).toMatchObject({
       model: "gpt-5.5",
       modelOptions: { reasoningEffort: "xhigh", fastMode: false },
+    })
+
+    const astra = await manager.writePatch({
+      providerDefaults: {
+        codex: { model: "gpt-6-astra", modelOptions: { reasoningEffort: "ultra", fastMode: true } },
+      },
+    })
+    expect(astra.providerDefaults.codex).toMatchObject({
+      model: "gpt-6-astra",
+      modelOptions: { reasoningEffort: "ultra", fastMode: true },
     })
 
     manager.dispose()

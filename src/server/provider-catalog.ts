@@ -289,7 +289,7 @@ export function normalizeCodexModelOptions(
       isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
     ),
     // Spawn-time gating: fast mode only reaches models that support it
-    // (per Codex docs: GPT-5.6/5.5/5.4 — not 5.3 Codex or Spark).
+    // (per Codex docs: Astra and GPT-5.6/5.5/5.4 — not 5.3 Codex or Spark).
     fastMode: supportsProviderFastMode("codex", model) && modelOptions?.codex?.fastMode === true,
   }
 }

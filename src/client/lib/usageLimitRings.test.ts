@@ -106,17 +106,20 @@ describe("selectLimitRingWindows", () => {
   test("codex fills the weekly ring from a lone model-scoped bucket", () => {
     const windows = [makeWindow("codex_bengalfox:primary", 21, WEEKLY, "GPT 5.3 Codex Spark")]
     const { slots } = selectLimitRingWindows(makeSnapshot("codex", windows), "codex", "gpt-5.3-codex")
-    expect(slots[0]?.window?.id).toBe("codex_bengalfox:primary")
+    expect(slots.map((slot) => slot.key)).toEqual(["session", "weekly"])
+    expect(slots[0]?.window).toBeNull()
+    expect(slots[1]?.window?.id).toBe("codex_bengalfox:primary")
   })
 
-  test("codex shows one weekly ring, taken from the window's duration not its slot", () => {
+  test("codex weekly is taken from the window's duration, not its slot name", () => {
     const windows = [
       makeWindow("codex:primary", 21, WEEKLY),
       makeWindow("codex_bengalfox:primary", 4, WEEKLY, "GPT 5.3 Codex Spark"),
     ]
     const { slots } = selectLimitRingWindows(makeSnapshot("codex", windows), "codex", "gpt-5.3-codex")
-    expect(slots.map((slot) => slot.key)).toEqual(["weekly"])
-    expect(slots[0]?.window?.id).toBe("codex:primary")
+    expect(slots.map((slot) => slot.key)).toEqual(["session", "weekly"])
+    expect(slots[0]?.window).toBeNull()
+    expect(slots[1]?.window?.id).toBe("codex:primary")
   })
 
   test("codex weekly switches to the model lane when that exact model is selected", () => {
@@ -125,14 +128,15 @@ describe("selectLimitRingWindows", () => {
       makeWindow("codex_bengalfox:primary", 4, WEEKLY, "GPT 5.3 Codex Spark"),
     ]
     const { slots } = selectLimitRingWindows(makeSnapshot("codex", windows), "codex", "gpt-5.3-codex-spark")
-    expect(slots[0]?.window?.id).toBe("codex_bengalfox:primary")
+    expect(slots[1]?.window?.id).toBe("codex_bengalfox:primary")
   })
 
-  test("codex session window is never shown, even when the plan reports one", () => {
+  test("codex shows session and weekly rings when the plan reports both", () => {
     const windows = [makeWindow("codex:primary", 30, FIVE_HOUR), makeWindow("codex:secondary", 21, WEEKLY)]
     const { slots } = selectLimitRingWindows(makeSnapshot("codex", windows), "codex", null)
-    expect(slots.map((slot) => slot.key)).toEqual(["weekly"])
-    expect(slots[0]?.window?.id).toBe("codex:secondary")
+    expect(slots.map((slot) => slot.key)).toEqual(["session", "weekly"])
+    expect(slots[0]?.window?.id).toBe("codex:primary")
+    expect(slots[1]?.window?.id).toBe("codex:secondary")
   })
 
   test("a snapshot from an older server still fills the rings", () => {
@@ -164,7 +168,8 @@ describe("selectLimitRingWindows", () => {
       "codex",
       "gpt-5.3-codex",
     )
-    expect(codex.slots[0]?.window?.id).toBe("codex:primary")
+    expect(codex.slots[0]?.window).toBeNull()
+    expect(codex.slots[1]?.window?.id).toBe("codex:primary")
   })
 
   test("missing windows keep their slot with a null window", () => {

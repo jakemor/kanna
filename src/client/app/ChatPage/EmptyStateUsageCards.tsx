@@ -3,8 +3,6 @@ import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../../stores/chat
 import { useUsageLimitsSnapshot } from "../../stores/usageLimitsStore"
 import { ProviderCard } from "../settings/UsageSection"
 
-let lastUsageSnapshot: UsageLimitsSnapshot | null = null
-
 /**
  * Compact harness usage meters shown on the empty (new chat) page. Renders
  * only providers with live limit data (Claude/Codex when signed in with a

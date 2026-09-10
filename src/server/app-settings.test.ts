@@ -21,6 +21,8 @@ async function createTempFilePath() {
 function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettingsSnapshot> = {}): AppSettingsSnapshot {
   return {
     devbox: false,
+    installedTerminals: null,
+    installedEditors: null,
     analyticsEnabled: true,
     browserSettingsMigrated: false,
     setupShown: false,

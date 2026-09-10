@@ -185,6 +185,12 @@ function createTerminalEnv() {
     ...process.env,
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
+    // Lets a shell rc tell "running inside Kanna" from a normal terminal, the
+    // way VS Code's TERM_PROGRAM=vscode does. The one lever a user has for a
+    // setup this terminal can't host — an rc that execs into another shell,
+    // say — is to condition on it.
+    TERM_PROGRAM: "kanna",
+    KANNA_TERMINAL: "1",
   })
 }
 

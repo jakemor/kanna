@@ -1,11 +1,12 @@
 import { useCallback } from "react"
-import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
+import type { EditorOpenSettings, OpenExternalAction, TerminalPreset } from "../../shared/protocol"
 import type { AskUserQuestionAnswerMap, SidebarChatRow } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import type { useAppDialog } from "../components/ui/app-dialog"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
-import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { getDefaultEditorCommandTemplate, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { getEffectiveEditorPreset } from "../components/open-external-menu"
 import type { KannaSocket } from "./socket"
 
 type SocketCommand = Parameters<KannaSocket["command"]>[0]
@@ -133,28 +134,35 @@ export function useChatCommands(params: {
     line?: number
     column?: number
     editor?: EditorOpenSettings
+    terminal?: TerminalPreset
   }) => {
     const preferences = useTerminalPreferencesStore.getState()
+    // Same editor the "Open in X" labels name — the navbar button's, not the
+    // bare preference, which may be an editor this machine doesn't have.
+    const preset = getEffectiveEditorPreset(preferences.editorPreset)
     setCommandError(null)
     await socket.command({
       type: "system.openExternal",
       ...command,
       editor: command.action === "open_editor"
         ? command.editor ?? {
-            preset: preferences.editorPreset,
-            commandTemplate: preferences.editorCommandTemplate,
+            preset,
+            commandTemplate: preset === "custom"
+              ? preferences.editorCommandTemplate
+              : getDefaultEditorCommandTemplate(preset),
           }
         : undefined,
     })
   }, [setCommandError, socket])
 
-  const handleOpenExternal = useCallback(async (action: OpenExternalAction, editor?: EditorOpenSettings) => {
+  const handleOpenExternal = useCallback(async (action: OpenExternalAction, editor?: EditorOpenSettings, terminal?: TerminalPreset) => {
     if (!defaultOpenLocalPath) return
     try {
       await openExternal({
         action,
         localPath: defaultOpenLocalPath,
         editor,
+        terminal,
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))

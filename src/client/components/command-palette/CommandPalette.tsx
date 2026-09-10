@@ -71,7 +71,7 @@ import { PROVIDER_ICONS } from "../chat-ui/ChatPreferenceControls"
 import { projectActivity } from "../../app/kannaStateHelpers"
 import { ThreadRowContent } from "../chat-ui/ThreadRowContent"
 import { UsageSection } from "../../app/settings/UsageSection"
-import { getOpenAppItems, openAppValue, OpenAppIcon } from "../open-external-menu"
+import { getOpenAppItems, openAppValue, OpenAppIcon, useInstalledEditors, useInstalledTerminals } from "../open-external-menu"
 import {
   Command,
   CommandDialog,
@@ -275,6 +275,10 @@ export function CommandPalette({ state }: { state: KannaState }) {
   const browser = useDirectoryBrowser(state.socket)
 
   const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
+  // Editors this machine doesn't have are dropped from the palette rather than
+  // listed disabled: every other row here is something you can run.
+  const installedEditors = useInstalledEditors()
+  const installedTerminals = useInstalledTerminals()
   const editorCommandTemplate = useTerminalPreferencesStore((store) => store.editorCommandTemplate)
 
   // The palette only ever flips between the two concrete themes, so it keys off
@@ -732,8 +736,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
       // and Windsurf are intentionally omitted here; a few icons are swapped
       // for palette-specific ones (harness Cursor glyph, folder-open, terminal).
       const CursorIcon = PROVIDER_ICONS.cursor
-      const openInItems = getOpenAppItems({ editorPreset, isMac, includeFinder: true, includeTerminal: true })
-        .filter((item) => item.value !== "editor:xcode" && item.value !== "editor:windsurf")
+      const openInItems = getOpenAppItems({ editorPreset, isMac, installedEditors, installedTerminals, includeFinder: true, includeTerminal: true })
+        .filter((item) => item.installed && item.value !== "editor:xcode" && item.value !== "editor:windsurf")
       for (const item of openInItems) {
         const icon = item.value === "editor:cursor"
           ? <CursorIcon className={ICON_CLASS} />
@@ -753,8 +757,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
             openAppValue({
               value: item.value,
               editorCommandTemplate,
-              onOpenExternal: (action, editor) => {
-                void state.handleOpenExternal(action, editor)
+              onOpenExternal: (action, editor, terminal) => {
+                void state.handleOpenExternal(action, editor, terminal)
               },
             })
           },
@@ -981,6 +985,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
     editorCommandTemplate,
     editorPreset,
     focusModeEnabled,
+    installedEditors,
+    installedTerminals,
     isMac,
     navigate,
     onChatPage,
@@ -1120,14 +1126,15 @@ export function CommandPalette({ state }: { state: KannaState }) {
 
   const openInResults = useMemo(() => {
     if (page !== "open-in") return []
-    const items = getOpenAppItems({ editorPreset, isMac, includeFinder: true, includeTerminal: true })
+    const items = getOpenAppItems({ editorPreset, isMac, installedEditors, installedTerminals, includeFinder: true, includeTerminal: true })
+      .filter((item) => item.installed)
     if (!trimmedQuery) return items
     return items
       .map((item) => ({ item, score: scorePaletteItem(trimmedQuery, item.label) }))
       .filter((entry) => entry.score > 0)
       .sort((left, right) => right.score - left.score)
       .map((entry) => entry.item)
-  }, [editorPreset, isMac, page, trimmedQuery])
+  }, [editorPreset, installedEditors, installedTerminals, isMac, page, trimmedQuery])
 
   // ---------------------------------------------------------------------
   // Add Project pages
@@ -1870,8 +1877,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
                     openAppValue({
                       value: item.value,
                       editorCommandTemplate,
-                      onOpenExternal: (action, editor) => {
-                        void state.handleOpenExternal(action, editor)
+                      onOpenExternal: (action, editor, terminal) => {
+                        void state.handleOpenExternal(action, editor, terminal)
                       },
                     })
                   }}

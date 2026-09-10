@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import type { EditorPreset } from "../../shared/protocol"
+import { getDefaultEditorCommandTemplate, getEditorPresetLabel, isEditorPreset } from "../../shared/editor-presets"
 
 export const DEFAULT_TERMINAL_SCROLLBACK = 1_000
 export const MIN_TERMINAL_SCROLLBACK = 500
@@ -10,37 +11,7 @@ export const MIN_TERMINAL_MIN_COLUMN_WIDTH = 250
 export const MAX_TERMINAL_MIN_COLUMN_WIDTH = 900
 export const DEFAULT_EDITOR_PRESET: EditorPreset = "cursor"
 
-export function getDefaultEditorCommandTemplate(preset: EditorPreset) {
-  switch (preset) {
-    case "vscode":
-      return "code {path}"
-    case "xcode":
-      return "xed {path}"
-    case "windsurf":
-      return "windsurf {path}"
-    case "custom":
-      return "cursor {path}"
-    case "cursor":
-    default:
-      return "cursor {path}"
-  }
-}
-
-export function getEditorPresetLabel(preset: EditorPreset) {
-  switch (preset) {
-    case "vscode":
-      return "VS Code"
-    case "xcode":
-      return "Xcode"
-    case "windsurf":
-      return "Windsurf"
-    case "custom":
-      return "Custom"
-    case "cursor":
-    default:
-      return "Cursor"
-  }
-}
+export { getDefaultEditorCommandTemplate, getEditorPresetLabel }
 
 function clampScrollback(value: number) {
   if (!Number.isFinite(value)) return DEFAULT_TERMINAL_SCROLLBACK
@@ -53,16 +24,7 @@ function clampMinColumnWidth(value: number) {
 }
 
 function normalizeEditorPreset(value?: string): EditorPreset {
-  switch (value) {
-    case "vscode":
-    case "xcode":
-    case "windsurf":
-    case "custom":
-    case "cursor":
-      return value
-    default:
-      return DEFAULT_EDITOR_PRESET
-  }
+  return isEditorPreset(value) ? value : DEFAULT_EDITOR_PRESET
 }
 
 function normalizeEditorCommandTemplate(value: string | undefined, preset: EditorPreset) {

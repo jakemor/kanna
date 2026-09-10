@@ -29,6 +29,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    submitWhileRunning: "queue",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,
@@ -279,6 +280,43 @@ describe("AppSettingsManager", () => {
     expect(nextPayload.chatSoundId).toBe("glass")
 
     manager.dispose()
+  })
+
+  test("persists the composer's queue-or-steer default, and ignores junk", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot().submitWhileRunning).toBe("queue")
+    expect((await manager.writePatch({ submitWhileRunning: "steer" })).submitWhileRunning).toBe("steer")
+
+    const payload = JSON.parse(await readFile(filePath, "utf8")) as { submitWhileRunning: string }
+    expect(payload.submitWhileRunning).toBe("steer")
+
+    // Anything unrecognised falls back to queueing rather than to the more
+    // disruptive action.
+    await writeFile(filePath, JSON.stringify({ submitWhileRunning: "yolo" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot().submitWhileRunning).toBe("queue")
+
+    manager.dispose()
+  })
+
+  test("does not rewrite a settings file that already carries the composer default", async () => {
+    // Every field the file payload has must be in the comparison too, or the
+    // file is rewritten on every launch for no change.
+    const filePath = await createTempFilePath()
+    const first = new AppSettingsManager(filePath)
+    await first.initialize()
+    await first.writePatch({ submitWhileRunning: "steer" })
+    first.dispose()
+    const written = await readFile(filePath, "utf8")
+
+    const second = new AppSettingsManager(filePath)
+    await second.initialize()
+    second.dispose()
+
+    expect(await readFile(filePath, "utf8")).toBe(written)
   })
 
   test("normalizes GPT-5.6 reasoning levels when settings are written", async () => {

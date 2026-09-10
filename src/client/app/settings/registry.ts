@@ -104,6 +104,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "The bundled sound used for chat notification playback and previews",
     keywords: ["notifications", "audio"],
   },
+  submitWhileRunning: {
+    sectionId: "general",
+    title: "Enter While Running",
+    description: "What Enter does while an agent is working. ⌘Enter always does the other one",
+    keywords: ["queue", "steer", "interrupt", "enter", "send", "composer"],
+  },
   defaultEditor: {
     sectionId: "general",
     title: "Default Editor",

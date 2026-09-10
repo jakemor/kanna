@@ -4,6 +4,7 @@ import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 
 const originalRuntimeProfile = process.env.KANNA_RUNTIME_PROFILE
 const originalSuppressOpen = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+const originalDisableSelfUpdate = process.env.KANNA_DISABLE_SELF_UPDATE
 
 beforeEach(() => {
   // Every test assumes the open-once suppression flag is unset; the parent
@@ -11,6 +12,10 @@ beforeEach(() => {
   // Kanna-managed terminal after a self-restart). Tests that need it set it
   // themselves; afterEach restores the inherited value for other suites.
   delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
+  // Likewise for the self-update opt-out: anyone running Kanna from a checkout
+  // exports it in their shell, and leaving it set would silently skip the
+  // update path these tests are here to cover.
+  delete process.env.KANNA_DISABLE_SELF_UPDATE
 })
 
 afterEach(() => {
@@ -18,6 +23,11 @@ afterEach(() => {
     delete process.env.KANNA_RUNTIME_PROFILE
   } else {
     process.env.KANNA_RUNTIME_PROFILE = originalRuntimeProfile
+  }
+  if (originalDisableSelfUpdate === undefined) {
+    delete process.env.KANNA_DISABLE_SELF_UPDATE
+  } else {
+    process.env.KANNA_DISABLE_SELF_UPDATE = originalDisableSelfUpdate
   }
   if (originalSuppressOpen === undefined) {
     delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]

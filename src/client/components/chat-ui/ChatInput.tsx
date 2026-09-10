@@ -27,6 +27,8 @@ import { abbreviatePathHead, formatPathWithTilde } from "../../lib/pathUtils"
 import { copyTextToClipboard } from "../../lib/clipboard"
 import { buildUploadErrorReport, simpleUploadError, type UploadErrorReport } from "../../lib/uploadError"
 import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
+import { shouldSteerSubmit } from "../../../shared/submit-mode"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
@@ -168,7 +170,7 @@ interface ComposerAttachment extends ChatAttachment {
 interface Props {
   onSubmit: (
     value: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean; attachments?: ChatAttachment[] }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean; attachments?: ChatAttachment[]; steer?: boolean }
   ) => Promise<void>
   onLayoutChange?: () => void
   onCancel?: () => void
@@ -244,6 +246,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { composerChatId, providerSwitchPending, selectedProvider } = composer
   const providerPrefs = composer.effectiveState
   const showModePicker = composer.supportsPlanMode
+  // What Enter does while a turn is running; ⌘/Ctrl+Enter does the other.
+  const submitWhileRunning = useAppSettingsStore((store) => store.settings?.submitWhileRunning) ?? "queue"
   // Switching to a harness that isn't signed in is blocked: the pick is
   // stashed here, a sign-in dialog opens, and the switch applies
   // automatically once the auth store reports the service signed in.
@@ -684,7 +688,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [])
 
   /** The composer's current prefs, the way a send carries them. */
-  function buildSubmitOptions(attachmentsForSubmit: ChatAttachment[]) {
+  function buildSubmitOptions(attachmentsForSubmit: ChatAttachment[], steer = shouldSteerSubmit(submitWhileRunning, false)) {
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
@@ -696,6 +700,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
     return {
+      steer,
       provider: selectedProvider,
       model: providerPrefs.model,
       modelOptions,
@@ -705,7 +710,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(options?: { withModifier?: boolean }) {
     if (!canSubmit || hasPendingUploads) return
 
     const nextValue = value
@@ -713,7 +718,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const previousSelectedAttachmentId = selectedAttachmentId
     const previousUploadError = uploadError
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
-    const submitOptions = buildSubmitOptions(attachmentsForSubmit)
+    const submitOptions = buildSubmitOptions(
+      attachmentsForSubmit,
+      shouldSteerSubmit(submitWhileRunning, options?.withModifier === true)
+    )
     setValue("")
     if (chatId) clearDraft(chatId)
     if (textareaRef.current) textareaRef.current.style.height = "auto"
@@ -833,7 +841,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0
     if (event.key === "Enter" && !event.shiftKey && !isTouchDevice && !disabled && canSubmit && !hasPendingUploads) {
       event.preventDefault()
-      void handleSubmit()
+      void handleSubmit({ withModifier: event.metaKey || event.ctrlKey })
     }
   }
 
@@ -1061,7 +1069,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 // cancel, so a file-only message queues instead of stopping
                 // the running turn.
                 if (!disabled && canSubmit && !hasPendingUploads) {
-                  void handleSubmit()
+                  void handleSubmit({ withModifier: event.metaKey || event.ctrlKey })
                 } else if (canCancel) {
                   onCancel?.()
                 }

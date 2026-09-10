@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { Monitor, Moon, Sun } from "lucide-react"
 import { ANALYTICS_STATIC_EVENT_NAMES, ANALYTICS_STATIC_PROPERTY_NAMES } from "../../../shared/analytics"
 import type { EditorPreset } from "../../../shared/protocol"
-import { DEFAULT_NEW_PROJECTS_DIRECTORY } from "../../../shared/types"
+import { DEFAULT_NEW_PROJECTS_DIRECTORY, type SubmitWhileRunning } from "../../../shared/types"
 import { EDITOR_OPTIONS, EditorIcon } from "../../components/editor-icons"
 import { Button } from "../../components/ui/button"
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from "../../components/ui/dialog"
@@ -86,6 +86,7 @@ export function GeneralSection({
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
   const newProjectsDirectory = appSettings?.newProjectsDirectory ?? DEFAULT_NEW_PROJECTS_DIRECTORY
   const [newProjectsDirectoryDraft, setNewProjectsDirectoryDraft] = useState(newProjectsDirectory)
+  const submitWhileRunning = appSettings?.submitWhileRunning ?? "queue"
   const transcriptWindow = appSettings?.transcript?.windowAssistantMessages ?? DEFAULT_TRANSCRIPT_WINDOW_ASSISTANT_MESSAGES
   const [transcriptWindowDraft, setTranscriptWindowDraft] = useState(String(transcriptWindow))
   const [appSettingsError, setAppSettingsError] = useState<string | null>(null)
@@ -315,6 +316,27 @@ export function GeneralSection({
                     {option.label}
                   </SelectItem>
                 ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+
+        <SettingsRow def={SETTINGS_ROWS.submitWhileRunning}>
+          <Select
+            value={submitWhileRunning}
+            onValueChange={(value) => {
+              void handleWriteAppSettings({ submitWhileRunning: value as SubmitWhileRunning }).catch((error) => {
+                setAppSettingsError(error instanceof Error ? error.message : "Unable to save composer settings.")
+              })
+            }}
+          >
+            <SelectTrigger className="min-w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="queue">Queue message</SelectItem>
+                <SelectItem value="steer">Steer now</SelectItem>
               </SelectGroup>
             </SelectContent>
           </Select>

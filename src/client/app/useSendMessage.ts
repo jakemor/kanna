@@ -61,7 +61,7 @@ export function useSendMessage(params: {
 
   const handleSend = useCallback(async (
     content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean; attachments?: ChatAttachment[] }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean; attachments?: ChatAttachment[]; steer?: boolean }
   ) => {
     const { isProcessing, optimisticUserPrompts, serverTranscriptEntries, selectedProjectId, fallbackLocalProjectPath } = sendContextRef.current
     const attachments = options?.attachments ?? []
@@ -77,6 +77,9 @@ export function useSendMessage(params: {
           modelOptions: options?.modelOptions,
           planMode: options?.planMode,
           autoPlan: options?.autoPlan,
+          // Only meaningful here: off a running turn there is nothing to
+          // interrupt, and the message starts immediately either way.
+          steer: options?.steer,
         })
         setCommandError(null)
         return

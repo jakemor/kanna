@@ -31,7 +31,8 @@ describe("probeExistingInstance", () => {
     stops.push(server.stop)
 
     const match = await probeExistingInstance(server.port, dataDir)
-    expect(match).toEqual({ localUrl: `http://localhost:${server.port}`, port: server.port })
+    // `api` is false: this server was started without --api.
+    expect(match).toEqual({ localUrl: `http://localhost:${server.port}`, port: server.port, api: false })
 
     // Same server, different expected data dir (e.g. dev profile) → no match.
     const mismatch = await probeExistingInstance(server.port, "/somewhere/else")

@@ -22,6 +22,12 @@ export function instanceFingerprint(dataDir: string = getDataDir(homedir())) {
 export interface ExistingInstance {
   localUrl: string
   port: number
+  /**
+   * Whether that instance serves the REST API. Absent from an instance older
+   * than this field, which is indistinguishable from "no API" here — either
+   * way `--api` cannot take effect without restarting it.
+   */
+  api?: boolean
 }
 
 /**
@@ -39,10 +45,10 @@ export async function probeExistingInstance(
       signal: AbortSignal.timeout(700),
     })
     if (!response.ok) return null
-    const payload = await response.json() as { ok?: unknown; instance?: unknown }
+    const payload = await response.json() as { ok?: unknown; instance?: unknown; api?: unknown }
     if (payload.ok !== true || typeof payload.instance !== "string") return null
     if (payload.instance !== instanceFingerprint(dataDir)) return null
-    return { localUrl: `http://localhost:${port}`, port }
+    return { localUrl: `http://localhost:${port}`, port, api: payload.api === true }
   } catch {
     return null
   }

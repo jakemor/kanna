@@ -147,6 +147,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -163,6 +166,9 @@ describe("parseArgs", () => {
         strictPort: true,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -179,6 +185,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -195,6 +204,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -211,6 +223,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -227,6 +242,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -253,6 +271,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -269,6 +290,9 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        api: false,
+        apiKeys: [],
+        apiKeyFile: null,
       },
     })
   })
@@ -632,6 +656,64 @@ describe("parseArgs pair subcommand", () => {
     expect(() => parseArgs(["--cloud", "--host", "10.0.0.5"])).toThrow("--host")
     expect(() => parseArgs(["--cloud", "--remote"])).toThrow("--remote")
   })
+
+  test("--api collects inline keys in either flag form", () => {
+    const equals = parseArgs(["--api", "--api-key=alpha,bravo"])
+    expect(equals).toMatchObject({ kind: "run", options: { api: true, apiKeys: ["alpha", "bravo"], apiKeyFile: null } })
+
+    const spaced = parseArgs(["--api", "--api-key", "alpha,bravo"])
+    expect(spaced).toMatchObject({ kind: "run", options: { api: true, apiKeys: ["alpha", "bravo"] } })
+  })
+
+  test("repeating --api-key accumulates without duplicates", () => {
+    expect(parseArgs(["--api", "--api-key=alpha", "--api-key=bravo,alpha"])).toMatchObject({
+      kind: "run",
+      options: { apiKeys: ["alpha", "bravo"] },
+    })
+  })
+
+  test("--api-key-file is recorded for startup to read", () => {
+    expect(parseArgs(["--api", "--api-key-file=/tmp/keys.txt"])).toMatchObject({
+      kind: "run",
+      options: { api: true, apiKeys: [], apiKeyFile: "/tmp/keys.txt" },
+    })
+    expect(parseArgs(["--api", "--api-key-file", "/tmp/keys.txt"])).toMatchObject({
+      kind: "run",
+      options: { apiKeyFile: "/tmp/keys.txt" },
+    })
+  })
+
+  test("--api-key-file is not swallowed by --api-key", () => {
+    const parsed = parseArgs(["--api", "--api-key-file=/tmp/keys.txt"])
+    expect(parsed).toMatchObject({ kind: "run", options: { apiKeys: [], apiKeyFile: "/tmp/keys.txt" } })
+  })
+
+  test("--api without any key flag is refused", () => {
+    expect(() => parseArgs(["--api"])).toThrow("--api-key")
+  })
+
+  test("key flags without --api are refused", () => {
+    expect(() => parseArgs(["--api-key=alpha"])).toThrow("--api")
+    expect(() => parseArgs(["--api-key-file=/tmp/keys.txt"])).toThrow("--api")
+  })
+
+  test("key flags need a value", () => {
+    expect(() => parseArgs(["--api", "--api-key="])).toThrow("Missing value for --api-key")
+    expect(() => parseArgs(["--api", "--api-key"])).toThrow("Missing value for --api-key")
+    expect(() => parseArgs(["--api", "--api-key", "--no-open"])).toThrow("Missing value for --api-key")
+    expect(() => parseArgs(["--api", "--api-key-file"])).toThrow("Missing value for --api-key-file")
+  })
+
+  test("--api composes with --remote", () => {
+    expect(parseArgs(["--remote", "--api", "--api-key=alpha"])).toMatchObject({
+      kind: "run",
+      options: { host: "0.0.0.0", api: true, apiKeys: ["alpha"] },
+    })
+  })
+
+  test("a blank inline key list is treated as no keys", () => {
+    expect(() => parseArgs(["--api", "--api-key= , "])).toThrow("--api-key")
+  })
 })
 
 describe("runCli cloud", () => {
@@ -829,6 +911,52 @@ describe("runCli single-instance guard + hosted open", () => {
     })
     await runCli(["--no-open"], deps)
     expect(calls.openUrl).toEqual([])
+  })
+
+  // This run starts no server, so its --api flags cannot take effect. Exiting
+  // 0 would tell a script the API is up when the running instance has no
+  // /api/v1 at all.
+  test("--api against an instance without the API → exit 1, say to restart", async () => {
+    const { calls, deps } = createDeps({
+      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210, api: false }),
+    })
+
+    const result = await runCli(["--api", "--api-key=alpha"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 1 })
+    expect(calls.startServer).toEqual([])
+    expect(calls.openUrl).toEqual([])
+    expect(calls.warn.some((line) => line.includes("without the API"))).toBe(true)
+    expect(calls.warn.some((line) => line.includes("--api"))).toBe(true)
+  })
+
+  test("an instance predating the health field is treated as having no API", async () => {
+    const { deps } = createDeps({
+      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210 }),
+    })
+
+    expect(await runCli(["--api", "--api-key=alpha"], deps)).toEqual({ kind: "exited", code: 1 })
+  })
+
+  test("--api against an instance already serving it → exit 0, but say the keys were not applied", async () => {
+    const { calls, deps } = createDeps({
+      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210, api: true }),
+    })
+
+    const result = await runCli(["--api", "--api-key=alpha", "--no-open"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(calls.startServer).toEqual([])
+    expect(calls.warn.some((line) => line.includes("was not applied"))).toBe(true)
+  })
+
+  test("without --api an existing instance is unaffected by the new check", async () => {
+    const { calls, deps } = createDeps({
+      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210, api: false }),
+    })
+
+    expect(await runCli(["--no-open"], deps)).toEqual({ kind: "exited", code: 0 })
+    expect(calls.warn).toEqual([])
   })
 
   test("paired start opens the hosted URL when the tunnel connects (not localhost)", async () => {

@@ -104,6 +104,18 @@ export interface ChatRecord {
   lastAgentMessagePreviewAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
   /**
+   * Set when a turn was cut short because Kanna itself went down, and cleared
+   * by the next boot's resume pass. A turn the *user* stopped never gets this,
+   * which is the whole point: it's how the next process tells "this chat was
+   * mid-task when we exited" from "this chat was stopped on purpose".
+   *
+   * Persisted rather than derived from `lastTurnStartedAt > lastTurnEndedAt`:
+   * shutdown cancels the turn like any other cancel, so the timestamps alone
+   * can't distinguish the two, and inferring it would make every chat killed
+   * by an old `kill -9` resume out of nowhere on upgrade.
+   */
+  resumePending?: boolean
+  /**
    * Files this chat has changed, unioned across its turns and measured by
    * diffing worktree snapshots at each turn boundary (see `TurnFileTracker`).
    * Intersected with the currently-dirty paths to decide whether a chat is
@@ -355,6 +367,13 @@ export type TurnEvent =
       type: "turn_cancelled"
       timestamp: number
       chatId: string
+    }
+  | {
+      v: 2
+      type: "turn_resume_pending_set"
+      timestamp: number
+      chatId: string
+      pending: boolean
     }
   | {
       v: 2

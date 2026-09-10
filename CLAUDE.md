@@ -41,6 +41,11 @@ React client (src/client)
 - Provider adapters normalize three different wire protocols into
   `HarnessEvent`s (`harness-types.ts`). Claude runs through the Agent SDK in
   `agent.ts` directly; codex/cursor/pi produce `HarnessTurn`s.
+- Shutdown cancels every in-flight turn and marks its chat `resumePending`
+  (`agent.interruptForShutdown`); the next boot restarts those turns with a
+  wire-only "carry on" prompt (`resume-turns.ts`). A user-initiated cancel
+  never sets the marker, and the marker is cleared before the attempt, so one
+  shutdown earns one resume.
 - Transcripts are append-only JSONL per chat (`transcripts/<chatId>.jsonl`)
   with a small LRU cache in the EventStore. `debugRaw` (raw provider JSON) is
   stamped only on `system_init` — the one entry with a raw JSON view. Tool

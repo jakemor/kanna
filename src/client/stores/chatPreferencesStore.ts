@@ -24,6 +24,7 @@ import {
   type ProviderModelOptionsInput,
   type ProviderPreferenceInput,
 } from "../../shared/provider-preferences"
+import { findSidebarChat } from "./sidebarStore"
 
 export type { ChatProviderPreferences, DefaultProviderPreference, ProviderPreference }
 // The normalizers live in shared/provider-preferences (also used by the server's
@@ -90,6 +91,26 @@ function composerFromProviderDefaults(
   providerDefaults: ChatProviderPreferences
 ): ComposerState {
   return composerStateForProvider(provider, providerDefaults[provider])
+}
+
+/**
+ * What the server knows a chat last ran with — the sidebar row's provider and
+ * model. Nothing else survives a reload on this side, so this is what an
+ * existing chat is seeded from. Settings defaults are for chats that have
+ * never run; a chat that has picks up where it left off, on every device.
+ */
+export interface ComposerSeed {
+  provider: AgentProvider
+  model?: string
+}
+
+function composerFromChatSeed(seed: ComposerSeed, providerDefaults: ChatProviderPreferences): ComposerState {
+  // Options (effort, context window…) aren't recorded per chat, so those still
+  // come from the provider's defaults; the model is the chat's own.
+  return composerStateForProvider(seed.provider, {
+    ...providerDefaults[seed.provider],
+    ...(seed.model ? { model: seed.model } : {}),
+  })
 }
 
 function cloneComposerState(state: ComposerState): ComposerState {
@@ -169,13 +190,31 @@ function createComposerStateForNewChat(args: {
   return composerFromProviderDefaults(args.defaultProvider, args.providerDefaults)
 }
 
+/**
+ * The seed for a chat with nothing stored, read from the sidebar snapshot.
+ * Every path that materialises state for a chat — including the mutation
+ * helpers, which never see the hook's reactive seed — must start from the
+ * chat's own record, or a Shift+Tab on a chat you just reloaded would pin it
+ * to the default provider on its way to toggling the mode.
+ */
+function seedForChat(chatId: string): ComposerSeed | null {
+  if (chatId === NEW_CHAT_COMPOSER_ID) return null
+  const row = findSidebarChat(chatId)
+  if (!row?.provider) return null
+  return { provider: row.provider, ...(row.model ? { model: row.model } : {}) }
+}
+
 function getStoredComposerState(
   state: Pick<ChatPreferencesState, "chatStates" | "defaultProvider" | "providerDefaults" | "legacyComposerState">,
-  chatId: string
+  chatId: string,
+  seed: ComposerSeed | null = seedForChat(chatId)
 ): ComposerState {
   const existingState = state.chatStates[chatId]
   if (existingState) {
     return existingState
+  }
+  if (seed) {
+    return composerFromChatSeed(seed, state.providerDefaults)
   }
 
   return createComposerStateForNewChat({
@@ -219,7 +258,8 @@ interface ChatPreferencesState {
     modelOptions: Partial<ProviderModelOptionsByProvider[TProvider]>
   ) => void
   setProviderDefaultMode: (provider: AgentProvider, mode: ChatMode) => void
-  getComposerState: (chatId: string) => ComposerState
+  /** `seed` is the chat's own record (see ComposerSeed); used only when nothing is stored for it. */
+  getComposerState: (chatId: string, seed?: ComposerSeed | null) => ComposerState
   initializeComposerForChat: (chatId: string, options?: { sourceState?: ComposerState | null }) => void
   setComposerState: (chatId: string, composerState: ComposerState) => void
   setChatComposerProvider: (chatId: string, provider: AgentProvider) => void
@@ -285,12 +325,13 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           providerDefaults,
           legacyComposerState: state.legacyComposerState,
         })
-        const chatStates = Object.fromEntries(
-          Object.entries(state.chatStates).map(([chatId, composerState]) => [
-            chatId,
-            sameComposerState(composerState, oldNewChatFallback) ? nextNewChatFallback : composerState,
-          ])
-        )
+        // Only the new-chat composer follows a change of defaults, and only
+        // while it is still untouched. A chat that has run keeps what it ran
+        // with: defaults are for starting chats, not for changing them.
+        const newChatState = state.chatStates[NEW_CHAT_COMPOSER_ID]
+        const chatStates = newChatState && sameComposerState(newChatState, oldNewChatFallback)
+          ? { ...state.chatStates, [NEW_CHAT_COMPOSER_ID]: nextNewChatFallback }
+          : state.chatStates
 
         return {
           defaultProvider,
@@ -328,7 +369,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             },
           },
         })),
-      getComposerState: (chatId) => cloneComposerState(getStoredComposerState(get(), chatId)),
+      getComposerState: (chatId, seed) => cloneComposerState(getStoredComposerState(get(), chatId, seed)),
       initializeComposerForChat: (chatId, options) =>
         set((state) => {
           if (state.chatStates[chatId]) {

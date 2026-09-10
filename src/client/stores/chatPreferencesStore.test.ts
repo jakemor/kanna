@@ -1,3 +1,5 @@
+import { useSidebarStore } from "./sidebarStore"
+import type { SidebarProjectGroup } from "../../shared/types"
 import { afterEach, describe, expect, test } from "bun:test"
 import {
   migrateChatPreferencesState,
@@ -537,10 +539,14 @@ describe("chat preference store", () => {
     })
   })
 
-  test("syncProviderDefaults refreshes untouched routed chat state after settings hydration", () => {
+  test("syncProviderDefaults leaves a routed chat's state alone", () => {
+    // Defaults are for starting chats. A chat that already has state — even
+    // state equal to the old defaults — keeps it when the defaults move;
+    // otherwise changing a setting would swap the model mid-conversation.
     const store = useChatPreferencesStore.getState()
 
     store.initializeComposerForChat("chat-a")
+    const before = store.getComposerState("chat-a")
     store.syncProviderDefaults("last_used", {
       ...INITIAL_STATE.providerDefaults,
       claude: {
@@ -551,13 +557,61 @@ describe("chat preference store", () => {
       },
     })
 
-    expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toEqual({
-      provider: "claude",
-      model: "opus",
-      modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
+    expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toEqual(before)
+  })
+
+  test("mutation helpers seed an un-stored chat from the sidebar row, not the defaults", () => {
+    // Shift+Tab (mode cycle) and plan approval write through the store's own
+    // helpers, which never see the hook's seed. They must still start from the
+    // chat's record, or the write pins the default provider on its way through.
+    useChatPreferencesStore.setState({ ...INITIAL_STATE, defaultProvider: "claude" })
+    useSidebarStore.setState({
+      data: {
+        projectGroups: [{
+          chats: [{ chatId: "chat-a", provider: "codex", model: "gpt-5.5" }],
+        } as unknown as SidebarProjectGroup],
+      },
+    } as never)
+    try {
+      useChatPreferencesStore.getState().setChatComposerMode("chat-a", "plan")
+      const stored = useChatPreferencesStore.getState().chatStates["chat-a"]
+      expect(stored?.provider).toBe("codex")
+      expect(stored?.model).toBe("gpt-5.5")
+      expect(stored?.planMode).toBe(true)
+    } finally {
+      useSidebarStore.setState({ data: { projectGroups: [] } } as never)
+    }
+  })
+
+  test("getComposerState seeds an existing chat from what it last ran with", () => {
+    // Nothing is stored for the chat (a reload emptied this store, or this is
+    // another device). The chat's own record wins over the settings defaults.
+    useChatPreferencesStore.setState({
+      ...INITIAL_STATE,
+      defaultProvider: "claude",
+      providerDefaults: {
+        ...INITIAL_STATE.providerDefaults,
+        codex: {
+          model: "gpt-5.3-codex-spark",
+          modelOptions: { reasoningEffort: "minimal", fastMode: true },
+          planMode: true,
+          autoPlan: false,
+        },
+      },
+    })
+
+    expect(useChatPreferencesStore.getState().getComposerState("chat-a", { provider: "codex", model: "gpt-5.5" })).toEqual({
+      provider: "codex",
+      model: "gpt-5.5",
+      // Options aren't recorded per chat, so those are the provider's defaults.
+      modelOptions: { reasoningEffort: "minimal", fastMode: true },
       planMode: true,
       autoPlan: false,
     })
+    // Stored state, once the user has touched the composer, still wins.
+    useChatPreferencesStore.getState().setChatComposerModel("chat-a", "gpt-5.3-codex-spark")
+    expect(useChatPreferencesStore.getState().getComposerState("chat-a", { provider: "codex", model: "gpt-5.5" }).model)
+      .toBe("gpt-5.3-codex-spark")
   })
 
   test("syncProviderDefaults does not replace a changed new-chat state", () => {

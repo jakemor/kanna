@@ -5,6 +5,7 @@ import {
   computeThreadDateBuckets,
   computeThreadSections,
   flattenSidebarThreads,
+  getArchivedThreads,
   getInProgressThreads,
   getRecentThreads,
   getRelevantThreads,
@@ -457,6 +458,34 @@ describe("computeSidebarThreadSections", () => {
     expect(sections.buckets).toHaveLength(1)
     expect(sections.buckets[0].threads.map((thread) => thread.chatId)).toEqual(["idle"])
     expect(sections.archived.map((thread) => thread.chatId)).toEqual(["archived-new", "archived-old"])
+  })
+
+  test("archived sorts by when it was archived, not by activity", () => {
+    const data = makeData([], [
+      // Dormant for a month, archived a moment ago: it leads, because this list
+      // answers "what did I just put away".
+      makeChatRow({
+        chatId: "just-archived",
+        title: "x",
+        lastMessageAt: at(2026, 7, 1),
+        archivedAt: at(2026, 7, 20),
+      }),
+      makeChatRow({
+        chatId: "archived-earlier",
+        title: "y",
+        lastMessageAt: at(2026, 7, 15),
+        archivedAt: at(2026, 7, 16),
+      }),
+      // Pre-dates `archivedAt`: falls back to its activity, so it sorts last.
+      makeChatRow({ chatId: "legacy", title: "z", lastMessageAt: at(2026, 7, 10) }),
+    ])
+
+    const archived = getArchivedThreads(flattenSidebarThreads(data))
+    expect(archived.map((thread) => thread.chatId)).toEqual([
+      "just-archived",
+      "archived-earlier",
+      "legacy",
+    ])
   })
 
   test("Relevant drains flagged chats out of the date buckets", () => {

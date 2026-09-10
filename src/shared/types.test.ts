@@ -98,6 +98,20 @@ describe("shared model normalization", () => {
     expect(normalizeCodexReasoningEffort("gpt-6-astra", undefined, live)).toBe("high")
   })
 
+  test("keeps GPT-6 Astra selectable with its own effort range and default", () => {
+    // The catalog is the gate: an id it doesn't list is silently replaced with
+    // the default model server-side, so a new release is unusable until added.
+    expect(normalizeCodexModelId("gpt-6-astra")).toBe("gpt-6-astra")
+    expect(getCodexReasoningOptions("gpt-6-astra").map((option) => option.id)).toEqual([
+      "low", "medium", "high", "xhigh", "max", "ultra",
+    ])
+    // Recommended default for this model is high, not the 5.6 family's medium.
+    expect(normalizeCodexReasoningEffort("gpt-6-astra", "unknown")).toBe("high")
+    // Astra is not the catalog default: access rolled out gradually, so
+    // everyone would otherwise be moved onto a model they may not have.
+    expect(normalizeCodexModelId()).toBe("gpt-5.6-sol")
+  })
+
   test("exposes model-specific GPT-5.6 reasoning efforts", () => {
     expect(getCodexReasoningOptions("gpt-5.6-sol").map((option) => option.id)).toEqual([
       "low", "medium", "high", "xhigh", "max", "ultra",

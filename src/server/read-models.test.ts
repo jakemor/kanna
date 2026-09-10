@@ -556,7 +556,7 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.olderChats.map((chat) => chat.chatId)).toEqual([])
   })
 
-  test("disables forking for active and draining chats, but allows pending fork chats", () => {
+  test("forks a busy chat only once it has a completed turn to branch from", () => {
     const state = createEmptyState()
     state.projectsById.set("project-1", {
       id: "project-1",
@@ -619,14 +619,31 @@ describe("read models", () => {
       sessionToken: "cursor-session",
       lastTurnOutcome: null,
     })
+    // Busy, but with a settled turn behind it — the fork branches from there.
+    state.chatsById.set("chat-active-again", {
+      id: "chat-active-again",
+      projectId: "project-1",
+      title: "Active again",
+      createdAt: 5,
+      updatedAt: 5,
+      unread: false,
+      provider: "claude",
+      planMode: false,
+      autoPlan: false,
+      sessionToken: "session-active-again",
+      lastTurnEndedAt: 4,
+      lastTurnOutcome: "success",
+    })
 
     const sidebar = deriveSidebarData(
       state,
-      new Map([["chat-active", "running"]]),
+      new Map([["chat-active", "running"], ["chat-active-again", "running"]]),
       { drainingChatIds: new Set(["chat-draining"]) }
     )
 
+    // Still inside its first turn: nothing settled to branch from.
     expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-active")?.canFork).toBeUndefined()
+    expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-active-again")?.canFork).toBe(true)
     expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-pending")?.canFork).toBe(true)
     expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-draining")?.canFork).toBeUndefined()
     // Cursor has no fork primitive, so forking is disabled even with a live session.

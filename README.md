@@ -119,9 +119,50 @@ kanna --no-open        # don't open browser
 kanna --password <secret>      # require a password before loading the app
 kanna --share                # create a public quick tunnel + terminal QR
 kanna --cloudflared <token>  # run a named Cloudflare tunnel from a token
+kanna-rc                     # production build on port 3211 with isolated data
 ```
 
 Default URL: `http://localhost:3210`
+
+### Release-candidate instance
+
+`kanna-rc` runs the same production build as `kanna`, but defaults to
+`http://localhost:3211` and stores its state under `~/.kanna-rc/`. It can run
+alongside production without sharing chat history, settings, credentials, or
+cloud pairing state.
+
+```bash
+kanna-rc
+kanna-rc --no-open
+```
+
+To build the current checkout and run it as RC without replacing your globally
+installed production command:
+
+```bash
+bun run rc
+bun run rc -- --no-open
+```
+
+This rebuilds the production client, disables package self-updates for the
+local run, and launches the normal supervised server on port `3211`.
+
+### Import chat history
+
+Import all live chats from another environment into the command's environment:
+
+```bash
+kanna import-chats dev       # dev → production
+kanna import-chats rc        # RC → production
+kanna-rc import-chats prd    # production → RC
+bun run dev:import-chats rc  # RC → dev
+```
+
+Stop both the source and destination instances before importing. Imports are additive:
+destination-only chats remain, while a chat previously imported from the same
+source is updated in place on the next import. Projects are matched by local
+path, and transcripts, tool payloads, queued messages, and transcript media are
+copied with each chat. `prod` is also accepted as an alias for `prd`.
 
 ### Network access (Tailscale / LAN)
 
@@ -212,6 +253,8 @@ bun run dev:server   # http://localhost:5175
 | `bun run dev`        | Run client + server together |
 | `bun run dev:client` | Vite dev server only         |
 | `bun run dev:server` | Bun backend only             |
+| `bun run dev:import-chats <env>` | Import chats into dev        |
+| `bun run rc`         | Build and run an isolated local RC |
 | `bun run start`      | Start production server      |
 | `bun test`           | Unit/integration tests       |
 | `bun run test:e2e`   | Playwright browser smoke suite |
@@ -255,7 +298,8 @@ e2e/                 Playwright smoke suite (boots the real server)
 
 ## Data Storage
 
-All state is stored locally at `~/.kanna/data/`:
+Production state is stored locally at `~/.kanna/data/`. Dev uses
+`~/.kanna-dev/data/`, and RC uses `~/.kanna-rc/data/`:
 
 | File             | Purpose                                   |
 | ---------------- | ----------------------------------------- |

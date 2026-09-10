@@ -41,10 +41,11 @@ type LoadablePreviewKind = Extract<AttachmentPreviewKind, "markdown" | "text" | 
 
 interface Props {
   attachment: ChatAttachment | null
+  metadataLabel?: string
   onOpenChange: (open: boolean) => void
 }
 
-export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
+export function AttachmentPreviewModal({ attachment, metadataLabel, onOpenChange }: Props) {
   const [previewCache, setPreviewCache] = useState<Record<string, PreviewState>>({})
   const previewTarget = useMemo(() => {
     return attachment ? classifyAttachmentPreview(attachment) : null
@@ -149,7 +150,7 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
             </DialogBody>
             <DialogFooter className="items-center justify-between gap-3 px-4 py-3">
               <DialogDescription className="truncate">
-                {attachment.mimeType} · {formatAttachmentSize(attachment.size)}
+                {metadataLabel ?? `${attachment.mimeType} · ${formatAttachmentSize(attachment.size)}`}
               </DialogDescription>
               <div className="flex items-center gap-2">
                 <DialogGhostButton type="button" onClick={handleCopyLink}>

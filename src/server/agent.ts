@@ -62,6 +62,8 @@ import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
 import { checkSessionArtifact, type SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+import { buildBrowserAccessNotice } from "./browser-context"
+import { normalizeBrowserOrigin } from "../shared/browser-context"
 
 /**
  * Tools every Claude session gets. `EnterPlanMode` is deliberately absent — it
@@ -241,6 +243,7 @@ interface SendMessageOptions {
   effort?: string
   planMode?: boolean
   autoPlan?: boolean
+  browserOrigin?: string
 }
 
 function stringFromUnknown(value: unknown) {
@@ -1116,6 +1119,7 @@ export class AgentCoordinator {
       modelOptions: options?.modelOptions,
       planMode: options?.planMode,
       autoPlan: options?.autoPlan,
+      browserOrigin: normalizeBrowserOrigin(options?.browserOrigin),
     })
     this.emitStateChange(chatId)
     return queued
@@ -1136,6 +1140,7 @@ export class AgentCoordinator {
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
       autoPlan: settings.autoPlan,
+      browserOrigin: queuedMessage.browserOrigin,
       appendUserPrompt: true,
       steered: options?.steered,
     })
@@ -1309,6 +1314,7 @@ export class AgentCoordinator {
     autoPlan: boolean
     appendUserPrompt: boolean
     steered?: boolean
+    browserOrigin?: string
   }) {
 
     // Close any lingering draining stream before starting a new turn.
@@ -1423,6 +1429,10 @@ export class AgentCoordinator {
     )
     if (concurrentAgentsNotice) {
       wireContent = appendSystemMessageBlock(wireContent, concurrentAgentsNotice)
+    }
+    const browserAccessNotice = buildBrowserAccessNotice(args.browserOrigin)
+    if (browserAccessNotice) {
+      wireContent = appendSystemMessageBlock(wireContent, browserAccessNotice)
     }
 
     // Harness switch or session restore: lead with the rebuilt transcript so
@@ -1712,6 +1722,7 @@ export class AgentCoordinator {
         effort: command.effort,
         planMode: command.planMode,
         autoPlan: command.autoPlan,
+        browserOrigin: command.browserOrigin,
       })
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
@@ -1729,6 +1740,7 @@ export class AgentCoordinator {
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
       autoPlan: settings.autoPlan,
+      browserOrigin: normalizeBrowserOrigin(command.browserOrigin),
       appendUserPrompt: true,
     })
 
@@ -1744,6 +1756,7 @@ export class AgentCoordinator {
       modelOptions: command.modelOptions,
       planMode: command.planMode,
       autoPlan: command.autoPlan,
+      browserOrigin: command.browserOrigin,
     })
     return { queuedMessageId: queuedMessage.id }
   }

@@ -4,6 +4,7 @@ import {
   JSON_PREVIEW_LIMIT_BYTES,
   classifyAttachmentIcon,
   classifyAttachmentPreview,
+  inferAttachmentPreviewMimeType,
   parseDelimitedPreview,
   prettifyJson,
 } from "./attachmentPreview"
@@ -52,6 +53,15 @@ describe("classifyAttachmentPreview", () => {
 
     expect(target.kind).toBe("text")
     expect(target.openInNewTab).toBe(false)
+  })
+})
+
+describe("inferAttachmentPreviewMimeType", () => {
+  test("recognizes files supported by the in-browser preview", () => {
+    expect(inferAttachmentPreviewMimeType("README.md")).toBe("text/markdown")
+    expect(inferAttachmentPreviewMimeType("diagram.svg")).toBe("image/svg+xml")
+    expect(inferAttachmentPreviewMimeType("app.tsx")).toBe("text/plain")
+    expect(inferAttachmentPreviewMimeType("archive.zip")).toBe("application/octet-stream")
   })
 })
 

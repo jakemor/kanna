@@ -53,6 +53,7 @@ function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
   return left.id === right.id
     && left.content === right.content
     && left.createdAt === right.createdAt
+    && left.browserOrigin === right.browserOrigin
     && left.provider === right.provider
     && left.model === right.model
     && left.planMode === right.planMode

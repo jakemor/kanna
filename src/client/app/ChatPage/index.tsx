@@ -1024,6 +1024,7 @@ export function ChatPage() {
           messages={state.messages}
           queuedMessages={state.queuedMessages}
           transcriptPaddingBottom={transcriptPaddingBottom}
+          projectId={projectId}
           localPath={state.runtime?.localPath}
           latestToolIds={state.latestToolIds}
           isProcessing={state.isProcessing}

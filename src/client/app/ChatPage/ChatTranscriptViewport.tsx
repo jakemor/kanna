@@ -10,6 +10,8 @@ import {
 import { ArrowDown, Flower, Upload } from "lucide-react"
 import { DrainingIndicator } from "../../components/messages/DrainingIndicator"
 import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
+import { AttachmentPreviewModal } from "../../components/messages/AttachmentPreviewModal"
+import { classifyAttachmentPreview, inferAttachmentPreviewMimeType } from "../../components/messages/attachmentPreview"
 import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../../components/messages/shared"
 import { ProcessingMessage } from "../../components/messages/ProcessingMessage"
 import { ContextMenu, ContextMenuTrigger } from "../../components/ui/context-menu"
@@ -18,7 +20,7 @@ import { TRANSCRIPT_PADDING_BOTTOM_OFFSET } from "../kannaStateHelpers"
 import { useScrollbarGutterVar } from "../../hooks/useScrollbarGutterVar"
 import { cn } from "../../lib/utils"
 import type { ChatJumpRole } from "../../lib/chat-navigation"
-import { formatPathWithTilde, shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
+import { formatPathWithTilde, projectRelativeFilePath, shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
 import {
   buildResolvedTranscriptRows,
   KannaTranscriptRow,
@@ -49,7 +51,8 @@ import {
   EMPTY_STATE_TEXT,
 } from "./utils"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
-import type { TranscriptOutlineEntry } from "../../../shared/types"
+import { browserOriginFromWindow, parseBrowserAccessContext } from "../../../shared/browser-context"
+import type { ChatAttachment, TranscriptOutlineEntry } from "../../../shared/types"
 /**
  * How close to the bottom counts as "at the end", as a fraction of viewport
  * height.
@@ -185,6 +188,7 @@ interface ChatTranscriptViewportProps {
   messages: KannaState["messages"]
   queuedMessages: KannaState["queuedMessages"]
   transcriptPaddingBottom: number
+  projectId: string | null
   localPath: string | null | undefined
   latestToolIds: KannaState["latestToolIds"]
   isProcessing: boolean
@@ -391,6 +395,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   messages,
   queuedMessages,
   transcriptPaddingBottom,
+  projectId,
   localPath,
   latestToolIds,
   isProcessing,
@@ -437,6 +442,8 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   const localLinkMenuTriggerRef = useRef<HTMLSpanElement | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
   const [localLinkMenuTarget, setLocalLinkMenuTarget] = useState<OpenLocalLinkTarget | null>(null)
+  const [localFilePreview, setLocalFilePreview] = useState<ChatAttachment | null>(null)
+  const [localLinkError, setLocalLinkError] = useState<string | null>(null)
   const isMac = platform === "darwin"
 
   const rawRows = useMemo(() => buildResolvedTranscriptRows(messages, {
@@ -916,6 +923,38 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
 
   const handleOpenLocalLinkClick = useCallback((target: OpenLocalLinkTarget) => {
     if (target.trigger !== "contextmenu") {
+      const accessContext = parseBrowserAccessContext(browserOriginFromWindow())
+      if (accessContext?.mode === "network") {
+        const relativePath = projectRelativeFilePath(target.path, localPath)
+        if (!projectId || !relativePath) {
+          setLocalLinkError(
+            "This file is outside the active project and can't be previewed over the network. Right-click it for actions on the Kanna machine."
+          )
+          return
+        }
+
+        const mimeType = inferAttachmentPreviewMimeType(relativePath)
+        const contentUrl = `/api/projects/${encodeURIComponent(projectId)}/files/${encodeURIComponent(relativePath)}/content`
+        const attachment: ChatAttachment = {
+          id: `workspace-file:${target.path}`,
+          kind: mimeType.startsWith("image/") ? "image" : "file",
+          displayName: relativePath.split("/").pop() ?? relativePath,
+          absolutePath: target.path,
+          relativePath,
+          contentUrl,
+          mimeType,
+          size: 0,
+        }
+        setLocalLinkError(null)
+        if (classifyAttachmentPreview(attachment).openInNewTab) {
+          window.open(contentUrl, "_blank", "noopener,noreferrer")
+        } else {
+          setLocalFilePreview(attachment)
+        }
+        return
+      }
+
+      setLocalLinkError(null)
       const action = shouldOpenLocalFileLinkInEditor(target.path) ? "open_editor" : "open_default"
       void onOpenLocalLink(target, action)
       return
@@ -935,7 +974,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
         view: window,
       }))
     })
-  }, [onOpenLocalLink])
+  }, [localPath, onOpenLocalLink, projectId])
 
   // Stable identity: the viewport commits a render on every scroll event (the
   // visible row range changes constantly), and a fresh style object hands the
@@ -985,9 +1024,9 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
       {!isProcessing && isDraining ? (
         <DrainingIndicator onStop={() => void onStopDraining()} />
       ) : null}
-      {commandError ? (
+      {commandError || localLinkError ? (
         <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          {commandError}
+          {commandError ?? localLinkError}
         </div>
       ) : null}
     </div>
@@ -1043,6 +1082,14 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
             </MessageScrollerContent>
           </MessageScrollerViewport>
         </MessageScroller>
+
+        <AttachmentPreviewModal
+          attachment={localFilePreview}
+          metadataLabel={localFilePreview?.relativePath}
+          onOpenChange={(open) => {
+            if (!open) setLocalFilePreview(null)
+          }}
+        />
       </OpenLocalLinkProvider>
 
       {showEmptyState ? null : (

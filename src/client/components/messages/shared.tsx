@@ -36,6 +36,7 @@ import { CopyButton } from "../ui/copy-button"
 import { cn } from "../../lib/utils"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useTranscriptRenderOptions } from "./render-context"
+import { MermaidDiagram } from "./MermaidDiagram"
 
 export type OpenLocalLinkTarget = {
   path: string
@@ -251,6 +252,12 @@ export const markdownComponents = {
   ),
 
   pre: ({ children, ...props }: ComponentPropsWithoutRef<"pre">) => {
+    const childNodes = Children.toArray(children)
+    const onlyChild = childNodes.length === 1 ? childNodes[0] : null
+    if (isValidElement<{ className?: string }>(onlyChild) && isMermaidClassName(onlyChild.props.className)) {
+      return onlyChild
+    }
+
     const textContent = extractText(children)
 
     return (
@@ -265,6 +272,10 @@ export const markdownComponents = {
   },
 
   code: ({ children, className, ...props }: ComponentPropsWithoutRef<"code">) => {
+    if (isMermaidClassName(className)) {
+      return <MermaidDiagram source={extractText(children).replace(/\n$/, "")} />
+    }
+
     const isInline = !className
     if (isInline) {
       return <code className="break-all px-1 bg-border/60 dark:[.no-pre-highlight_&]:bg-background dark:[.text-pretty_&]:bg-neutral [.no-code-highlight_&]:!bg-transparent py-0.5 rounded text-sm whitespace-wrap" {...props}>{children}</code>
@@ -333,6 +344,10 @@ export const markdownComponents = {
       {children}
     </a>
   ),
+}
+
+function isMermaidClassName(className: string | undefined) {
+  return className?.split(/\s+/).includes("language-mermaid") ?? false
 }
 
 export function createMarkdownComponents(options?: {
@@ -417,4 +432,3 @@ export const TranscriptMarkdown = memo(function TranscriptMarkdown({ text }: { t
     passNode: true,
   })
 })
-

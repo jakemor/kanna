@@ -171,6 +171,8 @@ export interface QueuedChatMessage {
   content: string
   attachments: ChatAttachment[]
   createdAt: number
+  /** Informational web origin used for wire-only agent context. */
+  browserOrigin?: string
   provider?: AgentProvider
   model?: string
   modelOptions?: ModelOptions

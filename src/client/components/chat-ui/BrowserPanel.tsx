@@ -1,6 +1,7 @@
 import { Copy, CornerDownLeft, Ellipsis, ExternalLink, Globe, GlobeLock, Home, Loader2, Minus, Play, Plus, RefreshCw, SquareArrowOutUpRight, Trash2, Zap } from "lucide-react"
 import { memo, useCallback, useEffect, useRef, useState, type FocusEvent, type FormEvent, type ReactNode } from "react"
 import type { LocalHttpServerInfo, ProjectQuickAction } from "../../../shared/protocol"
+import { browserOriginFromWindow, resolveUrlForBrowserHost } from "../../../shared/browser-context"
 import type { KannaSocket } from "../../app/socket"
 import {
   getCachedLocalHttpServers,
@@ -139,7 +140,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction }: BrowserPanelP
 
   const openServer = useCallback(async (server: LocalHttpServerInfo) => {
     if (!isCloud) {
-      navigateBrowser(projectId, server.address)
+      navigateBrowser(projectId, resolveUrlForBrowserHost(server.address, browserOriginFromWindow()))
       return
     }
     const publicUrl = await exposeServer(server)
@@ -450,7 +451,8 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction }: BrowserPanelP
                   <div className="space-y-1.5">
                     {visibleServers.map((server) => {
                       const isExposing = exposingPorts.has(server.port)
-                      const openUrl = isCloud && server.publicUrl ? server.publicUrl : server.address
+                      const reachableAddress = resolveUrlForBrowserHost(server.address, browserOriginFromWindow())
+                      const openUrl = isCloud && server.publicUrl ? server.publicUrl : reachableAddress
                       return (
                       <ContextMenu key={server.address}>
                         <ContextMenuTrigger asChild>
@@ -490,7 +492,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction }: BrowserPanelP
                             </span>
                             <span className="flex w-full min-w-0 items-center gap-3">
                               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                                {isExposing ? "Exposing…" : server.publicUrl ?? server.address}
+                                {isExposing ? "Exposing…" : server.publicUrl ?? reachableAddress}
                               </span>
                               {server.ownerPath ? (
                                 <span className="max-w-[45%] shrink-0 truncate text-right text-[11px] text-muted-foreground/70">{formatPathWithTilde(server.ownerPath)}</span>

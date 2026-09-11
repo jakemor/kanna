@@ -336,10 +336,12 @@ export function createWsRouter({
       const pendingTool = agent.getPendingTool(chatId)
       if (pendingTool) pendingToolKinds.set(chatId, pendingTool.toolKind)
     }
-    // Every input to the derive, in one string. A streaming turn bumps
-    // `stateVersion` per appended entry, so this still re-derives per entry;
-    // what it stops is the derive-and-stringify for broadcasts that changed
-    // nothing sidebar-visible (terminal, git, settings, read anchors).
+    // Every input to the derive, in one string. `stateVersion` now moves only
+    // when an append changed something the sidebar can show (see
+    // `sidebarVisibleSignature` in event-store), so a streaming turn re-derives
+    // on the 15 s activity bucket rather than per entry — on top of skipping
+    // broadcasts that changed nothing sidebar-visible (terminal, git,
+    // settings, read anchors).
     const memoKey = [
       store.stateVersion,
       sidebarInputsVersion,
@@ -1023,7 +1025,12 @@ export function createWsRouter({
       send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
     }
     if (changed) {
-      void broadcastSnapshots()
+      // Scoped, not a full broadcast: a git command can move this project's
+      // diff snapshot and the sidebar (branch label, uncommitted-work dot).
+      // It cannot move terminal snapshots, whose serializer walks the whole
+      // scrollback (~15 ms and ~350 KB at max scrollback) — and the 5 s diff
+      // poll lands here, so an unfiltered broadcast paid that every poll.
+      void broadcastFilteredSnapshots({ includeSidebar: true, projectIds: new Set([project.id]) })
     }
   }
 

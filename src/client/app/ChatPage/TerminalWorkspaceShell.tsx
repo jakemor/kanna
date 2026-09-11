@@ -1,5 +1,9 @@
-import { memo } from "react"
-import { TerminalWorkspace } from "../../components/chat-ui/TerminalWorkspace"
+import { lazy, memo, Suspense } from "react"
+// Code-split: pulls @xterm/xterm + webgl, web-links, serialize and unicode11.
+// The terminal is a toggle, so none of it belongs in the entry chunk.
+const TerminalWorkspace = lazy(() =>
+  import("../../components/chat-ui/TerminalWorkspace").then((m) => ({ default: m.TerminalWorkspace }))
+)
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import type { KannaState } from "../useKannaState"
 
@@ -40,6 +44,7 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
 }: TerminalWorkspaceShellProps) {
   return (
     <div style={fixedTerminalHeight > 0 ? { height: `${fixedTerminalHeight}px` } : undefined}>
+      <Suspense fallback={null}>
       <TerminalWorkspace
         projectId={projectId}
         layout={terminalLayout}
@@ -57,6 +62,7 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
         onRemoveTerminal={onRemoveTerminal}
         onTerminalLayout={onTerminalLayout}
       />
+      </Suspense>
     </div>
   )
 })

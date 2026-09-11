@@ -1,6 +1,8 @@
-import { useCallback, useEffect } from "react"
+import { lazy, Suspense, useCallback, useEffect } from "react"
 import { Navigate, useOutletContext } from "react-router-dom"
-import { TerminalWorkspace } from "../components/chat-ui/TerminalWorkspace"
+const TerminalWorkspace = lazy(() =>
+  import("../components/chat-ui/TerminalWorkspace").then((m) => ({ default: m.TerminalWorkspace }))
+)
 import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
@@ -57,6 +59,7 @@ export function TerminalPage() {
   return (
     <div className="flex-1 flex min-h-0 min-w-0 flex-col pt-14 md:pt-0">
       {layout && hasTerminals ? (
+        <Suspense fallback={null}>
         <TerminalWorkspace
           projectId={HOME_TERMINAL_LAYOUT_KEY}
           paneProjectId={null}
@@ -70,6 +73,7 @@ export function TerminalPage() {
           onRemoveTerminal={handleRemoveTerminal}
           onTerminalLayout={setTerminalSizes}
         />
+        </Suspense>
       ) : null}
     </div>
   )

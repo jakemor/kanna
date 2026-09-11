@@ -1,10 +1,19 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
 import type { GroupImperativeHandle } from "react-resizable-panels"
 import { useOutletContext } from "react-router-dom"
 import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../../components/chat-ui/ChatNavbar"
-import { BrowserPanel } from "../../components/chat-ui/BrowserPanel"
-import { GitPanel } from "../../components/chat-ui/GitPanel"
+// Code-split: a sidebar panel, not first paint.
+const BrowserPanel = lazy(() =>
+  import("../../components/chat-ui/BrowserPanel").then((m) => ({ default: m.BrowserPanel }))
+)
+// Code-split: GitPanel pulls @pierre/diffs, which pulls shiki core and ~300
+// language grammars. The git tab is a sidebar panel, not first paint, so none
+// of that belongs in the entry chunk. Type-only import keeps the prop types.
+import type { GitPanel as GitPanelComponent } from "../../components/chat-ui/GitPanel"
+const GitPanel = lazy(() =>
+  import("../../components/chat-ui/GitPanel").then((m) => ({ default: m.GitPanel }))
+)
 import { useAppDialog } from "../../components/ui/app-dialog"
 import { Card, CardContent } from "../../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui/resizable"
@@ -22,7 +31,7 @@ import { useProjectRepoUrl } from "../../stores/sidebarStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
 import { shouldCloseTerminalPane } from "../terminalLayoutResize"
-import { disposeCachedTerminal } from "../../components/chat-ui/TerminalPane"
+
 import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "../terminalToggleAnimation"
 import { useRightSidebarToggleAnimation } from "../useRightSidebarToggleAnimation"
 import { useStickyChatFocus } from "../useStickyChatFocus"
@@ -302,14 +311,16 @@ interface ChatWorkspaceProps {
   onLayoutChanged: (layout: Record<string, number>) => void
 }
 
-type ChatSidebarContentProps = ComponentProps<typeof GitPanel>
+type ChatSidebarContentProps = ComponentProps<typeof GitPanelComponent>
 
 const ChatSidebarContent = memo(function ChatSidebarContent(props: ChatSidebarContentProps) {
   return (
-    <GitPanel
-      {...props}
-      diffs={props.diffs ?? EMPTY_DIFF_SNAPSHOT}
-    />
+    <Suspense fallback={<div className="h-full w-full" />}>
+      <GitPanel
+        {...props}
+        diffs={props.diffs ?? EMPTY_DIFF_SNAPSHOT}
+      />
+    </Suspense>
   )
 })
 
@@ -771,6 +782,11 @@ export function ChatPage() {
     void state.handleShareChat(state.activeChatId)
   }, [state.activeChatId, state.handleShareChat])
 
+  // Same rule, for ChatInputDock: every other prop it takes is already stable,
+  // so an inline arrow here was the one thing defeating its memo - and then
+  // ChatInput's memo below it - on every streamed entry.
+  const handleEditModels = useCallback(() => setDefaultModelsDialogOpen(true), [])
+
   const handleRemoveTerminal = useCallback((currentProjectId: string, terminalId: string) => {
     const paneCount = useTerminalLayoutStore.getState().projects[currentProjectId]?.terminals.length ?? 0
     if (paneCount <= 1) {
@@ -784,7 +800,10 @@ export function ChatPage() {
     // A split pane is unreachable once removed, so closing it does kill it.
     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
     removeTerminal(currentProjectId, terminalId)
-    disposeCachedTerminal(terminalId)
+    // Dynamic so this one helper does not pin the five xterm packages into the
+    // entry chunk. Removing a terminal implies the module is already loaded, so
+    // this resolves from cache.
+    void import("../../components/chat-ui/TerminalPane").then((m) => m.disposeCachedTerminal(terminalId))
   }, [hideTerminals, removeTerminal, state.socket])
 
   const clearShowScrollTimeout = useCallback(() => {
@@ -1081,7 +1100,7 @@ export function ChatPage() {
         contextWindowSnapshot={contextWindowSnapshot}
         onSubmit={handleChatSubmit}
         onCancel={handleCancel}
-        onEditModels={() => setDefaultModelsDialogOpen(true)}
+        onEditModels={handleEditModels}
         onListSkills={handleListSkills}
       />
       <DefaultModelsDialog
@@ -1191,7 +1210,11 @@ export function ChatPage() {
     wrapDiffLines,
   ])
   const rightPanelContent = activeRightPanel === "browser" && projectId
-    ? <BrowserPanel projectId={projectId} socket={state.socket} onClose={handleCloseRightSidebar} onRunQuickAction={handleRunQuickAction} />
+    ? (
+      <Suspense fallback={<div className="h-full w-full" />}>
+        <BrowserPanel projectId={projectId} socket={state.socket} onClose={handleCloseRightSidebar} onRunQuickAction={handleRunQuickAction} />
+      </Suspense>
+    )
     : gitPanelContentProps
       ? <ChatSidebarContent {...gitPanelContentProps} />
       : null

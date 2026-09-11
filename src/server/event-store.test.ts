@@ -1611,3 +1611,55 @@ describe("getClientTranscript window and outline", () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 })
+
+
+describe("stateVersion", () => {
+  /**
+   * `stateVersion` is the sidebar memo key in ws-router. A transcript append
+   * must bump it only when it moved something the sidebar can actually show,
+   * otherwise a streaming turn re-derives and re-serializes the whole sidebar
+   * many times a second for bytes that come out identical.
+   */
+  test("agent entries inside one activity bucket do not bump it", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(dataDir, "proj")
+    const chat = await store.createChat(project.id)
+
+    const at = Date.now()
+    await store.appendMessage(chat.id, entry("user_prompt", at, { content: "go" }))
+
+    const before = store.stateVersion
+    for (let i = 0; i < 20; i++) {
+      // 20ms apart, so every one lands in the same 15s quantization bucket.
+      await store.appendMessage(chat.id, entry("assistant_text", at + 100 + i * 20, { text: `step ${i}` }))
+    }
+    // The first one moves lastAgentMessageAt into a bucket; the rest are free.
+    expect(store.stateVersion - before).toBe(1)
+  })
+
+  test("still bumps when a sidebar-visible field moves", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(dataDir, "proj")
+    const chat = await store.createChat(project.id)
+
+    const at = Date.now()
+    // hasMessages false -> true, and lastMessageAt is the sidebar sort key.
+    const afterFirstPrompt = store.stateVersion
+    await store.appendMessage(chat.id, entry("user_prompt", at, { content: "one" }))
+    expect(store.stateVersion).toBeGreaterThan(afterFirstPrompt)
+
+    // A later user prompt moves lastMessageAt, so it must bump again.
+    const beforeSecond = store.stateVersion
+    await store.appendMessage(chat.id, entry("user_prompt", at + 1_000, { content: "two" }))
+    expect(store.stateVersion).toBeGreaterThan(beforeSecond)
+
+    // Crossing into the next 15s activity bucket must bump.
+    const beforeBucketCross = store.stateVersion
+    await store.appendMessage(chat.id, entry("assistant_text", at + 40_000, { text: "much later" }))
+    expect(store.stateVersion).toBeGreaterThan(beforeBucketCross)
+  })
+})

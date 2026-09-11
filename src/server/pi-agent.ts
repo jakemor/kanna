@@ -1,16 +1,24 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import {
+import type {
   AuthStorage,
   DefaultResourceLoader,
   ModelRegistry,
-  SessionManager,
-  SettingsManager,
-  createAgentSession,
-  type AgentSession,
-  type AgentSessionEvent,
+  AgentSession,
+  AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent"
+
+/**
+ * The pi SDK is loaded on first use, not at import time. Its module graph
+ * pulls the AWS Bedrock, Google GenAI and Mistral clients and measures ~170 ms
+ * to evaluate — paid on every boot, by every user, including the ones who
+ * only ever pick Claude. Both runtime call sites below are already async.
+ */
+let piSdkPromise: Promise<typeof import("@mariozechner/pi-coding-agent")> | null = null
+function loadPiSdk() {
+  return (piSdkPromise ??= import("@mariozechner/pi-coding-agent"))
+}
 import type { Model } from "@mariozechner/pi-ai"
 import type { ContextWindowUsageSnapshot, HarnessSkill, LlmProviderKind, PiReasoningEffort } from "../shared/types"
 import { getDataRootDir } from "../shared/branding"
@@ -352,6 +360,7 @@ export class PiAgentManager {
     if (existing && existing.cwd === args.cwd) {
       return collectPiSkills(existing.resourceLoader)
     }
+    const { DefaultResourceLoader, SettingsManager } = await loadPiSdk()
     const loader = new DefaultResourceLoader({
       cwd: args.cwd,
       agentDir: this.agentDir,
@@ -412,6 +421,7 @@ export class PiAgentManager {
 
     // All state is Kanna-owned: in-memory credentials/settings, sessions under
     // Kanna's data root, and no discovery of the user's ~/.pi setup.
+    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession } = await loadPiSdk()
     const authStorage = AuthStorage.inMemory()
     authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
     const modelRegistry = ModelRegistry.inMemory(authStorage)

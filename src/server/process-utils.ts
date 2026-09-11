@@ -74,6 +74,17 @@ function findInUserBinDirs(command: string, homeDir: string): string | null {
  */
 export function resolveCommandPath(command: string, homeDir = homedir()): string | null {
   if (!/^[\w.-]+$/.test(command)) return null
+
+  // Fast path: the login shell below is a synchronous spawn that blocks the
+  // event loop for ~5 ms (up to 24 ms observed here), and callers like
+  // diff-store's `gh` runner hit this per invocation. `Bun.which` is ~0.045 ms.
+  // It only sees the server's own PATH — which is exactly the gap the login
+  // shell exists to cover — so it is a fast path, not a replacement.
+  // Deliberately not memoized: callers that need to re-resolve after an install
+  // (provider-auth's `fresh` option) must not be served a stale path.
+  const direct = Bun.which(command)
+  if (direct) return direct
+
   const result = spawnSync("sh", ["-lc", `command -v -- ${command}`], {
     stdio: ["ignore", "pipe", "ignore"],
     encoding: "utf8",

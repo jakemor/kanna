@@ -564,7 +564,12 @@ export function openUrl(url: string) {
 }
 
 export async function fetchLatestPackageVersion(packageName: string) {
-  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`)
+  // Timeout, because this is awaited before the server's port opens: a VPN or
+  // captive portal that blackholes the registry would otherwise hang startup
+  // indefinitely on "checking for updates". UpdateManager re-checks post-listen.
+  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
+    signal: AbortSignal.timeout(5000),
+  })
   if (!response.ok) {
     throw new Error(`registry returned ${response.status}`)
   }

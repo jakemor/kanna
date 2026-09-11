@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { Check, ChevronLeft, Cloud, Flower } from "lucide-react"
 import { AUTH_SERVICE_LABELS, type AuthServiceId } from "../../../shared/types"
@@ -100,7 +100,10 @@ function StepFooter({
  * satisfied are skipped on open, and skippable steps auto-advance the moment
  * they connect.
  */
-export function SetupWizard() {
+// Takes no props, so memo bails unconditionally whenever the app shell
+// re-renders - which is every streamed transcript entry. Its zustand
+// subscriptions still drive it normally.
+export const SetupWizard = memo(function SetupWizard() {
   const open = useProviderAuthStore((store) => store.setupWizardOpen)
   const socket = useProviderAuthStore((store) => store.socket)
   const snapshot = useProviderAuthStore((store) => store.snapshot)
@@ -386,4 +389,4 @@ export function SetupWizard() {
       </div>
     </div>
   )
-}
+})

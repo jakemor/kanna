@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { Flower } from "lucide-react"
 import { StandaloneShareDialog } from "../components/chat-ui/StandaloneShareDialog"
@@ -20,7 +20,9 @@ import { KannaSidebar } from "./KannaSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import { OpenRouterCallbackPage } from "./OpenRouterCallbackPage"
-import { SettingsPage } from "./SettingsPage"
+// Code-split: its own route, with 8 settings sections and a second
+// react-markdown instance behind the changelog.
+const SettingsPage = lazy(() => import("./SettingsPage").then((m) => ({ default: m.SettingsPage })))
 import { TerminalPage } from "./TerminalPage"
 import { useKannaState } from "./useKannaState"
 import { useSidebarStore } from "../stores/sidebarStore"
@@ -442,7 +444,7 @@ export function App() {
             <Route path="/" element={<div className="hidden md:contents"><LocalProjectsPage /></div>} />
             <Route path="/home" element={<LocalProjectsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
-            <Route path="/settings/:sectionId" element={<SettingsPage />} />
+            <Route path="/settings/:sectionId" element={<Suspense fallback={null}><SettingsPage /></Suspense>} />
             <Route path="/chat/:chatId" element={<ChatPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
           </Route>

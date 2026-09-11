@@ -1330,8 +1330,18 @@ export class AgentCoordinator {
     await this.store.setPlanMode(args.chatId, args.planMode)
     await this.store.setAutoPlan(args.chatId, args.autoPlan)
 
-    const existingMessages = this.store.getMessages(args.chatId)
-    const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat" && existingMessages.length === 0
+    // Lazy: `getMessages` reads the whole payload sidecar (its own docstring
+    // says it is "for export, handoff and fork, not for anything that runs per
+    // push"), which measures 3 ms on a short chat and ~45 ms on a 2,300-entry
+    // one. Only the handoff and session-restore paths below actually need it;
+    // the empty-chat check just needs a count.
+    let existingMessagesCache: ReturnType<typeof this.store.getMessages> | null = null
+    const existingMessages = () => (existingMessagesCache ??= this.store.getMessages(args.chatId))
+    // `chat.title === "New Chat"` short-circuits first, and it is only true for
+    // a chat that has never been titled - whose sidecar is empty. So on every
+    // later message the sidecar is never read at all.
+    const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat"
+      && existingMessages().length === 0
     const optimisticTitle = shouldGenerateTitle ? fallbackTitleFromMessage(args.content) : null
 
     if (optimisticTitle) {
@@ -1349,7 +1359,7 @@ export class AgentCoordinator {
     // transcript, and build the wire-only handoff context from the entries
     // that precede this turn's prompt.
     const handoff = previousProvider !== null && previousProvider !== args.provider
-      ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages)
+      ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages())
       : null
 
     // Same-provider session recovery: when we're NOT switching harnesses but
@@ -1369,7 +1379,7 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
       })
-      ? await this.prepareSessionRestore(args.chatId, args.provider, existingMessages)
+      ? await this.prepareSessionRestore(args.chatId, args.provider, existingMessages())
       : null
 
     if (args.appendUserPrompt) {

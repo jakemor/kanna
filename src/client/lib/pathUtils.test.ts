@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { abbreviatePathHead, formatPathWithTilde, parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
+import { abbreviatePathHead, formatPathWithTilde, parseLocalFileLink, projectRelativeFilePath, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
 
 describe("abbreviatePathHead", () => {
   test("returns short paths unchanged", () => {
@@ -46,6 +46,14 @@ describe("parseLocalFileLink", () => {
     })
   })
 
+  test("decodes browser-escaped paths", () => {
+    expect(parseLocalFileLink("/Users/jake/My%20Project/readme.md#L2")).toEqual({
+      path: "/Users/jake/My Project/readme.md",
+      line: 2,
+      column: undefined,
+    })
+  })
+
   test("parses an absolute file path with a line suffix", () => {
     expect(parseLocalFileLink("/Users/jake/Kanna/superwall-agent/scripts/e2b-proxy.mjs:1")).toEqual({
       path: "/Users/jake/Kanna/superwall-agent/scripts/e2b-proxy.mjs",
@@ -89,6 +97,14 @@ describe("parseLocalFileLink", () => {
 
   test("does not treat web links as local file links", () => {
     expect(parseLocalFileLink("https://example.com")).toBeNull()
+  })
+})
+
+describe("projectRelativeFilePath", () => {
+  test("returns only files inside the active project", () => {
+    expect(projectRelativeFilePath("/repo/docs/plan.md", "/repo")).toBe("docs/plan.md")
+    expect(projectRelativeFilePath("/repo-other/plan.md", "/repo")).toBeNull()
+    expect(projectRelativeFilePath("/repo", "/repo")).toBeNull()
   })
 })
 

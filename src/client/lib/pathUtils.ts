@@ -67,6 +67,14 @@ function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
   return null
 }
 
+function decodeFileLinkPath(filePath: string) {
+  try {
+    return decodeURIComponent(filePath)
+  } catch {
+    return filePath
+  }
+}
+
 export function parseLocalFileLink(target: string | undefined | null): ParsedLocalFileLink | null {
   if (!target) return null
   const trimmed = target.trim()
@@ -81,13 +89,24 @@ export function parseLocalFileLink(target: string | undefined | null): ParsedLoc
       if (url.origin !== window.location.origin || !url.pathname.startsWith("/")) {
         return null
       }
-      return parseAbsoluteFileTarget(`${url.pathname}${url.hash}`)
+      const parsed = parseAbsoluteFileTarget(`${url.pathname}${url.hash}`)
+      return parsed ? { ...parsed, path: decodeFileLinkPath(parsed.path) } : null
     } catch {
       return null
     }
   }
 
-  return parseAbsoluteFileTarget(trimmed)
+  const parsed = parseAbsoluteFileTarget(trimmed)
+  return parsed ? { ...parsed, path: decodeFileLinkPath(parsed.path) } : null
+}
+
+/** Project-relative path accepted by the scoped project-file content API. */
+export function projectRelativeFilePath(filePath: string, projectPath: string | undefined | null) {
+  if (!projectPath) return null
+  const root = projectPath.replace(/[\\/]+$/, "")
+  if (filePath === root) return null
+  const prefix = `${root}/`
+  return filePath.startsWith(prefix) ? filePath.slice(prefix.length) : null
 }
 
 /**

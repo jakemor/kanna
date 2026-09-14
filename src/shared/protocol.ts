@@ -244,6 +244,8 @@ export type ClientCommand =
       provider?: AgentProvider
       content: string
       attachments?: ChatAttachment[]
+      /** Browser origin used only for wire-only machine/network context. */
+      browserOrigin?: string
       model?: string
       modelOptions?: ModelOptions
       effort?: string
@@ -297,6 +299,8 @@ export type ClientCommand =
       chatId: string
       content: string
       attachments?: ChatAttachment[]
+      /** Browser origin retained with a queued prompt until its turn starts. */
+      browserOrigin?: string
       provider?: AgentProvider
       model?: string
       modelOptions?: ModelOptions

@@ -16,6 +16,22 @@ const ARCHIVE_EXTENSIONS = new Set([".7z", ".bz2", ".gz", ".rar", ".tar", ".tgz"
 const AUDIO_EXTENSIONS = new Set([".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"])
 const VIDEO_EXTENSIONS = new Set([".avi", ".m4v", ".mov", ".mp4", ".mkv", ".webm"])
 
+const PREVIEW_MIME_TYPE_BY_EXTENSION = new Map([
+  [".avif", "image/avif"],
+  [".bmp", "image/bmp"],
+  [".csv", "text/csv"],
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".json", "application/json"],
+  [".md", "text/markdown"],
+  [".pdf", "application/pdf"],
+  [".png", "image/png"],
+  [".svg", "image/svg+xml"],
+  [".tsv", "text/tab-separated-values"],
+  [".webp", "image/webp"],
+])
+
 export type AttachmentIconKind =
   | "image"
   | "pdf"
@@ -54,6 +70,13 @@ export interface TablePreviewData {
   columnCount: number
   truncatedRows: boolean
   truncatedColumns: boolean
+}
+
+/** Best-effort type for workspace files that were linked rather than uploaded. */
+export function inferAttachmentPreviewMimeType(fileName: string) {
+  const extension = getFileExtension(fileName)
+  return PREVIEW_MIME_TYPE_BY_EXTENSION.get(extension)
+    ?? (CODE_OR_CONFIG_EXTENSIONS.has(extension) ? "text/plain" : "application/octet-stream")
 }
 
 export function classifyAttachmentPreview(attachment: ChatAttachment): AttachmentPreviewTarget {

@@ -156,6 +156,7 @@ function StandaloneTranscriptApp() {
             messages={messages}
             queuedMessages={[]}
             transcriptPaddingBottom={120}
+            projectId={null}
             localPath={state.bundle.localPath}
             latestToolIds={latestToolIds}
             isProcessing={false}

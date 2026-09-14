@@ -1687,6 +1687,7 @@ export class EventStore {
       content: message.content,
       attachments: [...(message.attachments ?? [])],
       createdAt: message.createdAt ?? Date.now(),
+      browserOrigin: message.browserOrigin,
       provider: message.provider,
       model: message.model,
       modelOptions: message.modelOptions,

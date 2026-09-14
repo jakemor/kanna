@@ -63,6 +63,7 @@
     "file-type": "^22.0.0",
     "hast-util-to-jsx-runtime": "^2",
     "html-url-attributes": "^3",
+    "mermaid": "^12.0.0",
     "openai": "^6.34.0",
     "remark-parse": "^11",
     "remark-rehype": "^11",

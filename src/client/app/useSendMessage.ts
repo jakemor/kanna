@@ -15,6 +15,7 @@ import {
   type OptimisticUserPrompt,
 } from "./kannaStateHelpers"
 import type { KannaSocket } from "./socket"
+import { browserOriginFromWindow } from "../../shared/browser-context"
 
 export interface SendContext {
   isProcessing: boolean
@@ -65,6 +66,7 @@ export function useSendMessage(params: {
   ) => {
     const { isProcessing, optimisticUserPrompts, serverTranscriptEntries, selectedProjectId, fallbackLocalProjectPath } = sendContextRef.current
     const attachments = options?.attachments ?? []
+    const browserOrigin = browserOriginFromWindow()
     if (activeChatId && isProcessing) {
       try {
         await socket.command<{ queuedMessageId: string }>({
@@ -72,6 +74,7 @@ export function useSendMessage(params: {
           chatId: activeChatId,
           content,
           attachments,
+          browserOrigin,
           provider: options?.provider,
           model: options?.model,
           modelOptions: options?.modelOptions,
@@ -139,6 +142,7 @@ export function useSendMessage(params: {
         provider: options?.provider,
         content,
         attachments,
+        browserOrigin,
         model: options?.model,
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,

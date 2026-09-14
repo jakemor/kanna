@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { createMarkdownComponents, markdownComponents, OpenLocalLinkProvider } from "./shared"
+import { createMarkdownComponents, markdownComponents, OpenLocalLinkProvider, TranscriptMarkdown } from "./shared"
 
 describe("markdownComponents", () => {
   test("renders markdown headings with transcript-specific sizes and no bold weight", () => {
@@ -75,5 +75,15 @@ describe("markdownComponents", () => {
 
     expect(html).toContain("/Users/jake/Projects/kanna/src/client/app/App.tsx#L1")
     expect(html).not.toContain('target="_blank"')
+  })
+
+  test("routes fenced mermaid blocks to the diagram renderer", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptMarkdown text={"```mermaid\nflowchart TD\n  A --> B\n```"} />
+    )
+
+    expect(html).toContain("data-mermaid-diagram")
+    expect(html).toContain("Rendering Mermaid diagram")
+    expect(html).not.toContain("language-mermaid")
   })
 })

@@ -162,6 +162,7 @@ export interface KannaState {
   localProjects: LocalProjectsSnapshot | null
   updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
+  serverTranscriptEntries: TranscriptEntry[]
   /** Server-stored read position for the active chat; drives restore on open. */
   readAnchorState: ChatReadAnchorState
   /** Report the message at the top of the viewport (throttled write). */
@@ -1012,6 +1013,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const expandSidebar = useCallback(() => setSidebarCollapsed(false), [])
 
   return {
+    serverTranscriptEntries,
     socket,
     activeChatId,
     activeProjectId,

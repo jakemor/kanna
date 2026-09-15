@@ -585,6 +585,23 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             } finally { reader.releaseLock() }
           }
 
+          const childModelMatch = /^\/api\/chats\/([^/]+)\/subagent-models$/.exec(url.pathname)
+          if (childModelMatch && req.method === "GET") {
+            const chatId = childModelMatch[1]!
+            const chat = store.requireChat(chatId)
+            if (chat.provider !== "codex") return Response.json({models:{}})
+            const entries = store.getMessages(chatId)
+            const children = entries.flatMap(entry => {
+              if (entry.kind !== "tool_call" || entry.tool.toolKind !== "subagent_task") return []
+              const match = /^subagent:([0-9a-f-]{36}):/i.exec(entry.tool.toolId)
+              const input = entry.tool.input as Record<string, unknown>
+              const id = typeof input.agentThreadId === "string" ? input.agentThreadId : match?.[1]
+              return id ? [{toolId:entry.tool.toolId,threadId:id}] : []
+            }).slice(-50)
+            const models = await agent.getCodexManager().getSubagentModels(chatId, children.map(child=>child.threadId))
+            return Response.json({models:Object.fromEntries(children.filter(child=>models[child.threadId]).map(child=>[child.toolId,models[child.threadId]]))}, {headers:{"Cache-Control":"no-store"}})
+          }
+
           if (url.pathname === "/health") {
             // `instance` lets a second `kanna` invocation detect that this
             // data dir is already being served (single-instance guard). Only

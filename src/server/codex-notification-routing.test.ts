@@ -15,3 +15,22 @@ test('child lifecycle and text do not terminate or overwrite parent; parent comp
  await manager.handleNotification(context,{method:'turn/completed',params:{threadId:'parent-thread',turn:{id:'parent-turn',status:'completed'}}});
  expect(finished).toBe(1);expect(context.pendingTurn).toBeNull();
 });
+
+test("buffers startup notifications until the new turn ID is known", async () => {
+  const manager = new CodexAppServerManager() as any
+  const context = {sessionToken: "parent-thread", pendingTurn: null, closed: false}
+  manager.sessions.set("chat", context)
+  manager.sendRequest = async () => {
+    await manager.handleNotification(context, {method: "turn/completed", params: {threadId: "parent-thread", turn: {id: "old-turn", status: "completed"}}})
+    await manager.handleNotification(context, {method: "item/completed", params: {threadId: "parent-thread", turnId: "new-turn", item: {type: "agentMessage", id: "early", text: "Early valid output"}}})
+    expect(context.pendingTurn).not.toBeNull()
+    return {turn: {id: "new-turn"}}
+  }
+  const turn = await manager.startTurn({chatId: "chat", model: "gpt-5.6-sol", content: "continue", planMode: false, onToolRequest: async () => ({})})
+  expect(context.pendingTurn).not.toBeNull()
+  await manager.handleNotification(context, {method: "turn/completed", params: {threadId: "parent-thread", turn: {id: "new-turn", status: "completed"}}})
+  const events: any[] = []
+  for await (const event of turn.stream) events.push(event)
+  expect(events.some(event => event.entry?.text === "Early valid output")).toBe(true)
+  expect(events.filter(event => event.entry?.kind === "result")).toHaveLength(1)
+})

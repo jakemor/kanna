@@ -19,6 +19,7 @@ interface ChatInputDockProps {
   projectRepoLabel: string | null
   activeProvider: AgentProvider | null
   availableProviders: KannaState["availableProviders"]
+  subagentEntries?: import("../../../shared/types").TranscriptEntry[]
   contextWindowSnapshot: ContextWindowSnapshot | null
   onSubmit: KannaState["handleSend"]
   onCancel: () => void
@@ -42,6 +43,7 @@ export const ChatInputDock = memo(function ChatInputDock({
   activeProvider,
   availableProviders,
   contextWindowSnapshot,
+  subagentEntries,
   onSubmit,
   onCancel,
   onEditModels,
@@ -74,6 +76,7 @@ export const ChatInputDock = memo(function ChatInputDock({
             activeProvider={activeProvider}
             availableProviders={availableProviders}
             contextWindowSnapshot={contextWindowSnapshot}
+            subagentEntries={subagentEntries}
             previousPrompt={previousPrompt}
             onEditModels={onEditModels}
             onListSkills={onListSkills}

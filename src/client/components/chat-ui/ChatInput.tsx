@@ -1,3 +1,4 @@
+import { SubagentPanel } from "./SubagentPanel"
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowUp, AudioLines, Check, Copy, Loader2, Paperclip, Trash2 } from "lucide-react"
 import {
@@ -189,6 +190,7 @@ interface Props {
   inputElementRef?: React.Ref<HTMLTextAreaElement>
   activeProvider: AgentProvider | null
   availableProviders: ProviderCatalogEntry[]
+  subagentEntries?: import("../../../shared/types").TranscriptEntry[]
   contextWindowSnapshot?: ContextWindowSnapshot | null
   previousPrompt?: string | null
   onEditModels?: () => void
@@ -214,6 +216,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   activeProvider,
   availableProviders,
   contextWindowSnapshot = null,
+  subagentEntries = [],
   previousPrompt = null,
   onEditModels,
   onListSkills,
@@ -1191,6 +1194,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
           />
+          <div className="md:hidden"><SubagentPanel entries={subagentEntries} active={!!canCancel} /></div>
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">
               <ContextWindowMeter usage={activeContextWindow} />
@@ -1199,6 +1203,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div className={controlsScrollSpacer} />
         </div>
 
+        <div className="absolute right-[48px] top-1/2 -translate-y-1/2 hidden md:block"><SubagentPanel entries={subagentEntries} active={!!canCancel} /></div>
         {activeContextWindow ? (
           <div className="absolute right-[29px] top-1/2 translate-x-1/2 -translate-y-1/2 hidden md:block">
             <ContextWindowMeter usage={activeContextWindow} />

@@ -404,6 +404,8 @@ function collabToolCall(item: CollabAgentToolCallItem): TranscriptEntry {
       toolId: item.id,
       input: {
         subagentType: item.tool,
+        ...(typeof (item as unknown as Record<string, unknown>).model === "string"
+          ? { model: (item as unknown as Record<string, unknown>).model } : {}),
         ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
       },
       rawInput: item as unknown as Record<string, unknown>,

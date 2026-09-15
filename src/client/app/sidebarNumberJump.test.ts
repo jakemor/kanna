@@ -240,3 +240,11 @@ describe("getSidebarNumberJumpHint", () => {
     expect(getSidebarNumberJumpHint(KEYBINDINGS, 10)).toBeNull()
   })
 })
+
+ test("custom order keeps collapsed preview membership and shortcut indices aligned", () => {
+   const orders = { "project:project-a": ["chat-a-3", "chat-a-2", "chat-a-1"] }
+   const visible = (expanded: boolean) => getVisibleSidebarChats(PROJECT_GROUPS, new Set(["project-b"]), new Set(expanded ? ["project-a"] : []), orders)
+   expect(visible(true).map(x => [x.visibleIndex, x.chat.chatId])).toEqual([[1,"chat-a-3"],[2,"chat-a-2"],[3,"chat-a-1"]])
+   expect(visible(false).map(x => [x.visibleIndex, x.chat.chatId])).toEqual([[1,"chat-a-2"],[2,"chat-a-1"]])
+   expect(visible(true)[0]!.chat.chatId).toBe("chat-a-3")
+ })

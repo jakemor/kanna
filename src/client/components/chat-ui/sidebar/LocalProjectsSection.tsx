@@ -1,3 +1,4 @@
+import { SortableChatList } from "./SortableChatList"
 import { memo, type MouseEvent as ReactMouseEvent, type ReactNode, useMemo, useSyncExternalStore } from "react"
 import { ChevronRight, Loader2, MoreHorizontal, SquarePen } from "lucide-react"
 import {
@@ -384,7 +385,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
             />
           ) : (
             <>
-              {group.previewChats.map(renderChatRow)}
+              <SortableChatList items={[...group.previewChats, ...group.olderChats]} orderKey={`project:${groupKey}`} renderItem={renderChatRow} limit={isExpanded ? undefined : group.previewChats.length} />
               {!newSidebar && hasMore && isExpanded ? (
                 <button
                   onClick={() => onToggleExpandedGroup(groupKey)}
@@ -393,7 +394,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                  Show less
                 </button>
               ) : null}
-              {isExpanded ? group.olderChats.map(renderChatRow) : null}
+
               {!newSidebar && hasMore && !isExpanded ? (
                 <button
                   onClick={() => onToggleExpandedGroup(groupKey)}

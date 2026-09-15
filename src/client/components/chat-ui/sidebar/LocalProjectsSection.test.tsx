@@ -68,7 +68,7 @@ function createRect(top: number, height = 80): ClientRect {
 }
 
 describe("LocalProjectsSection", () => {
-  test("places show less between the collapsed slice and remaining chats", () => {
+  test("places show less after the expanded sortable list", () => {
     const projectGroups: SidebarProjectGroup[] = [{
       groupKey: "project-a",
       title: "Project A",
@@ -91,7 +91,7 @@ describe("LocalProjectsSection", () => {
 
     expect(html).toContain("Show less")
     expect(html.indexOf("chat-1")).toBeLessThan(html.indexOf("Show less"))
-    expect(html.indexOf("Show less")).toBeLessThan(html.indexOf("chat-3"))
+    expect(html.indexOf("chat-3")).toBeLessThan(html.indexOf("Show less"))
   })
 
   test("shows the most recent 5 chats when there are no chats in the last 24 hours", () => {

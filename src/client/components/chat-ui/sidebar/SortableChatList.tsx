@@ -25,7 +25,7 @@ export function applyChatOrder<T extends {chatId:string}>(items:T[], order?:stri
 function SortableRow({id, children}:{id:string;children:ReactNode}) {
   const {attributes,listeners,setNodeRef,setActivatorNodeRef,transform,transition,isDragging}=useSortable({id})
   return <div ref={setNodeRef} className="group/order flex min-w-0 items-center rounded-md" style={{transform:CSS.Transform.toString(transform),transition,opacity:isDragging?0.5:1}}>
-    <button type="button" ref={setActivatorNodeRef} {...attributes} {...listeners} aria-label="拖动排序任务" title="拖动排序；键盘按空格后用方向键移动" className="shrink-0 touch-none cursor-grab rounded p-0.5 text-muted-foreground opacity-50 hover:opacity-100 focus-visible:opacity-100 active:cursor-grabbing" onClick={event=>event.stopPropagation()}><GripVertical size={14}/></button>
+    <button type="button" ref={setActivatorNodeRef} {...attributes} {...listeners} aria-label="Reorder task" title="Drag to reorder; press Space then use arrow keys to reorder with the keyboard" className="shrink-0 touch-none cursor-grab rounded p-0.5 text-muted-foreground opacity-50 hover:opacity-100 focus-visible:opacity-100 active:cursor-grabbing" onClick={event=>event.stopPropagation()}><GripVertical size={14}/></button>
     <div className="min-w-0 flex-1">{children}</div>
   </div>
 }
@@ -38,7 +38,7 @@ export function SortableChatList<T extends {chatId:string}>({items,orderKey,rend
   const visible=limit===undefined?ordered:ordered.slice(0,limit)
   const sensors=useSensors(useSensor(PointerSensor,{activationConstraint:{distance:6}}),useSensor(KeyboardSensor,{coordinateGetter:sortableKeyboardCoordinates}))
   return <div>
-    {order && <button className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground" type="button" onClick={()=>reset(orderKey)}>恢复默认排序</button>}
+    {order && <button className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground" type="button" onClick={()=>reset(orderKey)}>Reset order</button>}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={({active,over})=>{
       if(!over||active.id===over.id)return
       const ids=ordered.map(item=>item.chatId)

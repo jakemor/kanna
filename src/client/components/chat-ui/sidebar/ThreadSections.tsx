@@ -1,3 +1,4 @@
+import { SortableChatList } from "./SortableChatList"
 import { memo, useMemo, useState } from "react"
 import { Archive, ChevronRight, MoreHorizontal } from "lucide-react"
 import type { SidebarChatRow } from "../../../../shared/types"
@@ -216,7 +217,7 @@ function ThreadSectionsImpl({
         <div key={group.key}>
           <SectionHeader label={group.heading} />
           <div className="space-y-[2px] mb-3">
-            {group.threads.map(renderRow)}
+            <SortableChatList items={group.threads} orderKey={`section:${group.key}`} renderItem={renderRow} />
           </div>
         </div>
       ))}
@@ -238,7 +239,7 @@ function ThreadSectionsImpl({
             />
             {isExpanded ? (
               <div className="space-y-[2px] mb-3">
-                {relevant.map(renderRow)}
+                <SortableChatList items={relevant} orderKey="section:relevant" renderItem={renderRow} />
               </div>
             ) : null}
           </div>
@@ -258,7 +259,7 @@ function ThreadSectionsImpl({
             />
             {isExpanded ? (
               <div className="space-y-[2px] mb-3">
-                {bucket.threads.map(renderRow)}
+                <SortableChatList items={bucket.threads} orderKey={`section:${bucket.key}`} renderItem={renderRow} />
               </div>
             ) : null}
           </div>

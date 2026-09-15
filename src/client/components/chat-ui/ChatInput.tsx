@@ -1,5 +1,5 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, AudioLines, Check, Copy, Loader2, Paperclip, Trash2 } from "lucide-react"
+import { ArrowUp, AudioLines, Check, Copy, Loader2, Plus, Trash2 } from "lucide-react"
 import {
   chatModeFromFlags,
   type AgentProvider,
@@ -995,6 +995,30 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             during a streaming turn is every frame.
           */}
           <div className="flex items-end max-w-[840px] mx-auto border bg-background dark:bg-card border-border rounded-[29px] pr-1.5">
+          <label
+            aria-label="Add files or photos"
+            className={cn(
+              "relative shrink-0 overflow-hidden ml-1 mb-1 cursor-pointer touch-manipulation",
+              "flex h-11 w-11 items-center justify-center rounded-full transition-colors text-muted-foreground hover:bg-muted/50 focus-within:ring-2 focus-within:ring-ring",
+              disabled && "pointer-events-none opacity-70",
+            )}
+          >
+            <Plus className="h-5 w-5" aria-hidden="true" />
+            <input
+              type="file"
+              multiple
+              disabled={disabled}
+              aria-label="Add files or photos"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])]
+                if (files.length > 0) {
+                  enqueueFiles(files)
+                }
+                event.target.value = ""
+              }}
+            />
+          </label>
             {recording ? (
               <div className="flex min-w-0 flex-1 items-center px-4 py-[6px] md:py-[10px]">
                 <RecordingWaveform levels={recorder.levels} />
@@ -1129,31 +1153,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "pt-3 pb-5")}>
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex flex-row">
           <div className={controlsScrollSpacer} />
-          <label
-            aria-label="Add attachment"
-            className={cn(
-              "relative md:hidden shrink-0 self-center overflow-hidden mr-0.5 cursor-pointer",
-              "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap hover:bg-muted/50",
-              disabled && "pointer-events-none opacity-70",
-            )}
-          >
-            <Paperclip className="h-3.5 w-3.5" />
-            <span>Attach</span>
-            <input
-              type="file"
-              multiple
-              disabled={disabled}
-              aria-label="Add attachment"
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])]
-                if (files.length > 0) {
-                  enqueueFiles(files)
-                }
-                event.target.value = ""
-              }}
-            />
-          </label>
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}

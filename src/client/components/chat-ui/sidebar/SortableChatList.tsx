@@ -6,7 +6,7 @@ import { SortableContext, useSortable, sortableKeyboardCoordinates, verticalList
 import { CSS } from "@dnd-kit/utilities"
 import { GripVertical } from "lucide-react"
 
-const useChatOrder = create(persist<{
+export const useChatOrder = create(persist<{
   orders: Record<string, string[]>
   save: (key: string, ids: string[]) => void
   reset: (key: string) => void
@@ -35,7 +35,7 @@ export function SortableChatList<T extends {chatId:string}>({items,orderKey,rend
   const save=useChatOrder(state=>state.save)
   const reset=useChatOrder(state=>state.reset)
   const ordered=useMemo(()=>applyChatOrder(items,order),[items,order])
-  const visible=limit===undefined?ordered:ordered.slice(0,limit)
+  const visible=limit===undefined?ordered:applyChatOrder(items.slice(0,limit),order)
   const sensors=useSensors(useSensor(PointerSensor,{activationConstraint:{distance:6}}),useSensor(KeyboardSensor,{coordinateGetter:sortableKeyboardCoordinates}))
   return <div>
     {order && <button className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground" type="button" onClick={()=>reset(orderKey)}>Reset order</button>}

@@ -1,3 +1,4 @@
+import { applyChatOrder } from "../components/chat-ui/sidebar/SortableChatList"
 import { findMatchingActionBinding, getBindingsForAction } from "../lib/keybindings"
 import type { SidebarChatRow, SidebarProjectGroup, KeybindingsSnapshot } from "../../shared/types"
 
@@ -11,7 +12,8 @@ export interface VisibleSidebarChat {
 export function getVisibleSidebarChats(
   projectGroups: SidebarProjectGroup[],
   collapsedSections: Set<string>,
-  expandedGroups: Set<string>
+  expandedGroups: Set<string>,
+  orders: Record<string, string[]> = {}
 ): VisibleSidebarChat[] {
   const visibleChats: VisibleSidebarChat[] = []
 
@@ -24,7 +26,7 @@ export function getVisibleSidebarChats(
       ? [...group.previewChats, ...group.olderChats]
       : group.previewChats
 
-    for (const chat of displayChats) {
+    for (const chat of applyChatOrder(displayChats, orders[`project:${group.groupKey}`])) {
       visibleChats.push({
         chat,
         visibleIndex: visibleChats.length + 1,

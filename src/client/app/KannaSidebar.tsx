@@ -1,3 +1,4 @@
+import { useChatOrder } from "../components/chat-ui/sidebar/SortableChatList"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { ArrowLeft, Flower, House, Loader2, PanelLeft, Search, Plus, Settings, Settings2, SquarePen, Terminal } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -217,9 +218,10 @@ function KannaSidebarImpl({
     })
   }, [leaveArchivedView, sidebarView])
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
+  const chatOrders = useChatOrder(state => state.orders)
   const visibleChats = useMemo(
-    () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups),
-    [collapsedSections, data.projectGroups, expandedGroups]
+    () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups, chatOrders),
+    [collapsedSections, data.projectGroups, expandedGroups, chatOrders]
   )
   const visibleChatsRef = useRef(visibleChats)
   const visibleIndexByChatId = useMemo(

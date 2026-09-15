@@ -391,8 +391,10 @@ describe("CodexAppServerManager", () => {
     expect(process.killed).toBe(false)
   })
 
-  test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
+  test("forwards every supported GPT-6 Astra and GPT-5.6 model and reasoning combination", async () => {
     const combinations = [
+      ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)
+        .map((effort) => ({ model: "gpt-6-astra", effort })),
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)
         .map((effort) => ({ model: "gpt-5.6-sol", effort })),
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)
@@ -401,7 +403,7 @@ describe("CodexAppServerManager", () => {
         .map((effort) => ({ model: "gpt-5.6-luna", effort })),
     ]
 
-    expect(combinations).toHaveLength(17)
+    expect(combinations).toHaveLength(23)
 
     for (const [index, combination] of combinations.entries()) {
       const threadId = `thread-matrix-${index}`

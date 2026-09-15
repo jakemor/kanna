@@ -91,6 +91,7 @@ interface PendingRequest<TResult> {
 }
 
 interface PendingTurn {
+  earlyNotifications?: ServerNotification[]
   turnId: string | null
   model: string
   planMode: boolean
@@ -1018,6 +1019,11 @@ export class CodexAppServerManager {
       } satisfies TurnStartParams)
       if (context.pendingTurn) {
         context.pendingTurn.turnId = response.turn.id
+        const earlyNotifications = pendingTurn.earlyNotifications ?? []
+        pendingTurn.earlyNotifications = []
+        for (const notification of earlyNotifications) {
+          await this.handleNotification(context, notification)
+        }
       } else {
         pendingTurn.turnId = response.turn.id
       }
@@ -1344,6 +1350,29 @@ export class CodexAppServerManager {
   }
 
   private async handleNotification(context: SessionContext, notification: ServerNotification) {
+    // Subagents share this transport, but their events must not mutate the
+    // parent session or complete its pending turn.
+    const params = notification.params as {
+      threadId?: string
+      thread?: { id?: string }
+      turnId?: string
+      turn?: { id?: string }
+    }
+    const threadId = params.threadId
+      ?? (notification.method === "thread/started" ? params.thread?.id : undefined)
+    if (context.sessionToken && threadId && threadId !== context.sessionToken) return
+
+    const turnId = params.turnId
+      ?? (notification.method === "turn/completed" ? params.turn?.id : undefined)
+    if (context.pendingTurn && context.pendingTurn.turnId === null && turnId) {
+      // turn/start can deliver notifications before its response. Replay them
+      // only once the actual turn ID is known, so stale completions cannot
+      // close the new turn and valid early output is not lost.
+      ;(context.pendingTurn.earlyNotifications ??= []).push(notification)
+      return
+    }
+    if (context.pendingTurn?.turnId && turnId && turnId !== context.pendingTurn.turnId) return
+
     if (notification.method === "thread/started") {
       context.sessionToken = notification.params.thread.id
       if (context.pendingTurn) {

@@ -9,7 +9,7 @@ export function collectSubagents(entries: TranscriptEntry[], active: boolean) {
   for (const entry of entries) {
     if (entry.parentToolUseId) continue
     if (entry.kind === "tool_call" && entry.tool.toolKind === "subagent_task") {
-      const input = entry.tool.input as Record<string, unknown>
+      const input = entry.tool.input
       agents.set(entry.tool.toolId, {id:entry.tool.toolId, name:String(input.subagentType || input.description || "Subagents"), model:typeof input.model === "string" ? input.model : "Not reported", startedAt:entry.createdAt, status:active ? "Running" : "Unconfirmed"})
     }
     if (entry.kind === "tool_result") {
@@ -22,9 +22,23 @@ export function collectSubagents(entries: TranscriptEntry[], active: boolean) {
   }
   return [...agents.values()]
 }
-export function SubagentPanel({entries, active}:{entries:TranscriptEntry[];active:boolean}) {
+export function SubagentPanel({entries, active,chatId}:{entries:TranscriptEntry[];active:boolean;chatId?:string|null}) {
   const [now,setNow]=useState(Date.now)
   const [open, setOpen] = useState(false)
+  const [models,setModels]=useState<Record<string,string>>({})
+  const agentKey=entries.filter(entry=>entry.kind==="tool_call" && entry.tool.toolKind==="subagent_task").map(entry=>entry._id).join(",")
+  useEffect(()=>{setModels({})},[chatId])
+  useEffect(()=>{
+    if(!open||!chatId||!agentKey)return
+    let cancelled=false
+    const refresh=()=>fetch(`/api/chats/${encodeURIComponent(chatId)}/subagent-models`).then(response=>{
+      if(!response.ok)throw Error("Model lookup failed")
+      return response.json()
+    }).then(result=>{if(!cancelled)setModels(result.models??{})}).catch(()=>{})
+    void refresh()
+    const timer=setInterval(()=>void refresh(),60_000)
+    return()=>{cancelled=true;clearInterval(timer)}
+  },[open,chatId,agentKey])
   const agents=useMemo(() => collectSubagents(entries,active), [entries,active])
   const running=agents.filter(a=>a.status==="Running")
   useEffect(()=>{if(!open || !running.length)return;setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer)},[running.length,open])
@@ -33,7 +47,7 @@ export function SubagentPanel({entries, active}:{entries:TranscriptEntry[];activ
       <div className="mb-3 flex items-center justify-between"><strong>Subagents</strong><span className="text-xs text-muted-foreground">{running.length} running</span></div>
       {!agents.length ? <p className="text-sm text-muted-foreground">No subagent activity in the loaded conversation</p> : <div className="max-h-72 overflow-y-auto space-y-3">{[...agents].sort((a,b)=>Number(b.status==="Running")-Number(a.status==="Running")).map(agent=><div key={agent.id} className="rounded-xl border p-3 text-sm">
         <div className="flex justify-between gap-2"><span className="truncate font-medium">{agent.name}</span><span className="shrink-0 text-xs text-muted-foreground">{agent.status}</span></div>
-        <div className="mt-2 flex justify-between gap-2 text-xs text-muted-foreground"><span>Model: {agent.model}</span><span className="shrink-0 tabular-nums">{agent.status==="Unconfirmed" ? "Duration unknown" : formatDuration(Math.max(0, (agent.endedAt??now)-agent.startedAt))}</span></div>
+        <div className="mt-2 flex justify-between gap-2 text-xs text-muted-foreground"><span>Model: {agent.model !== "Not reported" ? agent.model : models[agent.id] ?? "Not reported"}</span><span className="shrink-0 tabular-nums">{agent.status==="Unconfirmed" ? "Duration unknown" : formatDuration(Math.max(0, (agent.endedAt??now)-agent.startedAt))}</span></div>
       </div>)}</div>}
       <p className="mt-3 text-xs text-muted-foreground">Based on loaded task records. Models and unresolved status are not inferred.</p>
     </PopoverContent></Popover>

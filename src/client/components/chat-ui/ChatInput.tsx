@@ -1194,7 +1194,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
           />
-          <div className="md:hidden"><SubagentPanel entries={subagentEntries} active={!!canCancel} /></div>
+          <div className="md:hidden"><SubagentPanel chatId={chatId} entries={subagentEntries} active={!!canCancel} /></div>
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">
               <ContextWindowMeter usage={activeContextWindow} />
@@ -1203,7 +1203,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div className={controlsScrollSpacer} />
         </div>
 
-        <div className="absolute right-[48px] top-1/2 -translate-y-1/2 hidden md:block"><SubagentPanel entries={subagentEntries} active={!!canCancel} /></div>
+        <div className="absolute right-[48px] top-1/2 -translate-y-1/2 hidden md:block"><SubagentPanel chatId={chatId} entries={subagentEntries} active={!!canCancel} /></div>
         {activeContextWindow ? (
           <div className="absolute right-[29px] top-1/2 translate-x-1/2 -translate-y-1/2 hidden md:block">
             <ContextWindowMeter usage={activeContextWindow} />

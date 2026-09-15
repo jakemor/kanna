@@ -2480,6 +2480,16 @@ export class AgentCoordinator {
       throw new Error("Tool response does not match active request")
     }
 
+    if (pending.tool.toolKind === "ask_user_question") {
+      const questions = pending.tool.input.questions
+      const answers = (command.result as { answers?: Record<string, unknown> } | null)?.answers
+      if (!answers || questions.some(question => {
+        const value = answers[question.id ?? question.question] ?? answers[question.question]
+        const values = Array.isArray(value) ? value : [value]
+        return !values.length || values.some(answer => typeof answer !== "string" || !answer.trim())
+      })) throw new Error("Answer all questions before submitting")
+    }
+
     await this.store.appendMessage(
       command.chatId,
       timestamped({

@@ -42,6 +42,7 @@ export function useShareExport(params: {
         chatId,
         theme: resolvedTheme,
         attachmentMode: "bundle",
+        sourceOrigin: window.location.origin,
       })
       setCommandError(null)
       return result

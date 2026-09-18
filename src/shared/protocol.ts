@@ -293,6 +293,7 @@ export type ClientCommand =
   | { type: "chat.stopDraining"; chatId: string }
   | {
       type: "chat.exportStandalone"
+      sourceOrigin?: string
       chatId: string
       theme: "light" | "dark"
       attachmentMode: StandaloneTranscriptAttachmentMode

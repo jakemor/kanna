@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from "react"
 import { toJsxRuntime } from "hast-util-to-jsx-runtime"
+import { Link, useInRouterContext } from "react-router-dom"
+import { parseChatLink } from "../../../shared/chat-links"
 import { Fragment } from "react"
 import { jsx, jsxs } from "react/jsx-runtime"
 import { parseTranscriptMarkdown } from "../../lib/markdown-cache"
@@ -344,6 +346,21 @@ export function createMarkdownComponents(options?: {
       const contextOpenLocalLink = useContext(OpenLocalLinkContext)
       const onOpenLocalLink = options?.onOpenLocalLink ?? contextOpenLocalLink
       const renderOptions = useTranscriptRenderOptions()
+      const inRouter = useInRouterContext()
+      const chatOrigin = renderOptions.localLinkMode === "text"
+        ? renderOptions.sourceOrigin ?? undefined
+        : typeof window === "undefined" ? undefined : window.location.origin
+      const chatLink = parseChatLink(href, chatOrigin)
+      if (chatLink) {
+        const className = "transition-all underline decoration-2 text-logo decoration-logo/50 hover:text-logo/70"
+        // Standalone exports have no Kanna router to resolve a chat against.
+        if (renderOptions.localLinkMode === "text") return <span className={className}>{children}</span>
+        return inRouter ? (
+          <Link {...props} className={className} to={chatLink} onClick={onClick}>{children}</Link>
+        ) : (
+          <a {...props} className={className} href={chatLink} onClick={onClick}>{children}</a>
+        )
+      }
       const parsedLocalLink = parseLocalFileLink(href)
 
       if (parsedLocalLink && renderOptions.localLinkMode === "text") {
@@ -417,4 +434,3 @@ export const TranscriptMarkdown = memo(function TranscriptMarkdown({ text }: { t
     passNode: true,
   })
 })
-

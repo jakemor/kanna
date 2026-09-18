@@ -2,9 +2,49 @@ import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { MemoryRouter } from "react-router-dom"
+import { TranscriptRenderOptionsProvider } from "./render-context"
+import { TranscriptMarkdown } from "./shared"
 import { createMarkdownComponents, markdownComponents, OpenLocalLinkProvider } from "./shared"
 
 describe("markdownComponents", () => {
+  test("exports recognize absolute chat links against the source origin, not the viewer", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptRenderOptionsProvider value={{ localLinkMode: "text", sourceOrigin: "http://kanna.example:5174" }}>
+        <TranscriptMarkdown text={[
+          "[Source chat](http://kanna.example:5174/chat/abc-123)",
+          "[External chat](https://other.example/chat/abc-123)",
+          "[Docs](https://docs.example/guide)",
+        ].join("\n\n")} />
+      </TranscriptRenderOptionsProvider>
+    )
+    expect(html).toContain("Source chat</span>")
+    expect(html).not.toContain('href="http://kanna.example:5174/chat/abc-123"')
+    expect(html).toContain('href="https://other.example/chat/abc-123"')
+    expect(html).toContain('href="https://docs.example/guide"')
+  })
+
+  test("renders chat references as same-page router links", () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <TranscriptMarkdown text="[Dual Stripe Account Support](/chat/abc-123)" />
+      </MemoryRouter>
+    )
+    expect(html).toContain('href="/chat/abc-123"')
+    expect(html).toContain('data-discover="true"')
+    expect(html).not.toContain('target="_blank"')
+  })
+
+  test("keeps chat links inert in standalone exports", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptRenderOptionsProvider value={{ localLinkMode: "text" }}>
+        <TranscriptMarkdown text="[Other chat](/chat/abc-123)" />
+      </TranscriptRenderOptionsProvider>
+    )
+    expect(html).toContain("Other chat")
+    expect(html).not.toContain("href=")
+  })
+
   test("renders markdown headings with transcript-specific sizes and no bold weight", () => {
     const html = renderToStaticMarkup(
       <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>

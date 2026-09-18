@@ -1797,6 +1797,7 @@ export function createWsRouter({
             title: chat.title,
             localPath: project.localPath,
             theme: command.theme,
+            sourceOrigin: command.sourceOrigin,
             attachmentMode: command.attachmentMode,
             messages: store.getMessages(command.chatId),
             resolveMediaPath: (url) => store.resolveTranscriptMediaPath(url),

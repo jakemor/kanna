@@ -64,6 +64,7 @@ import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
 import { checkSessionArtifact, type SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+import { KANNA_CHAT_LINK_NOTICE } from "../shared/chat-links"
 
 /**
  * Tools every Claude session gets. `EnterPlanMode` is deliberately absent — it
@@ -1506,6 +1507,7 @@ export class AgentCoordinator {
     // Handoff: after a harness switch, the rendered transcript context leads
     // the first prompt sent to the new harness (see handoff.ts).
     let wireContent = args.steered ? buildSteeredMessageContent(args.content) : args.content
+    wireContent = appendSystemMessageBlock(wireContent, KANNA_CHAT_LINK_NOTICE)
     const concurrentAgentsNotice = buildConcurrentAgentsNotice(
       this.collectConcurrentProjectChats(args.chatId, project.localPath)
     )

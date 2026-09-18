@@ -138,6 +138,8 @@ export interface ChatAttachment {
 }
 
 export interface StandaloneTranscriptBundle {
+  /** Source Kanna origin for recognizing absolute chat references in exports. */
+  sourceOrigin?: string
   version: 1
   chatId: string
   title: string

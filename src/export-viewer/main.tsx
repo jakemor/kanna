@@ -123,6 +123,7 @@ function StandaloneTranscriptApp() {
       value={{
         readonly: true,
         localLinkMode: "text",
+        sourceOrigin: state.bundle.sourceOrigin ?? null,
         attachmentMode: state.bundle.attachmentMode,
       }}
     >

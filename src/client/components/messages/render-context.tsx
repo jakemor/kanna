@@ -4,6 +4,7 @@ import type { StandaloneTranscriptAttachmentMode } from "../../../shared/types"
 export interface TranscriptRenderOptions {
   readonly: boolean
   localLinkMode: "open" | "text"
+  sourceOrigin: string | null
   attachmentMode: "live" | StandaloneTranscriptAttachmentMode
   /**
    * Fetch an entry's raw provider payload on demand, or null when the host has
@@ -19,6 +20,7 @@ export interface TranscriptRenderOptions {
 const DEFAULT_RENDER_OPTIONS: TranscriptRenderOptions = {
   readonly: false,
   localLinkMode: "open",
+  sourceOrigin: null,
   attachmentMode: "live",
   loadEntryDebugRaw: null,
 }

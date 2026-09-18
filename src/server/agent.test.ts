@@ -16,6 +16,9 @@ import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+import { KANNA_CHAT_LINK_NOTICE } from "../shared/chat-links"
+
+const withChatLinks = (text: string) => text + "\n\n" + KANNA_CHAT_LINK_NOTICE
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()
@@ -849,8 +852,8 @@ describe("AgentCoordinator codex integration", () => {
     await waitFor(() => store.turnFinishedCount === 1)
 
     expect(startTurnCalls).toEqual([
-      { content: "plan this", planMode: true },
-      { content: "Proceed with the approved plan. Additional guidance: Use the fast path", planMode: false },
+      { content: withChatLinks("plan this"), planMode: true },
+      { content: withChatLinks("Proceed with the approved plan. Additional guidance: Use the fast path"), planMode: false },
     ])
     expect(sessionCalls).toEqual([
       { chatId: "chat-1", sessionToken: null },
@@ -1393,7 +1396,7 @@ describe("AgentCoordinator codex integration", () => {
       throw new Error("missing discarded exit-plan result")
     }
     expect(discardedResult.content).toEqual({ discarded: true })
-    expect(startTurnCalls).toEqual(["plan this"])
+    expect(startTurnCalls).toEqual(["plan this"].map(withChatLinks))
   })
 })
 
@@ -1540,7 +1543,7 @@ describe("AgentCoordinator claude integration", () => {
     expect(startSessionCalls).toHaveLength(1)
     expect(startSessionCalls[0]?.planMode).toBe(false)
     expect(startSessionCalls[0]?.sessionToken).toBeNull()
-    expect(prompts).toEqual(["start background task", "check task output"])
+    expect(prompts).toEqual(["start background task", "check task output"].map(withChatLinks))
     expect(store.chat.sessionToken).toBe("claude-session-1")
 
     events.close()
@@ -1788,7 +1791,7 @@ describe("AgentCoordinator claude integration", () => {
       model: "claude-opus-4-1",
     })
 
-    expect(prompts).toEqual(["first prompt"])
+    expect(prompts).toEqual(["first prompt"].map(withChatLinks))
     await coordinator.steer({
       type: "message.steer",
       chatId: "chat-1",
@@ -1796,7 +1799,7 @@ describe("AgentCoordinator claude integration", () => {
     })
 
     expect(prompts).toHaveLength(2)
-    expect(prompts[0]).toEqual("first prompt")
+    expect(prompts[0]).toEqual(withChatLinks("first prompt"))
     expect(prompts[1]).toContain("queued follow up")
     expect(prompts[1]).toContain("<system-message>")
     expect(prompts[1]).toContain("</system-message>")
@@ -1911,7 +1914,7 @@ describe("AgentCoordinator claude integration", () => {
     })).resolves.toEqual({ queuedMessageId: expect.any(String) })
 
     // Nothing was double-sent and the running turn was left alone.
-    expect(prompts).toEqual(["first prompt"])
+    expect(prompts).toEqual(["first prompt"].map(withChatLinks))
     expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(false)
 
     events.close()
@@ -2183,8 +2186,8 @@ describe("concurrent agents notice injection", () => {
     await coordinator.send({ type: "chat.send", chatId: "chat-2", provider: "claude", content: "second prompt", model: "claude-opus-4-1" })
 
     expect(prompts).toHaveLength(2)
-    // chat-1 started alone — no notice.
-    expect(prompts[0]).toBe("first prompt")
+    // chat-1 started alone — only the chat-link instructions.
+    expect(prompts[0]).toBe(withChatLinks("first prompt"))
     // chat-2 started while chat-1 was running in the same directory.
     expect(prompts[1]?.startsWith("second prompt")).toBe(true)
     expect(prompts[1]).toContain("there are other agents working in the current directory")
@@ -2217,7 +2220,7 @@ describe("concurrent agents notice injection", () => {
     await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "first prompt", model: "claude-opus-4-1" })
     await coordinator.send({ type: "chat.send", chatId: "chat-2", provider: "claude", content: "second prompt", model: "claude-opus-4-1" })
 
-    expect(prompts).toEqual(["first prompt", "second prompt"])
+    expect(prompts).toEqual(["first prompt", "second prompt"].map(withChatLinks))
 
     close()
   })
@@ -2304,7 +2307,7 @@ describe("mid-conversation provider switch", () => {
     expect(sentContents).toHaveLength(1)
     expect(sentContents[0]).toContain("<handoff_transcript>")
     expect(sentContents[0]).toContain("fix the login bug")
-    expect(sentContents[0]?.endsWith("keep going with codex")).toBe(true)
+    expect(sentContents[0]?.endsWith(withChatLinks("keep going with codex"))).toBe(true)
     expect((store.messages[promptIndex] as { content: string }).content).toBe("keep going with codex")
   })
 
@@ -2330,7 +2333,7 @@ describe("mid-conversation provider switch", () => {
 
     const boundaries = store.messages.filter((entry) => entry.kind === "handoff_boundary")
     expect(boundaries).toHaveLength(1)
-    expect(sentContents[1]).toBe("same harness again")
+    expect(sentContents[1]).toBe(withChatLinks("same harness again"))
   })
 })
 
@@ -2409,7 +2412,7 @@ describe("session restore on lost native session", () => {
     expect(prompts[0]).toContain("<handoff_transcript>")
     expect(prompts[0]).toContain("restored from Kanna's saved transcript")
     expect(prompts[0]).toContain("earlier question")
-    expect(prompts[0]?.endsWith("continue please")).toBe(true)
+    expect(prompts[0]?.endsWith(withChatLinks("continue please"))).toBe(true)
     expect((store.messages[promptIndex] as { content: string }).content).toBe("continue please")
 
     events.close()
@@ -2430,7 +2433,7 @@ describe("session restore on lost native session", () => {
     expect(store.messages.some((entry) => entry.kind === "session_restored")).toBe(false)
     // Normal resume with the existing token; prompt is not wrapped in a transcript.
     expect(startSessionCalls).toEqual([{ sessionToken: "claude-session-old", forkSession: false }])
-    expect(prompts[0]).toBe("continue please")
+    expect(prompts[0]).toBe(withChatLinks("continue please"))
 
     events.close()
   })
@@ -2488,7 +2491,7 @@ describe("session restore on lost native session", () => {
     expect(promptIndex).toBeGreaterThan(boundaryIndex)
     expect((store.messages[boundaryIndex] as Extract<TranscriptEntry, { kind: "session_restored" }>).provider).toBe("codex")
     expect(sentContents[0]).toContain("<handoff_transcript>")
-    expect(sentContents[0]?.endsWith("continue please")).toBe(true)
+    expect(sentContents[0]?.endsWith(withChatLinks("continue please"))).toBe(true)
 
     // Live session on the follow-up turn: resume succeeds, so no second boundary.
     resumeFellBack = false
@@ -2502,7 +2505,7 @@ describe("session restore on lost native session", () => {
     await waitFor(() => store.turnFinishedCount === 2)
 
     expect(store.messages.filter((entry) => entry.kind === "session_restored")).toHaveLength(1)
-    expect(sentContents[1]).toBe("and again")
+    expect(sentContents[1]).toBe(withChatLinks("and again"))
   })
 })
 
@@ -2678,7 +2681,7 @@ describe("AgentCoordinator restart resume", () => {
 
     expect(await coordinator.resumeInterruptedTurn("chat-1")).toBe(true)
 
-    expect(prompts).toEqual([RESUME_AFTER_RESTART_MESSAGE])
+    expect(prompts).toEqual([RESUME_AFTER_RESTART_MESSAGE].map(withChatLinks))
     // Nobody typed anything, so nothing lands in the transcript as if they had.
     expect(store.messages.some((entry) => entry.kind === "user_prompt")).toBe(false)
     expect(coordinator.activeTurns.has("chat-1")).toBe(true)

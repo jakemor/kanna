@@ -67,6 +67,7 @@ describe("writeStandaloneTranscriptExport", () => {
     const result = await writeStandaloneTranscriptExport({
       chatId: "chat-1",
       title: "Release Review",
+      sourceOrigin: "http://user:password@kanna.example:5174/chat/one?token=secret",
       localPath: projectDir,
       theme: "dark",
       attachmentMode: "metadata",
@@ -110,6 +111,7 @@ describe("writeStandaloneTranscriptExport", () => {
 
     const bundle = await Bun.file(result.transcriptJsonPath).json()
     expect(bundle.title).toBe("Release Review")
+    expect(bundle.sourceOrigin).toBe("http://kanna.example:5174")
     expect(bundle.viewerVersion).toBeDefined()
     expect(bundle.theme).toBe("dark")
     expect(bundle.attachmentMode).toBe("metadata")

@@ -78,4 +78,13 @@ describe("checkSessionArtifact", () => {
     expect(checkSessionArtifact("codex", { cwd: CWD, sessionToken: "thread-1", home })).toBe("unknown")
     expect(checkSessionArtifact("pi", { cwd: CWD, sessionToken: "sess-1", home })).toBe("unknown")
   })
+
+  test("grok: keys the session dir by encodeURIComponent(cwd)", async () => {
+    const home = await makeHome()
+    const dir = path.join(home, ".grok", "sessions", encodeURIComponent(CWD))
+    await mkdir(path.join(dir, "session-xyz"), { recursive: true })
+
+    expect(checkSessionArtifact("grok", { cwd: CWD, sessionToken: "session-xyz", home })).toBe("present")
+    expect(checkSessionArtifact("grok", { cwd: CWD, sessionToken: "other", home })).toBe("missing")
+  })
 })

@@ -17,6 +17,7 @@ import {
   scanCodexSkills,
   scanCommandsRoot,
   scanCursorSkills,
+  scanGrokSkills,
   scanSkillsRoot,
 } from "./harness-skills"
 
@@ -212,6 +213,7 @@ describe("filesystem scanners", () => {
     writeSkill(path.join(home, ".agents", "skills"), "universal-skill")
     writeSkill(path.join(home, ".claude", "skills"), "claude-only")
     writeSkill(path.join(home, ".cursor", "skills"), "cursor-only")
+    writeSkill(path.join(home, ".grok", "skills"), "grok-only")
     writeSkill(path.join(home, ".codex", "skills"), "codex-legacy")
     // Marketplace-style install: same skill in both the universal + claude dirs.
     writeSkill(path.join(home, ".agents", "skills"), "everywhere")
@@ -220,15 +222,30 @@ describe("filesystem scanners", () => {
     const skills = listGlobalSkills({ home })
     const byName = new Map(skills.map((skill) => [skill.name, skill]))
 
-    expect(byName.get("universal-skill")?.providers).toEqual(["codex", "cursor", "pi"])
+    expect(byName.get("universal-skill")?.providers).toEqual(["codex", "cursor", "grok", "pi"])
     expect(byName.get("claude-only")?.providers).toEqual(["claude"])
     expect(byName.get("cursor-only")?.providers).toEqual(["cursor"])
+    expect(byName.get("grok-only")?.providers).toEqual(["grok"])
     expect(byName.get("codex-legacy")?.providers).toEqual(["codex"])
     // Duplicate name merges to one entry with the provider union + both paths.
-    expect(byName.get("everywhere")?.providers).toEqual(["claude", "codex", "cursor", "pi"])
+    expect(byName.get("everywhere")?.providers).toEqual(["claude", "codex", "cursor", "grok", "pi"])
     expect(byName.get("everywhere")?.paths).toHaveLength(2)
     // Sorted by name for a stable settings list.
     expect(skills.map((skill) => skill.name)).toEqual([...skills.map((skill) => skill.name)].sort())
+  })
+
+  test("scanGrokSkills reads project .grok/.agents and user dirs", () => {
+    const home = path.join(base, "home")
+    const repo = path.join(base, "repo")
+    mkdirSync(path.join(repo, ".git"), { recursive: true })
+    writeSkill(path.join(repo, ".grok", "skills"), "project-grok-skill")
+    writeSkill(path.join(home, ".grok", "skills"), "user-grok-skill")
+    writeSkill(path.join(home, ".agents", "skills"), "shared-agents-skill")
+
+    const names = scanGrokSkills({ cwd: repo, home }).map((skill) => skill.name)
+    expect(names).toContain("project-grok-skill")
+    expect(names).toContain("user-grok-skill")
+    expect(names).toContain("shared-agents-skill")
   })
 
   test("scanCursorSkills reads nested .cursor/.agents roots and user dirs", () => {

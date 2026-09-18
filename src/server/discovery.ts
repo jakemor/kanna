@@ -302,9 +302,45 @@ export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
   }
 }
 
+export class GrokProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
+  readonly provider = "grok" as const
+
+  scan(homeDir: string = homedir()): ProviderDiscoveredProject[] {
+    const sessionsDir = path.join(homeDir, ".grok", "sessions")
+    if (!existsSync(sessionsDir)) return []
+
+    const projects: ProviderDiscoveredProject[] = []
+    for (const entry of readdirSync(sessionsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      let cwd: string
+      try {
+        cwd = decodeURIComponent(entry.name)
+      } catch {
+        continue
+      }
+      if (!path.isAbsolute(cwd)) continue
+      const normalizedPath = normalizeExistingDirectory(cwd)
+      if (!normalizedPath) continue
+      const stat = statSync(path.join(sessionsDir, entry.name))
+      projects.push({
+        provider: this.provider,
+        localPath: normalizedPath,
+        title: path.basename(normalizedPath) || normalizedPath,
+        modifiedAt: stat.mtimeMs,
+      })
+    }
+
+    return mergeDiscoveredProjects(projects).map((project) => ({
+      provider: this.provider,
+      ...project,
+    }))
+  }
+}
+
 export const DEFAULT_PROJECT_DISCOVERY_ADAPTERS: ProjectDiscoveryAdapter[] = [
   new ClaudeProjectDiscoveryAdapter(),
   new CodexProjectDiscoveryAdapter(),
+  new GrokProjectDiscoveryAdapter(),
 ]
 
 export function discoverProjects(

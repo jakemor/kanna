@@ -154,6 +154,7 @@ describe("applyModelToComposerState", () => {
 
 describe("deriveComposerOptionControls", () => {
   const claudeConfig = PROVIDERS.find((provider) => provider.id === "claude")!
+  const grokConfig = PROVIDERS.find((provider) => provider.id === "grok")!
   const cursorConfig = PROVIDERS.find((provider) => provider.id === "cursor")!
   const codexConfig = PROVIDERS.find((provider) => provider.id === "codex")!
 
@@ -171,6 +172,24 @@ describe("deriveComposerOptionControls", () => {
     // "Max" reasoning is disabled unless the model supports it.
     const max = controls.reasoning?.options.find((option) => option.id === "max")
     expect(max?.disabled).toBe(!supportsClaudeMaxReasoningEffort(modelWithWindow.id))
+  })
+
+  test("grok exposes reasoning and plan mode, not auto-plan or fast mode", () => {
+    const grokModel = grokConfig.models[0]!
+    const controls = deriveComposerOptionControls(
+      {
+        provider: "grok",
+        model: grokModel.id,
+        modelOptions: { reasoningEffort: "high" },
+        planMode: false,
+        autoPlan: false,
+      } as ComposerState,
+      grokConfig,
+    )
+    expect(controls.reasoning?.options.map((option) => option.id)).toEqual(["low", "medium", "high"])
+    expect(controls.mode?.options).toEqual(["full-access", "plan"])
+    expect(controls.fastMode).toBeNull()
+    expect(controls.contextWindow).toBeNull()
   })
 
   test("cursor has no reasoning selector", () => {

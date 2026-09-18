@@ -8,6 +8,7 @@ import {
   mergeCodexRateLimitPush,
   normalizeClaudeUsage,
   normalizeCodexRateLimits,
+  normalizeGrokAccountUsage,
 } from "./usage-limits"
 
 const NOW = "2026-07-22T10:00:00.000Z"
@@ -244,6 +245,39 @@ describe("mergeCodexRateLimitPush", () => {
   })
 })
 
+describe("normalizeGrokAccountUsage", () => {
+  test("maps weekly product lanes and subscription tier", () => {
+    const snapshot = normalizeGrokAccountUsage(
+      {
+        user: { subscriptionTier: "XPremiumPlus", email: "a@b.com" },
+        billing: {
+          config: {
+            currentPeriod: { end: "2026-09-12T00:00:00Z" },
+            creditUsagePercent: 6,
+            productUsage: [
+              { product: "GrokBuild", usagePercent: 4 },
+              { product: "GrokChat", usagePercent: 1 },
+            ],
+            onDemandCap: { val: 0 },
+            onDemandUsed: { val: 0 },
+            prepaidBalance: { val: 0 },
+          },
+        },
+      },
+      NOW,
+    )
+    expect(snapshot.status).toBe("ok")
+    expect(snapshot.plan).toBe("XPremiumPlus")
+    expect(snapshot.windows.map((window) => window.id)).toEqual(["credits", "GrokBuild", "GrokChat"])
+    expect(snapshot.windows[1]).toMatchObject({
+      label: "Weekly · Grok Build",
+      usedPercent: 4,
+      resetsAt: "2026-09-12T00:00:00Z",
+    })
+    expect(snapshot.credits).toBeNull()
+  })
+})
+
 describe("UsageLimitsManager", () => {
   test("refresh applies both providers, emits, and persists", async () => {
     const filePath = await createTempFilePath()
@@ -267,11 +301,12 @@ describe("UsageLimitsManager", () => {
     await manager.refresh()
 
     const snapshot = manager.getSnapshot()
-    expect(snapshot.providers.map((p) => p.provider)).toEqual(["claude", "codex", "cursor", "pi"])
+    expect(snapshot.providers.map((p) => p.provider)).toEqual(["claude", "codex", "cursor", "grok", "pi"])
     expect(snapshot.providers[0]?.status).toBe("ok")
     expect(snapshot.providers[1]?.status).toBe("ok")
     expect(snapshot.providers[2]?.status).toBe("unavailable")
-    expect(snapshot.providers[3]?.status).toBe("not_applicable")
+    expect(snapshot.providers[3]?.status).toBe("unknown")
+    expect(snapshot.providers[4]?.status).toBe("not_applicable")
     expect(emitted).toBeGreaterThanOrEqual(2)
 
     const persisted = JSON.parse(await readFile(filePath, "utf8"))

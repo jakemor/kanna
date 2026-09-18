@@ -4,6 +4,7 @@ import {
   applyClaudeSdkModels,
   applyCodexModels,
   applyCursorModels,
+  applyGrokModels,
   applyPiFaveModels,
   cursorModelIdForOptions,
   normalizeClaudeModelOptions,
@@ -143,6 +144,24 @@ describe("provider catalog normalization", () => {
     expect(cursorModelIdForOptions("composer-2.5", { fastMode: true })).toBe("composer-2.5-fast")
     // Idempotent if the base id already carries the suffix.
     expect(cursorModelIdForOptions("composer-2.5-fast", { fastMode: true })).toBe("composer-2.5-fast")
+  })
+
+  test("applyGrokModels overlays the live grok models list", () => {
+    expect(applyGrokModels([
+      { id: "grok-4.6", label: "Grok 4.6", isDefault: true },
+      { id: "grok-4.5", label: "Grok 4.5" },
+      { id: "grok-5", label: "Grok 5" },
+    ])).toBe(true)
+
+    const grok = SERVER_PROVIDERS.find((provider) => provider.id === "grok")
+    expect(grok?.defaultModel).toBe("grok-4.6")
+    expect(grok?.models.map((model) => model.id)).toEqual(["grok-4.6", "grok-4.5", "grok-5"])
+    expect(normalizeServerModel("grok", "grok-5")).toBe("grok-5")
+    expect(applyGrokModels([
+      { id: "grok-4.6", label: "Grok 4.6", isDefault: true },
+      { id: "grok-4.5", label: "Grok 4.5" },
+      { id: "grok-5", label: "Grok 5" },
+    ])).toBe(false)
   })
 
   test("resolves the Cursor default model through the server catalog", () => {

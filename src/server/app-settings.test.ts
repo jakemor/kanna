@@ -74,6 +74,14 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         planMode: false,
         autoPlan: false,
       },
+      grok: {
+        model: "grok-4.6",
+        modelOptions: {
+          reasoningEffort: "high",
+        },
+        planMode: false,
+        autoPlan: false,
+      },
       pi: {
         model: "~anthropic/claude-fable-latest",
         modelOptions: {

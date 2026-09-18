@@ -1,6 +1,6 @@
 # Kanna — development notes
 
-Kanna is a local web UI for coding agents (Claude Code, Codex, Cursor, Pi).
+Kanna is a local web UI for coding agents (Claude Code, Codex, Cursor, Grok Build, Pi).
 Bun server + React 19 client, talking over one WebSocket.
 
 ## Commands
@@ -19,7 +19,7 @@ React client (src/client)
                                    ├─ snapshots: per-topic push with dedupe signatures
                                    ├─ AgentCoordinator (agent.ts) ── provider adapters:
                                    │    Claude Agent SDK (in agent.ts) · codex-app-server.ts
-                                   │    cursor-cli.ts · pi-agent.ts
+                                   │    cursor-cli.ts · grok-cli.ts · pi-agent.ts
                                    └─ EventStore (event-store.ts): JSONL logs + snapshot
                                       compaction + per-chat transcripts (~/.kanna/data)
 ```

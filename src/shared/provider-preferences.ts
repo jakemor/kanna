@@ -4,6 +4,7 @@ import {
   DEFAULT_CURSOR_MODEL_OPTIONS,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isGrokReasoningEffort,
   isPiReasoningEffort,
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
@@ -11,6 +12,8 @@ import {
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
   normalizeCursorModelId,
+  normalizeGrokModelId,
+  normalizeGrokReasoningEffort,
   normalizePiModelId,
   normalizePiReasoningEffort,
   supportsClaudeMaxReasoningEffort,
@@ -20,6 +23,7 @@ import {
   type ClaudeModelOptions,
   type CodexModelOptions,
   type CursorModelOptions,
+  type GrokModelOptions,
   type PiModelOptions,
   type ProviderPreference,
 } from "./types"
@@ -127,6 +131,20 @@ export function normalizePiPreference(value?: ProviderPreferenceInput): Provider
   }
 }
 
+export function normalizeGrokPreference(value?: ProviderPreferenceInput): ProviderPreference<GrokModelOptions> {
+  const reasoningEffort = value?.modelOptions?.reasoningEffort
+  return {
+    model: normalizeGrokModelId(modelIdFromInput(value)),
+    modelOptions: {
+      reasoningEffort: normalizeGrokReasoningEffort(
+        isGrokReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
+      ),
+    },
+    planMode: value?.planMode === true,
+    autoPlan: false,
+  }
+}
+
 // Exhaustive provider dispatch: the record is keyed by AgentProvider, so adding a
 // provider to AgentProvider forces a new entry here instead of silently falling
 // through to one provider's branch.
@@ -136,6 +154,7 @@ export const PROVIDER_NORMALIZERS: {
   claude: normalizeClaudePreference,
   codex: normalizeCodexPreference,
   cursor: normalizeCursorPreference,
+  grok: normalizeGrokPreference,
   pi: normalizePiPreference,
 }
 
@@ -153,6 +172,7 @@ export function normalizeProviderDefaults(
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
     cursor: normalizeCursorPreference(value?.cursor),
+    grok: normalizeGrokPreference(value?.grok),
     pi: normalizePiPreference(value?.pi),
   }
 }
@@ -194,6 +214,14 @@ export function mergeProviderDefaultsPatch(
       modelOptions: {
         ...current.cursor.modelOptions,
         ...patch?.cursor?.modelOptions,
+      },
+    },
+    grok: {
+      ...current.grok,
+      ...patch?.grok,
+      modelOptions: {
+        ...current.grok.modelOptions,
+        ...patch?.grok?.modelOptions,
       },
     },
     pi: {

@@ -7,6 +7,7 @@ import {
   normalizeClaudeFastMode,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
+  GROK_REASONING_OPTIONS,
   PI_REASONING_OPTIONS,
   supportsClaudeMaxReasoningEffort,
   type AgentProvider,
@@ -114,6 +115,14 @@ export function getEffectiveComposerState(
         provider: "cursor",
         model: chatModel ?? providerDefaults.cursor.model,
         modelOptions: { ...providerDefaults.cursor.modelOptions },
+        planMode: composerState.planMode,
+        autoPlan: composerState.autoPlan,
+      }
+    case "grok":
+      return {
+        provider: "grok",
+        model: chatModel ?? providerDefaults.grok.model,
+        modelOptions: { ...providerDefaults.grok.modelOptions },
         planMode: composerState.planMode,
         autoPlan: composerState.autoPlan,
       }
@@ -255,7 +264,9 @@ export function deriveComposerOptionControls(
           }))
           : state.provider === "pi"
             ? [...PI_REASONING_OPTIONS]
-            : [...getCodexReasoningOptions(state.model, providerConfig?.models)]
+            : state.provider === "grok"
+              ? [...GROK_REASONING_OPTIONS]
+              : [...getCodexReasoningOptions(state.model, providerConfig?.models)]
       ) as ComposerOptionChoice[],
       selectedId: modelOptions.reasoningEffort,
     }

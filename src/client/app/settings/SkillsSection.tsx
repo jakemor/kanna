@@ -19,6 +19,7 @@ const PROVIDER_LABELS: Record<AgentProvider, string> = {
   claude: "Claude",
   codex: "Codex",
   cursor: "Cursor",
+  grok: "Grok",
   pi: "Pi",
 }
 

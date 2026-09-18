@@ -5,6 +5,7 @@ import type {
   CursorModelOptions,
   ClaudeContextWindow,
   FaveModel,
+  GrokModelOptions,
   ModelOptions,
   PiModelOptions,
   ProviderCatalogEntry,
@@ -22,10 +23,12 @@ import {
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeCodexReasoningEffort,
+  normalizeGrokReasoningEffort,
   normalizePiReasoningEffort,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isGrokReasoningEffort,
   isPiReasoningEffort,
   modelIdFamily,
   supportsProviderFastMode,
@@ -405,6 +408,18 @@ export function normalizePiModelOptions(
   }
 }
 
+export function normalizeGrokModelOptions(
+  modelOptions?: ModelOptions,
+  legacyEffort?: string,
+): GrokModelOptions {
+  const reasoningEffort = modelOptions?.grok?.reasoningEffort
+  return {
+    reasoningEffort: normalizeGrokReasoningEffort(
+      isGrokReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
+    ),
+  }
+}
+
 export function normalizeCursorModelOptions(modelOptions?: ModelOptions): CursorModelOptions {
   return {
     fastMode: typeof modelOptions?.cursor?.fastMode === "boolean"
@@ -423,4 +438,54 @@ export function cursorModelIdForOptions(baseModel: string, modelOptions: CursorM
   const option = getServerProviderCatalog("cursor").models.find((candidate) => candidate.id === baseModel)
   if (option && !option.supportsFastMode) return baseModel
   return `${baseModel}-fast`
+}
+
+export interface GrokCliModelInfo {
+  id: string
+  label: string
+  isDefault?: boolean
+}
+
+/**
+ * Replace the grok provider's model list with the account's live list from
+ * `grok models`. Returns true when the catalog changed.
+ */
+export function applyGrokModels(models: ReadonlyArray<GrokCliModelInfo>): boolean {
+  const grokIndex = SERVER_PROVIDERS.findIndex((provider) => provider.id === "grok")
+  const grokProvider = SERVER_PROVIDERS[grokIndex]
+  if (!grokProvider) return false
+
+  const staticModels = PROVIDERS.find((provider) => provider.id === "grok")?.models ?? []
+  const nextModels: ProviderModelOption[] = []
+  for (const model of models) {
+    const id = model.id.trim()
+    if (!id || nextModels.some((existing) => existing.id === id)) continue
+    const staticOption = staticModels.find((option) => option.id === id)
+    nextModels.push({
+      id,
+      label: model.label || staticOption?.label || deriveModelLabel(id),
+      supportsEffort: staticOption?.supportsEffort ?? true,
+      ...(staticOption?.contextWindowTokens ? { contextWindowTokens: staticOption.contextWindowTokens } : { contextWindowTokens: 500_000 }),
+    })
+  }
+  if (nextModels.length === 0) return false
+
+  const cliDefault = models.find((model) => model.isDefault)?.id
+  const defaultModel = nextModels.some((model) => model.id === grokProvider.defaultModel)
+    ? grokProvider.defaultModel
+    : nextModels.find((model) => model.id === cliDefault)?.id ?? nextModels[0]!.id
+
+  if (
+    defaultModel === grokProvider.defaultModel
+    && JSON.stringify(nextModels) === JSON.stringify(grokProvider.models)
+  ) {
+    return false
+  }
+
+  SERVER_PROVIDERS.splice(grokIndex, 1, {
+    ...grokProvider,
+    defaultModel,
+    models: nextModels,
+  })
+  return true
 }

@@ -8,14 +8,15 @@ import type { AgentProvider, GlobalSkillSummary, HarnessSkill, HarnessSkillSourc
  *
  * Discovery has two tiers per provider:
  *   - live: ask the running harness (claude supportedCommands, codex skills/list,
- *     pi resource loader). Authoritative — includes built-ins/plugins/enabled flags.
+ *     grok inspect --json, pi resource loader). Authoritative — includes
+ *     built-ins/plugins/enabled flags.
  *   - filesystem: Kanna scans the same directories the harness itself reads.
  *     Used for cold start (no session yet) and for cursor, which has no
  *     enumeration protocol at all.
  *
  * Invocation is translated per provider at the adapter boundary (the transcript
  * always keeps the user's typed text verbatim):
- *   - claude/pi: passthrough — both expand a message that *starts* with "/name".
+ *   - claude/grok/pi: passthrough — they expand a message that *starts* with "/name".
  *   - codex: structured `{type:"skill", name, path}` input item + failsafe block.
  *   - cursor: failsafe block only (no headless expansion exists).
  */
@@ -294,12 +295,30 @@ export function scanCursorSkills(args: ScanArgs): HarnessSkill[] {
   ])
 }
 
+/**
+ * Grok discovery: project + user `.grok/skills`, shared `.agents/skills`
+ * (repo → git root and $HOME), matching grok inspect's resource loader.
+ */
+export function scanGrokSkills(args: ScanArgs): HarnessSkill[] {
+  const home = args.home ?? homedir()
+  const repoRoots = collectAncestorDirsToRepoRoot(args.cwd)
+    .flatMap((dir) => [
+      path.join(dir, ".grok", "skills"),
+      path.join(dir, ".agents", "skills"),
+    ])
+  return dedupeSkillsByName([
+    ...repoRoots.flatMap(scanSkillsRoot),
+    ...scanSkillsRoot(path.join(home, ".grok", "skills")),
+    ...scanSkillsRoot(path.join(home, ".agents", "skills")),
+  ])
+}
+
 /** Resolve a typed `/name` against a skill list (exact match on the namespaced name). */
 export function findSkillByName(skills: HarnessSkill[], name: string): HarnessSkill | null {
   return skills.find((skill) => skill.name === name) ?? null
 }
 
-const PROVIDER_ORDER: readonly AgentProvider[] = ["claude", "codex", "cursor", "pi"]
+const PROVIDER_ORDER: readonly AgentProvider[] = ["claude", "codex", "cursor", "grok", "pi"]
 
 /**
  * User-level skill roots and the harnesses that read each of them. This is the
@@ -309,9 +328,10 @@ const PROVIDER_ORDER: readonly AgentProvider[] = ["claude", "codex", "cursor", "
 export function globalSkillRoots(home: string): { dir: string; providers: AgentProvider[] }[] {
   return [
     // The cross-harness standard dir: codex, cursor, and pi all read it natively.
-    { dir: path.join(home, ".agents", "skills"), providers: ["codex", "cursor", "pi"] },
+    { dir: path.join(home, ".agents", "skills"), providers: ["codex", "cursor", "grok", "pi"] },
     { dir: path.join(home, ".claude", "skills"), providers: ["claude"] },
     { dir: path.join(home, ".cursor", "skills"), providers: ["cursor"] },
+    { dir: path.join(home, ".grok", "skills"), providers: ["grok"] },
     // Deprecated codex location, but current codex builds still scan it.
     { dir: path.join(home, ".codex", "skills"), providers: ["codex"] },
   ]

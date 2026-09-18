@@ -27,7 +27,7 @@ export const SETTINGS_SECTIONS = [
     id: "providers",
     label: "Providers",
     icon: MessageSquareQuote as LucideIcon,
-    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, Cursor, and Pi.",
+    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, Cursor, Grok Build, and Pi.",
   },
   {
     id: "keybindings",

@@ -52,7 +52,7 @@ export type ComposerState = {
 export const NEW_CHAT_COMPOSER_ID = "__new__"
 
 export function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
-  if (value === "claude" || value === "codex" || value === "cursor" || value === "pi") return value
+  if (value === "claude" || value === "codex" || value === "cursor" || value === "grok" || value === "pi") return value
   return "last_used"
 }
 

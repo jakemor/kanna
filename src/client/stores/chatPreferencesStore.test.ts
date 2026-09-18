@@ -31,6 +31,7 @@ describe("migrateChatPreferencesState", () => {
     // Auto Plan is Claude-only; the other harnesses are pinned to false.
     expect(migrated.providerDefaults.codex.autoPlan).toBe(false)
     expect(migrated.providerDefaults.cursor.autoPlan).toBe(false)
+    expect(migrated.providerDefaults.grok.autoPlan).toBe(false)
     expect(migrated.providerDefaults.pi.autoPlan).toBe(false)
   })
 
@@ -100,6 +101,12 @@ describe("migrateChatPreferencesState", () => {
         cursor: {
           model: "composer-2.5",
           modelOptions: { fastMode: false },
+          planMode: false,
+          autoPlan: false,
+        },
+        grok: {
+          model: "grok-4.6",
+          modelOptions: { reasoningEffort: "high" },
           planMode: false,
           autoPlan: false,
         },

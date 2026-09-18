@@ -702,6 +702,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "cursor") {
       modelOptions = { cursor: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "grok") {
+      modelOptions = { grok: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "pi") {
       modelOptions = { pi: { ...providerPrefs.modelOptions } }
     } else {

@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 
 import type { AgentProvider } from "../shared/types"
+import { grokSessionDir } from "./grok-cli"
 
 /**
  * Whether a provider's native session artifact for a chat still exists on disk.
@@ -73,6 +74,10 @@ export function checkSessionArtifact(
     }
     case "cursor": {
       const parent = cursorChatsDir(home, query.cwd)
+      return statusFor(parent, path.join(parent, query.sessionToken))
+    }
+    case "grok": {
+      const parent = grokSessionDir(home, query.cwd)
       return statusFor(parent, path.join(parent, query.sessionToken))
     }
     // codex surfaces its own resume failure (isRecoverableResumeError); pi is

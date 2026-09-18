@@ -213,6 +213,7 @@ function createHarness(options: HarnessOptions = {}) {
     claude: "/usr/local/bin/claude",
     codex: "/usr/local/bin/codex",
     "cursor-agent": "/home/user/.local/bin/cursor-agent",
+    grok: "/home/user/.local/bin/grok",
     gh: "/usr/local/bin/gh",
     git: "/usr/bin/git",
     npm: "/usr/local/bin/npm",
@@ -278,6 +279,7 @@ function signedOutExec(argv: string[]): ExecResult {
     if (argv[0].includes("claude")) return { code: 0, stdout: "2.1.218 (Claude Code)", stderr: "" }
     if (argv[0].includes("codex")) return { code: 0, stdout: "codex-cli 0.145.0", stderr: "" }
     if (argv[0].includes("cursor-agent")) return { code: 0, stdout: "2026.07.23-e383d2b\n", stderr: "" }
+    if (argv[0].includes("grok")) return { code: 0, stdout: "grok 1.0.13 (abc)\n", stderr: "" }
     if (argv[0].includes("gh")) return { code: 0, stdout: "gh version 2.96.0 (2026-07-02)", stderr: "" }
   }
   if (joined.includes("auth status --json")) {
@@ -285,6 +287,7 @@ function signedOutExec(argv: string[]): ExecResult {
   }
   if (joined.includes("login status")) return { code: 1, stdout: "", stderr: "Not logged in" }
   if (joined.includes("cursor-agent status")) return { code: 0, stdout: "Not logged in", stderr: "" }
+  if (joined.includes("grok") && joined.includes("models")) return { code: 1, stdout: "Not logged in. Run `grok login`.", stderr: "" }
   if (joined.includes("auth status")) return { code: 1, stdout: "", stderr: "You are not logged into any GitHub hosts." }
   return { code: 0, stdout: "", stderr: "" }
 }
@@ -296,11 +299,11 @@ function signedOutExec(argv: string[]): ExecResult {
 describe("ProviderAuthManager probing", () => {
   test("reports not_installed when the binary is missing", async () => {
     const harness = createHarness({
-      paths: { claude: null, codex: null, "cursor-agent": null, gh: null },
+      paths: { claude: null, codex: null, "cursor-agent": null, grok: null, gh: null },
     })
     await harness.manager.refresh({ force: true })
     const snapshot = harness.manager.getSnapshot()
-    for (const service of ["claude", "codex", "cursor", "gh"]) {
+    for (const service of ["claude", "codex", "cursor", "grok", "gh"]) {
       const entry = snapshot.services.find((s) => s.service === service)!
       expect(entry.authStatus).toBe("not_installed")
       expect(entry.installed).toBe(false)
@@ -314,6 +317,7 @@ describe("ProviderAuthManager probing", () => {
     expect(byService.get("claude")).toMatchObject({ installed: true, version: "2.1.218", authStatus: "signed_out" })
     expect(byService.get("codex")).toMatchObject({ version: "0.145.0", authStatus: "signed_out" })
     expect(byService.get("cursor")).toMatchObject({ version: "2026.07.23-e383d2b", authStatus: "signed_out" })
+    expect(byService.get("grok")).toMatchObject({ version: "1.0.13", authStatus: "signed_out" })
     expect(byService.get("gh")).toMatchObject({ version: "2.96.0", authStatus: "signed_out" })
     expect(byService.get("openrouter")).toMatchObject({ installed: true, authStatus: "signed_out" })
   })
@@ -327,6 +331,9 @@ describe("ProviderAuthManager probing", () => {
         }
         if (joined.includes("login status")) return { code: 0, stdout: "Logged in using ChatGPT", stderr: "" }
         if (joined.includes("cursor-agent status")) return { code: 0, stdout: "Logged in as jake@x.com", stderr: "" }
+        if (argv[0].includes("grok") && argv.includes("models")) {
+          return { code: 0, stdout: "You are logged in with grok.com.\nDefault model: grok-4.6\n", stderr: "" }
+        }
         if (joined.includes("auth status")) {
           return { code: 0, stdout: "✓ Logged in to github.com account jakemny (keyring)", stderr: "" }
         }
@@ -339,6 +346,7 @@ describe("ProviderAuthManager probing", () => {
     expect(byService.get("claude")).toMatchObject({ authStatus: "signed_in", account: "jake@example.com" })
     expect(byService.get("codex")).toMatchObject({ authStatus: "signed_in", account: "ChatGPT" })
     expect(byService.get("cursor")).toMatchObject({ authStatus: "signed_in", account: "jake@x.com" })
+    expect(byService.get("grok")).toMatchObject({ authStatus: "signed_in", account: "grok.com" })
     expect(byService.get("gh")).toMatchObject({ authStatus: "signed_in", account: "jakemny" })
     expect(byService.get("openrouter")).toMatchObject({ authStatus: "signed_in" })
   })

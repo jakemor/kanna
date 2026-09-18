@@ -18,6 +18,15 @@ describe("shared model normalization", () => {
     expect(PROVIDERS.find((provider) => provider.id === "claude")?.label).toBe("Claude Code")
   })
 
+  test("registers Grok Build with plan mode and reasoning effort", () => {
+    const grok = PROVIDERS.find((provider) => provider.id === "grok")
+    expect(grok?.label).toBe("Grok Build")
+    expect(grok?.defaultModel).toBe("grok-4.6")
+    expect(grok?.supportsPlanMode).toBe(true)
+    expect(grok?.supportsAutoPlanMode).toBe(false)
+    expect(grok?.models.map((model) => model.id)).toEqual(["grok-4.6", "grok-4.5"])
+  })
+
   test("derives fallback Claude model labels from model ids", () => {
     expect(deriveClaudeModelLabel("fable")).toBe("Fable")
     expect(deriveClaudeModelLabel("claude-opus-4-8")).toBe("Opus")

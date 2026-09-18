@@ -11,6 +11,9 @@ import {
   type ProviderAuthSnapshot,
 } from "../shared/types"
 import { compareVersions } from "./cli-runtime"
+import { parseGrokAuthStatus, parseGrokDeviceLogin, parseGrokVersion } from "./grok-cli"
+
+export { parseGrokAuthStatus, parseGrokDeviceLogin, parseGrokVersion }
 import { resolveCommandPath as defaultResolveCommandPath } from "./process-utils"
 
 // ---------------------------------------------------------------------------
@@ -41,6 +44,7 @@ const CLI_BINARIES: Record<Exclude<AuthServiceId, "openrouter">, string> = {
   claude: "claude",
   codex: "codex",
   cursor: "cursor-agent",
+  grok: "grok",
   gh: "gh",
 }
 
@@ -422,6 +426,7 @@ export class ProviderAuthManager {
       service === "claude" ? parseClaudeVersion(versionOutput)
       : service === "codex" ? parseCodexVersion(versionOutput)
       : service === "cursor" ? parseCursorVersion(versionResult.stdout)
+      : service === "grok" ? parseGrokVersion(versionOutput)
       : parseGhVersion(versionOutput)
 
     let authStatus: AuthServiceSnapshot["authStatus"] = "signed_out"
@@ -459,6 +464,11 @@ export class ProviderAuthManager {
     } else if (service === "cursor") {
       const result = await this.deps.exec([binaryPath, "status"], { timeoutMs: 20_000 })
       const parsed = parseCursorStatus(`${result.stdout}\n${result.stderr}`)
+      authStatus = parsed.loggedIn && result.code === 0 ? "signed_in" : "signed_out"
+      account = parsed.loggedIn ? parsed.account : null
+    } else if (service === "grok") {
+      const result = await this.deps.exec([binaryPath, "models"], { timeoutMs: 20_000 })
+      const parsed = parseGrokAuthStatus(`${result.stdout}\n${result.stderr}`)
       authStatus = parsed.loggedIn && result.code === 0 ? "signed_in" : "signed_out"
       account = parsed.loggedIn ? parsed.account : null
     } else {
@@ -518,6 +528,20 @@ export class ProviderAuthManager {
       // Rate-limited/offline — keep whatever we had.
     }
     // cursor uses calendar versioning with no public feed: never offer an update chip.
+    const grokPath = this.resolvePath(CLI_BINARIES.grok)
+    if (grokPath) {
+      try {
+        const result = await this.deps.exec([grokPath, "update", "--check", "--json"], { timeoutMs: 20_000 })
+        if (result.code === 0 && result.stdout.trim()) {
+          const parsed = JSON.parse(result.stdout) as { latestVersion?: unknown }
+          if (typeof parsed.latestVersion === "string" && parsed.latestVersion.trim()) {
+            this.patchService("grok", { latestVersion: parsed.latestVersion.trim() })
+          }
+        }
+      } catch {
+        // Offline / old CLI — keep whatever we had.
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -579,6 +603,11 @@ export class ProviderAuthManager {
       const existing = this.resolvePath(CLI_BINARIES.cursor)
       if (existing) return `${shellQuote(existing)} update`
       return "curl https://cursor.com/install -fsS | bash"
+    }
+    if (service === "grok") {
+      const existing = this.resolvePath(CLI_BINARIES.grok)
+      if (existing) return `${shellQuote(existing)} update`
+      return "curl -fsSL https://x.ai/cli/install.sh | bash"
     }
     // gh
     if (platform === "darwin") {
@@ -644,6 +673,7 @@ export class ProviderAuthManager {
       service === "gh" ? this.runGhLogin(flow)
       : service === "codex" ? this.runCodexLogin(flow)
       : service === "cursor" ? this.runCursorLogin(flow)
+      : service === "grok" ? this.runGrokLogin(flow)
       : this.runClaudeLogin(flow)
 
     void run.catch((error) => {
@@ -925,6 +955,44 @@ export class ProviderAuthManager {
       configLoadFailed
         ? "Codex could not read ~/.codex/config.toml — fix or remove the line it names (or update Codex), then try again."
         : CODEX_DEVICE_AUTH_HINT
+    )
+  }
+
+  private async runGrokLogin(flow: LoginFlowRuntime) {
+    const grokPath = this.resolvePath(CLI_BINARIES.grok)
+    if (!grokPath) throw new Error("Grok Build CLI is not installed.")
+
+    const child = this.deps.spawnStreaming([grokPath, "login", "--device-auth"])
+    flow.child = child
+    let buffer = ""
+    child.onOutput((chunk) => {
+      buffer = (buffer + chunk).slice(-16_384)
+      flow.transcript = buffer
+      const current = this.services.get("grok")!
+      if (current.login.phase !== "starting") return
+      const parsed = parseGrokDeviceLogin(stripAnsi(buffer))
+      if (parsed) {
+        const startedAt = this.now()
+        this.setLogin("grok", {
+          phase: "waiting_for_approval",
+          verificationUrl: parsed.verificationUrl,
+          userCode: parsed.userCode,
+          startedAt,
+          expiresAt: startedAt + 15 * 60_000,
+        })
+      }
+    })
+
+    const exitCode = await child.exited
+    if (flow.cancelled) return
+    if (exitCode === 0) {
+      await this.finishLogin(flow)
+      return
+    }
+    this.failFlow(
+      flow,
+      `Grok sign-in failed: ${truncateOutput(stripAnsi(flow.transcript)) || `exit code ${exitCode}`}`,
+      "Device-code login prints a URL (and sometimes a code). Open it, approve, and wait for this card to finish.",
     )
   }
 

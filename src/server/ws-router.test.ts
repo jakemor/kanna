@@ -132,6 +132,14 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
       autoPlan: false,
     },
+    grok: {
+      model: "grok-4.6",
+      modelOptions: {
+        reasoningEffort: "high",
+      },
+      planMode: false,
+      autoPlan: false,
+    },
     pi: {
       model: "~anthropic/claude-fable-latest",
       modelOptions: {
@@ -229,10 +237,10 @@ describe("skills helpers", () => {
       const snapshot = await listGlobalSkillsWithSources({ home, lockFilePath: lockPath })
       const byName = new Map(snapshot.skills.map((skill) => [skill.name, skill]))
 
-      // Lock-tracked skill carries its marketplace source; ~/.agents attributes codex/cursor/pi.
+      // Lock-tracked skill carries its marketplace source; ~/.agents attributes codex/cursor/grok/pi.
       expect(byName.get("installed-skill")).toMatchObject({
         source: "owner/repo",
-        providers: ["codex", "cursor", "pi"],
+        providers: ["codex", "cursor", "grok", "pi"],
       })
       // Hand-dropped skill still listed, claude-attributed, with no source.
       expect(byName.get("hand-dropped")?.providers).toEqual(["claude"])
@@ -2539,7 +2547,7 @@ describe("transcript windows", () => {
       // The client's cache may hold an old catalog, so the incremental first
       // push carries the current one.
       expect(chatData(ws, 0).incremental).toBe(true)
-      expect(providersOf(0)?.map((provider) => provider.id)).toEqual(["claude", "codex", "cursor", "pi"])
+      expect(providersOf(0)?.map((provider) => provider.id)).toEqual(["claude", "codex", "cursor", "grok", "pi"])
 
       // Unchanged catalog: no later push repeats it.
       await router.broadcastSnapshots()

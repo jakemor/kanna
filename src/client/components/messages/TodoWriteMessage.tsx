@@ -38,7 +38,7 @@ export function TodoWriteMessage({ message }: Props) {
               >
                 <Icon className={cn("h-4 w-4 flex-shrink-0", iconClass)} />
                 <span className={cn("text-sm", textClass)}>
-                  {todo.status === "in_progress" ? todo.activeForm : todo.content}
+                  {todo.status === "in_progress" ? (todo.activeForm || todo.content) : todo.content}
                 </span>
               </div>
             )

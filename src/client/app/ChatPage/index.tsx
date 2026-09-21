@@ -1082,6 +1082,7 @@ export function ChatPage() {
       </CardContent>
 
       <ChatInputDock
+        subagentEntries={state.serverTranscriptEntries}
         inputRef={inputRef}
         onLayoutChange={syncInputHeight}
         chatInputRef={chatInputRef}

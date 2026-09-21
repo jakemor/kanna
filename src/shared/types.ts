@@ -1643,6 +1643,8 @@ export interface DeleteFileToolCall
 export interface SubagentTaskToolCall
   extends ToolCallBase<"subagent_task", {
     subagentType?: string
+    agentThreadId?: string
+    model?: string
     /** The short label the caller gave the task; the row's title. */
     description?: string
     /** The full task text. Unbounded, so it lives in the payload sidecar. */

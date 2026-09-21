@@ -408,6 +408,9 @@ function collabToolCall(item: CollabAgentToolCallItem): TranscriptEntry {
       toolId: item.id,
       input: {
         subagentType: item.tool,
+        ...(item.receiverThreadIds.length === 1 ? {agentThreadId:item.receiverThreadIds[0]} : {}),
+        ...(typeof (item as unknown as Record<string, unknown>).model === "string"
+          ? { model: (item as unknown as Record<string, unknown>).model } : {}),
         ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
       },
       rawInput: item as unknown as Record<string, unknown>,
@@ -765,6 +768,35 @@ export class CodexAppServerManager {
         stdio: ["pipe", "pipe", "pipe"],
         env: process.env,
       }) as unknown as CodexAppServerProcess)
+  }
+
+  private childModelCache = new Map<string, { model: string; at: number }>()
+
+  async getSubagentModels(chatId: string, threadIds: string[]): Promise<Record<string, string>> {
+    const result: Record<string, string> = {}
+    const missing: string[] = []
+    for (const id of [...new Set(threadIds)].slice(-50)) {
+      const cached = this.childModelCache.get(id)
+      if (cached && Date.now() - cached.at < 60_000) result[id] = cached.model
+      else missing.push(id)
+    }
+    if (!missing.length) return result
+    const read = async (context: SessionContext) => {
+      for (const id of missing) {
+        try {
+          const response = await this.sendRequest<{thread:{id:string;model?:string|null}}>(context, "thread/read", {threadId:id,includeTurns:false})
+          if (response.thread.id === id && response.thread.model) {
+            result[id] = response.thread.model
+            this.childModelCache.set(id, {model:response.thread.model,at:Date.now()})
+          }
+        } catch { /* Older providers or unavailable threads remain unknown. */ }
+      }
+      if (this.childModelCache.size > 500) this.childModelCache.clear()
+    }
+    const context = this.sessions.get(chatId)
+    if (context && !context.closed) await read(context)
+    else await this.withProbe(process.cwd(), read)
+    return result
   }
 
   /** Register a sink for pushed `account/rateLimits/updated` notifications. */

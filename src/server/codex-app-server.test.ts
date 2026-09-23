@@ -121,6 +121,74 @@ describe("CodexAppServerManager", () => {
     ])
   })
 
+  // Regression coverage for the real-world "thread/resume failed: thread X
+  // already has an active writer" incidents (both observed on Codex chats).
+  // handleErrorNotification's non-retryable branch calls failContext(),
+  // which used to clear the manager's own bookkeeping (this.sessions,
+  // context.closed) without killing context.child — the app-server
+  // subprocess for the old thread stayed running, so a later retry spawned
+  // a second process that collided with the still-alive first one over the
+  // same thread's write lock.
+  test("a non-retryable error notification kills the app-server child process", async () => {
+    const firstProcess = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1", status: "in_progress", error: null } } })
+        // A fatal, non-retryable error arriving mid-turn — e.g. a usage-limit hit.
+        child.writeServerMessage({
+          method: "error",
+          params: { error: { message: "You've hit your usage limit." }, willRetry: false },
+        })
+      }
+    })
+
+    const processes = [firstProcess]
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => (processes.shift() ?? firstProcess) as never,
+    })
+
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const turn = await manager.startTurn({
+      chatId: "chat-1",
+      model: "gpt-5.4",
+      content: "do something",
+      planMode: false,
+      onToolRequest: async () => ({}),
+    })
+    const events = await collectStream(turn.stream)
+    expect(events.some((event: any) => event.type === "transcript" && event.entry.kind === "result" && event.entry.isError)).toBe(true)
+
+    // failContext() must kill the real process, not just clear bookkeeping —
+    // otherwise it survives orphaned, still holding thread-1's write lock.
+    expect(firstProcess.killed).toBe(true)
+
+    // A retry (matching a user's "Continue"/"Resume") sees no session for
+    // chat-1 anymore and spawns a brand-new process. Since the old one is
+    // now actually dead, this is a clean resume rather than a collision.
+    const secondProcess = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/resume") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      }
+    })
+    processes.push(secondProcess)
+
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
+
+    expect(secondProcess.messages.map((message: any) => message.method)).toContain("thread/resume")
+    expect(firstProcess.killed).toBe(true)
+  })
+
   test("forks a thread when a pending fork session token is provided", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {

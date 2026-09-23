@@ -1667,6 +1667,17 @@ export class CodexAppServerManager {
     context.pendingRequests.clear()
     context.closed = true
     if (this.sessions.get(context.chatId) === context) this.sessions.delete(context.chatId)
+    // A non-retryable protocol error (e.g. a usage-limit hit) leaves the
+    // subprocess itself running — only the child.on("close") path had
+    // actually exited already. Without this, the process survives orphaned,
+    // still holding its thread's write lock, until the whole Kanna process
+    // is killed. A later resume then spawns a second process for the same
+    // thread and collides with the still-alive first one.
+    try {
+      context.child.kill("SIGKILL")
+    } catch {
+      // ignore kill failures
+    }
   }
 
   getResourceCounts() {

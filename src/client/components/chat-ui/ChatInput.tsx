@@ -272,7 +272,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadQueueRef = useRef<File[]>([])
   const activeUploadsRef = useRef(0)
   const attachmentsRef = useRef<ComposerAttachment[]>([])
-  const paletteFileInputRef = useRef<HTMLInputElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const uploadGenerationRef = useRef(0)
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
@@ -685,10 +685,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     enqueueFiles,
   }), [enqueueFiles])
 
-  // The command palette's "Attach Files" action opens the hidden picker.
+  // The command palette shares the native picker with the composer attachment control.
   useEffect(() => {
     function handleAttachRequest() {
-      paletteFileInputRef.current?.click()
+      fileInputRef.current?.click()
     }
 
     window.addEventListener(REQUEST_ATTACH_FILES_EVENT, handleAttachRequest)
@@ -1005,6 +1005,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           >
             <Plus className="h-5 w-5" aria-hidden="true" />
             <input
+              ref={fileInputRef}
               type="file"
               multiple
               disabled={disabled}
@@ -1124,24 +1125,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
         {uploadError ? <UploadErrorNotice report={uploadError} /> : null}
       </div>
-
-      {/* Hidden picker for the command palette's "Attach Files" action. */}
-      <input
-        ref={paletteFileInputRef}
-        type="file"
-        multiple
-        disabled={disabled}
-        aria-hidden="true"
-        tabIndex={-1}
-        className="hidden"
-        onChange={(event) => {
-          const files = [...(event.target.files ?? [])]
-          if (files.length > 0) {
-            enqueueFiles(files)
-          }
-          event.target.value = ""
-        }}
-      />
 
       {/*
         Vertical padding only: horizontal padding here would clip the scroller

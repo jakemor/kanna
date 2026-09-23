@@ -1,3 +1,5 @@
+import { R2BackupManager, cloudflareOAuthFromEnv } from "./r2-backup"
+import { handleBackupRequest } from "./backup-routes"
 import { homedir } from "node:os"
 import { PerformanceLog } from "./performance-log"
 import path from "node:path"
@@ -112,6 +114,8 @@ export interface StartKannaServerOptions {
    * reachable solely through a trusted reverse proxy such as cloudflared.
    */
   trustProxy?: boolean
+  /** Canonical browser origin, including the HTTPS proxy port. */
+  publicOrigin?: string
   /**
    * Cloud runtime shell (kanna.sh pairing). When set, requests are classified
    * (proxied / local / untrusted raw-tunnel) before any other handling:
@@ -145,7 +149,16 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const runtimeProfile = getRuntimeProfile()
-  const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
+  const configuredPublicOrigin = options.publicOrigin ?? process.env.KANNA_PUBLIC_ORIGIN
+  let publicOrigin: string | undefined
+  if (configuredPublicOrigin) {
+    const parsed = new URL(configuredPublicOrigin)
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      throw new Error("KANNA_PUBLIC_ORIGIN must be an HTTP(S) origin with no path, credentials, query or fragment")
+    }
+    publicOrigin = parsed.origin
+  }
+  const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false, publicOrigin }) : null
   const diagnostics = new PerformanceLog(options.dataDir ?? getDataDir(homedir()), undefined, options.update?.version)
   const store = new EventStore(options.dataDir, diagnostics)
   const diffStore = new DiffStore(store.dataDir)
@@ -219,6 +232,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   // without a cloud identity.
   const devboxUi = Boolean(options.directCloud) || process.env.KANNA_DEVBOX_UI === "1"
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"), { devbox: devboxUi })
+  const backups = new R2BackupManager({
+    directory: path.join(store.dataDir, "backups"),
+    capture: (destination) => store.captureBackup(destination),
+    oauth: cloudflareOAuthFromEnv(),
+  })
+  await backups.initialize()
   await appSettings.initialize()
   // Which editors and terminals this machine has, for the "Open in…" menus.
   // Deliberately not awaited: it shells out per app, and the menus render
@@ -586,6 +605,16 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             } finally { reader.releaseLock() }
           }
 
+          const backupOrigin = new URL(url.origin)
+          const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim()
+          if (options.trustProxy && (forwardedProto === "http" || forwardedProto === "https")) {
+            backupOrigin.protocol = `${forwardedProto}:`
+          }
+          const backupResponse = await handleBackupRequest(req, backups,
+            requestClass === "proxied" && cloud ? cloud.identity.appOrigin
+              : publicOrigin && req.headers.get("origin") === publicOrigin ? publicOrigin : backupOrigin.origin)
+          if (backupResponse) return withOriginAgentCluster(backupResponse)
+
           if (url.pathname === "/health") {
             // `instance` lets a second `kanna` invocation detect that this
             // data dir is already being served (single-instance guard). Only
@@ -750,6 +779,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     router.dispose()
     providerAuth.dispose()
     usageLimits.dispose()
+    await backups.stop()
     appSettings.dispose()
     keybindings.dispose()
     terminals.closeAll()

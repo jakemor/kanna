@@ -1,3 +1,4 @@
+import { BackupsSection } from "./settings/BackupsSection"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
@@ -301,7 +302,9 @@ export function SettingsPage() {
                   </div>
                 </div>
 
-                {selectedPage === "general" ? (
+                {selectedPage === "backups" ? (
+                  <BackupsSection />
+                ) : selectedPage === "general" ? (
                   <GeneralSection state={state} appVersion={appVersion} />
                 ) : selectedPage === "providers" ? (
                   <ProvidersSection state={state} />

@@ -1,3 +1,6 @@
+import { MemoryRouter } from "react-router-dom"
+import { TranscriptRenderOptionsProvider } from "./render-context"
+import { TranscriptMarkdown } from "./shared"
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import Markdown from "react-markdown"
@@ -5,6 +8,28 @@ import remarkGfm from "remark-gfm"
 import { createMarkdownComponents, markdownComponents, OpenLocalLinkProvider } from "./shared"
 
 describe("markdownComponents", () => {
+  test("renders backup settings as a router link instead of a workspace file", () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <TranscriptMarkdown text="[Backups](/settings/backups)" />
+      </MemoryRouter>
+    )
+    expect(html).toContain('href="/settings/backups"')
+    expect(html).toContain('data-discover="true"')
+    expect(html).not.toContain('target="_blank"')
+  })
+
+  test("keeps settings links inert in standalone exports", () => {
+    const html = renderToStaticMarkup(
+      <TranscriptRenderOptionsProvider value={{ localLinkMode: "text" }}>
+        <TranscriptMarkdown text="[Backups](/settings/backups)" />
+      </TranscriptRenderOptionsProvider>
+    )
+    expect(html).toContain("Backups")
+    expect(html).not.toContain("href=")
+  })
+
+
   test("renders markdown headings with transcript-specific sizes and no bold weight", () => {
     const html = renderToStaticMarkup(
       <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>

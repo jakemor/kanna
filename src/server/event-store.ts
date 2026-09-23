@@ -1,3 +1,4 @@
+import { prepareBackupFiles } from "./backup-files"
 import type { PerformanceLog } from "./performance-log"
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
@@ -2287,6 +2288,24 @@ export class EventStore {
 
   async hasLegacyTranscriptData() {
     return (await this.getLegacyTranscriptStats()).hasLegacyData
+  }
+
+  /** Capture a restorable history archive serialized with transcript writes. */
+  async captureBackup(destination: string) {
+    const capture = this.writeChain.then(() => {
+      const snapshot = this.createSnapshot()
+      // Preserve projects whose chats still exist even if hidden from the sidebar.
+      snapshot.projects = [...this.state.projectsById.values()].map((project) => ({ ...project }))
+      snapshot.sidebarProjectOrder = [...this.sidebarProjectOrder]
+      if (this.legacyMessagesByChatId.size) {
+        snapshot.messages = [...this.legacyMessagesByChatId].map(([chatId, entries]) => ({ chatId, entries }))
+      }
+      return prepareBackupFiles(this.dataDir, destination, snapshot)
+    })
+    // A backup disk error must not poison subsequent chat writes.
+    this.writeChain = capture.then(() => undefined, () => undefined)
+    const copy = await capture
+    await copy()
   }
 
   private createSnapshot(): SnapshotFile {

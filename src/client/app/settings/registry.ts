@@ -1,4 +1,4 @@
-import { BookText, Command, FlaskConical, Gauge, MessageSquareQuote, Settings2, type LucideIcon } from "lucide-react"
+import { CloudUpload, BookText, Command, FlaskConical, Gauge, MessageSquareQuote, Settings2, type LucideIcon } from "lucide-react"
 
 /**
  * Single source of truth for settings navigation targets.
@@ -46,6 +46,12 @@ export const SETTINGS_SECTIONS = [
     label: "Labs",
     icon: FlaskConical as LucideIcon,
     subtitle: "Experimental features that are still in progress.",
+  },
+  {
+    id: "backups",
+    label: "Backups",
+    icon: CloudUpload as LucideIcon,
+    subtitle: "Keep an automatic copy of your complete chat history in Cloudflare R2.",
   },
   // always last
   {

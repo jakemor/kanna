@@ -1,3 +1,5 @@
+import { Link, useInRouterContext } from "react-router-dom"
+import { parseAppLink } from "../../lib/app-links"
 import {
   Children,
   cloneElement,
@@ -344,6 +346,18 @@ export function createMarkdownComponents(options?: {
       const contextOpenLocalLink = useContext(OpenLocalLinkContext)
       const onOpenLocalLink = options?.onOpenLocalLink ?? contextOpenLocalLink
       const renderOptions = useTranscriptRenderOptions()
+      const inRouter = useInRouterContext()
+      const appLink = parseAppLink(href, typeof window === "undefined" ? undefined : window.location.origin)
+      if (appLink) {
+        const className = "transition-all underline decoration-2 text-logo decoration-logo/50 hover:text-logo/70"
+        // Standalone exports have no Kanna router to resolve an app route against.
+        if (renderOptions.localLinkMode === "text") return <span className={className}>{children}</span>
+        return inRouter ? (
+          <Link {...props} className={className} to={appLink} onClick={onClick}>{children}</Link>
+        ) : (
+          <a {...props} className={className} href={appLink} onClick={onClick}>{children}</a>
+        )
+      }
       const parsedLocalLink = parseLocalFileLink(href)
 
       if (parsedLocalLink && renderOptions.localLinkMode === "text") {

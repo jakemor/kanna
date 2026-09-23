@@ -109,12 +109,20 @@ export interface AuthManagerOptions {
    * proxy such as cloudflared.
    */
   trustProxy?: boolean
+  /** Explicit browser origin for an HTTPS proxy; does not trust forwarded headers. */
+  publicOrigin?: string
 }
 
 export function createAuthManager(password: string, options: AuthManagerOptions = {}): AuthManager {
   const sessions = new Set<string>()
   const expectedPassword = Buffer.from(password)
   const trustProxy = options.trustProxy ?? false
+  const publicOrigin = options.publicOrigin
+  const publicHost = publicOrigin ? new URL(publicOrigin).host : null
+  const isPublicRequest = (req: Request) => Boolean(publicOrigin && (
+    req.headers.get("origin") === publicOrigin || new URL(req.url).host === publicHost
+  ))
+  const publicCookieExtras = (req: Request) => isPublicRequest(req) && publicOrigin?.startsWith("https:") ? ["Secure"] : []
 
   function getSessionToken(req: Request) {
     return parseCookies(req.headers.get("cookie")).get(SESSION_COOKIE_NAME) ?? null
@@ -129,6 +137,7 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
     const origin = req.headers.get("origin")
     if (!origin) return true
     if (origin === new URL(req.url).origin) return true
+    if (publicOrigin && origin === publicOrigin) return true
     if (!trustProxy) return false
     return origin === effectiveOrigin(req, trustProxy)
   }
@@ -136,7 +145,7 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   function createSessionCookie(req: Request) {
     const sessionToken = randomBytes(32).toString("base64url")
     sessions.add(sessionToken)
-    return buildCookie(SESSION_COOKIE_NAME, sessionToken, req, trustProxy)
+    return buildCookie(SESSION_COOKIE_NAME, sessionToken, req, trustProxy, publicCookieExtras(req))
   }
 
   function clearSessionCookie(req: Request) {
@@ -144,7 +153,7 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
     if (sessionToken) {
       sessions.delete(sessionToken)
     }
-    return buildCookie(SESSION_COOKIE_NAME, "", req, trustProxy, ["Max-Age=0"])
+    return buildCookie(SESSION_COOKIE_NAME, "", req, trustProxy, ["Max-Age=0", ...publicCookieExtras(req)])
   }
 
   function verifyPassword(candidate: string) {
@@ -164,7 +173,7 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
 
   function redirectToApp(req: Request) {
     const currentUrl = new URL(req.url)
-    return Response.redirect(new URL(sanitizeNextPath(currentUrl.searchParams.get("next")), effectiveOrigin(req, trustProxy)), 302)
+    return Response.redirect(new URL(sanitizeNextPath(currentUrl.searchParams.get("next")), isPublicRequest(req) ? publicOrigin! : effectiveOrigin(req, trustProxy)), 302)
   }
 
   async function handleLogin(req: Request, fallbackNextPath: string) {

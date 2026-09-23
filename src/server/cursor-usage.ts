@@ -41,6 +41,9 @@ export async function readCursorAccessToken(
   }
 }
 
+/** api2.cursor.sh is unofficial and unmonitored; a stall shouldn't hang every later usage refresh. */
+const CURSOR_DASHBOARD_TIMEOUT_MS = 10_000
+
 export async function defaultCursorDashboardRpc(
   method: DashboardMethod,
   accessToken: string,
@@ -53,6 +56,7 @@ export async function defaultCursorDashboardRpc(
       "Connect-Protocol-Version": "1",
     },
     body: "{}",
+    signal: AbortSignal.timeout(CURSOR_DASHBOARD_TIMEOUT_MS),
   })
   if (!response.ok) {
     throw new Error(`Cursor ${method} failed with HTTP ${response.status}`)
@@ -74,15 +78,19 @@ export async function fetchCursorAccountUsage(
   const accessToken = await readAccessToken()
   if (!accessToken) return null
 
+  // GetCurrentPeriodUsage carries the actual usage percentages this call
+  // exists for; GetPlanInfo and GetHardLimit only supply auxiliary labeling
+  // and an on-demand fallback limit, so their failure shouldn't take down
+  // otherwise-valid usage data.
   const [currentPeriodUsage, planInfo, hardLimit] = await Promise.all([
     dashboardRpc("GetCurrentPeriodUsage", accessToken),
-    dashboardRpc("GetPlanInfo", accessToken),
+    dashboardRpc("GetPlanInfo", accessToken).catch(() => null),
     dashboardRpc("GetHardLimit", accessToken).catch(() => null),
   ])
 
   return {
     currentPeriodUsage: currentPeriodUsage as CursorCurrentPeriodUsageRaw,
-    planInfo: planInfo as CursorPlanInfoRaw,
+    planInfo: (planInfo as CursorPlanInfoRaw | null) ?? null,
     hardLimit: (hardLimit as CursorHardLimitRaw | null) ?? null,
   }
 }

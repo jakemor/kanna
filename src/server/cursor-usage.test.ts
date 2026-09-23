@@ -73,6 +73,22 @@ describe("fetchCursorAccountUsage", () => {
     expect(usage?.currentPeriodUsage).toEqual(fixture.currentPeriodUsage)
   })
 
+  test("treats a failed plan-info read as optional, keeping the real usage percentages", async () => {
+    const fixture = loadFixture("cursor-usage-pro.json")
+    const usage = await fetchCursorAccountUsage({
+      readAccessToken: async () => "session-token",
+      dashboardRpc: async (method) => {
+        if (method === "GetCurrentPeriodUsage") return fixture.currentPeriodUsage
+        if (method === "GetPlanInfo") throw new Error("endpoint removed")
+        if (method === "GetHardLimit") return fixture.hardLimit
+        return null
+      },
+    })
+
+    expect(usage?.planInfo).toBeNull()
+    expect(usage?.currentPeriodUsage).toEqual(fixture.currentPeriodUsage)
+  })
+
   test("exports the dashboard service base used by the probe", () => {
     expect(CURSOR_DASHBOARD_SERVICE_BASE).toBe("https://api2.cursor.sh/aiserver.v1.DashboardService")
   })

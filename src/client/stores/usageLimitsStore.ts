@@ -44,6 +44,10 @@ export function useUsageLimitsSnapshot(enabled: boolean): UsageLimitsSnapshot | 
   const [snapshot, setSnapshot] = useState<UsageLimitsSnapshot | null>(null)
 
   useEffect(() => {
+    // Drop any snapshot from a prior socket/enabled state immediately —
+    // otherwise disabling and re-enabling rings (or a socket swap) briefly
+    // shows stale quota data until the new subscription's first push lands.
+    setSnapshot(null)
     if (!socket || !enabled) return
     return subscribeShared(socket, setSnapshot)
   }, [socket, enabled])

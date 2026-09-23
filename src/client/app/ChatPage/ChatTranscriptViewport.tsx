@@ -1235,7 +1235,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
                   <EmptyStateAuthCards />
                   {/* On desktop usage lives in the widget column, which a new
                       chat opens; a phone's column is a closed sheet. */}
-                  {showEmptyStateUsage ? <EmptyStateUsageCards socket={socket} activeChatId={activeChatId} /> : null}
+                  {showEmptyStateUsage ? <EmptyStateUsageCards activeChatId={activeChatId} /> : null}
                   {emptyStateProjectId ? (
                     <EmptyStateProjectChats projectId={emptyStateProjectId} activeChatId={activeChatId} />
                   ) : null}

@@ -677,7 +677,14 @@ export function normalizeCursorUsageLimits(
   const spend = period.spendLimitUsage
   const onDemandBlocked = hardLimit?.noUsageBasedAllowed === true
   const usedCents = spend?.individualUsed
+  // `individualLimit` covers a personal account; a team/pooled account instead
+  // reports its shared cap in `pooledLimit` with `individualLimit` unset. This
+  // is an unofficial, undocumented endpoint and we don't have a real pooled
+  // account to confirm `individualUsed` is still the right numerator against
+  // it — falling back to it is a best-effort improvement over ignoring
+  // `pooledLimit` entirely, not a verified-correct reading.
   const limitCents = spend?.individualLimit
+    ?? spend?.pooledLimit
     ?? (hardLimit?.hardLimit != null && hardLimit.hardLimit > 0 ? hardLimit.hardLimit * 100 : null)
 
   if (!onDemandBlocked && (usedCents != null || (limitCents != null && limitCents > 0))) {

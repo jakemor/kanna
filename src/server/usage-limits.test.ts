@@ -355,6 +355,30 @@ describe("normalizeCursorUsageLimits", () => {
     expect(normalizeCursorUsageLimits({ planInfo: { planInfo: { planName: "Pro" } } }, NOW).status)
       .toBe("unavailable")
   })
+
+  // Team/pooled accounts report their shared cap in `pooledLimit` with
+  // `individualLimit` unset — best-effort mapping, see the comment in
+  // normalizeCursorUsageLimits. We don't have a real pooled-account fixture
+  // to confirm `individualUsed` is the right numerator against it.
+  test("falls back to the pooled limit when there is no individual cap", () => {
+    const raw: CursorUsageRaw = {
+      currentPeriodUsage: {
+        planUsage: {},
+        spendLimitUsage: { limitType: "pooled", individualUsed: 500, pooledLimit: 10_000 },
+        enabled: true,
+      },
+      planInfo: null,
+      hardLimit: null,
+    }
+
+    const snapshot = normalizeCursorUsageLimits(raw, NOW)
+
+    expect(snapshot.credits).toMatchObject({
+      usedAmount: 5,
+      limitAmount: 100,
+      usedPercent: 5,
+    })
+  })
 })
 describe("mergeCodexRateLimitPush", () => {
   test("overlays pushed windows onto the previous full read", () => {
@@ -442,7 +466,7 @@ describe("UsageLimitsManager", () => {
     expect(snapshot.providers.map((p) => p.provider)).toEqual(["claude", "codex", "cursor", "grok", "pi"])
     expect(snapshot.providers[0]?.status).toBe("ok")
     expect(snapshot.providers[1]?.status).toBe("ok")
-    expect(snapshot.providers[2]?.status).toBe("unavailable")
+    expect(snapshot.providers[2]?.status).toBe("unknown")
     expect(snapshot.providers[3]?.status).toBe("unknown")
     expect(snapshot.providers[4]?.status).toBe("not_applicable")
     expect(emitted).toBeGreaterThanOrEqual(2)

@@ -256,7 +256,7 @@ export async function resolvePiConnection(): Promise<PiConnection | null> {
 }
 
 export const MISSING_PI_CONNECTION_MESSAGE =
-  "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
+  "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, Requesty, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
 
 export interface StartPiTurnArgs {
   customTools?: KannaToolHost

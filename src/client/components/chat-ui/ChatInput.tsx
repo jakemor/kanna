@@ -34,7 +34,7 @@ import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
-import { openViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
+import { getChatViewer, openViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
 import { overrideContextWindowMaxTokens, type ContextWindowSnapshot } from "../../lib/contextWindow"
 import {
   applySkillCompletion,
@@ -991,7 +991,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return current.filter((item) => item.id !== attachment.id)
     })
     // Removed while it's open in the viewer: its URL is about to go away.
-    const viewing = useViewerStore.getState().item
+    const viewing = getChatViewer()?.item
     if (viewing?.kind === "attachment" && viewing.attachment.url === attachment.contentUrl) {
       useViewerStore.getState().close()
     }

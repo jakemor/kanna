@@ -1,5 +1,5 @@
-import { ChevronDown, ChevronUp, X } from "lucide-react"
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { ChevronDown, ChevronUp, Maximize2, Minimize2, X } from "lucide-react"
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { FOCUS_FALLBACK_IGNORE_ATTRIBUTE } from "../../app/chatFocusPolicy"
 import { cn } from "../../lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
@@ -7,16 +7,28 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 /**
  * The viewer's chrome, the one frame every full-size view sits in: a changed
  * file's diff, an attachment, a chart. An elevated card, like the widget
- * cards, over the whole chat (navbar, transcript, composer, terminal), so
- * whatever is in it gets the room and nothing competes with it.
+ * cards. On the chat page it opens in a pane of its own beside the chat,
+ * and expands over the chat (navbar, transcript, composer, terminal) on
+ * request; elsewhere it covers the page.
  *
  * One header grammar: what it is (icon, title, a muted subtitle), then the
  * view's own controls, then stepping between items when there are several,
- * then close. The body scrolls; the header stays.
+ * then expand and close. The body scrolls; the header stays.
  *
  * Keys: Esc closes; j/k (or ]/[) step when there's more than one item, but
- * never while you're typing in a field.
+ * never while you're typing in a field. In a pane beside the chat they're
+ * the viewer's only while focus is in it: the chat is live then, and Esc or
+ * a j typed there is the chat's.
  */
+
+/** The page gave the viewer a pane beside the chat, which it can widen over the chat. */
+export interface ViewerPlacement {
+  expanded: boolean
+  onToggleExpanded: () => void
+}
+
+const ViewerPlacementContext = createContext<ViewerPlacement | null>(null)
+export const ViewerPlacementProvider = ViewerPlacementContext.Provider
 
 /**
  * A menu, select or dialog open over the page: Escape is theirs to close
@@ -73,6 +85,12 @@ export function ViewerSurface({
 }) {
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
+  const placement = useContext(ViewerPlacementContext)
+  const docked = placement !== null && !placement.expanded
+  const dockedRef = useRef(docked)
+  dockedRef.current = docked
+  // Beside a live chat, a key is the viewer's only when focus is in it.
+  const ownsKeys = () => !dockedRef.current || Boolean(surfaceRef.current?.contains(document.activeElement))
 
   useLayoutEffect(() => {
     if (scrollKey !== undefined) bodyRef.current?.scrollTo({ top: 0 })
@@ -92,7 +110,7 @@ export function ViewerSurface({
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape" || event.metaKey || event.ctrlKey || event.altKey) return
-      if (hasOpenLayer()) return
+      if (hasOpenLayer() || !ownsKeys()) return
       event.preventDefault()
       event.stopImmediatePropagation()
       onClose()
@@ -105,7 +123,7 @@ export function ViewerSurface({
     function handleKeyDown(event: KeyboardEvent) {
       // Something closer to the key (a menu, a field) already answered it.
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return
-      if (!navigation || navigation.count < 2 || isTypingTarget(event.target)) return
+      if (!navigation || navigation.count < 2 || isTypingTarget(event.target) || !ownsKeys()) return
       if (event.key === "j" || event.key === "]") {
         event.preventDefault()
         navigation.onNext()
@@ -124,10 +142,13 @@ export function ViewerSurface({
       tabIndex={-1}
       role="region"
       aria-label={label}
-      // An overlay to the composer's focus keeper: a click in here isn't a
-      // click away from the chat input to take back.
+      // A click in here isn't a click away from the chat input for the
+      // composer's focus keeper to take back. Over the chat it's also an open
+      // overlay, which stands the keeper down altogether; in a pane beside
+      // the chat it isn't, and the keeper goes on working for the chat.
       {...{ [FOCUS_FALLBACK_IGNORE_ATTRIBUTE]: "" }}
-      data-state="open"
+      data-state={docked ? undefined : "open"}
+      data-viewer-surface
       className={cn(
         "flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-xl outline-none dark:bg-card",
         // Opens like the modal it effectively is: from its own centre, a
@@ -166,6 +187,11 @@ export function ViewerSurface({
             </>
           ) : null}
           <ViewerDivider />
+          {placement ? (
+            <ViewerIconButton label={placement.expanded ? "Show chat" : "Expand"} onClick={placement.onToggleExpanded}>
+              {placement.expanded ? <Minimize2 /> : <Maximize2 />}
+            </ViewerIconButton>
+          ) : null}
           <ViewerIconButton label="Close (Esc)" onClick={onClose}><X /></ViewerIconButton>
         </div>
       </header>

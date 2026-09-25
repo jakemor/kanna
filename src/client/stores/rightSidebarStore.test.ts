@@ -10,7 +10,7 @@ const PROJECT_ID = "project-1"
 
 describe("rightSidebarStore", () => {
   beforeEach(() => {
-    useRightSidebarStore.setState({ size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {}, projectUi: {} })
+    useRightSidebarStore.setState({ size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {}, projectUi: {}, chatViewers: {} })
   })
 
   test("widgets start closed with the default size", () => {
@@ -122,6 +122,7 @@ describe("rightSidebarStore", () => {
             description: "body",
           },
         },
+        chatViewers: {},
       })
     })
 

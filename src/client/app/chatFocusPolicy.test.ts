@@ -258,6 +258,21 @@ describe("chatFocusPolicy", () => {
     })).toBe("none")
   })
 
+  test("leaves escape to a region that keeps its own focus, like the viewer's pane", () => {
+    const { chat } = createTree()
+    const pane = new FakeElement("div", { attributes: { [FOCUS_FALLBACK_IGNORE_ATTRIBUTE]: "" } })
+    const paneButton = new FakeElement("button", { parent: pane, tabIndex: 0 })
+
+    expect(resolveChatFocusAction({
+      trigger: "escape",
+      activeElement: paneButton as unknown as Element,
+      fallback: chat,
+      hasActiveOverlay: false,
+      canCancel: false,
+      defaultPrevented: false,
+    })).toBe("none")
+  })
+
   test("does not focus chat input on escape when an overlay is open", () => {
     const { chat, random } = createTree()
 

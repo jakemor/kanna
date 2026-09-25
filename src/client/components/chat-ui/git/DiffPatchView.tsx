@@ -1,5 +1,6 @@
 import { PatchDiff } from "@pierre/diffs/react"
 import { useMemo } from "react"
+import { useTheme } from "../../../hooks/useTheme"
 import { Skeleton } from "../../ui/skeleton"
 import { getDiffPreviewAttachment, type DiffFile, type DiffRenderMode } from "./shared"
 
@@ -51,6 +52,9 @@ export function DiffPatchView({
   onRetry: () => void
 }) {
   const previewAttachment = useMemo(() => getDiffPreviewAttachment(projectId, file), [file, projectId])
+  // The app's theme, not the system's (the renderer's default): a light app
+  // on a dark Mac drew light text on its light background.
+  const { resolvedTheme } = useTheme()
 
   // An image or PDF shows as itself, as big as a file in the list can be:
   // this already is the full-size view, so there's no second modal to open.
@@ -85,6 +89,7 @@ export function DiffPatchView({
           overflow: wrapLines ? "wrap" : "scroll",
           lineDiffType: "word",
           diffIndicators: "classic",
+          themeType: resolvedTheme,
         }}
       />
     </div>

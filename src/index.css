@@ -449,6 +449,15 @@
     --diffs-font-size: 11px;
   }
 
+  /* The viewer's card is the card colour in dark mode, not the page's: code
+     drawn in it (a file, a review) takes the card's, so it reads as one sheet. */
+  .dark [data-viewer-surface] diffs-container {
+    --diffs-bg: hsl(var(--card)) !important;
+    --diffs-light-bg: hsl(var(--card)) !important;
+    --diffs-dark-bg: hsl(var(--card)) !important;
+    --diffs-bg-separator: hsl(var(--card)) !important;
+  }
+
   [data-panel][data-terminal-open] {
     overflow: hidden;
   }

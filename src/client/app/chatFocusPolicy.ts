@@ -99,6 +99,9 @@ export function resolveChatFocusAction(args:
   if (args.trigger === "escape") {
     if (args.defaultPrevented) return "none"
     if (hasAttributeInTree(activeElement, CHAT_INPUT_ATTRIBUTE)) return "none"
+    // Focus in something that keeps its own (the viewer's pane beside the
+    // chat): its Escape is its own to answer.
+    if (hasAttributeInTree(activeElement, FOCUS_FALLBACK_IGNORE_ATTRIBUTE)) return "none"
     if (args.canCancel) return "none"
     return "escape-focus"
   }

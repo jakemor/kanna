@@ -5,6 +5,7 @@ import { DIFF_REVIEW_STORAGE_KEY_PREFIX } from "../../../lib/storageKeys"
 import { cn } from "../../../lib/utils"
 import { OpenFileSelect } from "../../open-external-menu"
 import { isDiffPathChecked, useDiffCommitStore } from "../../../stores/diffCommitStore"
+import { useRightSidebarStore } from "../../../stores/rightSidebarStore"
 import { useViewerStore, type ViewerAttachment } from "../../../stores/viewerStore"
 import { hasRenderedView, RenderedFilePreview } from "../../viewer/AttachmentViewer"
 import { ViewerDivider, ViewerIconButton, ViewerSurface, ViewerToggle } from "../../viewer/ViewerSurface"
@@ -111,8 +112,8 @@ function canShowFullFile(file: DiffFile) {
 
 /**
  * Where the list was, for a reload to come back to: the file at the top, how
- * far into it, and each file's own state. The address names the file; this
- * holds the rest. Per tab (sessionStorage), and gone once the viewer closes.
+ * far into it, and each file's own state. The chat's viewer names the file;
+ * this holds the rest. Per tab (sessionStorage), and gone once the viewer closes.
  */
 interface ReviewState {
   path: string
@@ -194,8 +195,9 @@ export function DiffViewer({
   const shownCount = Math.min(files.length, pageLimit(limit, openedIndex))
   const shown = useMemo(() => files.slice(0, shownCount), [files, shownCount])
 
-  // A reload opens on the file the address names; when this tab left the list
-  // there, it comes back to the same spot in it, each file as it was.
+  // A reload, or coming back from another chat, opens on the file the list
+  // was scrolled to; when this tab left the list there, it comes back to the
+  // same spot in it, each file as it was.
   const [restored] = useState(() => {
     const state = readReviewState(projectId)
     return state && state.path === path ? state : null
@@ -425,10 +427,13 @@ export function DiffViewer({
     saveRef.current()
   }, [activeIndex, collapsed, fullFiles, loaded, previewing])
   // Closing the viewer is done with this review: the next open starts fresh.
-  // (A reload never gets here; it doesn't unmount.)
+  // Going to another chat isn't: a chat still reviewing this project comes
+  // back to it here. (A reload never gets here; it doesn't unmount.)
   useEffect(() => () => {
     window.clearTimeout(saveTimerRef.current)
-    clearReviewState(projectId)
+    const stillReviewing = Object.values(useRightSidebarStore.getState().chatViewers)
+      .some((viewer) => viewer.item.kind === "diff" && viewer.item.projectId === projectId)
+    if (!stillReviewing) clearReviewState(projectId)
   }, [projectId])
 
   const totals = useMemo(() => files.reduce(

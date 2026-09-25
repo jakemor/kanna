@@ -1,6 +1,7 @@
 import { File as CodeFile, type FileOptions } from "@pierre/diffs/react"
 import { Code, FileCode, FileDiff, WrapText } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useTheme } from "../../hooks/useTheme"
 import { openViewer } from "../../stores/viewerStore"
 import { OpenFileSelect } from "../open-external-menu"
 import { fetchTextPreview, TEXT_PREVIEW_LIMIT_BYTES } from "../messages/attachmentPreview"
@@ -179,7 +180,14 @@ function CodeView({ name, contents, line, wrap }: { name: string; contents: stri
   const containerRef = useRef<HTMLDivElement | null>(null)
   const file = useMemo(() => ({ name, contents }), [contents, name])
   const selectedLines = useMemo(() => (line === undefined ? null : { start: line, end: line }), [line])
-  const options = useMemo<FileOptions<undefined>>(() => ({ disableFileHeader: true, overflow: wrap ? "wrap" : "scroll" }), [wrap])
+  // The app's theme, not the system's (the renderer's default): a light app
+  // on a dark Mac drew light text on its light background.
+  const { resolvedTheme } = useTheme()
+  const options = useMemo<FileOptions<undefined>>(() => ({
+    disableFileHeader: true,
+    overflow: wrap ? "wrap" : "scroll",
+    themeType: resolvedTheme,
+  }), [resolvedTheme, wrap])
 
   useEffect(() => {
     if (line === undefined) return

@@ -24,19 +24,18 @@ import {
   useRightSidebarStore,
   useWidgetsOpen,
 } from "../../stores/rightSidebarStore"
-import { ViewerLayer, useViewerOpen } from "../../components/viewer/ViewerLayer"
-import { useViewerUrlSync } from "../../components/viewer/viewerUrl"
+import { ViewerLayer, useViewerShown } from "../../components/viewer/ViewerLayer"
 import { opensInViewer, projectRelativePath } from "../../components/viewer/localLinks"
 import type { OpenLocalLinkTarget } from "../../components/messages/shared"
 import { shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
-import { openViewer } from "../../stores/viewerStore"
+import { getChatViewer, openViewer, useChatViewer, useViewerStore } from "../../stores/viewerStore"
 import type { DiffViewerContext } from "../../components/chat-ui/git/DiffViewer"
 import { useProjectRepoUrl } from "../../stores/sidebarStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
 import { shouldCloseTerminalPane } from "../terminalLayoutResize"
 
-import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "../terminalToggleAnimation"
+import { interpolateLayout, TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "../terminalToggleAnimation"
 import { useRightSidebarToggleAnimation } from "../useRightSidebarToggleAnimation"
 import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
@@ -215,7 +214,17 @@ function useTranscriptPaddingBottom() {
 }
 
 const MOBILE_BREAKPOINT_PX = 768
+/** The chat's narrowest, as a share of the page: beside the widget column, and beside the viewer's pane. */
 const RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT = 20
+/** Dragging the viewer's pane narrower than this closes it, as the terminal's does. */
+const VIEWER_PANE_CLOSE_WIDTH_PX = 240
+/**
+ * The viewer's pane for anything but a review of changes (a file, an
+ * attachment, a chart): room for the markdown preview's 72ch measure with
+ * air either side, or about 100 columns of code, and no wider, so the chat
+ * keeps the rest of the room.
+ */
+const VIEWER_PREVIEW_PANE_WIDTH_PX = 800
 const RIGHT_SIDEBAR_MAX_SIZE_PERCENT = 100 - RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT
 
 /** The chat pane never shrinks past this, so it also fixes the terminal's ceiling. */
@@ -562,9 +571,21 @@ export function ChatPage() {
   const setTerminalSizes = useTerminalLayoutStore((store) => store.setTerminalSizes)
   const toggleWidgets = useRightSidebarStore((store) => store.toggleWidgets)
   const hideWidgets = useRightSidebarStore((store) => store.hideWidgets)
-  const viewerOpen = useViewerOpen()
-  // What's open survives a refresh: it's written to, and read from, the address.
-  useViewerUrlSync(projectId)
+  const viewerOpen = useViewerShown(projectId)
+  const chatViewer = useChatViewer()
+  const viewerExpanded = chatViewer?.expanded ?? false
+  const viewerReviewing = chatViewer?.item.kind === "diff"
+  const viewerChatKey = useViewerStore((store) => store.chatKey)
+  const setViewerChat = useViewerStore((store) => store.setChat)
+  const toggleViewerExpanded = useViewerStore((store) => store.toggleExpanded)
+  const setViewerWidth = useViewerStore((store) => store.setWidth)
+  const closeViewer = useViewerStore((store) => store.close)
+  // The viewer is the chat's: this chat's opens here, and another chat's
+  // waits in the store for you to go back to it. Before paint, so a switch
+  // never shows one frame of the last chat's viewer.
+  useLayoutEffect(() => {
+    setViewerChat(state.activeChatId)
+  }, [setViewerChat, state.activeChatId])
   const projectLocalPath = state.runtime?.localPath ?? state.navbarLocalPath ?? null
   // A file link that would open in the editor (or a CSV that would open in
   // Numbers) opens in the viewer instead, when it's a file in this project
@@ -709,9 +730,10 @@ export function ChatPage() {
     canCancel: state.canCancel,
   })
 
-  // The chat is inert while the viewer is open, so the composer can't hold
-  // focus then, and a new chat's composer mounts (and tries to take focus)
-  // before the address change closes the viewer. Hand focus back on close.
+  // The viewer takes focus when it opens (and the chat is inert under it
+  // when it covers the chat), and going to a chat with nothing open closes
+  // the last chat's viewer after that chat's composer mounted (and tried to
+  // take focus). Hand focus back on close.
   const wasViewerOpenRef = useRef(viewerOpen)
   useEffect(() => {
     const wasViewerOpen = wasViewerOpenRef.current
@@ -1057,6 +1079,86 @@ export function ChatPage() {
     isMobileViewport,
   ])
 
+  // Beside the chat on anything wider than a phone: the viewer opens in a
+  // pane between the chat and the widget column. Reviewing changes, the chat
+  // narrows to its least so the review is the main thing; a file, attachment
+  // or chart gets a reading width and the chat keeps the rest. The chat stays
+  // live either way. Expanded, or on a phone, the viewer covers the chat as
+  // it always did.
+  const viewerPaneAvailable = !isMobileViewport
+  const viewerPaneOpen = viewerPaneAvailable && viewerOpen
+  const viewerDocked = viewerPaneOpen && !viewerExpanded
+  const chatMinWidthPx = layoutWidth * (RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT / 100)
+  const viewerSplitGroupRef = useRef<GroupImperativeHandle | null>(null)
+  const viewerSplitElementRef = useRef<HTMLDivElement | null>(null)
+  const viewerSplitAnimationRef = useRef<number | null>(null)
+  const viewerSplitStateRef = useRef<{ group: GroupImperativeHandle | null; open: boolean; chatKey: string }>({ group: null, open: false, chatKey: "" })
+  const viewerPlacement = useMemo(() => ({ expanded: viewerExpanded, onToggleExpanded: toggleViewerExpanded }), [toggleViewerExpanded, viewerExpanded])
+
+  // Opening slides the pane in, as the terminal and widget column slide, and
+  // so does going between a review and a preview; closing snaps the chat
+  // back, as the viewer leaves at once. Another chat, or a group that's new
+  // (another project, a phone turned desktop), takes its layout without the
+  // slide. Stepping between files of one kind, and expanding, leave the split
+  // as it is. A width you dragged the pane to is the chat's, and it opens at
+  // it again.
+  useLayoutEffect(() => {
+    const group = viewerSplitGroupRef.current
+    const previous = viewerSplitStateRef.current
+    viewerSplitStateRef.current = { group, open: viewerPaneOpen, chatKey: viewerChatKey }
+    if (!group) return
+    if (viewerSplitAnimationRef.current !== null) {
+      window.cancelAnimationFrame(viewerSplitAnimationRef.current)
+      viewerSplitAnimationRef.current = null
+    }
+
+    const splitWidth = viewerSplitElementRef.current?.clientWidth ?? 0
+    const pageWidth = layoutRootRef.current?.clientWidth ?? 0
+    const chatMinPx = pageWidth * (RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT / 100)
+    const draggedWidthPx = getChatViewer()?.widthPx
+    const paneWidthPx = Math.min(
+      splitWidth - chatMinPx,
+      draggedWidthPx ?? (viewerReviewing ? Infinity : VIEWER_PREVIEW_PANE_WIDTH_PX),
+    )
+    const target: [number, number] = viewerPaneOpen && splitWidth > 0
+      ? (() => {
+          const panePercent = Math.max(0, (paneWidthPx / splitWidth) * 100)
+          return [100 - panePercent, panePercent]
+        })()
+      : [100, 0]
+    const animate = viewerPaneOpen && previous.group === group && previous.chatKey === viewerChatKey
+    if (!animate) {
+      group.setLayout({ chatColumn: target[0], viewerPane: target[1] })
+      return
+    }
+
+    const current = group.getLayout()
+    const from: [number, number] = previous.open
+      ? [current.chatColumn ?? 100, current.viewerPane ?? 0]
+      : [100, 0]
+    const startTime = performance.now()
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - startTime) / TERMINAL_TOGGLE_ANIMATION_DURATION_MS)
+      const next = interpolateLayout(from, target, progress)
+      group.setLayout({ chatColumn: next[0], viewerPane: next[1] })
+      viewerSplitAnimationRef.current = progress < 1 ? window.requestAnimationFrame(step) : null
+    }
+    viewerSplitAnimationRef.current = window.requestAnimationFrame(step)
+  }, [projectId, shouldRenderDesktopRightSidebarLayout, viewerChatKey, viewerPaneOpen, viewerReviewing])
+
+  useEffect(() => () => {
+    if (viewerSplitAnimationRef.current !== null) window.cancelAnimationFrame(viewerSplitAnimationRef.current)
+  }, [])
+
+  const handleViewerSplitLayoutChanged = useCallback((layout: Record<string, number>, meta?: { isUserInteraction: boolean }) => {
+    if (!meta?.isUserInteraction || !viewerDocked) return
+    const splitWidth = viewerSplitElementRef.current?.clientWidth ?? 0
+    const viewerWidth = splitWidth * ((layout.viewerPane ?? 0) / 100)
+    if (splitWidth <= 0) return
+    if (viewerWidth < VIEWER_PANE_CLOSE_WIDTH_PX) closeViewer()
+    else setViewerWidth(Math.round(viewerWidth))
+  }, [closeViewer, setViewerWidth, viewerDocked])
+
   const chatCard = (
     <Card
       ref={chatCardRef}
@@ -1225,18 +1327,63 @@ export function ChatPage() {
     chatCard
   )
 
-  // The chat and its terminal, with the viewer over them when it's open. They
-  // stay mounted underneath (the transcript keeps its place, the terminals
-  // their sessions) but go inert: the viewer is the whole of what's
-  // interactive there, so Esc, typing and focus can't reach the chat behind.
-  const workspace = (
+  // The chat and its terminal, with the viewer beside them or over them.
+  // Over them, they stay mounted underneath (the transcript keeps its place,
+  // the terminals their sessions) but go inert: the viewer is the whole of
+  // what's interactive there, so Esc, typing and focus can't reach the chat
+  // behind.
+  const chatColumn = (
+    <div inert={(viewerOpen && !viewerDocked) || undefined} className="flex h-full min-h-0 flex-1 flex-col">
+      {chatWorkspace}
+    </div>
+  )
+  // No right padding beside the widget column: its own 8px gutter is the
+  // gap, and the viewer's on top of it read as a double margin.
+  const viewerLayer = (
+    <ViewerLayer
+      diff={diffViewerContext}
+      onOpenLocalLink={handleViewerLocalLink}
+      placement={viewerPaneAvailable ? viewerPlacement : undefined}
+      className={showRightSidebar && !isMobileViewport ? "pr-0" : undefined}
+    />
+  )
+  const workspace = viewerPaneAvailable ? (
+    // The split is always there, the pane at nothing while the viewer's
+    // closed, so opening one never moves the chat to a new parent (which
+    // would remount the transcript and the terminals). The viewer is
+    // positioned against its pane while docked; expanded, the pane lets go
+    // and it's positioned against this wrapper, over the chat, without
+    // remounting either.
     <div className="relative flex h-full min-h-0 flex-1 flex-col">
-      <div inert={viewerOpen || undefined} className="flex h-full min-h-0 flex-1 flex-col">
-        {chatWorkspace}
-      </div>
-      {/* No right padding beside the widget column: its own 8px gutter is
-          the gap, and the viewer's on top of it read as a double margin. */}
-      <ViewerLayer diff={diffViewerContext} onOpenLocalLink={handleViewerLocalLink} className={showRightSidebar && !isMobileViewport ? "pr-0" : undefined} />
+      <ResizablePanelGroup
+        groupRef={viewerSplitGroupRef}
+        elementRef={viewerSplitElementRef}
+        orientation="horizontal"
+        className="flex-1 min-h-0"
+        onLayoutChanged={handleViewerSplitLayoutChanged}
+      >
+        <ResizablePanel id="chatColumn" defaultSize="100%" minSize={chatMinWidthPx} className="flex min-h-0 min-w-0 flex-col">
+          {chatColumn}
+        </ResizablePanel>
+        <ResizableHandle
+          withHandle={false}
+          orientation="horizontal"
+          disabled={!viewerDocked}
+          // The card sits 8px into its pane, so a handle centred on the pane's
+          // edge missed the card's own border, the edge you reach for. This
+          // one reaches from 4px into the chat to 4px past the border (still
+          // no width of its own), over the card.
+          className={cn("z-40 w-4 -ml-1 -mr-3", !viewerDocked && "pointer-events-none opacity-0")}
+        />
+        <ResizablePanel id="viewerPane" defaultSize="0%" minSize="0%" className={cn("min-h-0 min-w-0", viewerDocked && "relative")}>
+          {viewerLayer}
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </div>
+  ) : (
+    <div className="relative flex h-full min-h-0 flex-1 flex-col">
+      {chatColumn}
+      {viewerLayer}
     </div>
   )
 
@@ -1357,7 +1504,7 @@ export function ChatPage() {
           <ResizablePanel
             id="workspace"
             defaultSize={`${100 - effectiveRightSidebarSize}%`}
-            minSize="20%"
+            minSize={`${RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT}%`}
             className="min-h-0 min-w-0"
             groupResizeBehavior="preserve-relative-size"
           >

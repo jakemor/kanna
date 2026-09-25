@@ -1,11 +1,14 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import type { AgentProvider } from "../../shared/types"
+import type { ViewerItem } from "./viewerStore"
 
 /**
- * The right sidebar is one column of widgets (agents, git, attachments,
- * ports, quick actions, usage). It is either open or closed per project;
- * there are no panels to pick between.
+ * The chat page's panes beside the chat, and the one record of how they're
+ * laid out. The widget column (agents, git, attachments, ports, quick
+ * actions, usage) is open or closed per project; there are no panels to pick
+ * between. The viewer's pane holds what's open per chat, so going to another
+ * chat and back finds it as you left it, and so does a reload.
  */
 export interface ProjectRightSidebarVisibilityState {
   widgetsOpen: boolean
@@ -26,10 +29,28 @@ export interface ProjectRightSidebarUiState {
   description: string
 }
 
+/** What one chat has open in the viewer, and how. */
+export interface ChatViewerState {
+  item: ViewerItem
+  /** Widened over the chat, rather than in its pane beside it. */
+  expanded: boolean
+  /** The pane's width once you've dragged it; until then, the default for what's open. */
+  widthPx?: number
+  /**
+   * The file the diff list is scrolled to, which the Changes card lights.
+   * Apart from `item`, the file that was opened, which decides where the
+   * list jumps: scrolling mustn't move that. Coming back to the chat, it's
+   * the file the list reopens on.
+   */
+  reviewPath?: string
+}
+
 interface RightSidebarState {
   size: number
   projects: Record<string, ProjectRightSidebarVisibilityState>
   projectUi: Record<string, ProjectRightSidebarUiState>
+  /** By chat id; see viewerStore for who reads and writes it. */
+  chatViewers: Record<string, ChatViewerState>
   toggleWidgets: (projectId: string) => void
   openWidgets: (projectId: string) => void
   hideWidgets: (projectId: string) => void
@@ -38,6 +59,8 @@ interface RightSidebarState {
   setCommitDraft: (projectId: string, draft: Pick<ProjectRightSidebarUiState, "summary" | "description">) => void
   clearCommitDraft: (projectId: string) => void
   clearProject: (projectId: string) => void
+  /** Sets (or, with null, clears) what a chat has open in the viewer. */
+  setChatViewer: (chatKey: string, viewer: ChatViewerState | null) => void
 }
 
 export const DEFAULT_RIGHT_SIDEBAR_SIZE = 420
@@ -68,13 +91,14 @@ function isWidgetsOpen(projects: Record<string, ProjectRightSidebarVisibilitySta
  */
 export function migrateRightSidebarStore(persistedState: unknown, version = 0) {
   if (!persistedState || typeof persistedState !== "object") {
-    return { size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {}, projectUi: {} }
+    return { size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {}, projectUi: {}, chatViewers: {} }
   }
 
   const state = persistedState as {
     size?: number
     projects?: Record<string, Partial<{ isVisible: boolean; rightPanel: string; widgetsOpen: boolean }>>
     projectUi?: Record<string, Partial<ProjectRightSidebarUiState> & { viewMode?: unknown }>
+    chatViewers?: Record<string, ChatViewerState>
   }
   const projects = Object.fromEntries(
     Object.entries(state.projects ?? {}).map(([projectId, layout]) => [
@@ -98,7 +122,29 @@ export function migrateRightSidebarStore(persistedState: unknown, version = 0) {
 
   // Sizes before v7 were percentages of the window, not pixels.
   const size = version >= 7 && state.size !== undefined ? clampSize(state.size) : DEFAULT_RIGHT_SIDEBAR_SIZE
-  return { size, projects, projectUi }
+  return { size, projects, projectUi, chatViewers: state.chatViewers ?? {} }
+}
+
+/**
+ * What of the chats' viewers outlives the page. A chart is data from the
+ * transcript and a `blob:` attachment lives only in this page, so neither
+ * would come back; nor does the viewer of a page with no chat. A review
+ * is kept at the file it was scrolled to, which is where it reopens.
+ */
+export function persistedChatViewers(chatViewers: Record<string, ChatViewerState>) {
+  const kept: Record<string, ChatViewerState> = {}
+  for (const [chatKey, viewer] of Object.entries(chatViewers)) {
+    const { item } = viewer
+    if (!chatKey || item.kind === "chart" || (item.kind === "attachment" && item.attachment.url.startsWith("blob:"))) continue
+    kept[chatKey] = settledChatViewer(viewer)
+  }
+  return kept
+}
+
+/** A viewer as it reopens: a review opened at the file it was scrolled to. */
+export function settledChatViewer(viewer: ChatViewerState): ChatViewerState {
+  const { reviewPath, ...rest } = viewer
+  return rest.item.kind === "diff" && reviewPath ? { ...rest, item: { ...rest.item, path: reviewPath } } : rest
 }
 
 export const useRightSidebarStore = create<RightSidebarState>()(
@@ -107,6 +153,7 @@ export const useRightSidebarStore = create<RightSidebarState>()(
       size: DEFAULT_RIGHT_SIDEBAR_SIZE,
       projects: {},
       projectUi: {},
+      chatViewers: {},
       toggleWidgets: (projectId) =>
         set((state) => ({
           projects: { ...state.projects, [projectId]: { widgetsOpen: !isWidgetsOpen(state.projects, projectId) } },
@@ -166,13 +213,29 @@ export const useRightSidebarStore = create<RightSidebarState>()(
         set((state) => {
           const { [projectId]: _removedLayout, ...restProjects } = state.projects
           const { [projectId]: _removedUi, ...restProjectUi } = state.projectUi
-          return { projects: restProjects, projectUi: restProjectUi }
+          const chatViewers = Object.fromEntries(Object.entries(state.chatViewers).filter(([, viewer]) => (
+            !("projectId" in viewer.item) || viewer.item.projectId !== projectId
+          )))
+          return { projects: restProjects, projectUi: restProjectUi, chatViewers }
+        }),
+      setChatViewer: (chatKey, viewer) =>
+        set((state) => {
+          if (viewer) return { chatViewers: { ...state.chatViewers, [chatKey]: viewer } }
+          if (!(chatKey in state.chatViewers)) return state
+          const { [chatKey]: _removed, ...rest } = state.chatViewers
+          return { chatViewers: rest }
         }),
     }),
     {
       name: "right-sidebar-layouts",
-      version: 8,
+      version: 9,
       migrate: migrateRightSidebarStore,
+      partialize: (state) => ({
+        size: state.size,
+        projects: state.projects,
+        projectUi: state.projectUi,
+        chatViewers: persistedChatViewers(state.chatViewers),
+      }),
     }
   )
 )

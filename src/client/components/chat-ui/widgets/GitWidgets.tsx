@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, FileDiff, GitBranch, GitBranchPlus, GitMerge, Github, GitPullRequest, History, LoaderCircle, Pencil, PenLine, RefreshCw, Sparkles, Upload } from "lucide-react"
+import { ArrowDown, ArrowUp, Check, Eye, Search, GitBranch, GitBranchPlus, GitMerge, Github, GitPullRequest, History, LoaderCircle, Pencil, PenLine, RefreshCw, Sparkles, Upload } from "lucide-react"
 import { memo, useEffect, useMemo, useRef, useState } from "react"
 import type {
   ChatBranchDetails,
@@ -23,7 +23,9 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { Input } from "../../ui/input"
 import { Textarea } from "../../ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip"
+import { BranchHoverCard } from "../git/BranchHoverCard"
 import { BranchPicker } from "../git/BranchPicker"
+import { BranchPullRequestRow, branchPullRequestEntry } from "../git/BranchPullRequestRow"
 import { CommitHistoryRow } from "../git/CommitHistoryRow"
 import { CommitHoverCard } from "../git/CommitHoverCard"
 import { DiffFileHoverCard } from "../git/DiffFileHoverCard"
@@ -39,6 +41,7 @@ import {
   WidgetFooter,
   WidgetList,
   WidgetMoreRow,
+  WidgetRow,
   WidgetStatic,
   WidgetStrip,
 } from "./parts"
@@ -153,14 +156,21 @@ function formatFetchTooltip(isoTimestamp?: string) {
 }
 
 /**
- * The git part of the widget column, three cards.
+ * The git part of the widget column, split by time: the present in one card,
+ * the past in another.
  *
- * Branch names the current branch and carries the sync controls (fetch, and
- * ↓/↑ counts to pull and push). It expands into the branch picker (find,
- * switch or create a branch), with Merge and PR in its footer. Changes is an
- * "N files changed" disclosure over the file list, an index: each row opens
- * its diff in the viewer over the chat, and the commit box stays in
- * view below. History lists recent commits.
+ * Branch is the present: where you are and what you're doing there, under
+ * one header. The header names the branch and carries the sync controls
+ * (fetch, and ↓/↑ counts to pull and push). The body is the branch's open PR,
+ * then, while the tree is dirty, the changes: a strip that counts and
+ * searches them, the file list (an index where each row opens its diff in
+ * the viewer over the chat) and the commit box. The header opens the branch
+ * picker (find, switch or create a branch) in place of the whole body, with
+ * Merge and PR in its footer. The branch stays on top and your changes right
+ * under it, the two things you look at every turn.
+ *
+ * Commits is the past: what's incoming, then the branch's recent commits. A
+ * record you glance at, so it folds away when long.
  */
 function GitWidgetsImpl({
   projectId,
@@ -216,12 +226,14 @@ function GitWidgetsImpl({
   const [branchesExpanded, setBranchesExpanded] = useState(false)
   const [showAllHistory, setShowAllHistory] = useState(false)
   const historyListRef = useRef<HTMLDivElement | null>(null)
+  const pullRequestListRef = useRef<HTMLDivElement | null>(null)
   const changesListRef = useRef<HTMLDivElement | null>(null)
-  const [changesExpanded, setChangesExpanded] = useWidgetExpanded(projectId, "changes", diffs.files.length, true)
   // Tree order, here and in the viewer, as GitHub and VS Code list changes:
   // related files sit together and the order doesn't move as edits grow.
   const filesInOrder = useMemo(() => sortByPath(diffs.files), [diffs.files])
-  const [historyExpanded, setHistoryExpanded] = useWidgetExpanded(projectId, "history", diffs.branchHistory?.entries.length ?? 0)
+  // Starts open whatever the count: it shows five commits, then "Show more",
+  // so it's never too long to open with (the changed files' reason too).
+  const [historyExpanded, setHistoryExpanded] = useWidgetExpanded(projectId, "history", diffs.branchHistory?.entries.length ?? 0, true)
   const summary = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.summary ?? "") : ""))
   const description = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.description ?? "") : ""))
   // The message and description fields stay hidden behind the pencil: the
@@ -271,6 +283,7 @@ function GitWidgetsImpl({
   const selectedCount = selectedPaths.length
   const allSelected = diffs.files.length > 0 && selectedCount === diffs.files.length
   const someSelected = selectedCount > 0 && selectedCount < diffs.files.length
+  const reviewLabel = allSelected ? "Review all" : someSelected ? `Review ${selectedCount}` : "Review"
   const trimmedSummary = summary.trim()
   const hasSummary = trimmedSummary.length > 0
   const isCommitting = commitModeInFlight !== null
@@ -662,6 +675,63 @@ function GitWidgetsImpl({
     </WidgetFooter>
   ) : null
 
+  // The branch's open PR, first under the header: it is about the branch as
+  // a whole. It lands from a background read, so it grows in.
+  const branchPullRequest = diffs.branchName && diffs.branchPullRequest
+    ? { pr: diffs.branchPullRequest, entry: branchPullRequestEntry(diffs.branchName, diffs.branchPullRequest) }
+    : null
+  const branchPullRequestBlock = branchPullRequest ? (
+    <div className="border-t border-border">
+      <WidgetList listRef={pullRequestListRef}>
+        <BranchPullRequestRow entry={branchPullRequest.entry} pr={branchPullRequest.pr} onReadBranch={onReadBranch} />
+      </WidgetList>
+      <BranchHoverCard
+        containerRef={pullRequestListRef}
+        entries={new Map([[branchPullRequest.entry.id, branchPullRequest.entry]])}
+        onReadBranch={onReadBranch}
+        repoSlug={diffs.originRepoSlug}
+      />
+    </div>
+  ) : null
+
+  // The Commits card: what's on the remote and not here yet, which pulls,
+  // then the commits, ↑ on the ones not pushed. So the Branch header's ↓ and
+  // ↑ counts each stand over the rows they would move.
+  const hasIncoming = isPublishedBranch && behindCount > 0
+  const commitList = (
+    <>
+      <WidgetList listRef={historyListRef}>
+        {hasIncoming ? (
+          <WidgetRow
+            icon={isSyncing ? <LoaderCircle className="animate-spin" /> : <ArrowDown className="text-foreground" />}
+            title={`${behindCount} incoming ${behindCount === 1 ? "commit" : "commits"}`}
+            subtitle="On the remote, not here yet"
+            disabled={isSyncing}
+            onActivate={() => void handleSync("pull")}
+            aria-label={`Pull ${behindCount} ${behindCount === 1 ? "commit" : "commits"}`}
+          />
+        ) : null}
+        {visibleHistory.shown.map((entry, index) => (
+          <CommitHistoryRow
+            key={entry.sha}
+            entry={entry}
+            isPendingPush={index < aheadCount}
+            className={index >= INITIAL_VISIBLE_HISTORY_COUNT ? WIDGET_ROW_REVEAL_CLASS : undefined}
+          />
+        ))}
+        {branchHistory.length > INITIAL_VISIBLE_HISTORY_COUNT ? (
+          <WidgetMoreRow
+            count={visibleHistory.hiddenCount}
+            shown={showAllHistory}
+            onShow={() => setShowAllHistory(true)}
+            onHide={() => setShowAllHistory(false)}
+          />
+        ) : null}
+      </WidgetList>
+      <CommitHoverCard containerRef={historyListRef} entries={visibleHistory.shown} onReadCommit={onReadCommit} />
+    </>
+  )
+
   const openFileReview = (path: string) => {
     if (projectId) openViewer({ kind: "diff", projectId, path })
   }
@@ -692,40 +762,78 @@ function GitWidgetsImpl({
     <>
       <WidgetStrip
         leading={(
-          <StageCheckbox
-            checked={allSelected}
-            mixed={someSelected}
-            label={allSelected ? "Unselect all files from commit" : "Select all files for commit"}
-            className="size-4"
-            onClick={() => {
-              if (!projectId) return
-              setAllCheckedPaths(projectId, filePaths, someSelected ? true : !allSelected)
-            }}
-          />
+          // Everything checked is the resting state, and a full check says
+          // nothing, so the strip shows what it is at rest: a search. The
+          // check swaps in on hover or keyboard focus (the rows' idle-glyph
+          // swap: shrink, 1px blur, fade), and always on devices that can't
+          // hover. Partial or none is news, so that check shows as is.
+          <span className="group/lead relative flex size-4 items-center justify-center">
+            {allSelected ? (
+              <Search
+                aria-hidden
+                className="size-3.5 transition-[opacity,scale,filter] duration-150 ease-snappy group-hover/lead:scale-75 group-hover/lead:opacity-0 group-hover/lead:blur-[1px] group-focus-within/lead:scale-75 group-focus-within/lead:opacity-0 group-focus-within/lead:blur-[1px] [@media(hover:none)]:hidden"
+              />
+            ) : null}
+            <span
+              className={cn(
+                "flex items-center justify-center",
+                allSelected && "absolute inset-0 scale-75 opacity-0 blur-[1px] transition-[opacity,scale,filter] duration-150 ease-snappy group-hover/lead:scale-100 group-hover/lead:opacity-100 group-hover/lead:blur-none group-focus-within/lead:scale-100 group-focus-within/lead:opacity-100 group-focus-within/lead:blur-none [@media(hover:none)]:scale-100 [@media(hover:none)]:opacity-100 [@media(hover:none)]:blur-none",
+              )}
+            >
+              <StageCheckbox
+                checked={allSelected}
+                mixed={someSelected}
+                label={allSelected ? "Unselect all files from commit" : "Select all files for commit"}
+                className="size-4"
+                onClick={() => {
+                  if (!projectId) return
+                  setAllCheckedPaths(projectId, filePaths, someSelected ? true : !allSelected)
+                }}
+              />
+            </span>
+          </span>
         )}
         trailing={(
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!firstCheckedPath}
-            onClick={() => {
-              // Opens on a checked file, so the review is the checked files
-              // and nothing else (the viewer adds an unchecked file only when
-              // you open that file itself).
-              const reviewedIsChecked = reviewedPath !== null && isDiffPathChecked(diffCommitSelection, reviewedPath)
-              const target = reviewedIsChecked ? reviewedPath : firstCheckedPath
-              if (target) openFileReview(target)
-            }}
-            className="h-6 gap-1 px-1.5 text-xs text-muted-foreground hover:text-foreground hover:!bg-transparent hover:!border-border/0"
-          >
-            {/* Words, not an eye: it opens the checked files in one scroll,
-                and says how many, which a glyph can't. */}
-            <span>{allSelected ? "Review all" : someSelected ? `Review ${selectedCount}` : "Review"}</span>
-          </Button>
+          <>
+            {/* The totals of what will be committed, in each file row's +/-
+                typography; the old section header's words on hover. */}
+            <span title={changesSummary.title} className="flex">
+              <DiffFileStat additions={changesSummary.additions} deletions={changesSummary.deletions} />
+            </span>
+            {/* The eye the rows' own Review item uses, set in the rows' status
+                column: 24px wide against the strip's 8px right padding puts
+                its centre 20px in, where every row's M / A letter centres
+                (16px slot, 1px border + 5px padding + the list's 6px inset).
+                How many it opens moves to the label and tooltip. */}
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="none"
+                  disabled={!firstCheckedPath}
+                  aria-label={reviewLabel}
+                  onClick={() => {
+                    // Opens on a checked file, so the review is the checked files
+                    // and nothing else (the viewer adds an unchecked file only when
+                    // you open that file itself).
+                    const reviewedIsChecked = reviewedPath !== null && isDiffPathChecked(diffCommitSelection, reviewedPath)
+                    const target = reviewedIsChecked ? reviewedPath : firstCheckedPath
+                    if (target) openFileReview(target)
+                  }}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center p-0 text-muted-foreground hover:text-foreground hover:!bg-transparent hover:!border-border/0"
+                >
+                  <Eye className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{reviewLabel}</TooltipContent>
+            </Tooltip>
+          </>
         )}
       >
-        {/* What's in the commit is already said: the header counts it ("2 of
-            3 files changed") and Review names it. This line finds a file. */}
+        {/* The count lives here, in the search, rather than in a header of
+            its own: the Branch card has one header, and this line is where
+            the list is described. What's in the commit is said by the
+            checkbox, the +/- and Review. */}
         <input
           value={fileQuery}
           onChange={(event) => setFileQuery(event.target.value)}
@@ -736,8 +844,8 @@ function GitWidgetsImpl({
               setFileQuery("")
             }
           }}
-          placeholder="Search files"
-          aria-label="Search changed files"
+          placeholder={`Search ${diffs.files.length.toLocaleString()} ${diffs.files.length === 1 ? "change" : "changes"}`}
+          aria-label="Search changes"
           type="search"
           autoComplete="off"
           spellCheck={false}
@@ -799,6 +907,10 @@ function GitWidgetsImpl({
         </WidgetCard>
       </WidgetPresence>
       <WidgetPresence show={diffs.status === "ready"}>
+        {/* The present: where you are, and what you're doing there. One
+            header, the branch; the PR and the changes are its body, not
+            sections with headers of their own, and the picker takes the
+            whole body while it's open. */}
         <WidgetCard
           icon={<GitBranch />}
           title={(
@@ -811,68 +923,51 @@ function GitWidgetsImpl({
           onToggle={() => setBranchesExpanded((current) => !current)}
           actions={remoteSyncActions}
           footer={branchesExpanded ? branchActions : undefined}
+          bodyDivider={false}
+          collapsedBody={(
+            <>
+              <WidgetPresence show={branchPullRequestBlock !== null} spaced={false}>
+                {branchPullRequestBlock}
+              </WidgetPresence>
+              {/* A clean tree folds the changes away, commit box and all,
+                  rather than saying so; the header holds still. */}
+              <WidgetPresence show={hasChanges} spaced={false}>
+                <div className="border-t border-border">
+                  {fileList}
+                  {commitBox ? <div className="border-t border-border">{commitBox}</div> : null}
+                </div>
+              </WidgetPresence>
+            </>
+          )}
         >
-          <BranchPicker
-            currentBranchName={diffs.branchName}
-            onListBranches={onListBranches}
-            onCheckoutBranch={onCheckoutBranch}
-            onCreateBranch={onCreateBranch}
-            onDone={() => setBranchesExpanded(false)}
-            repoSlug={diffs.originRepoSlug}
-            onReadBranch={onReadBranch}
-          />
+          <div className="border-t border-border">
+            <BranchPicker
+              currentBranchName={diffs.branchName}
+              onListBranches={onListBranches}
+              onCheckoutBranch={onCheckoutBranch}
+              onCreateBranch={onCreateBranch}
+              onDone={() => setBranchesExpanded(false)}
+              repoSlug={diffs.originRepoSlug}
+              onReadBranch={onReadBranch}
+            />
+          </div>
         </WidgetCard>
       </WidgetPresence>
-      {/* A clean working tree drops the card rather than saying so. */}
-      <WidgetPresence show={diffs.status === "ready" && hasChanges}>
-        <WidgetCard
-          icon={<FileDiff />}
-          title={changesSummary.title}
-          expanded={changesExpanded}
-          onToggle={() => setChangesExpanded(!changesExpanded)}
-          // Totals of what will be committed, in the same +/- typography as each file row.
-          actions={<DiffFileStat additions={changesSummary.additions} deletions={changesSummary.deletions} className="pr-1" />}
-          footer={commitBox}
-        >
-          {fileList}
-        </WidgetCard>
-      </WidgetPresence>
-      <WidgetPresence show={diffs.status === "ready" && branchHistory.length > 0}>
+      {/* The past, in its own card: glanced at, where the card above is used
+          every turn, so it can stay folded out of the way. */}
+      <WidgetPresence show={diffs.status === "ready" && (branchHistory.length > 0 || hasIncoming)}>
         <WidgetCard
           icon={<History />}
-          title="History"
+          title="Commits"
           // Not the length: that is the server's cap (25) on any real repo.
           // What is worth a glance is what hasn't reached the remote yet.
           count={isPublishedBranch && aheadCount > 0 ? `${aheadCount} unpushed` : undefined}
           expanded={historyExpanded}
           onToggle={() => setHistoryExpanded(!historyExpanded)}
         >
-          <WidgetList listRef={historyListRef}>
-            {visibleHistory.shown.map((entry, index) => (
-              <CommitHistoryRow
-                key={entry.sha}
-                entry={entry}
-                isPendingPush={index < aheadCount}
-                className={index >= INITIAL_VISIBLE_HISTORY_COUNT ? WIDGET_ROW_REVEAL_CLASS : undefined}
-              />
-            ))}
-            {branchHistory.length > INITIAL_VISIBLE_HISTORY_COUNT ? (
-              <WidgetMoreRow
-                count={visibleHistory.hiddenCount}
-                shown={showAllHistory}
-                onShow={() => setShowAllHistory(true)}
-                onHide={() => setShowAllHistory(false)}
-              />
-            ) : null}
-          </WidgetList>
-          <CommitHoverCard
-            containerRef={historyListRef}
-            entries={visibleHistory.shown}
-            onReadCommit={onReadCommit}
-          />
+          {commitList}
         </WidgetCard>
       </WidgetPresence>
-
       <MergeBranchModal
         open={mergeModalOpen}
         onOpenChange={setMergeModalOpen}

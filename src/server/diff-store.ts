@@ -11,6 +11,7 @@ import type {
   ChatBranchListResult,
   ChatCheckoutBranchResult,
   ChatCreateBranchResult,
+  ChatBranchPullRequest,
   ChatCommitChecks,
   ChatCommitDetails,
   ChatCommitFile,
@@ -34,6 +35,7 @@ import type {
 import { buildKannaCommitAttribution } from "./attribution"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
 import { getGhAuthInfo } from "./github"
+import { BranchPullRequestStore } from "./github-branch-pr"
 import { CommitChecksStore } from "./github-checks"
 import { resolveCommandPath } from "./process-utils"
 import { inferProjectFileContentType } from "./uploads"
@@ -43,6 +45,7 @@ interface StoredChatDiffState extends BranchMetadata, UpstreamStatus {
   checkedOutPrNumber?: number
   files: ChatDiffFile[]
   branchHistory: ChatBranchHistorySnapshot
+  branchPullRequest?: ChatBranchPullRequest
 }
 
 function createEmptyState(): StoredChatDiffState {
@@ -101,12 +104,22 @@ function branchHistoryEqual(left: ChatBranchHistorySnapshot, right: ChatBranchHi
   })
 }
 
+function branchPullRequestEqual(left: ChatBranchPullRequest | undefined, right: ChatBranchPullRequest | undefined) {
+  if (!left || !right) return left === right
+  return left.number === right.number
+    && left.title === right.title
+    && left.url === right.url
+    && left.isDraft === right.isDraft
+    && left.updatedAt === right.updatedAt
+}
+
 function snapshotsEqual(left: StoredChatDiffState | undefined, right: StoredChatDiffState) {
   if (!left) {
     return right.status === "unknown" && right.files.length === 0
   }
   if (left.status !== right.status) return false
   if (left.checkedOutPrNumber !== right.checkedOutPrNumber) return false
+  if (!branchPullRequestEqual(left.branchPullRequest, right.branchPullRequest)) return false
   if (!branchMetadataEqual(left, right)) return false
   if (!upstreamStatusEqual(left, right)) return false
   if (left.files.length !== right.files.length) return false
@@ -813,6 +826,17 @@ async function getBranchHistory(args: {
 }
 
 const commitChecksStore = new CommitChecksStore()
+const branchPullRequestStore = new BranchPullRequestStore()
+
+/**
+ * The checked-out branch's open PR, from cache (a stale one refetches behind
+ * the answer). Not for the default branch, which is where PRs go, not what
+ * they come from; nor off GitHub, or with a detached HEAD.
+ */
+function readBranchPullRequest(state: Pick<StoredChatDiffState, "branchName" | "defaultBranchName" | "originRepoSlug" | "checkedOutPrNumber">) {
+  if (!state.originRepoSlug || !state.branchName || state.branchName === state.defaultBranchName) return undefined
+  return branchPullRequestStore.read(state.originRepoSlug, state.branchName, state.checkedOutPrNumber)
+}
 
 /**
  * Adds GitHub check counts to the commits that can have them. Commits Kanna
@@ -2063,6 +2087,7 @@ export class DiffStore {
       behindCount: state.behindCount,
       lastFetchedAt: state.lastFetchedAt,
       checkedOutPrNumber: state.checkedOutPrNumber,
+      branchPullRequest: state.branchPullRequest,
       files: [...state.files],
       branchHistory: {
         entries: state.branchHistory.entries.map((entry) => ({
@@ -2189,6 +2214,8 @@ export class DiffStore {
         repoSlug: gate.repoSlug,
         unpushedCount: gate.unpushedCount,
       }),
+      // Also outside the repo: a PR opened on GitHub moves no ref here.
+      branchPullRequest: readBranchPullRequest(previous),
     })
   }
 
@@ -2265,6 +2292,9 @@ export class DiffStore {
       repoSlug: originRepoSlug,
       unpushedCount,
     })
+    const checkedOutPrNumber = branchName
+      ? this.prNumbersByBranch.get(this.getPrBranchKey(repo.repoRoot, branchName))
+      : undefined
     const nextState = {
       status: "ready",
       branchName,
@@ -2275,11 +2305,10 @@ export class DiffStore {
       aheadCount,
       behindCount,
       lastFetchedAt,
-      checkedOutPrNumber: branchName
-        ? this.prNumbersByBranch.get(this.getPrBranchKey(repo.repoRoot, branchName))
-        : undefined,
+      checkedOutPrNumber,
       files,
       branchHistory: historyWithChecks,
+      branchPullRequest: readBranchPullRequest({ branchName, defaultBranchName, originRepoSlug, checkedOutPrNumber }),
     } satisfies StoredChatDiffState
     const changed = this.commitState(projectId, nextState)
     if (gitDir) {

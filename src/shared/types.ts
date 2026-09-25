@@ -2055,12 +2055,27 @@ export interface UpstreamStatus {
   lastFetchedAt?: string
 }
 
+/** The open pull request whose head is the checked-out branch, as the Branch card pins it. */
+export interface ChatBranchPullRequest {
+  number: number
+  title: string
+  url: string
+  isDraft: boolean
+  /** Moves on a push or an edit, so a card's cached details know to read again. */
+  updatedAt?: string
+}
+
 export interface ChatDiffSnapshot extends BranchMetadata, UpstreamStatus {
   status: "unknown" | "ready" | "no_repo"
   /** Set when the checked-out branch is a pull request checked out through Kanna. */
   checkedOutPrNumber?: number
   files: ChatDiffFile[]
   branchHistory?: ChatBranchHistorySnapshot
+  /**
+   * The checked-out branch's open PR on GitHub, when there is one. Read in the
+   * background and attached from cache, so it can land a poll or two late.
+   */
+  branchPullRequest?: ChatBranchPullRequest
 }
 
 export interface BranchActionSuccess {

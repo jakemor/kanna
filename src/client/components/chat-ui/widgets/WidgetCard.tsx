@@ -28,8 +28,9 @@ import { useRightSidebarStore, type WidgetDisclosureId } from "../../../stores/r
  * - Disclosures start open when they hold a few rows and closed when they
  *   hold many (defaultWidgetExpanded). Once toggled, they remember it per project.
  * - Status changes (spinner to check, a label that swaps) cross-fade through
- *   SwapIn. Nothing else in the column animates except cards entering and
- *   leaving (WidgetPresence): the column is opened too often for more.
+ *   SwapIn, and so does a body a disclosure swaps (`collapsedBody`). Nothing
+ *   else in the column animates except cards entering and leaving
+ *   (WidgetPresence): the column is opened too often for more.
  */
 
 export interface WidgetSectionProps {
@@ -45,6 +46,18 @@ export interface WidgetSectionProps {
   onToggle?: () => void
   /** The body. Omit for a header-only section. */
   children?: ReactNode
+  /**
+   * What the body shows while the disclosure is closed, for a section whose
+   * disclosure swaps its body rather than hiding it: the Branch card lists
+   * the branch's commits, and opens into the branch picker in their place.
+   */
+  collapsedBody?: ReactNode
+  /**
+   * Off when the body draws its own dividers: a body whose parts come and go
+   * (the Branch card's PR and changes) folds each part away with its rule,
+   * where a divider on the body itself would stay behind as a stray line.
+   */
+  bodyDivider?: boolean
   /** Always visible below the body, even while a disclosure is collapsed. */
   footer?: ReactNode
 }
@@ -58,8 +71,18 @@ export function WidgetSection({
   expanded,
   onToggle,
   children,
+  collapsedBody,
+  bodyDivider = true,
   footer,
 }: WidgetSectionProps) {
+  const open = !onToggle || Boolean(expanded)
+  const body = open ? children : collapsedBody
+  // A swapped body cross-fades in, as SwapIn does a status: the card is
+  // changing what it shows, not gaining or losing a part. Only after a real
+  // swap, so opening the column doesn't fade every card's body in.
+  const [initialOpen] = useState(open)
+  const swappedRef = useRef(false)
+  if (collapsedBody !== undefined && open !== initialOpen) swappedRef.current = true
   // One header grammar for every widget: icon, title, then the count set like
   // the Branch header's branch name (same size, muted, on the title's
   // baseline), then the chevron tucked 4px after, as the left sidebar's
@@ -100,7 +123,17 @@ export function WidgetSection({
       {/* Uncapped: a widget is as tall as its content and the column scrolls.
           Two bodies cap themselves and scroll inside: Changes, which can list
           thousands of files, and Attachments. */}
-      {children && (!onToggle || expanded) ? <div className="border-t border-border">{children}</div> : null}
+      {body ? (
+        <div
+          key={open ? "open" : "closed"}
+          className={cn(
+            bodyDivider && "border-t border-border",
+            swappedRef.current && "transition-[opacity,filter] duration-150 ease-snappy starting:opacity-0 starting:blur-[2px] motion-reduce:transition-opacity",
+          )}
+        >
+          {body}
+        </div>
+      ) : null}
       {footer ? <div className="border-t border-border">{footer}</div> : null}
     </div>
   )
@@ -146,7 +179,16 @@ const PRESENCE_EXIT_MS = 180
  * The slot also owns the column's spacing (pt-2 inside the collapsing part),
  * so a card's gap folds away with it instead of snapping shut at the end.
  */
-export function WidgetPresence({ show, children }: { show: boolean; children: ReactNode }) {
+export function WidgetPresence({ show, spaced = true, children }: {
+  show: boolean
+  /**
+   * The column's gap above the card. Off for a section coming and going
+   * inside a WidgetGroup (Changes in the Branch card), where the group's
+   * divider is the only separation, and folds away with the section.
+   */
+  spaced?: boolean
+  children: ReactNode
+}) {
   const [phase, setPhase] = useState<PresencePhase>(show ? "shown" : "hidden")
   const rootRef = useRef<HTMLDivElement | null>(null)
   // While leaving, the card keeps its last content. What the caller renders
@@ -187,7 +229,7 @@ export function WidgetPresence({ show, children }: { show: boolean; children: Re
       )}
     >
       <div className="min-h-0 overflow-hidden">
-        <div className="pt-2">{show ? children : lastChildrenRef.current}</div>
+        <div className={spaced ? "pt-2" : undefined}>{show ? children : lastChildrenRef.current}</div>
       </div>
     </div>
   )

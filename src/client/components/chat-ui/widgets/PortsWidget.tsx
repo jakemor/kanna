@@ -126,11 +126,18 @@ export function PortsWidget({
     // longer a user gesture, so popup blockers eat it. Open the tab now and
     // point it at the tunnel once it exists.
     const tab = window.open("about:blank", "_blank")
-    if (tab) tab.opener = null
     void exposeServer(server).then((publicUrl) => {
-      if (!tab) return
-      if (publicUrl) tab.location.href = publicUrl
-      else tab.close()
+      if (!tab || tab.closed) return
+      if (!publicUrl) {
+        tab.close()
+        return
+      }
+      tab.location.replace(publicUrl)
+      // Cut the tunnelled page off from this one only now, in the same task
+      // as the navigation, while the tab still holds our about:blank. Cut
+      // first, and the browser no longer counts this page as the tab's
+      // opener, refuses to navigate it, and leaves it blank.
+      tab.opener = null
     })
   }, [exposeServer, isCloud])
 
@@ -221,7 +228,6 @@ export function PortsWidget({
 
   function renderServer(server: LocalHttpServerInfo) {
     const isExposing = exposingPorts.has(server.port)
-    const openUrl = isCloud && server.publicUrl ? server.publicUrl : server.address
     return (
       <WidgetRow
         key={server.address}
@@ -245,7 +251,9 @@ export function PortsWidget({
         menuLabel="Port actions"
         menu={(
           <>
-            <ContextMenuItem onSelect={() => window.open(openUrl, "_blank", "noopener,noreferrer")}>
+            {/* The row's own open, so in cloud mode it exposes first rather
+                than opening a localhost this browser can't reach. */}
+            <ContextMenuItem onSelect={() => openServer(server)}>
               <SquareArrowOutUpRight className="size-3.5" />
               <span>Open in New Tab</span>
             </ContextMenuItem>

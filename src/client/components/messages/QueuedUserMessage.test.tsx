@@ -25,7 +25,7 @@ describe("QueuedUserMessage", () => {
     expect(html).not.toContain("text-right")
   })
 
-  test("an attachment-only message still gets the Send now and Remove controls", () => {
+  test("attachment-only messages still have Send now and Remove controls", () => {
     const message: QueuedChatMessage = {
       id: "queued-2",
       content: "",
@@ -51,6 +51,30 @@ describe("QueuedUserMessage", () => {
     )
 
     expect(html).toContain("Queued")
+    expect(html).toContain('aria-label="Send now"')
+    expect(html).toContain('aria-label="Cancel message"')
     expect(html.match(/<button/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+  })
+
+  test("shows controls at rest without hover gating and labels both", () => {
+    const message: QueuedChatMessage = {
+      id: "queued-3",
+      content: "Another follow-up",
+      attachments: [],
+      createdAt: Date.now(),
+    }
+
+    const html = renderToStaticMarkup(
+      <QueuedUserMessage
+        message={message}
+        onRemove={() => undefined}
+        onSendNow={() => undefined}
+      />
+    )
+
+    expect(html).toContain('aria-label="Cancel message"')
+    expect(html).toContain('aria-label="Send now"')
+    expect(html).not.toContain("opacity-0")
+    expect(html).not.toContain("scale-[0.1]")
   })
 })

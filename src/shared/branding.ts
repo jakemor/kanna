@@ -2,6 +2,7 @@ export const APP_NAME = "Kanna"
 export const CLI_COMMAND = "kanna"
 export const DATA_ROOT_NAME = ".kanna"
 export const DEV_DATA_ROOT_NAME = ".kanna-dev"
+export const RC_DATA_ROOT_NAME = ".kanna-rc"
 export const PACKAGE_NAME = "kanna-code"
 export const RUNTIME_PROFILE_ENV_VAR = "KANNA_RUNTIME_PROFILE"
 // Read version from package.json — JSON import works in both Bun and Vite
@@ -11,7 +12,7 @@ export const SDK_CLIENT_APP = `kanna/${pkg.version}`
 export const LOG_PREFIX = "[kanna]"
 export const DEFAULT_NEW_PROJECT_ROOT = `~/${APP_NAME}`
 
-export type RuntimeProfile = "dev" | "prod"
+export type RuntimeProfile = "dev" | "rc" | "prod"
 
 type RuntimeEnv = Record<string, string | undefined> | undefined
 
@@ -25,11 +26,20 @@ function getRuntimeEnv(): RuntimeEnv {
 }
 
 export function getRuntimeProfile(env: RuntimeEnv = getRuntimeEnv()): RuntimeProfile {
-  return env?.[RUNTIME_PROFILE_ENV_VAR]?.trim().toLowerCase() === "dev" ? "dev" : "prod"
+  const profile = env?.[RUNTIME_PROFILE_ENV_VAR]?.trim().toLowerCase()
+  if (profile === "dev" || profile === "rc") return profile
+  return "prod"
 }
 
 export function getDataRootName(env: RuntimeEnv = getRuntimeEnv()) {
-  return getRuntimeProfile(env) === "dev" ? DEV_DATA_ROOT_NAME : DATA_ROOT_NAME
+  const profile = getRuntimeProfile(env)
+  if (profile === "dev") return DEV_DATA_ROOT_NAME
+  if (profile === "rc") return RC_DATA_ROOT_NAME
+  return DATA_ROOT_NAME
+}
+
+export function getCliCommand(env: RuntimeEnv = getRuntimeEnv()) {
+  return getRuntimeProfile(env) === "rc" ? "kanna-rc" : CLI_COMMAND
 }
 
 export function getDataRootDir(homeDir: string, env: RuntimeEnv = getRuntimeEnv()) {
@@ -73,5 +83,6 @@ export function getCloudFilePathDisplay(env: RuntimeEnv = getRuntimeEnv()) {
 }
 
 export function getCliInvocation(arg?: string) {
-  return arg ? `${CLI_COMMAND} ${arg}` : CLI_COMMAND
+  const command = getCliCommand()
+  return arg ? `${command} ${arg}` : command
 }

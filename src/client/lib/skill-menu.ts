@@ -4,31 +4,45 @@ import type { HarnessSkill } from "../../shared/types"
  * Helpers for the composer's "/" skill menu. Pure functions so they can be
  * unit-tested; ChatInput owns the state and rendering.
  *
- * The menu is only offered while the caret sits inside a leading trigger token
- * ("/name", or "$name" on codex) — invocation is start-anchored on every
- * harness (claude checks trim().startsWith("/"), pi checks startsWith("/")),
- * so a mid-message trigger never opens it.
+ * The menu opens while the caret sits inside a trigger token ("/name", or
+ * "$name" on codex) that opens the message or follows whitespace, so a skill
+ * can go anywhere in the prompt and a prompt can name several. The server
+ * finds every "/name" at send time and hands each one to the harness
+ * (harness-skills.ts).
  */
 
 export const DEFAULT_SKILL_MENU_TRIGGERS: readonly string[] = ["/"]
 /** Codex's native skill-mention sigil is "$" — accept it as a menu trigger too. */
 export const CODEX_SKILL_MENU_TRIGGERS: readonly string[] = ["/", "$"]
 
+export interface ActiveSkillMention {
+  /** Index of the trigger in the value. */
+  start: number
+  /** Text typed between the trigger and the caret. */
+  query: string
+}
+
 /**
- * Returns the query (text typed after the leading trigger) when the skill menu
- * should be open for the given input value + caret position, else null.
+ * The trigger token the caret sits in, when the skill menu should be open.
+ * The trigger must open the message or follow whitespace, so `src/foo` never
+ * opens it. A second "/" in the token means a path like `/etc/hosts`, and
+ * "$" before a digit is a price, so neither opens it either.
  */
-export function getActiveSlashQuery(
+export function getActiveSkillMention(
   value: string,
   caretPosition: number,
   triggers: readonly string[] = DEFAULT_SKILL_MENU_TRIGGERS
-): string | null {
-  if (value.length === 0 || !triggers.includes(value[0]!)) return null
-  const token = value.slice(1).match(/^[^\s]*/)?.[0] ?? ""
-  // Caret must be inside "<trigger>token" (position 1..token end). Once the
-  // user moves past the first whitespace they are typing arguments.
-  if (caretPosition < 1 || caretPosition > token.length + 1) return null
-  return token.slice(0, caretPosition - 1)
+): ActiveSkillMention | null {
+  if (caretPosition < 1 || caretPosition > value.length) return null
+  let start = caretPosition - 1
+  while (start >= 0 && !/\s/.test(value[start]!)) start -= 1
+  start += 1
+  const trigger = value[start]
+  if (trigger === undefined || !triggers.includes(trigger)) return null
+  const token = value.slice(start + 1).match(/^[^\s]*/)?.[0] ?? ""
+  if (token.includes("/") || token.includes("$")) return null
+  if (trigger === "$" && /^\d/.test(token)) return null
+  return { start, query: value.slice(start + 1, caretPosition) }
 }
 
 function scoreSkill(skill: HarnessSkill, query: string): number {
@@ -73,14 +87,21 @@ export function filterSkillMenuItems(skills: HarnessSkill[], query: string): Har
 }
 
 /**
- * Replace the leading trigger token with the accepted skill, preserving any
- * argument text. Always completes to the "/" form — "$" is only an input
- * convenience; "/" is the canonical invocation the server-side translation
- * understands on every harness.
+ * Swap the trigger token under the caret for "/name", keeping the text around
+ * it, and put the caret after the space that follows. Always completes to the
+ * "/" form — "$" is only an input convenience; "/" is the canonical
+ * invocation the server-side translation understands on every harness.
  */
-export function applySkillCompletion(value: string, skillName: string): string {
-  if (!value.startsWith("/") && !value.startsWith("$")) return `/${skillName} `
-  const token = value.slice(1).match(/^[^\s]*/)?.[0] ?? ""
-  const rest = value.slice(1 + token.length)
-  return `/${skillName}${rest.length > 0 ? rest : " "}`
+export function applySkillCompletion(
+  value: string,
+  mention: ActiveSkillMention,
+  skillName: string
+): { value: string; caret: number } {
+  const tokenEnd = mention.start + 1 + (value.slice(mention.start + 1).match(/^[^\s]*/)?.[0].length ?? 0)
+  const rest = value.slice(tokenEnd)
+  const inserted = rest.startsWith(" ") || rest.startsWith("\n") ? `/${skillName}` : `/${skillName} `
+  return {
+    value: `${value.slice(0, mention.start)}${inserted}${rest}`,
+    caret: mention.start + skillName.length + 2,
+  }
 }

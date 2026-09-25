@@ -9,10 +9,11 @@ import {
   dedupeSkillsByName,
   findNestedSkillRoots,
   findSkillByName,
+  findSkillMentions,
   listGlobalSkills,
   normalizeSkillDescription,
   parseFrontmatter,
-  parseSkillInvocation,
+  resolveSkillMentions,
   scanClaudeSkills,
   scanCodexSkills,
   scanCommandsRoot,
@@ -21,43 +22,69 @@ import {
   scanSkillsRoot,
 } from "./harness-skills"
 
-describe("parseSkillInvocation", () => {
-  test("parses a bare invocation", () => {
-    expect(parseSkillInvocation("/code-review")).toEqual({ name: "code-review", args: "" })
+describe("findSkillMentions", () => {
+  test("finds a leading invocation", () => {
+    expect(findSkillMentions("/code-review")).toEqual([{ name: "code-review", leading: true }])
+    expect(findSkillMentions("  /fix-tests\nfocus on auth")).toEqual([{ name: "fix-tests", leading: true }])
   })
 
-  test("parses namespaced names and arguments", () => {
-    expect(parseSkillInvocation("/skill:brave-search find kanna")).toEqual({
-      name: "skill:brave-search",
-      args: "find kanna",
-    })
-    expect(parseSkillInvocation("/plugin:cmd --flag")).toEqual({ name: "plugin:cmd", args: "--flag" })
+  test("finds namespaced names", () => {
+    expect(findSkillMentions("/skill:brave-search find kanna")).toEqual([{ name: "skill:brave-search", leading: true }])
   })
 
-  test("tolerates leading whitespace and multi-line args", () => {
-    expect(parseSkillInvocation("  /fix-tests\nfocus on auth")).toEqual({
-      name: "fix-tests",
-      args: "focus on auth",
-    })
+  test("finds mentions mid-message and at the end, several at once", () => {
+    expect(findSkillMentions("fix it with /simplify then /code-review.")).toEqual([
+      { name: "simplify", leading: false },
+      { name: "code-review", leading: false },
+    ])
+    expect(findSkillMentions("/review this\nand /deploy")).toEqual([
+      { name: "review", leading: true },
+      { name: "deploy", leading: false },
+    ])
   })
 
-  test("returns null for non-invocations", () => {
-    expect(parseSkillInvocation("hello world")).toBeNull()
-    expect(parseSkillInvocation("see /etc/hosts")).toBeNull()
-    expect(parseSkillInvocation("/")).toBeNull()
-    expect(parseSkillInvocation("")).toBeNull()
+  test("ignores slashes inside words", () => {
+    expect(findSkillMentions("edit src/foo.ts and a/b")).toEqual([])
+    expect(findSkillMentions("cat /etc/hosts")).toEqual([])
+    expect(findSkillMentions("see https://x.dev/path")).toEqual([])
+    expect(findSkillMentions("/")).toEqual([])
+    expect(findSkillMentions("")).toEqual([])
+  })
+})
+
+describe("resolveSkillMentions", () => {
+  const skills = [
+    { name: "review", description: "", source: "skill" as const, path: "/s/review/SKILL.md" },
+    { name: "compact", description: "", source: "command" as const },
+  ]
+
+  test("keeps known skills once each, in typed order", () => {
+    expect(resolveSkillMentions(findSkillMentions("/compact then /review and /review again"), skills)).toEqual([
+      { name: "compact" },
+      { name: "review", path: "/s/review/SKILL.md" },
+    ])
+  })
+
+  test("drops names the harness does not list, like file paths", () => {
+    expect(resolveSkillMentions(findSkillMentions("look at /etc/hosts and /nope"), skills)).toEqual([])
   })
 })
 
 describe("system message failsafe", () => {
   test("wraps the skill path exactly", () => {
-    expect(buildSkillSystemMessage("/tmp/skills/foo/SKILL.md")).toBe(
+    expect(buildSkillSystemMessage([{ name: "foo", path: "/tmp/skills/foo/SKILL.md" }])).toBe(
       "<system-message>the user would like to use the skill available at /tmp/skills/foo/SKILL.md</system-message>"
     )
   })
 
+  test("lists every skill in one block, by name when there is no path", () => {
+    expect(buildSkillSystemMessage([{ name: "a", path: "/a/SKILL.md" }, { name: "review" }])).toBe(
+      "<system-message>the user would like to use the skill available at /a/SKILL.md\nthe user would like to use the /review skill</system-message>"
+    )
+  })
+
   test("appends after content with a blank line, never prepends", () => {
-    const block = buildSkillSystemMessage("/p/SKILL.md")
+    const block = buildSkillSystemMessage([{ name: "p", path: "/p/SKILL.md" }])
     expect(appendSystemMessageBlock("/foo run it", block)).toBe(`/foo run it\n\n${block}`)
     expect(appendSystemMessageBlock("   ", block)).toBe(block)
     expect(appendSystemMessageBlock("/foo", block).startsWith("/foo")).toBe(true)

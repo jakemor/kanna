@@ -41,7 +41,7 @@ import {
   CODEX_SKILL_MENU_TRIGGERS,
   DEFAULT_SKILL_MENU_TRIGGERS,
   filterSkillMenuItems,
-  getActiveSlashQuery,
+  getActiveSkillMention,
 } from "../../lib/skill-menu"
 import {
   applyProjectMention,
@@ -318,13 +318,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     )
     return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
   }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
-  // "/" skill menu derivations. The query is non-null only while the caret is
-  // inside a leading "/token" ("$token" also opens it on codex, whose native
-  // sigil is "$" — accepting still completes to the canonical "/" form); menu
-  // items render in ascending match quality so the best match sits at the
-  // bottom, next to the input.
+  // "/" skill menu derivations. The mention is non-null only while the caret
+  // is inside a "/token" anywhere in the prompt ("$token" also opens it on
+  // codex, whose native sigil is "$" — accepting still completes to the
+  // canonical "/" form); menu items render in ascending match quality so the
+  // best match sits at the bottom, next to the input.
   const skillMenuTriggers = selectedProvider === "codex" ? CODEX_SKILL_MENU_TRIGGERS : DEFAULT_SKILL_MENU_TRIGGERS
-  const slashQuery = onListSkills && !disabled ? getActiveSlashQuery(value, caretPosition, skillMenuTriggers) : null
+  const skillMention = onListSkills && !disabled ? getActiveSkillMention(value, caretPosition, skillMenuTriggers) : null
+  const slashQuery = skillMention?.query ?? null
   const slashActive = slashQuery !== null
   const skillMenuItems = useMemo(
     () => (slashQuery !== null && availableSkills ? filterSkillMenuItems(availableSkills, slashQuery) : []),
@@ -378,11 +379,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     selectedSkillItemRef.current?.scrollIntoView({ block: "nearest" })
   }, [selectedSkillIndex, skillMenuOpen])
 
+  // Escape closes the menu for the token it was pressed in; the next token
+  // (a second skill later in the prompt) opens it again.
+  const skillMentionStart = skillMention?.start ?? null
+  useEffect(() => {
+    setSkillMenuDismissed(false)
+  }, [skillMentionStart])
+
   const acceptSkill = useCallback((skill: HarnessSkill) => {
-    const nextValue = applySkillCompletion(value, skill.name)
+    if (!skillMention) return
+    const { value: nextValue, caret: nextCaret } = applySkillCompletion(value, skillMention, skill.name)
     setValue(nextValue)
     if (chatId) setDraft(chatId, nextValue)
-    const nextCaret = skill.name.length + 2
     setCaretPosition(nextCaret)
     requestAnimationFrame(() => {
       const element = textareaRef.current
@@ -391,7 +399,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       element.selectionStart = nextCaret
       element.selectionEnd = nextCaret
     })
-  }, [value, chatId, setDraft])
+  }, [value, skillMention, chatId, setDraft])
 
   // "@" project menu derivations. The project list is read from the store
   // when the menu opens rather than subscribed to: the sidebar changes on

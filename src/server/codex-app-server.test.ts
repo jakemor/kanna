@@ -242,7 +242,7 @@ describe("CodexAppServerManager", () => {
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "/deploy-helper ship to prod",
-      skill: { name: "deploy-helper", path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md" },
+      skills: [{ name: "deploy-helper", path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md" }],
       planMode: false,
       onToolRequest: async () => ({}),
     })

@@ -158,13 +158,14 @@ export interface StartCodexTurnArgs {
   serviceTier?: ServiceTier
   content: string
   /**
-   * Resolved `/skill` invocation for this turn. When set, the turn input adds
-   * a structured `{type:"skill", name, path}` item (deterministic server-side
-   * injection) and appends a `<system-message>` failsafe to the text item —
-   * codex silently skips skill items whose path no longer matches a discovered
-   * skill, so the failsafe keeps the intent visible to the model regardless.
+   * Skills the prompt names, resolved. Each one adds a structured
+   * `{type:"skill", name, path}` item to the turn input (deterministic
+   * server-side injection), and one `<system-message>` failsafe listing them
+   * is appended to the text item — codex silently skips skill items whose
+   * path no longer matches a discovered skill, so the failsafe keeps the
+   * intent visible to the model regardless.
    */
-  skill?: { name: string; path: string }
+  skills?: { name: string; path: string }[]
   planMode: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
@@ -1012,14 +1013,14 @@ export class CodexAppServerManager {
       const input: CodexUserInput[] = [
         {
           type: "text",
-          text: args.skill
-            ? appendSystemMessageBlock(args.content, buildSkillSystemMessage(args.skill.path))
+          text: args.skills?.length
+            ? appendSystemMessageBlock(args.content, buildSkillSystemMessage(args.skills))
             : args.content,
           text_elements: [],
         },
       ]
-      if (args.skill) {
-        input.push({ type: "skill", name: args.skill.name, path: args.skill.path })
+      for (const skill of args.skills ?? []) {
+        input.push({ type: "skill", name: skill.name, path: skill.path })
       }
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",

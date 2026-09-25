@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import {
   AgentCoordinator,
   buildAttachmentHintText,
@@ -2245,6 +2248,56 @@ describe("concurrent agents notice injection", () => {
     expect(prompts).toEqual(["first prompt", "second prompt"].map(withChatLinks))
 
     close()
+  })
+})
+
+describe("skill mentions", () => {
+  test("claude expands the leading skill itself; later ones get the failsafe", async () => {
+    const projectDir = mkdtempSync(path.join(tmpdir(), "kanna-skill-mentions-"))
+    for (const name of ["review", "simplify"]) {
+      mkdirSync(path.join(projectDir, ".claude", "skills", name), { recursive: true })
+      writeFileSync(path.join(projectDir, ".claude", "skills", name, "SKILL.md"), `---\nname: ${name}\n---\n`)
+    }
+    const store = createFakeStore({
+      chats: [createFakeChat("chat-1", "project-1", "Chat One")],
+      projects: [{ id: "project-1", localPath: projectDir }],
+    })
+    const queues: AsyncEventQueue<any>[] = []
+    const prompts: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        const events = new AsyncEventQueue<any>()
+        queues.push(events)
+        return {
+          provider: "claude" as const,
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+          },
+        }
+      },
+    })
+
+    const content = "/review this, then /simplify it and read /etc/hosts"
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content, model: "claude-opus-4-1" })
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]?.startsWith(content)).toBe(true)
+    const simplifyPath = path.join(projectDir, ".claude", "skills", "simplify", "SKILL.md")
+    expect(prompts[0]).toContain(
+      `<system-message>the user would like to use the skill available at ${simplifyPath}</system-message>`
+    )
+    expect(prompts[0]).not.toContain("skills/review/SKILL.md")
+
+    queues.forEach((queue) => queue.close())
+    rmSync(projectDir, { recursive: true, force: true })
   })
 })
 

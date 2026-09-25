@@ -46,12 +46,13 @@ import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-ty
 import {
   appendSystemMessageBlock,
   buildSkillSystemMessage,
-  findSkillByName,
-  parseSkillInvocation,
+  findSkillMentions,
+  resolveSkillMentions,
   scanClaudeSkills,
   scanCodexSkills,
   scanCursorSkills,
   scanGrokSkills,
+  type SkillReference,
 } from "./harness-skills"
 import {
   buildKannaAgentCorrection,
@@ -1835,7 +1836,18 @@ export class AgentCoordinator {
     //
     // Handoff: after a harness switch, the rendered transcript context leads
     // the first prompt sent to the new harness (see handoff.ts).
+    //
+    // Skills: every "/name" in the prompt, translated per provider:
+    //   claude/grok/pi — a leading "/name" passes through (they expand it);
+    //                    the rest get the <system-message> failsafe.
+    //   codex          — structured skill input item each + failsafe (added
+    //                    by the codex manager, after attachments).
+    //   cursor         — <system-message> failsafe only (no headless expansion).
+    const skills = await this.resolvePromptSkills(args.provider, args.chatId, args.content)
     let wireContent = args.steered ? buildSteeredMessageContent(args.content) : args.content
+    if (args.provider !== "codex" && skills.length > 0) {
+      wireContent = appendSystemMessageBlock(wireContent, buildSkillSystemMessage(skills))
+    }
     wireContent = appendSystemMessageBlock(wireContent, KANNA_CHAT_LINK_NOTICE)
     const concurrentAgentsNotice = buildConcurrentAgentsNotice(
       this.collectConcurrentProjectChats(args.chatId, project.localPath)
@@ -1851,14 +1863,6 @@ export class AgentCoordinator {
     if (contextBlock) {
       wireContent = buildHandoffMessageContent(contextBlock.text, wireContent)
     }
-
-    // "/name" skill invocation, translated per provider:
-    //   claude/pi — passthrough; both harnesses expand a leading "/name".
-    //   codex     — structured skill input item + <system-message> failsafe.
-    //   cursor    — <system-message> failsafe only (no headless expansion).
-    const skillInvocation = (args.provider === "codex" || args.provider === "cursor")
-      ? parseSkillInvocation(args.content)
-      : null
 
     let turn: HarnessTurn
     if (args.provider === "claude") {
@@ -1880,12 +1884,6 @@ export class AgentCoordinator {
       // fetch never succeeded (e.g. the user just logged in to cursor-agent).
       void this.refreshCursorModelCatalog()
       let cursorContent = buildPromptText(wireContent, args.attachments)
-      if (skillInvocation) {
-        const match = findSkillByName(scanCursorSkills({ cwd: project.localPath }), skillInvocation.name)
-        if (match?.path) {
-          cursorContent = appendSystemMessageBlock(cursorContent, buildSkillSystemMessage(match.path))
-        }
-      }
       // Cursor builds its system prompt server-side and exposes no append hook,
       // so its share of the git attribution rides the user-text path instead.
       cursorContent = appendSystemMessageBlock(
@@ -1950,9 +1948,7 @@ export class AgentCoordinator {
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
         content: buildPromptText(wireContent, args.attachments),
-        skill: skillInvocation
-          ? await this.resolveCodexSkill(args.chatId, project.localPath, skillInvocation.name)
-          : undefined,
+        skills: skills.flatMap((skill) => skill.path ? [{ name: skill.name, path: skill.path }] : []),
         model: args.model,
         effort: args.effort as CodexReasoningEffort | undefined,
         serviceTier: args.serviceTier,
@@ -2328,24 +2324,19 @@ export class AgentCoordinator {
   }
 
   /**
-   * Resolve a typed `/name` to a codex skill for the structured input item.
-   * Live skills/list is authoritative (paths must exact-match the server's own
-   * discovery for the item to inject); the fs scan of the same roots covers
-   * codex versions that predate skills/list. Unresolved names degrade to plain
-   * text — codex silently ignores unknown skill items anyway.
+   * The skills a prompt names that the harness won't expand by itself,
+   * resolved against the same list the "/" menu shows (for codex, live
+   * skills/list paths are what its structured item must exact-match).
+   * Unresolved names stay plain text. The list is only fetched when some
+   * mention needs it, so an ordinary leading "/name" on claude/grok/pi costs
+   * nothing extra.
    */
-  private async resolveCodexSkill(
-    chatId: string,
-    cwd: string,
-    name: string
-  ): Promise<{ name: string; path: string } | undefined> {
-    const live = await this.codexManager.listSkills({ chatId, cwd })
-    if (live) {
-      const match = live.find((skill) => skill.name === name)
-      return match ? { name: match.name, path: match.path } : undefined
-    }
-    const scanned = findSkillByName(scanCodexSkills({ cwd }), name)
-    return scanned?.path ? { name: scanned.name, path: scanned.path } : undefined
+  private async resolvePromptSkills(provider: AgentProvider, chatId: string, content: string): Promise<SkillReference[]> {
+    const expandsLeading = provider === "claude" || provider === "grok" || provider === "pi"
+    const mentions = findSkillMentions(content).filter((mention) => !(expandsLeading && mention.leading))
+    if (mentions.length === 0) return []
+    const { skills } = await this.listSkills({ type: "chat.listSkills", provider, chatId })
+    return resolveSkillMentions(mentions, skills)
   }
 
   /**

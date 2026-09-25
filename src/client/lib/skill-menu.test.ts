@@ -1,39 +1,51 @@
 import { describe, expect, test } from "bun:test"
 import type { HarnessSkill } from "../../shared/types"
-import { applySkillCompletion, CODEX_SKILL_MENU_TRIGGERS, filterSkillMenuItems, getActiveSlashQuery } from "./skill-menu"
+import { applySkillCompletion, CODEX_SKILL_MENU_TRIGGERS, filterSkillMenuItems, getActiveSkillMention } from "./skill-menu"
 
 function skill(name: string, description = ""): HarnessSkill {
   return { name, description, source: "skill" }
 }
 
-describe("getActiveSlashQuery", () => {
+function query(value: string, caret: number, triggers?: readonly string[]) {
+  return getActiveSkillMention(value, caret, triggers)?.query ?? null
+}
+
+describe("getActiveSkillMention", () => {
   test("active while the caret is inside the leading /token", () => {
-    expect(getActiveSlashQuery("/", 1)).toBe("")
-    expect(getActiveSlashQuery("/rev", 4)).toBe("rev")
-    expect(getActiveSlashQuery("/rev", 2)).toBe("r")
+    expect(getActiveSkillMention("/", 1)).toEqual({ start: 0, query: "" })
+    expect(query("/rev", 4)).toBe("rev")
+    expect(query("/rev", 2)).toBe("r")
   })
 
-  test("inactive once the user is typing arguments", () => {
-    expect(getActiveSlashQuery("/review args", 8)).toBeNull()
-    expect(getActiveSlashQuery("/review ", 8)).toBeNull()
+  test("active mid-message and at the end", () => {
+    expect(getActiveSkillMention("run /rev now", 8)).toEqual({ start: 4, query: "rev" })
+    expect(query("first /review then /sim", 23)).toBe("sim")
+    expect(query("line one\n/dep", 13)).toBe("dep")
   })
 
-  test("inactive for mid-message slashes and plain text", () => {
-    expect(getActiveSlashQuery("see /etc/hosts", 8)).toBeNull()
-    expect(getActiveSlashQuery("hello", 3)).toBeNull()
-    expect(getActiveSlashQuery("", 0)).toBeNull()
+  test("inactive once the caret leaves the token", () => {
+    expect(query("/review args", 8)).toBeNull()
+    expect(query("/review ", 8)).toBeNull()
+  })
+
+  test("inactive for paths, slashes inside words and plain text", () => {
+    expect(query("see /etc/hosts", 8)).toBeNull()
+    expect(query("src/foo", 4)).toBeNull()
+    expect(query("hello", 3)).toBeNull()
+    expect(query("", 0)).toBeNull()
   })
 
   test("inactive when the caret sits before the slash", () => {
-    expect(getActiveSlashQuery("/rev", 0)).toBeNull()
+    expect(query("/rev", 0)).toBeNull()
   })
 
   test("$ triggers only with the codex trigger set", () => {
-    expect(getActiveSlashQuery("$dep", 4)).toBeNull()
-    expect(getActiveSlashQuery("$dep", 4, CODEX_SKILL_MENU_TRIGGERS)).toBe("dep")
-    expect(getActiveSlashQuery("/dep", 4, CODEX_SKILL_MENU_TRIGGERS)).toBe("dep")
-    expect(getActiveSlashQuery("$deploy args", 9, CODEX_SKILL_MENU_TRIGGERS)).toBeNull()
-    expect(getActiveSlashQuery("see $dep", 8, CODEX_SKILL_MENU_TRIGGERS)).toBeNull()
+    expect(query("$dep", 4)).toBeNull()
+    expect(query("$dep", 4, CODEX_SKILL_MENU_TRIGGERS)).toBe("dep")
+    expect(query("/dep", 4, CODEX_SKILL_MENU_TRIGGERS)).toBe("dep")
+    expect(query("$deploy args", 9, CODEX_SKILL_MENU_TRIGGERS)).toBeNull()
+    expect(query("see $dep", 8, CODEX_SKILL_MENU_TRIGGERS)).toBe("dep")
+    expect(query("costs $5", 8, CODEX_SKILL_MENU_TRIGGERS)).toBeNull()
   })
 })
 
@@ -65,21 +77,33 @@ describe("filterSkillMenuItems", () => {
   })
 })
 
+function complete(value: string, caret: number, name: string, triggers = CODEX_SKILL_MENU_TRIGGERS) {
+  return applySkillCompletion(value, getActiveSkillMention(value, caret, triggers)!, name)
+}
+
 describe("applySkillCompletion", () => {
   test("replaces the leading token and appends a space", () => {
-    expect(applySkillCompletion("/rev", "review")).toBe("/review ")
+    expect(complete("/rev", 4, "review")).toEqual({ value: "/review ", caret: 8 })
   })
 
   test("preserves existing argument text", () => {
-    expect(applySkillCompletion("/rev main branch", "review")).toBe("/review main branch")
+    expect(complete("/rev main branch", 4, "review").value).toBe("/review main branch")
   })
 
   test("handles a bare slash", () => {
-    expect(applySkillCompletion("/", "skill:brave-search")).toBe("/skill:brave-search ")
+    expect(complete("/", 1, "skill:brave-search").value).toBe("/skill:brave-search ")
   })
 
   test("normalizes a $ trigger to the canonical / form", () => {
-    expect(applySkillCompletion("$dep", "deploy-helper")).toBe("/deploy-helper ")
-    expect(applySkillCompletion("$dep to prod", "deploy-helper")).toBe("/deploy-helper to prod")
+    expect(complete("$dep", 4, "deploy-helper").value).toBe("/deploy-helper ")
+    expect(complete("$dep to prod", 4, "deploy-helper").value).toBe("/deploy-helper to prod")
+  })
+
+  test("completes the token under the caret, leaving other skills alone", () => {
+    expect(complete("/review this then /sim", 22, "simplify")).toEqual({
+      value: "/review this then /simplify ",
+      caret: 28,
+    })
+    expect(complete("use /rev on main", 8, "review")).toEqual({ value: "use /review on main", caret: 12 })
   })
 })

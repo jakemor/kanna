@@ -183,7 +183,7 @@ export function UsageWindowRows({ snapshot, compact = false, className }: {
 }) {
   return (
     <div className={cn("space-y-2.5", className)}>
-      {snapshot.windows.map((window) => (
+      {usageWindowsForDisplay(snapshot.windows).map((window) => (
         <WindowRow key={window.id} window={window} compact={compact} />
       ))}
       {snapshot.credits ? (
@@ -291,7 +291,7 @@ export function ProviderCard({
   // the same grid the expanded rows use so every bar lines up card to card. The
   // row title and the freshness stamp (which the header no longer prints) live
   // in the bar's tooltip instead.
-  const summaryWindow = snapshot.windows[0] ?? null
+  const summaryWindow = usageWindowsForDisplay(snapshot.windows)[0] ?? null
   const summaryResets = summaryWindow?.resetsAt ? formatUntil(summaryWindow.resetsAt) : null
 
   const header = showBody ? (

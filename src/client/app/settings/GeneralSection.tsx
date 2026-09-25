@@ -288,6 +288,15 @@ export function GeneralSection({
     }
   }
 
+  async function handleUsageLimitIndicatorsChange(enabled: boolean) {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ usageLimitIndicatorsEnabled: enabled })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save usage indicator settings.")
+    }
+  }
+
   const customEditorPreview = editorCommandDraft
     .replaceAll("{path}", "/Users/jake/Projects/kanna/src/client/app/App.tsx")
     .replaceAll("{line}", "12")
@@ -463,6 +472,20 @@ export function GeneralSection({
                 className={SETTINGS_NUMBER_INPUT_CLASS}
               />
             </SettingsField>
+          </SettingsRow>
+
+          <SettingsRow
+            def={SETTINGS_ROWS.usageLimitIndicators}
+            inlineControl
+            description="Show plan-limit rings next to the chat input's context meter. Claude Code and Codex each show 5-hour and weekly windows. Full details stay on the Usage page."
+          >
+            <Switch
+              checked={appSettings?.usageLimitIndicatorsEnabled !== false}
+              onCheckedChange={(checked) => {
+                void handleUsageLimitIndicatorsChange(checked)
+              }}
+              aria-label={SETTINGS_ROWS.usageLimitIndicators.title}
+            />
           </SettingsRow>
         </SettingsGroup>
 

@@ -14,6 +14,7 @@ import {
   RESUME_AFTER_RESTART_MESSAGE,
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
+import type { SubagentActivityUpdate } from "./background-tasks"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
@@ -2978,6 +2979,136 @@ describe("subagent activity", () => {
 
   test("chats without delegated work stay empty", () => {
     expect(coordinator().getSubagents("chat-1")).toEqual([])
+  })
+
+  test("a monitor shows the moment it starts, not at the next Stop", () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", {
+      kind: "started", id: "m1", type: "monitor", label: "Watch deploy", toolUseId: "toolu_m", description: "Watch deploy", stoppable: true,
+    }, 1000)
+    expect(agent.getSubagents("chat-1")).toEqual([{
+      id: "m1", type: "monitor", label: "Watch deploy", status: "running", startedAt: 1000,
+      toolUseId: "toolu_m", description: "Watch deploy", stoppable: true,
+    }])
+
+    agent.applySubagentActivity("chat-1", { kind: "stopped", id: "m1", failed: false, stopped: true }, 5000)
+    expect(agent.getSubagents("chat-1")[0]).toMatchObject({ status: "stopped", endedAt: 5000 })
+  })
+
+  test("a workflow's progress replaces its agents, and ties its agents' own tasks to it", () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", { kind: "started", id: "w1", type: "workflow", label: "review", workflowName: "review" }, 1000)
+    agent.applySubagentActivity("chat-1", { kind: "started", id: "agent-a", type: "subagent", label: "general-purpose" }, 1100)
+    agent.applySubagentActivity("chat-1", {
+      kind: "progress",
+      id: "w1",
+      usage: { totalTokens: 500, toolUses: 2 },
+      workflow: {
+        phases: [{ index: 1, title: "Review" }],
+        agents: [
+          { index: 1, label: "a", state: "running", agentId: "agent-a", phaseIndex: 1 },
+          { index: 2, label: "b", state: "queued", phaseIndex: 1 },
+        ],
+      },
+    }, 2000)
+
+    const byId = new Map(agent.getSubagents("chat-1").map((entry) => [entry.id, entry]))
+    expect(byId.get("w1")?.workflow).toEqual({
+      name: "review",
+      phases: [{ index: 1, title: "Review" }],
+      agents: [
+        { index: 1, label: "a", state: "running", agentId: "agent-a", phaseIndex: 1 },
+        { index: 2, label: "b", state: "queued", phaseIndex: 1 },
+      ],
+    })
+    expect(byId.get("w1")?.usage).toEqual({ totalTokens: 500, toolUses: 2 })
+    expect(byId.get("agent-a")?.workflowId).toBe("w1")
+
+    // An agent starting after the run named it is tied at once.
+    agent.applySubagentActivity("chat-1", {
+      kind: "progress",
+      id: "w1",
+      workflow: { phases: [], agents: [{ index: 2, label: "b", state: "running", agentId: "agent-b" }] },
+    }, 3000)
+    agent.applySubagentActivity("chat-1", { kind: "started", id: "agent-b", type: "subagent", label: "x" }, 3100)
+    expect(agent.getSubagents("chat-1").find((entry) => entry.id === "agent-b")?.workflowId).toBe("w1")
+  })
+
+  test("a workflow first heard of mid-run is picked up from its progress", () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", {
+      kind: "progress", id: "w1", workflow: { phases: [], agents: [{ index: 1, label: "a", state: "running" }] },
+    }, 1000)
+    expect(agent.getSubagents("chat-1")[0]).toMatchObject({ id: "w1", type: "workflow", status: "running", stoppable: true })
+  })
+
+  test("the notification's totals land even after task_updated closed it", () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", { kind: "started", id: "w1", type: "workflow", label: "review" }, 1000)
+    agent.applySubagentActivity("chat-1", { kind: "stopped", id: "w1", failed: false }, 2000)
+    agent.applySubagentActivity("chat-1", { kind: "stopped", id: "w1", failed: true, usage: { totalTokens: 9, toolUses: 1 }, summary: "all good" }, 3000)
+    expect(agent.getSubagents("chat-1")[0]).toMatchObject({
+      status: "completed", endedAt: 2000, usage: { totalTokens: 9, toolUses: 1 }, summary: "all good",
+    })
+  })
+
+  test("the sweep keeps ambient tasks out", () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", { kind: "ambient", id: "watcher" }, 1000)
+    agent.applySubagentActivity("chat-1", {
+      kind: "inFlight", ids: [{ id: "watcher", type: "monitor", label: "live update" }, { id: "sh1", type: "shell", label: "bun test" }],
+    }, 2000)
+    expect(agent.getSubagents("chat-1").map((entry) => entry.id)).toEqual(["sh1"])
+  })
+
+  test("a start after the sweep found the task keeps when the sweep saw it start", () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", { kind: "inFlight", ids: [{ id: "sh1", type: "shell", label: "bun test" }] }, 1000)
+    agent.applySubagentActivity("chat-1", { kind: "started", id: "sh1", type: "shell", label: "Run tests", toolUseId: "t1", stoppable: true }, 4000)
+    expect(agent.getSubagents("chat-1")[0]).toMatchObject({ startedAt: 1000, label: "Run tests", toolUseId: "t1" })
+  })
+
+  test("a Claude session's task reports reach the registry, and Stop reaches the CLI", async () => {
+    const events = new AsyncEventQueue<any>()
+    const stopped: string[] = []
+    let report: ((update: SubagentActivityUpdate) => void) | undefined
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        report = args.onSubagentActivity
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          stopTask: async (taskId: string) => { stopped.push(taskId) },
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async () => {},
+        }
+      },
+    })
+    await coordinator.send({ type: "chat.send", projectId: "project-1", provider: "claude", content: "watch it" })
+    await waitFor(() => report !== undefined)
+
+    report!({ kind: "started", id: "m1", type: "monitor", label: "Watch deploy", stoppable: true })
+    expect(coordinator.getSubagents("chat-1")[0]).toMatchObject({ id: "m1", type: "monitor", status: "running" })
+
+    await coordinator.stopBackgroundTask("chat-1", "m1")
+    expect(stopped).toEqual(["m1"])
+    events.close()
+  })
+
+  test("stopping a task needs a live session that can", async () => {
+    const agent = coordinator()
+    agent.applySubagentActivity("chat-1", { kind: "started", id: "m1", type: "monitor", label: "Watch", stoppable: true }, 1000)
+    await expect(agent.stopBackgroundTask("chat-1", "m1")).rejects.toThrow("can't be stopped")
+    // Stopping something already over is a no-op, not an error.
+    agent.applySubagentActivity("chat-1", { kind: "stopped", id: "m1", failed: false }, 2000)
+    await agent.stopBackgroundTask("chat-1", "m1")
   })
 
   test("interrupting the turn closes agents still marked running", async () => {

@@ -302,6 +302,8 @@ export type ClientCommand =
   | { type: "chat.ignoreDiffFile"; chatId: string; path: string }
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.stopDraining"; chatId: string }
+  /** Stops one background task (a monitor, a workflow, a subagent) and leaves the turn running. */
+  | { type: "chat.stopTask"; chatId: string; taskId: string }
   | {
       type: "chat.exportStandalone"
       sourceOrigin?: string

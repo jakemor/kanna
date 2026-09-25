@@ -18,8 +18,9 @@ import { useRightSidebarStore, type WidgetDisclosureId } from "../../../stores/r
  * The grammar every widget follows, so the column reads as one design:
  * - Count: a bare number ("5"). A subset of it is "N of M" ("3 of 5"). A state
  *   word goes after the number ("3 of 5 running", "2 unpushed").
- * - Running: the red `text-logo` spinner the left sidebar shows for a busy
- *   chat. Done is `text-success`, failed is `text-destructive`.
+ * - Running: a grey (`text-muted-foreground`) spinner. Red reads as an alarm,
+ *   and in progress is the column's normal state. Done is `text-success`,
+ *   failed is `text-destructive`.
  * - Bodies are built from the parts in parts.tsx (Strip, List of Rows,
  *   Static, Footer), never from ad hoc padding, dividers or hover classes.
  *   Rows sit 1px apart and no more, so a highlight never visibly drops out.

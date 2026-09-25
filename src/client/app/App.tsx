@@ -24,6 +24,7 @@ import { OpenRouterCallbackPage } from "./OpenRouterCallbackPage"
 // Code-split: its own route, with 8 settings sections and a second
 // react-markdown instance behind the changelog.
 const SettingsPage = lazy(() => import("./SettingsPage").then((m) => ({ default: m.SettingsPage })))
+const WorkflowsGalleryPage = lazy(() => import("./WorkflowsGalleryPage").then((m) => ({ default: m.WorkflowsGalleryPage })))
 import { TerminalPage } from "./TerminalPage"
 import { useKannaState } from "./useKannaState"
 import { useSidebarStore } from "../stores/sidebarStore"
@@ -501,6 +502,8 @@ export function App() {
             <Route path="/settings/:sectionId" element={<Suspense fallback={null}><SettingsPage /></Suspense>} />
             <Route path="/chat/:chatId" element={<ChatPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
+            {/* Every state of the Tasks and Workflow widgets, on made-up data. */}
+            <Route path="/workflows" element={<Suspense fallback={null}><WorkflowsGalleryPage /></Suspense>} />
           </Route>
         </Routes>
       </AppDialogProvider>

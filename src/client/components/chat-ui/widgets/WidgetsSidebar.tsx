@@ -2,13 +2,15 @@ import { memo, useCallback, useMemo, useState, type ReactNode } from "react"
 import type { AgentProvider, ProviderCatalogEntry, SubagentActivity, TranscriptEntry } from "../../../../shared/types"
 import type { KannaSocket } from "../../../app/socket"
 import { useComposer } from "../../../hooks/useComposer"
-import { AgentsWidget } from "./AgentsWidget"
 import { AttachmentsWidget } from "./AttachmentsWidget"
-import { deriveSentAttachments, deriveSubagentToolIds } from "./derive"
+import { deriveSentAttachments, deriveSubagentToolIds, latestWorkflows, orderTaskLog } from "./derive"
 import { PortsWidget } from "./PortsWidget"
 import { QuickActionsWidget } from "./QuickActionsWidget"
+import { TasksWidget } from "./TasksWidget"
 import { UsageWidgets } from "./UsageWidget"
+import { useStopTask } from "./useStopTask"
 import { WidgetPresence } from "./WidgetCard"
+import { WorkflowWidget } from "./WorkflowWidget"
 
 /**
  * The right sidebar: one vertical, scrolling column of widgets. Opening the
@@ -19,7 +21,8 @@ import { WidgetPresence } from "./WidgetCard"
  * slides the rest instead of jumping them.
  *
  * Order runs from what the agent is doing right now to what it has left
- * behind: its delegated agents, then git (branch, working tree, history),
+ * behind: what is running on its behalf (tasks, then any workflow opened up),
+ * then git (branch, working tree, history),
  * the files it sent, the servers it started and the commands that start
  * them. Usage limits close the column: the selected harness's, or on a new
  * chat every harness's, selected first.
@@ -58,7 +61,7 @@ function WidgetsSidebarImpl({
   entries: readonly TranscriptEntry[]
   subagents: readonly SubagentActivity[]
   onRunQuickAction: (command: string) => void
-  /** Scrolls the chat to a tool call (an Agents row's spawn call). */
+  /** Scrolls the chat to a tool call (the call that started a Tasks row). */
   onJumpToToolCall: (toolId: string) => void
   gitWidgets: ReactNode
 }) {
@@ -67,6 +70,10 @@ function WidgetsSidebarImpl({
   const { selectedProvider } = useComposer({ chatId, activeProvider, availableProviders })
   const attachments = useMemo(() => deriveSentAttachments(entries), [entries])
   const subagentToolIds = useMemo(() => deriveSubagentToolIds(entries, subagents), [entries, subagents])
+  // A workflow's own agents are on its card; in the Tasks list the run is one row.
+  const tasks = useMemo(() => orderTaskLog(subagents), [subagents])
+  const workflows = useMemo(() => latestWorkflows(subagents), [subagents])
+  const stopControl = useStopTask(socket, chatId, subagents)
   const [portsRefreshRequest, setPortsRefreshRequest] = useState(0)
   const runQuickAction = useCallback((command: string) => {
     onRunQuickAction(command)
@@ -78,8 +85,17 @@ function WidgetsSidebarImpl({
       {/* No gap: each slot carries its own top spacing, so a card's gap folds
           away with it. */}
       <div className="flex flex-col px-2 pb-2">
-        <WidgetPresence show={subagents.length > 0}>
-          <AgentsWidget subagents={subagents} toolIds={subagentToolIds} entries={entries} onJumpToToolCall={onJumpToToolCall} />
+        <WidgetPresence show={tasks.length > 0}>
+          <TasksWidget
+            tasks={tasks}
+            toolIds={subagentToolIds}
+            entries={entries}
+            stopControl={stopControl}
+            onJumpToToolCall={onJumpToToolCall}
+          />
+        </WidgetPresence>
+        <WidgetPresence show={workflows.length > 0}>
+          <WorkflowWidget workflows={workflows} stopControl={stopControl} />
         </WidgetPresence>
         {gitWidgets}
         <WidgetPresence show={attachments.length > 0}>

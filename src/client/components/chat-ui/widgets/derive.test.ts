@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import { normalizeToolCall } from "../../../../shared/tools"
-import type { SubagentActivity, TranscriptEntry } from "../../../../shared/types"
-import { deriveSentAttachments, deriveSubagentDetails, deriveSubagentToolIds } from "./derive"
+import type { SubagentActivity, TranscriptEntry, WorkflowProgress } from "../../../../shared/types"
+import {
+  deriveSentAttachments,
+  deriveSubagentDetails,
+  deriveSubagentToolIds,
+  formatTokens,
+  latestWorkflows,
+  orderTaskLog,
+  summarizeWorkflow,
+  workflowAgentElapsed,
+} from "./derive"
 
 let nextId = 0
 function toolCall(toolName: string, toolId: string, input: Record<string, unknown>): TranscriptEntry {
@@ -90,5 +99,85 @@ describe("deriveSubagentDetails", () => {
     expect(details?.toolCalls).toBe(2)
     expect(details?.messages).toBe(1)
     expect(details?.latestTool?.toolKind).toBe("grep")
+  })
+})
+
+describe("deriveSubagentToolIds with task events", () => {
+  test("a task that names its call jumps there, whatever kind of call it is", () => {
+    const entries = [
+      toolCall("Monitor", "toolu_m", { description: "watch" }),
+      toolCall("Agent", "toolu_a", { subagent_type: "Explore", description: "Find it", prompt: "p" }),
+    ]
+    const tasks: SubagentActivity[] = [
+      { id: "m1", type: "monitor", label: "watch", status: "running", startedAt: 1, toolUseId: "toolu_m" },
+      { id: "a1", type: "subagent", label: "Explore", status: "running", startedAt: 1, toolUseId: "toolu_a" },
+      // Its call is outside the window: no row to guess at by type.
+      { id: "a2", type: "subagent", label: "Explore", status: "running", startedAt: 1, toolUseId: "toolu_gone" },
+    ]
+    const ids = deriveSubagentToolIds(entries, tasks)
+    expect(ids.get("m1")).toBe("toolu_m")
+    expect(ids.get("a1")).toBe("toolu_a")
+    expect(ids.has("a2")).toBe(false)
+  })
+})
+
+describe("workflow helpers", () => {
+  const progress: WorkflowProgress = {
+    name: "review",
+    phases: [{ index: 1, title: "Review" }, { index: 2, title: "Verify" }],
+    agents: [
+      { index: 1, label: "a", state: "done", phaseIndex: 1, tokens: 1000 },
+      { index: 2, label: "b", state: "failed", phaseIndex: 1, tokens: 500 },
+      { index: 3, label: "c", state: "running", phaseIndex: 2, startedAt: 1000 },
+      { index: 4, label: "d", state: "queued", phaseIndex: 2 },
+      { index: 5, label: "loose", state: "done" },
+    ],
+  }
+
+  test("counts agents by state and finds the phase in progress", () => {
+    expect(summarizeWorkflow(progress)).toEqual({
+      total: 5, queued: 1, running: 1, done: 2, failed: 1, skipped: 0, tokens: 1500,
+      currentPhase: { index: 2, title: "Verify" },
+    })
+    expect(summarizeWorkflow(undefined).total).toBe(0)
+  })
+
+  test("elapsed runs live while an agent runs, and stops at its last report", () => {
+    expect(workflowAgentElapsed({ index: 1, label: "x", state: "running", startedAt: 1000 }, 4000)).toBe(3000)
+    expect(workflowAgentElapsed({ index: 1, label: "x", state: "done", startedAt: 1000, lastProgressAt: 2500 }, 9000)).toBe(1500)
+    expect(workflowAgentElapsed({ index: 1, label: "x", state: "queued" }, 9000)).toBeNull()
+    expect(workflowAgentElapsed({ index: 1, label: "x", state: "done", durationMs: 42 }, 9000)).toBe(42)
+  })
+
+  test("token counts fit a row", () => {
+    expect(formatTokens(940)).toBe("940")
+    expect(formatTokens(1_250)).toBe("1.3k")
+    expect(formatTokens(12_400)).toBe("12k")
+    expect(formatTokens(1_300_000)).toBe("1.3M")
+  })
+})
+
+describe("task log", () => {
+  const task = (id: string, startedAt: number, extra: Partial<SubagentActivity> = {}): SubagentActivity =>
+    ({ id, type: "subagent", label: id, status: "completed", startedAt, ...extra })
+  const run = { phases: [], agents: [] }
+
+  test("running first, then newest first, without a workflow's own agents", () => {
+    const tasks = [
+      task("monitor", 1, { type: "monitor", status: "running" }),
+      task("old", 2),
+      task("new", 5),
+      task("inner", 6, { workflowId: "w" }),
+    ]
+    expect(orderTaskLog(tasks).map((entry) => entry.id)).toEqual(["monitor", "new", "old"])
+  })
+
+  test("the Workflow card shows the runs going, else the latest run", () => {
+    const older = task("w1", 1, { type: "workflow", workflow: run })
+    const newer = task("w2", 2, { type: "workflow", workflow: run })
+    expect(latestWorkflows([older, newer, task("t", 3)]).map((entry) => entry.id)).toEqual(["w2"])
+    const live = { ...older, status: "running" as const }
+    expect(latestWorkflows([live, newer]).map((entry) => entry.id)).toEqual(["w1"])
+    expect(latestWorkflows([task("t", 1)])).toEqual([])
   })
 })

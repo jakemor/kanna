@@ -261,6 +261,27 @@
   }
 }
 
+/*
+ * A running workflow agent's tile. Shallow and quick: dimming only to 70% at
+ * 1.2s a cycle reads as work going on, where the stock pulse's 2s dip to half
+ * read as blinking. Still under reduced motion: the grey already says running.
+ */
+.kanna-tile-pulse {
+  animation: kanna-tile-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes kanna-tile-pulse {
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kanna-tile-pulse {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kanna-shiny-track {
     display: none;

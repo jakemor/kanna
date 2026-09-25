@@ -630,7 +630,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
         // words still find the toggle.
         keywords: [
           "right sidebar", "panel", "git", "diff", "changes", "commit", "stage", "source control", "history", "log",
-          "ports", "localhost", "servers", "browser", "todos", "agents", "subagents", "attachments", "show", "hide",
+          "ports", "localhost", "servers", "browser", "todos", "agents", "subagents", "tasks", "monitors", "workflows", "attachments", "show", "hide",
         ],
         icon: <PanelRight className={ICON_CLASS} />,
         shortcut: chatShortcuts("toggleRightSidebar"),

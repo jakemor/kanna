@@ -82,6 +82,16 @@ import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } 
 import { checkSessionArtifact, type SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
 import { KANNA_CHAT_LINK_NOTICE } from "../shared/chat-links"
+import {
+  findWorkflowOf,
+  finishActivity,
+  linkWorkflowAgents,
+  normalizeClaudeTaskMessage,
+  pruneTaskLog,
+  type SubagentActivityUpdate,
+} from "./background-tasks"
+
+export type { SubagentActivityUpdate } from "./background-tasks"
 
 /**
  * Tools every Claude session gets. `EnterPlanMode` is deliberately absent — it
@@ -186,6 +196,8 @@ interface ClaudeSessionHandle {
   getAccountInfo?: () => Promise<any>
   getUsage?: () => Promise<ClaudeUsageRaw | null>
   interrupt: () => Promise<void>
+  /** Stops one background task; the CLI then reports it ended as `stopped`. */
+  stopTask?: (taskId: string) => Promise<void>
   close: () => void
   sendPrompt: (content: string) => Promise<void>
   setModel: (model: string) => Promise<void>
@@ -648,6 +660,8 @@ async function* createClaudeHarnessStream(
   hooks?: {
     onCommandsChanged?: (commands: SlashCommand[]) => void
     onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
+    /** A background task started, reported progress, or ended. */
+    onTaskActivity?: (update: SubagentActivityUpdate) => void
   }
 ): AsyncGenerator<HarnessEvent> {
   let seenAssistantUsageIds = new Set<string>()
@@ -673,6 +687,14 @@ async function* createClaudeHarnessStream(
     // Subscription rate-limit utilization pushed on turns (claude.ai plans).
     if (sdkMessage?.type === "rate_limit_event" && sdkMessage.rate_limit_info) {
       hooks?.onRateLimitEvent?.(sdkMessage.rate_limit_info as ClaudeRateLimitInfoRaw)
+    }
+
+    // Task reports are live state, not conversation: they go to the chat's
+    // task registry and never into the transcript. A workflow reports every
+    // few seconds for as long as it runs.
+    if (hooks?.onTaskActivity) {
+      const task = normalizeClaudeTaskMessage(sdkMessage)
+      if (task) hooks.onTaskActivity(task)
     }
 
     // Per-step usage lives on the nested API message (`sdkMessage.message.usage`);
@@ -769,28 +791,17 @@ async function* createClaudeHarnessStream(
 }
 
 /**
- * What the SDK's subagent hooks tell us, normalized.
+ * SDK hooks that back up the task stream (see background-tasks.ts).
  *
- * `started`/`stopped` name one agent. `inFlight` is the authoritative sweep the
- * Stop hook carries: everything still running at the moment the main agent went
- * quiet. The sweep is what makes the count trustworthy — a `stopped` hook that
- * never fires (crash, kill, a session torn down mid-flight) would otherwise
- * strand an agent as "running" forever, and the whole point of this feature is
- * a count you can believe.
- */
-export type SubagentActivityUpdate =
-  | { kind: "started"; id: string; type: string; label: string }
-  | { kind: "stopped"; id: string; failed: boolean }
-  | { kind: "inFlight"; ids: readonly { id: string; type: string; label: string }[] }
-
-/**
- * SDK hooks that report delegated work.
+ * The stream announces every task as it starts and ends. The hooks are the
+ * safety net for an end that never lands. `SubagentStop` closes a Task
+ * subagent. `Stop` fires when the main agent stops and carries
+ * `background_tasks`, the work still registered on the session. That is the
+ * sweep: whatever it doesn't name has ended, however it ended.
  *
- * `SubagentStart`/`SubagentStop` cover Task-spawned agents. `Stop` fires when
- * the main agent stops and carries `background_tasks` — running/pending and
- * backgrounded work registered on the session, which is the only signal that
- * distinguishes "this turn is done" from "the main agent is done talking but
- * the work it kicked off is still going".
+ * There is no `SubagentStart`: `task_started` announces the same agent under
+ * the same id, with its tool call. The hook also fires for every agent a
+ * workflow runs, which belong on the workflow's card, not as rows of their own.
  *
  * Every hook returns `{}`: these observe, they never block or steer the model.
  */
@@ -811,11 +822,6 @@ function subagentHooks(
   }
 
   return {
-    SubagentStart: one(async (input) => {
-      if (input.hook_event_name !== "SubagentStart") return {}
-      onActivity({ kind: "started", id: input.agent_id, type: "subagent", label: input.agent_type })
-      return {}
-    }),
     SubagentStop: one(async (input) => {
       if (input.hook_event_name !== "SubagentStop") return {}
       onActivity({ kind: "stopped", id: input.agent_id, failed: false })
@@ -842,8 +848,9 @@ async function startClaudeSession(args: {
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
   /**
-   * Delegated work starting, finishing, or — on Stop — the authoritative list
-   * of what is still in flight. Driven by SDK hooks; see `subagentHooks`.
+   * Delegated work starting, progressing, finishing, or — on Stop — the
+   * authoritative list of what is still in flight. Driven by the task stream
+   * (background-tasks.ts) and SDK hooks (`subagentHooks`).
    */
   onSubagentActivity?: (update: SubagentActivityUpdate) => void
 }): Promise<ClaudeSessionHandle> {
@@ -954,6 +961,7 @@ async function startClaudeSession(args: {
         commandsRef.current = commands
       },
       onRateLimitEvent: args.onRateLimitEvent,
+      onTaskActivity: args.onSubagentActivity,
     }),
     getAccountInfo: async () => {
       try {
@@ -980,6 +988,9 @@ async function startClaudeSession(args: {
     },
     interrupt: async () => {
       await q.interrupt()
+    },
+    stopTask: async (taskId: string) => {
+      await q.stopTask(taskId)
     },
     sendPrompt: async (content: string) => {
       if (promptQueueClosed) {
@@ -1034,11 +1045,18 @@ export class AgentCoordinator {
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   /**
-   * Delegated work per chat, keyed by the provider's agent id. Finished entries
-   * are kept so the panel can still say what just ran; they are cleared when
-   * the next turn starts, not when they finish.
+   * Delegated work per chat, keyed by the provider's agent id: a log that
+   * runs across turns. Finished entries stay, so the widgets can say what ran
+   * whether its turn is going or over, until newer ones push them out
+   * (`pruneTaskLog`). In memory only: a restart starts it empty.
    */
   private readonly subagents = new Map<string, Map<string, SubagentActivity>>()
+  /**
+   * Tasks the CLI called housekeeping when they started, per chat. The Stop
+   * sweep lists them with everything else and can't say which they are, so
+   * without this it would surface them as work.
+   */
+  private readonly ambientTaskIds = new Map<string, Set<string>>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
 
   constructor(args: AgentCoordinatorArgs) {
@@ -1179,6 +1197,16 @@ export class AgentCoordinator {
    * in "waiting" forever.
    */
   applySubagentActivity(chatId: string, update: SubagentActivityUpdate, now = Date.now()) {
+    if (update.kind === "ambient") {
+      let ambient = this.ambientTaskIds.get(chatId)
+      if (!ambient) {
+        ambient = new Set()
+        this.ambientTaskIds.set(chatId, ambient)
+      }
+      ambient.add(update.id)
+      return
+    }
+
     let byId = this.subagents.get(chatId)
     if (!byId) {
       byId = new Map()
@@ -1186,23 +1214,66 @@ export class AgentCoordinator {
     }
 
     if (update.kind === "started") {
-      byId.set(update.id, {
+      const existing = byId.get(update.id)
+      const next: SubagentActivity = {
         id: update.id,
         type: update.type,
         label: update.label,
         status: "running",
-        startedAt: now,
-      })
+        // The Stop sweep can list a task before its start event lands, and
+        // it started when the sweep first saw it, not now.
+        startedAt: existing?.status === "running" ? existing.startedAt : now,
+        ...(update.toolUseId ? { toolUseId: update.toolUseId } : {}),
+        ...(update.description ? { description: update.description } : {}),
+        ...(update.stoppable ? { stoppable: true } : {}),
+        ...(update.type === "workflow"
+          ? { workflow: { ...(update.workflowName ? { name: update.workflowName } : {}), phases: [], agents: [] } }
+          : {}),
+      }
+      const workflowId = findWorkflowOf(byId, update.id)
+      if (workflowId) next.workflowId = workflowId
+      byId.set(update.id, next)
+    } else if (update.kind === "progress") {
+      let existing = byId.get(update.id)
+      // A workflow already running when the session (re)attached reports
+      // progress with no start before it. Its progress says what it is.
+      if (!existing && update.workflow) {
+        existing = { id: update.id, type: "workflow", label: "Workflow", status: "running", startedAt: now, stoppable: true }
+      }
+      if (!existing || existing.status !== "running") return
+      const next: SubagentActivity = { ...existing }
+      if (update.usage) next.usage = update.usage
+      if (update.summary) next.summary = update.summary
+      if (update.workflow) {
+        next.workflow = { ...(existing.workflow?.name ? { name: existing.workflow.name } : {}), ...update.workflow }
+        linkWorkflowAgents(byId, update.id, update.workflow.agents)
+      }
+      byId.set(update.id, next)
     } else if (update.kind === "stopped") {
       const existing = byId.get(update.id)
-      if (!existing || existing.status !== "running") return
-      byId.set(update.id, { ...existing, status: update.failed ? "failed" : "completed", endedAt: now })
+      if (!existing) return
+      const reported = {
+        ...(update.usage ? { usage: update.usage } : {}),
+        ...(update.summary ? { summary: update.summary } : {}),
+      }
+      if (existing.status !== "running") {
+        // Two reports can end one task (task_updated, then the notification
+        // with its totals), or the sweep can close it first. The outcome and
+        // time already stand; the totals are still worth having.
+        if (!update.usage && !update.summary) return
+        byId.set(update.id, { ...existing, ...reported })
+      } else {
+        const status = update.stopped ? "stopped" : update.failed ? "failed" : "completed"
+        byId.set(update.id, finishActivity({ ...existing, ...reported }, status, now))
+      }
     } else {
       const named = new Set(update.ids.map((task) => task.id))
+      const ambient = this.ambientTaskIds.get(chatId)
       for (const task of update.ids) {
+        if (ambient?.has(task.id)) continue
         const existing = byId.get(task.id)
-        // The sweep also *discovers* work: a backgrounded shell or a monitor
-        // never fires SubagentStart, so Stop is the first we hear of it.
+        // The sweep also *discovers* work whose start event never reached
+        // us, so Stop is the first we hear of it.
         if (!existing) {
           byId.set(task.id, { id: task.id, type: task.type, label: task.label, status: "running", startedAt: now })
         } else if (existing.status !== "running") {
@@ -1211,12 +1282,28 @@ export class AgentCoordinator {
       }
       for (const [id, activity] of byId) {
         if (activity.status === "running" && !named.has(id)) {
-          byId.set(id, { ...activity, status: "completed", endedAt: now })
+          byId.set(id, finishActivity(activity, "completed", now))
         }
       }
     }
 
+    pruneTaskLog(byId)
     this.emitStateChange(chatId)
+  }
+
+  /**
+   * Stops one background task without cancelling the turn: the Stop in a
+   * Tasks row's menu, or on a workflow's card. The CLI answers with the
+   * task's end, reported as `stopped`, which is what updates the row.
+   */
+  async stopBackgroundTask(chatId: string, taskId: string) {
+    const task = this.subagents.get(chatId)?.get(taskId)
+    if (!task || task.status !== "running") return
+    const stopTask = this.claudeSessions.get(chatId)?.session.stopTask
+    if (!task.stoppable || !stopTask) {
+      throw new Error("This task can't be stopped on its own. Stop the chat to end it.")
+    }
+    await stopTask(taskId)
   }
 
   /**
@@ -1257,20 +1344,10 @@ export class AgentCoordinator {
     let changed = false
     for (const [id, activity] of byId) {
       if (activity.status !== "running") continue
-      byId.set(id, { ...activity, status: "failed", endedAt: now })
+      byId.set(id, finishActivity(activity, "failed", now))
       changed = true
     }
     if (changed) this.emitStateChange(chatId)
-  }
-
-  /** Drop the previous turn's record so the panel reflects this turn only. */
-  private clearFinishedSubagents(chatId: string) {
-    const byId = this.subagents.get(chatId)
-    if (!byId) return
-    for (const [id, activity] of byId) {
-      if (activity.status !== "running") byId.delete(id)
-    }
-    if (byId.size === 0) this.subagents.delete(chatId)
   }
 
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
@@ -1715,10 +1792,6 @@ export class AgentCoordinator {
       await this.store.appendMessage(args.chatId, userPromptEntry)
     }
     await this.store.recordTurnStarted(args.chatId, args.model)
-    // Last turn's finished agents stop being interesting the moment a new one
-    // starts. Anything still running is deliberately kept: that is precisely
-    // the work this turn may still be waiting on.
-    this.clearFinishedSubagents(args.chatId)
 
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
@@ -2544,7 +2617,10 @@ export class AgentCoordinator {
       }
       // The session is gone, so nothing it spawned can report back. Only when
       // it is still the chat's session: a restart's replacement owns them now.
-      if (!this.claudeSessions.has(session.chatId)) this.closeRunningSubagents(session.chatId)
+      if (!this.claudeSessions.has(session.chatId)) {
+        this.closeRunningSubagents(session.chatId)
+        this.ambientTaskIds.delete(session.chatId)
+      }
       session.session.close()
       this.emitStateChange(session.chatId)
     }

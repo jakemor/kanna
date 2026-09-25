@@ -24,10 +24,12 @@ import {
   MessageCircleQuestion,
   FileSearchCorner,
   Pencil,
+  Radar,
   Search,
   SquareX,
   Terminal,
   ToyBrick,
+  Workflow,
   type LucideIcon,
   File,
   FilePen,
@@ -87,6 +89,9 @@ export const toolIcons: Record<string, LucideIcon> = {
   AskUserQuestion: MessageCircleQuestion,
   Skill: FileSearchCorner,
   EnterPlanMode: Map,
+  // As the Tasks and Workflow widgets draw them.
+  Workflow,
+  Monitor: Radar,
 }
 
 export const defaultToolIcon: LucideIcon = ToyBrick

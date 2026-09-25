@@ -2352,16 +2352,79 @@ export type HydratedTranscriptMessage =
  * while the work it delegated was still going.
  */
 export interface SubagentActivity {
-  /** The provider's own id: Claude's `agent_id`, or the spawning tool call id. */
+  /** The provider's own id: Claude's task id (a subagent's `agent_id`), or the spawning tool call id. */
   id: string
   /** `subagent`, `shell`, `monitor`, `workflow`, … Free-form: providers add kinds. */
   type: string
   /** Subagent type name ("code-reviewer") when known, else the task description. */
   label: string
-  status: "running" | "completed" | "failed"
+  /** `stopped` is someone stopping it (the user, or the agent's TaskStop), not a failure. */
+  status: "running" | "completed" | "failed" | "stopped"
   startedAt: number
   /** Unset while running. */
   endedAt?: number
+  /** The tool call that started it, when the provider names it. Claude's task events do. */
+  toolUseId?: string
+  /** What it was started to do: a subagent's task, a monitor's or a shell's description. */
+  description?: string
+  /** Its latest one-line status, when the provider reports one (an MCP task's own message). */
+  summary?: string
+  /** Tokens and tool calls so far, when the provider counts them. */
+  usage?: { totalTokens: number; toolUses: number }
+  /** A workflow's phases and agents. Only on `workflow`. */
+  workflow?: WorkflowProgress
+  /**
+   * The workflow this agent runs inside. Its work is on the workflow's row
+   * and card, so it gets no row of its own.
+   */
+  workflowId?: string
+  /** The provider can stop this one task without cancelling the turn (Claude's `stopTask`). */
+  stoppable?: boolean
+}
+
+/**
+ * A running Claude workflow: the phases its script announced and every
+ * agent() call so far. Replaced wholesale on each progress report, as the
+ * CLI sends it.
+ */
+export interface WorkflowProgress {
+  /** The script's `meta.name` ("review-changes"). */
+  name?: string
+  phases: WorkflowPhase[]
+  agents: WorkflowAgent[]
+}
+
+export interface WorkflowPhase {
+  index: number
+  title: string
+}
+
+export type WorkflowAgentState = "queued" | "running" | "done" | "failed" | "skipped"
+
+/** One agent() call in a workflow. */
+export interface WorkflowAgent {
+  /** The call's index in the run, and its identity across reports. */
+  index: number
+  label: string
+  phaseIndex?: number
+  state: WorkflowAgentState
+  /** The CLI's agent id, once it has started: the same id a subagent's task carries. */
+  agentId?: string
+  model?: string
+  tokens?: number
+  toolCalls?: number
+  /** Epoch ms, from the machine's clock. */
+  startedAt?: number
+  /** Epoch ms of its latest report: its end, once it has ended. */
+  lastProgressAt?: number
+  durationMs?: number
+  /** The start of its prompt, as the CLI previews it. Clipped. */
+  promptPreview?: string
+  /** The start of its result. Clipped. */
+  resultPreview?: string
+  error?: string
+  /** Replayed from an earlier run of the same workflow rather than run again. */
+  cached?: boolean
 }
 
 export interface ChatRuntime {
@@ -2376,9 +2439,9 @@ export interface ChatRuntime {
   autoPlan: boolean
   sessionToken: string | null
   /**
-   * In-flight and just-finished delegated work, newest last. Omitted when the
-   * chat has never spawned any, so a chat that doesn't delegate costs nothing
-   * on the wire.
+   * The chat's task log: delegated work running now and the latest to have
+   * finished, across turns, oldest first. Omitted when the chat has never
+   * spawned any, so a chat that doesn't delegate costs nothing on the wire.
    */
   subagents?: SubagentActivity[]
 }

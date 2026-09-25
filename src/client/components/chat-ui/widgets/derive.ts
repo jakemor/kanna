@@ -1,5 +1,13 @@
 import { ATTACHMENT_TOOL_NAMES, displayAttachments, type DisplayAttachment } from "../../../../shared/display-tools"
-import type { NormalizedToolCall, SubagentActivity, ToolCallEntry, TranscriptEntry } from "../../../../shared/types"
+import type {
+  NormalizedToolCall,
+  SubagentActivity,
+  ToolCallEntry,
+  TranscriptEntry,
+  WorkflowAgent,
+  WorkflowPhase,
+  WorkflowProgress,
+} from "../../../../shared/types"
 
 /**
  * What the widgets read out of the transcript. Kept pure (entries in, data
@@ -37,16 +45,17 @@ export function deriveSentAttachments(entries: readonly TranscriptEntry[]): Widg
 }
 
 /**
- * The tool call that spawned each subagent, so its row in the Agents widget can
- * jump to it. Keyed by subagent id; an agent missing here has no call in the
+ * The tool call that started each task, so its row in the Tasks widget can
+ * jump to it. Keyed by task id; a task missing here has no call in the
  * loaded window and its row stays static.
  *
+ * Claude's task events name the call (`toolUseId`), for every kind: a
+ * subagent's Agent call, a monitor's Monitor call, a workflow's Workflow call.
  * Codex and Grok key a subagent by its tool call id, so the id is the answer.
- * Claude keys it by the SDK's `agent_id`, which no transcript entry carries.
- * Its spawn calls are matched by type instead: the latest calls for a
- * subagent type pair, in order, with this turn's agents of that type. A turn's
- * agents are the latest spawned, so the tail of the calls is theirs.
- * Background shells and monitors have no spawn call to find.
+ * A Claude agent the Stop sweep found carries neither. Its spawn calls are
+ * matched by type instead: the latest calls for a subagent type pair, in
+ * order, with this turn's agents of that type. A turn's agents are the latest
+ * spawned, so the tail of the calls is theirs.
  */
 export function deriveSubagentToolIds(
   entries: readonly TranscriptEntry[],
@@ -54,8 +63,11 @@ export function deriveSubagentToolIds(
 ): Map<string, string> {
   const callIdsByLabel = new Map<string, string[]>()
   const callIds = new Set<string>()
+  const allCallIds = new Set<string>()
   for (const entry of entries) {
-    if (entry.kind !== "tool_call" || entry.tool.toolKind !== "subagent_task") continue
+    if (entry.kind !== "tool_call") continue
+    allCallIds.add(entry.tool.toolId)
+    if (entry.tool.toolKind !== "subagent_task") continue
     callIds.add(entry.tool.toolId)
     const label = entry.tool.input.subagentType || entry.tool.input.description
     if (!label) continue
@@ -66,7 +78,15 @@ export function deriveSubagentToolIds(
 
   const toolIds = new Map<string, string>()
   const unmatchedByLabel = new Map<string, SubagentActivity[]>()
+  const claimed = new Set<string>()
   for (const agent of subagents) {
+    if (agent.toolUseId && allCallIds.has(agent.toolUseId)) {
+      toolIds.set(agent.id, agent.toolUseId)
+      claimed.add(agent.toolUseId)
+    }
+  }
+  for (const agent of subagents) {
+    if (toolIds.has(agent.id) || agent.toolUseId) continue
     if (callIds.has(agent.id)) {
       toolIds.set(agent.id, agent.id)
     } else if (agent.type === "subagent") {
@@ -76,7 +96,7 @@ export function deriveSubagentToolIds(
     }
   }
   for (const [label, agents] of unmatchedByLabel) {
-    const calls = callIdsByLabel.get(label) ?? []
+    const calls = (callIdsByLabel.get(label) ?? []).filter((toolId) => !claimed.has(toolId))
     const tail = calls.slice(-agents.length)
     // Fewer calls than agents means the older ones are outside the window:
     // the calls still loaded belong to the newest agents.
@@ -142,4 +162,74 @@ export function deriveSubagentDetails(
     if (found) details.set(agentId, found)
   }
   return details
+}
+
+/** What a workflow's card says at a glance, counted from its agents. */
+export interface WorkflowSummary {
+  total: number
+  queued: number
+  running: number
+  done: number
+  failed: number
+  skipped: number
+  tokens: number
+  /** Where the run is: the latest phase with an agent running, else the latest one reached. */
+  currentPhase?: WorkflowPhase
+}
+
+export function summarizeWorkflow(progress: WorkflowProgress | undefined): WorkflowSummary {
+  const summary: WorkflowSummary = { total: 0, queued: 0, running: 0, done: 0, failed: 0, skipped: 0, tokens: 0 }
+  if (!progress) return summary
+  let runningPhase: number | undefined
+  let reachedPhase: number | undefined
+  for (const agent of progress.agents) {
+    summary.total += 1
+    summary[agent.state] += 1
+    summary.tokens += agent.tokens ?? 0
+    if (agent.phaseIndex === undefined) continue
+    if (agent.state === "running") runningPhase = Math.max(runningPhase ?? agent.phaseIndex, agent.phaseIndex)
+    if (agent.state !== "queued") reachedPhase = Math.max(reachedPhase ?? agent.phaseIndex, agent.phaseIndex)
+  }
+  const phaseIndex = runningPhase ?? reachedPhase
+  const currentPhase = phaseIndex === undefined ? undefined : progress.phases.find((phase) => phase.index === phaseIndex)
+  if (currentPhase) summary.currentPhase = currentPhase
+  return summary
+}
+
+/** How long a workflow agent has run, or ran. Null until it starts. */
+export function workflowAgentElapsed(agent: WorkflowAgent, now: number): number | null {
+  if (agent.durationMs !== undefined) return agent.durationMs
+  if (agent.startedAt === undefined) return null
+  if (agent.state === "running") return Math.max(0, now - agent.startedAt)
+  return agent.lastProgressAt !== undefined ? Math.max(0, agent.lastProgressAt - agent.startedAt) : null
+}
+
+/** "940", "12.4k", "1.3M": a token count at the width of a row's meta. */
+export function formatTokens(tokens: number): string {
+  if (tokens < 1_000) return String(Math.round(tokens))
+  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0).replace(/\.0$/, "")}k`
+  return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+}
+
+/**
+ * The Tasks card's log order: what is running, then what finished, each
+ * newest first. The log runs across turns, so a long-lived monitor can be
+ * the oldest entry and still the one that matters most.
+ */
+export function orderTaskLog(tasks: readonly SubagentActivity[]): SubagentActivity[] {
+  return tasks
+    .filter((task) => !task.workflowId)
+    .sort((a, b) => Number(b.status === "running") - Number(a.status === "running") || b.startedAt - a.startedAt)
+}
+
+/**
+ * The runs the Workflow card opens up: every one still running, or when none
+ * is, the latest to have run, whether its turn is going or long over.
+ */
+export function latestWorkflows(tasks: readonly SubagentActivity[]): SubagentActivity[] {
+  const workflows = tasks.filter((task) => task.type === "workflow" && task.workflow)
+  const running = workflows.filter((task) => task.status === "running")
+  if (running.length > 0) return running.sort((a, b) => a.startedAt - b.startedAt)
+  const latest = workflows.reduce<SubagentActivity | undefined>((newest, task) => (!newest || task.startedAt > newest.startedAt ? task : newest), undefined)
+  return latest ? [latest] : []
 }

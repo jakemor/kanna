@@ -1868,6 +1868,13 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }
+        case "chat.stopTask": {
+          // No broadcast: the task's end arrives on the session's stream and
+          // updates the registry, which pushes the chat like any task report.
+          await agent.stopBackgroundTask(command.chatId, command.taskId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
         case "chat.exportStandalone": {
           const { chat, project } = resolveChatProject(command.chatId)
           const result = await writeStandaloneTranscriptExport({

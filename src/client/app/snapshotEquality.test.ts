@@ -148,6 +148,22 @@ describe("foldChatSnapshot", () => {
     expect(foldTwice(started, null, stopped)?.runtime.subagents?.[0]?.status).toBe("failed")
   })
 
+  test("a push that only moves a workflow's progress is applied", () => {
+    // A running workflow changes nothing but its agents for minutes at a time.
+    const current = snapshot(0, ["a"])
+    const agent = { index: 1, label: "review a.ts", state: "running" as const }
+    const workflow = {
+      id: "wf-1", type: "workflow", label: "review", status: "running" as const, startedAt: 1,
+      workflow: { phases: [], agents: [agent] },
+    }
+    const started = foldTwice(current, null, { ...snapshot(1, [], true), runtime: { ...current.runtime, subagents: [workflow] } })
+    const moved = {
+      ...snapshot(1, [], true),
+      runtime: { ...current.runtime, subagents: [{ ...workflow, workflow: { phases: [], agents: [{ ...agent, state: "done" as const }] } }] },
+    }
+    expect(foldTwice(started, null, moved)?.runtime.subagents?.[0]?.workflow?.agents[0]?.state).toBe("done")
+  })
+
   test("a full push replaces outright, cache or no cache", () => {
     const base = { messages: [entry("a")], startIndex: 0 }
     expect(ids(foldTwice(null, base, snapshot(0, ["x", "y"])))).toEqual(["x", "y"])

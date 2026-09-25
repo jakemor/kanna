@@ -24,11 +24,18 @@ import { CHAT_HOVER_CARD_CONTENT_CLASSNAME } from "../sidebar/ChatHoverCard"
  */
 export function WidgetHoverCard({
   containerRef,
+  alignTo,
   children,
   className,
 }: {
   /** The list; every row the card describes is somewhere beneath it. */
   containerRef: RefObject<HTMLElement | null>
+  /**
+   * Opens beside this element instead of the row, level with the row. For
+   * keys that sit mid-card (a workflow's tiles): anchored to its own box, a
+   * card would open over the tiles beside it rather than beside the column.
+   */
+  alignTo?: RefObject<HTMLElement | null>
   children: (rowKey: string, dismiss: () => void) => ReactNode | null
   className?: string
 }) {
@@ -38,7 +45,7 @@ export function WidgetHoverCard({
   // A click closes the card while the pointer is still on the row; without
   // this, one pixel of movement would raise it again.
   const dismissedKeyRef = useRef<string | null>(null)
-  const anchorRef = useRef<HTMLElement | null>(null)
+  const anchorRef = useRef<{ getBoundingClientRect: () => DOMRect } | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
 
   const setHovered = useCallback((key: string | null) => {
@@ -56,9 +63,19 @@ export function WidgetHoverCard({
   // an anchor holding a detached row would float the card where it was.
   useLayoutEffect(() => {
     const container = containerRef.current
-    anchorRef.current = hoveredKey && container
+    const row = hoveredKey && container
       ? container.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(hoveredKey)}"]`)
       : null
+    const edge = alignTo?.current
+    anchorRef.current = row && edge
+      ? {
+        getBoundingClientRect: () => {
+          const rowRect = row.getBoundingClientRect()
+          const edgeRect = edge.getBoundingClientRect()
+          return DOMRect.fromRect({ x: edgeRect.left, y: rowRect.top, width: edgeRect.width, height: rowRect.height })
+        },
+      }
+      : row
   })
 
   useEffect(() => {

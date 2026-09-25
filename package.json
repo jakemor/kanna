@@ -50,7 +50,7 @@
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.277",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
     "@anthropic-ai/sdk": "^0.123.0",
     "@mariozechner/pi-ai": "0.73.1",
     "@mariozechner/pi-coding-agent": "0.73.1",

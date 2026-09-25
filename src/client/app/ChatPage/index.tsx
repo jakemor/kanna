@@ -313,7 +313,8 @@ function useFixedTerminalHeight(args: {
 }
 
 interface ChatWorkspaceProps {
-  chatCard: ReactNode
+  /** Everything above the terminal: the chat, the viewer's pane and the widget column. */
+  content: ReactNode
   projectId: string
   shouldRenderTerminalLayout: boolean
   showTerminalPane: boolean
@@ -375,6 +376,11 @@ const DesktopSidebarPane = memo(function DesktopSidebarPane({
       id="rightSidebar"
       defaultSize={`${sizePercent}%`}
       className="min-h-0 min-w-0"
+      // The column is at least 370px and the panel a percentage of the page,
+      // which can come out a fraction of a pixel narrower. The library's own
+      // `overflow: auto` then gave the panel a horizontal scrollbar, a thin
+      // bar in the border colour along its bottom. The column scrolls itself.
+      style={{ overflow: "hidden" }}
       elementRef={sidebarPanelRef}
       groupResizeBehavior="preserve-pixel-size"
     >
@@ -445,8 +451,16 @@ const MobileSidebarPane = memo(function MobileSidebarPane({
   )
 })
 
+/**
+ * The terminal under everything right of the left sidebar: the chat, the
+ * viewer's pane and the widget column above it, all as wide as it is.
+ *
+ * The split is there even with no terminals (the terminal at nothing), so
+ * adding the first one doesn't move what's above to a new parent, which
+ * would remount the transcript, the viewer and the widget column.
+ */
 function ChatWorkspace({
-  chatCard,
+  content,
   projectId,
   shouldRenderTerminalLayout,
   showTerminalPane,
@@ -470,10 +484,6 @@ function ChatWorkspace({
   onTerminalLayout,
   onLayoutChanged,
 }: ChatWorkspaceProps) {
-  if (!shouldRenderTerminalLayout) {
-    return <>{chatCard}</>
-  }
-
   const terminalPanelDefaultSizes = getTerminalPanelDefaultSizes(showTerminalPane, terminalLayout.mainSizes)
 
   return (
@@ -484,8 +494,8 @@ function ChatWorkspace({
       className="flex-1 min-h-0"
       onLayoutChanged={onLayoutChanged}
     >
-      <ResizablePanel id="chat" defaultSize={`${terminalPanelDefaultSizes[0]}%`} minSize={`${CHAT_MIN_SIZE_PERCENT}%`} className="min-h-0">
-        {chatCard}
+      <ResizablePanel id="chat" defaultSize={`${terminalPanelDefaultSizes[0]}%`} minSize={`${CHAT_MIN_SIZE_PERCENT}%`} className="flex min-h-0 flex-col">
+        {content}
       </ResizablePanel>
       <ResizableHandle
         // Nothing to drag to when the terminal is pinned at its ceiling; the
@@ -512,7 +522,7 @@ function ChatWorkspace({
             "--terminal-toggle-duration": `${TERMINAL_TOGGLE_ANIMATION_DURATION_MS}ms`,
           } as CSSProperties}
         >
-          <TerminalWorkspaceShell
+          {shouldRenderTerminalLayout ? <TerminalWorkspaceShell
             projectId={projectId}
             fixedTerminalHeight={fixedTerminalHeight}
             terminalLayout={terminalLayout}
@@ -528,7 +538,7 @@ function ChatWorkspace({
             onInitialTerminalCommandSent={onInitialTerminalCommandSent}
             onRemoveTerminal={onRemoveTerminal}
             onTerminalLayout={onTerminalLayout}
-          />
+          /> : null}
         </div>
       </ResizablePanel>
     </ResizablePanelGroup>
@@ -1297,44 +1307,13 @@ export function ChatPage() {
     isMac: state.localProjects?.machine.platform === "darwin",
   } : undefined), [diffRenderMode, handleLoadDiffPatch, handleOpenDiffFile, projectId, setDiffRenderMode, setWrapDiffLines, state.chatDiffSnapshot?.files, state.chatDiffSnapshot?.status, state.editorLabel, state.localProjects?.machine.platform, wrapDiffLines])
 
-  const chatWorkspace = projectId ? (
-    <ChatWorkspace
-      chatCard={chatCard}
-      projectId={projectId}
-      shouldRenderTerminalLayout={shouldRenderTerminalLayout}
-      showTerminalPane={showTerminalPane}
-      clampTerminalToMaxHeight={isMobileViewport}
-      terminalLayout={terminalLayout}
-      mainPanelGroupRef={mainPanelGroupRef}
-      terminalPanelRef={terminalPanelRef}
-      terminalVisualRef={terminalVisualRef}
-      fixedTerminalHeight={fixedTerminalHeight}
-      terminalFocusRequestVersion={terminalFocusRequestVersion}
-      addTerminal={addTerminal}
-      socket={state.socket}
-      connectionStatus={state.connectionStatus}
-      scrollback={scrollback}
-      minColumnWidth={minColumnWidth}
-      splitTerminalShortcut={resolvedKeybindings.bindings.addSplitTerminal}
-      pendingCommandsByTerminalId={pendingTerminalCommands}
-      onTerminalCommandSent={scheduleTerminalDiffRefresh}
-      onInitialTerminalCommandSent={handleInitialTerminalCommandSent}
-      onRemoveTerminal={handleRemoveTerminal}
-      onTerminalLayout={setTerminalSizes}
-      onLayoutChanged={handleTerminalResize}
-    />
-  ) : (
-    chatCard
-  )
-
-  // The chat and its terminal, with the viewer beside them or over them.
-  // Over them, they stay mounted underneath (the transcript keeps its place,
-  // the terminals their sessions) but go inert: the viewer is the whole of
-  // what's interactive there, so Esc, typing and focus can't reach the chat
-  // behind.
+  // The chat, with the viewer beside it or over it. Over it, the chat stays
+  // mounted underneath (the transcript keeps its place) but goes inert: the
+  // viewer is the whole of what's interactive there, so Esc, typing and focus
+  // can't reach the chat behind.
   const chatColumn = (
     <div inert={(viewerOpen && !viewerDocked) || undefined} className="flex h-full min-h-0 flex-1 flex-col">
-      {chatWorkspace}
+      {chatCard}
     </div>
   )
   // No right padding beside the widget column: its own 8px gutter is the
@@ -1467,66 +1446,100 @@ export function ChatPage() {
     </ToolPayloadProvider>
   ) : null
 
+  // The chat and the viewer, then the widget column, side by side: all that
+  // sits above the terminal.
+  const panes = shouldRenderDesktopRightSidebarLayout && projectId ? (
+    <ResizablePanelGroup
+      key={`${projectId}-right-sidebar`}
+      groupRef={rightSidebarPanelGroupRef}
+      orientation="horizontal"
+      className="flex-1 min-h-0"
+      onLayoutChange={(layout) => {
+        if (!showRightSidebar || isRightSidebarAnimating.current) {
+          return
+        }
+
+        const clampedRightSidebarSize = getRightSidebarSizePercent(
+          getRightSidebarSizePx(layout.rightSidebar, layoutWidth),
+          layoutWidth,
+        )
+        if (Math.abs(clampedRightSidebarSize - layout.rightSidebar) < 0.1) {
+          return
+        }
+
+        rightSidebarPanelGroupRef.current?.setLayout({
+          workspace: 100 - clampedRightSidebarSize,
+          rightSidebar: clampedRightSidebarSize,
+        })
+      }}
+      onLayoutChanged={(layout) => {
+        if (!showRightSidebar || isRightSidebarAnimating.current) {
+          return
+        }
+
+        setRightSidebarSize(getRightSidebarSizePx(layout.rightSidebar, layoutWidth))
+      }}
+    >
+      <ResizablePanel
+        id="workspace"
+        defaultSize={`${100 - effectiveRightSidebarSize}%`}
+        minSize={`${RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT}%`}
+        className="min-h-0 min-w-0"
+        groupResizeBehavior="preserve-relative-size"
+      >
+        {workspace}
+      </ResizablePanel>
+      <ResizableHandle
+        withHandle={false}
+        orientation="horizontal"
+        disabled={!showRightSidebar}
+        className={cn(!showRightSidebar && "pointer-events-none opacity-0")}
+      />
+      <DesktopSidebarPane
+        showRightSidebar={showRightSidebar}
+        sizePercent={effectiveRightSidebarSize}
+        sidebarPanelRef={sidebarPanelRef}
+        sidebarVisualRef={sidebarVisualRef}
+        content={rightPanelContent}
+      />
+    </ResizablePanelGroup>
+  ) : (
+    workspace
+  )
+
+  const chatWorkspace = projectId ? (
+    <ChatWorkspace
+      content={panes}
+      projectId={projectId}
+      shouldRenderTerminalLayout={shouldRenderTerminalLayout}
+      showTerminalPane={showTerminalPane}
+      clampTerminalToMaxHeight={isMobileViewport}
+      terminalLayout={terminalLayout}
+      mainPanelGroupRef={mainPanelGroupRef}
+      terminalPanelRef={terminalPanelRef}
+      terminalVisualRef={terminalVisualRef}
+      fixedTerminalHeight={fixedTerminalHeight}
+      terminalFocusRequestVersion={terminalFocusRequestVersion}
+      addTerminal={addTerminal}
+      socket={state.socket}
+      connectionStatus={state.connectionStatus}
+      scrollback={scrollback}
+      minColumnWidth={minColumnWidth}
+      splitTerminalShortcut={resolvedKeybindings.bindings.addSplitTerminal}
+      pendingCommandsByTerminalId={pendingTerminalCommands}
+      onTerminalCommandSent={scheduleTerminalDiffRefresh}
+      onInitialTerminalCommandSent={handleInitialTerminalCommandSent}
+      onRemoveTerminal={handleRemoveTerminal}
+      onTerminalLayout={setTerminalSizes}
+      onLayoutChanged={handleTerminalResize}
+    />
+  ) : (
+    panes
+  )
+
   return (
     <div ref={layoutRootRef} className="flex-1 flex flex-col min-w-0 relative">
-      {shouldRenderDesktopRightSidebarLayout && projectId ? (
-        <ResizablePanelGroup
-          key={`${projectId}-right-sidebar`}
-          groupRef={rightSidebarPanelGroupRef}
-          orientation="horizontal"
-          className="flex-1 min-h-0"
-          onLayoutChange={(layout) => {
-            if (!showRightSidebar || isRightSidebarAnimating.current) {
-              return
-            }
-
-            const clampedRightSidebarSize = getRightSidebarSizePercent(
-              getRightSidebarSizePx(layout.rightSidebar, layoutWidth),
-              layoutWidth,
-            )
-            if (Math.abs(clampedRightSidebarSize - layout.rightSidebar) < 0.1) {
-              return
-            }
-
-            rightSidebarPanelGroupRef.current?.setLayout({
-              workspace: 100 - clampedRightSidebarSize,
-              rightSidebar: clampedRightSidebarSize,
-            })
-          }}
-          onLayoutChanged={(layout) => {
-            if (!showRightSidebar || isRightSidebarAnimating.current) {
-              return
-            }
-
-            setRightSidebarSize(getRightSidebarSizePx(layout.rightSidebar, layoutWidth))
-          }}
-        >
-          <ResizablePanel
-            id="workspace"
-            defaultSize={`${100 - effectiveRightSidebarSize}%`}
-            minSize={`${RIGHT_SIDEBAR_MIN_WORKSPACE_SIZE_PERCENT}%`}
-            className="min-h-0 min-w-0"
-            groupResizeBehavior="preserve-relative-size"
-          >
-            {workspace}
-          </ResizablePanel>
-          <ResizableHandle
-            withHandle={false}
-            orientation="horizontal"
-            disabled={!showRightSidebar}
-            className={cn(!showRightSidebar && "pointer-events-none opacity-0")}
-          />
-          <DesktopSidebarPane
-            showRightSidebar={showRightSidebar}
-            sizePercent={effectiveRightSidebarSize}
-            sidebarPanelRef={sidebarPanelRef}
-            sidebarVisualRef={sidebarVisualRef}
-            content={rightPanelContent}
-          />
-        </ResizablePanelGroup>
-      ) : (
-        workspace
-      )}
+      {chatWorkspace}
       {isMobileViewport ? (
         <MobileSidebarPane
           projectId={projectId}

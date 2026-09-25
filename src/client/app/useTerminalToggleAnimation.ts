@@ -132,6 +132,9 @@ export function useTerminalToggleAnimation({
         animationTimeoutRef.current = null
       }
       isAnimatingRef.current = false
+      // The split stays mounted without terminals; the terminal's share goes
+      // back to what's above it.
+      mainPanelGroupRef.current?.setLayout({ chat: 100, terminal: 0 })
       return
     }
 

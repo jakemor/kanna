@@ -6,9 +6,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 /**
  * The viewer's chrome, the one frame every full-size view sits in: a changed
- * file's diff, an attachment, a chart. An elevated card, like the widget
- * cards. On the chat page it opens in a pane of its own beside the chat,
- * and expands over the chat (navbar, transcript, composer, terminal) on
+ * file's diff, an attachment, a chart. A flat card, bordered like the
+ * widget cards. On the chat page it opens in a pane of its own beside the
+ * chat, and expands over the chat (navbar, transcript, composer) on
  * request; elsewhere it covers the page.
  *
  * One header grammar: what it is (icon, title, a muted subtitle), then the
@@ -18,7 +18,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
  * Keys: Esc closes; j/k (or ]/[) step when there's more than one item, but
  * never while you're typing in a field. In a pane beside the chat they're
  * the viewer's only while focus is in it: the chat is live then, and Esc or
- * a j typed there is the chat's.
+ * a j typed there is the chat's. Over the chat they're the viewer's from
+ * anywhere but a field, since the terminal below stays live: Esc in vim
+ * there is vim's.
  */
 
 /** The page gave the viewer a pane beside the chat, which it can widen over the chat. */
@@ -89,8 +91,11 @@ export function ViewerSurface({
   const docked = placement !== null && !placement.expanded
   const dockedRef = useRef(docked)
   dockedRef.current = docked
-  // Beside a live chat, a key is the viewer's only when focus is in it.
-  const ownsKeys = () => !dockedRef.current || Boolean(surfaceRef.current?.contains(document.activeElement))
+  const ownsKeys = () => {
+    const active = document.activeElement
+    if (surfaceRef.current?.contains(active)) return true
+    return !dockedRef.current && !isTypingTarget(active)
+  }
 
   useLayoutEffect(() => {
     if (scrollKey !== undefined) bodyRef.current?.scrollTo({ top: 0 })
@@ -150,7 +155,7 @@ export function ViewerSurface({
       data-state={docked ? undefined : "open"}
       data-viewer-surface
       className={cn(
-        "flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-xl outline-none dark:bg-card",
+        "flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-background outline-none dark:bg-card",
         // Opens like the modal it effectively is: from its own centre, a
         // touch small and faded, 200ms. It leaves at once: closing is you
         // done with it, and a fade would hold it over the chat you went back to.

@@ -5,6 +5,7 @@ import {
   chatModeToFlags,
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
+  DEFAULT_REQUESTY_SDK_MODEL,
   PROVIDERS,
   type AgentProvider,
   type ChatMode,
@@ -44,6 +45,7 @@ import { SETTINGS_ROWS } from "./registry"
 const QUICK_RESPONSE_PROVIDER_OPTIONS: Array<{ value: LlmProviderKind; label: string }> = [
   { value: "openai", label: "OpenAI" },
   { value: "openrouter", label: "OpenRouter" },
+  { value: "requesty", label: "Requesty" },
   { value: "custom", label: "Custom" },
 ]
 
@@ -167,7 +169,9 @@ export function ProvidersSection({
         ? DEFAULT_OPENAI_SDK_MODEL
         : nextProvider === "openrouter"
           ? DEFAULT_OPENROUTER_SDK_MODEL
-          : llmProviderDraft.model,
+          : nextProvider === "requesty"
+            ? DEFAULT_REQUESTY_SDK_MODEL
+            : llmProviderDraft.model,
       baseUrl: nextProvider === "custom" ? llmProviderDraft.baseUrl : "",
     }
     setLlmProviderDraft(nextDraft)
@@ -179,7 +183,7 @@ export function ProvidersSection({
   const llmValidationDescription = (
     <>
       <span>
-        OpenAI-compatible API for Pi, naming chats & more. Works with OpenRouter, OpenAI, or any custom endpoint. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
+        OpenAI-compatible API for Pi, naming chats & more. Works with OpenRouter, Requesty, OpenAI, or any custom endpoint. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
       </span>
       <span
         className={cn(

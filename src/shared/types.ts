@@ -5,7 +5,7 @@ export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex" | "cursor" | "grok" | "pi"
-export type LlmProviderKind = "openai" | "openrouter" | "custom"
+export type LlmProviderKind = "openai" | "openrouter" | "requesty" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
 /** Same gates as the chime, applied to system notifications. Off by default: it needs a permission prompt. */
@@ -21,6 +21,7 @@ export type SubmitWhileRunning = "queue" | "steer"
 export type EditorPreset = "cursor" | "vscode" | "zed" | "xcode" | "windsurf" | "custom"
 export const DEFAULT_OPENAI_SDK_MODEL = "gpt-5.4-mini"
 export const DEFAULT_OPENROUTER_SDK_MODEL = "moonshotai/kimi-k2.5:nitro"
+export const DEFAULT_REQUESTY_SDK_MODEL = "google/gemini-2.5-flash"
 
 export type AttachmentKind = "image" | "file"
 export type StandaloneTranscriptAttachmentMode = "metadata" | "bundle"

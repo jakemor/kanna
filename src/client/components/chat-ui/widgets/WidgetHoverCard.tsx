@@ -151,8 +151,12 @@ export function WidgetHoverCard({
 
 /**
  * Lazily fetched card details, cached by a key that changes when the thing
- * does (a commit's sha never does; a branch's tip time or a file's patch
- * digest do). Bounded, since a long session hovers a lot of rows.
+ * does (a commit's checks, a branch's tip time, a file's patch digest).
+ * Bounded, since a long session hovers a lot of rows.
+ *
+ * When the key moves under an open card, the old details stay until the new
+ * ones land: a card is keyed by its row, so they are the same thing's, only
+ * older, and blanking them would collapse the card under the reader.
  */
 export function useCardDetails<T>(
   cache: Map<string, T>,
@@ -170,8 +174,10 @@ export function useCardDetails<T>(
       return
     }
     const cached = cache.get(cacheKey)
-    setDetails(cached ?? null)
-    if (cached !== undefined) return
+    if (cached !== undefined) {
+      setDetails(cached)
+      return
+    }
     let cancelled = false
     currentLoad()
       .then((result) => {

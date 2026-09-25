@@ -1,4 +1,4 @@
-import type { ChatCommitChecks, ChatCommitChecksState } from "../shared/types"
+import type { ChatCheckRun, ChatCheckRunState, ChatCommitChecks, ChatCommitChecksState } from "../shared/types"
 import { resolveCommandPath } from "./process-utils"
 
 /** Runs one `gh api graphql` query. Injected in tests so they never spawn `gh`. */
@@ -6,10 +6,17 @@ export type GraphqlRunner = (query: string) => Promise<{ stdout: string; exitCod
 
 interface CheckRunNode {
   __typename?: string
+  // A CheckRun (an Actions job, or another app's check)...
+  name?: string | null
   conclusion?: string | null
   status?: string | null
+  startedAt?: string | null
+  completedAt?: string | null
   detailsUrl?: string | null
-  checkSuite?: { workflowRun?: { url?: string | null } | null } | null
+  checkSuite?: { workflowRun?: { url?: string | null; workflow?: { name?: string | null } | null } | null } | null
+  // ...or a StatusContext (a commit status, as deploy services post).
+  context?: string | null
+  description?: string | null
   state?: string | null
   targetUrl?: string | null
 }
@@ -28,6 +35,8 @@ interface CommitNode {
 interface CacheEntry {
   fetchedAt: number
   checks: ChatCommitChecks | null
+  /** Held apart from `checks`, which is all the History snapshot carries. */
+  runs: ChatCheckRun[] | null
 }
 
 /** A running workflow changes state fast, so it is re-read often. */
@@ -44,12 +53,6 @@ const MAX_CACHE_ENTRIES = 500
 
 const REPO_SLUG_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/u
-
-/**
- * Only a real success counts, which is what GitHub itself shows: a commit with
- * three passing jobs and one skipped job reads "3 / 4" there too.
- */
-const PASSING_CONCLUSIONS = new Set(["SUCCESS"])
 
 async function runGhGraphql(query: string) {
   // Resolve gh through a login shell so servers started without the user's
@@ -84,12 +87,17 @@ fragment checks on Commit {
       nodes {
         __typename
         ... on CheckRun {
+          name
           conclusion
           status
+          startedAt
+          completedAt
           detailsUrl
-          checkSuite { workflowRun { url } }
+          checkSuite { workflowRun { url workflow { name } } }
         }
         ... on StatusContext {
+          context
+          description
           state
           targetUrl
         }
@@ -105,14 +113,56 @@ function readRollupState(state: string | null | undefined): ChatCommitChecksStat
   return "pending"
 }
 
+/**
+ * Only a real success passes, which is what GitHub itself shows: a commit with
+ * three passing jobs and one skipped job reads "3 / 4" there too.
+ */
+function nodeState(node: CheckRunNode): ChatCheckRunState {
+  // Only a commit status has a `state`; a check run has a conclusion once done.
+  if (!node.conclusion && node.state) {
+    if (node.state === "SUCCESS") return "success"
+    return node.state === "FAILURE" || node.state === "ERROR" ? "failure" : "pending"
+  }
+  switch (node.conclusion) {
+    case "SUCCESS":
+      return "success"
+    case "FAILURE":
+    case "TIMED_OUT":
+    case "CANCELLED":
+    case "STARTUP_FAILURE":
+    case "ACTION_REQUIRED":
+      return "failure"
+    case "SKIPPED":
+      return "skipped"
+    case "NEUTRAL":
+    case "STALE":
+      return "neutral"
+    default:
+      return "pending"
+  }
+}
+
 function nodePassed(node: CheckRunNode) {
-  if (node.conclusion) return PASSING_CONCLUSIONS.has(node.conclusion)
-  return node.state === "SUCCESS"
+  return nodeState(node) === "success"
 }
 
 function nodeFailed(node: CheckRunNode) {
-  if (node.conclusion) return node.conclusion === "FAILURE" || node.conclusion === "TIMED_OUT" || node.conclusion === "CANCELLED"
-  return node.state === "FAILURE" || node.state === "ERROR"
+  return nodeState(node) === "failure"
+}
+
+/** A row's own link: the job's page, where the rollup prefers the whole run. */
+function toCheckRun(node: CheckRunNode): ChatCheckRun | null {
+  const name = node.name || node.context
+  if (!name) return null
+  return {
+    name,
+    workflowName: node.checkSuite?.workflowRun?.workflow?.name || undefined,
+    state: nodeState(node),
+    startedAt: node.startedAt || undefined,
+    completedAt: node.completedAt || undefined,
+    url: node.detailsUrl || node.checkSuite?.workflowRun?.url || node.targetUrl || undefined,
+    description: node.description || undefined,
+  }
 }
 
 /**
@@ -139,6 +189,15 @@ function summarizeCommit(commit: CommitNode | null | undefined): ChatCommitCheck
   const url = nodeUrl(preferred ?? nodes.find((node) => nodeUrl(node)) ?? {})
 
   return { state, passed, total, url }
+}
+
+function listRuns(commit: CommitNode | null | undefined): ChatCheckRun[] | null {
+  const nodes = commit?.statusCheckRollup?.contexts?.nodes ?? []
+  const runs = nodes.flatMap((node) => {
+    const run = node ? toCheckRun(node) : null
+    return run ? [run] : []
+  })
+  return runs.length > 0 ? runs : null
 }
 
 function ttlFor(checks: ChatCommitChecks | null) {
@@ -191,6 +250,23 @@ export class CommitChecksStore {
     return known
   }
 
+  /**
+   * A commit's checks one by one, for a hover card. A commit already in the
+   * cache answers at once (History's snapshot read keeps pushed commits warm)
+   * and refetches behind the answer when stale; one the cache has never seen
+   * waits on a single read.
+   */
+  async readRuns(repoSlug: string, sha: string): Promise<ChatCheckRun[] | undefined> {
+    if (!REPO_SLUG_PATTERN.test(repoSlug) || !SHA_PATTERN.test(sha)) return undefined
+    const key = this.cacheKey(repoSlug, sha)
+    if (this.entries.has(key)) {
+      this.read(repoSlug, [sha])
+    } else if (this.now() >= this.unavailableUntil) {
+      await this.refresh(repoSlug, [sha])
+    }
+    return this.entries.get(key)?.runs ?? undefined
+  }
+
   /** Fetches one batch and stores it. Public so tests can await a fetch. */
   async refresh(repoSlug: string, shas: string[]): Promise<void> {
     const [owner, name] = repoSlug.split("/")
@@ -223,9 +299,11 @@ export class CommitChecksStore {
 
     const fetchedAt = this.now()
     wanted.forEach((sha, index) => {
+      const commit = repository[`c${index}`]
       this.store(this.cacheKey(repoSlug, sha), {
         fetchedAt,
-        checks: summarizeCommit(repository[`c${index}`]),
+        checks: summarizeCommit(commit),
+        runs: listRuns(commit),
       })
     })
   }

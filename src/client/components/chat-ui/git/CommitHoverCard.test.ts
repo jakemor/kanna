@@ -27,11 +27,15 @@ const details: ChatCommitDetails = {
   totalFileCount: 5,
   additions: 40,
   deletions: 9,
+  checkRuns: [
+    { name: "test", workflowName: "CI", state: "success", startedAt: "2026-09-25T10:00:00Z", completedAt: "2026-09-25T10:03:04Z" },
+    { name: "lint", workflowName: "CI", state: "failure", url: "https://github.com/acme/repo/actions/runs/1/job/2" },
+  ],
 }
 
 describe("CommitHoverCardContent", () => {
   test("shows what the row cuts or lacks: the whole message and the hash, not the row's author, tags or checks", () => {
-    const markup = renderToStaticMarkup(createElement(CommitHoverCardContent, { entry, details: null, isPendingPush: true }))
+    const markup = renderToStaticMarkup(createElement(CommitHoverCardContent, { entry, details: null }))
     expect(markup).toContain("Replace the git panel with widgets")
     expect(markup).toContain("Every card shares one grammar.")
     expect(markup).toContain("abcdef1")
@@ -39,18 +43,22 @@ describe("CommitHoverCardContent", () => {
     expect(markup).not.toContain("Not pushed")
     expect(markup).not.toContain("checks passed")
     expect(markup).not.toContain(">Jake<")
-    // No file list until the read lands.
-    expect(markup).not.toContain("src/app.ts")
+    // Nothing of the read until it lands.
+    expect(markup).not.toContain("files changed")
   })
 
-  test("adds the server's details once read: merge, committer, files and what was left out", () => {
-    const markup = renderToStaticMarkup(createElement(CommitHoverCardContent, { entry, details, isPendingPush: false }))
+  test("adds the server's details once read: merge, committer, the size without the files, and each check", () => {
+    const markup = renderToStaticMarkup(createElement(CommitHoverCardContent, { entry, details, onOpenCheck: () => {} }))
     expect(markup).toContain("Merge")
     expect(markup).toContain("committed by GitHub")
-    expect(markup).toContain("5 files")
-    expect(markup).toContain("src/app.ts")
-    expect(markup).toContain("src/old.ts → ")
-    expect(markup).toContain("3 more files")
-    expect(markup).not.toContain("Not pushed")
+    expect(markup).toContain("5 files changed")
+    expect(markup).not.toContain("src/app.ts")
+    expect(markup).toContain("3/3")
+    expect(markup).toContain("1 failed")
+    expect(markup).toContain("3m 4s")
+    // The failing job leads.
+    expect(markup.indexOf("lint")).toBeLessThan(markup.indexOf("test"))
+    // The size is the footer, under the checks.
+    expect(markup.indexOf("lint")).toBeLessThan(markup.indexOf("5 files changed"))
   })
 })

@@ -868,11 +868,7 @@ function GitWidgetsImpl({
           <CommitHoverCard
             containerRef={historyListRef}
             entries={visibleHistory.shown}
-            aheadCount={aheadCount}
             onReadCommit={onReadCommit}
-            // A commit's file opens in the viewer, as it reads now; the
-            // editor is a button away there.
-            onOpenFile={projectId ? (path) => openViewer({ kind: "file", projectId, path }) : undefined}
           />
         </WidgetCard>
       </WidgetPresence>

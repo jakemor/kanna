@@ -107,6 +107,94 @@ describe("CommitChecksStore", () => {
     })
   })
 
+  test("lists each check for the hover cards, jobs and commit statuses alike", async () => {
+    const store = new CommitChecksStore({
+      runGraphql: respond({
+        c0: {
+          oid: SHA_A,
+          statusCheckRollup: {
+            state: "FAILURE",
+            contexts: {
+              totalCount: 3,
+              nodes: [
+                {
+                  ...checkRun({ conclusion: "FAILURE", runUrl: "https://github.com/acme/repo/actions/runs/2" }),
+                  name: "lint",
+                  startedAt: "2026-09-25T10:00:00Z",
+                  completedAt: "2026-09-25T10:01:00Z",
+                  checkSuite: { workflowRun: { url: "https://github.com/acme/repo/actions/runs/2", workflow: { name: "CI" } } },
+                },
+                { ...checkRun({ conclusion: "SKIPPED" }), name: "deploy" },
+                { __typename: "StatusContext", context: "vercel", description: "Deployment has completed", state: "SUCCESS", targetUrl: "https://vercel.com/x" },
+              ],
+            },
+          },
+        },
+      }),
+    })
+
+    expect(await store.readRuns("acme/repo", SHA_A)).toEqual([
+      {
+        name: "lint",
+        workflowName: "CI",
+        state: "failure",
+        startedAt: "2026-09-25T10:00:00Z",
+        completedAt: "2026-09-25T10:01:00Z",
+        // The job's own page, not the run's.
+        url: "https://github.com/acme/repo/runs/1",
+        description: undefined,
+      },
+      {
+        name: "deploy",
+        workflowName: undefined,
+        state: "skipped",
+        startedAt: undefined,
+        completedAt: undefined,
+        url: "https://github.com/acme/repo/runs/1",
+        description: undefined,
+      },
+      {
+        name: "vercel",
+        workflowName: undefined,
+        state: "success",
+        startedAt: undefined,
+        completedAt: undefined,
+        url: "https://vercel.com/x",
+        description: "Deployment has completed",
+      },
+    ])
+    // The snapshot's rollup still carries counts only.
+    expect(store.read("acme/repo", [SHA_A]).get(SHA_A)).toEqual({
+      state: "failure",
+      passed: 1,
+      total: 3,
+      url: "https://github.com/acme/repo/actions/runs/2",
+    })
+  })
+
+  test("reads runs from cache without asking GitHub again", async () => {
+    let calls = 0
+    const store = new CommitChecksStore({
+      runGraphql: async () => {
+        calls += 1
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            data: {
+              repository: {
+                c0: { oid: SHA_A, statusCheckRollup: { state: "SUCCESS", contexts: { totalCount: 1, nodes: [{ ...checkRun({ conclusion: "SUCCESS" }), name: "test" }] } } },
+              },
+            },
+          }),
+        }
+      },
+    })
+
+    expect((await store.readRuns("acme/repo", SHA_A))?.map((run) => run.name)).toEqual(["test"])
+    expect((await store.readRuns("acme/repo", SHA_A))?.map((run) => run.name)).toEqual(["test"])
+    expect(calls).toBe(1)
+  })
+
   test("keeps commits without checks out of the result", async () => {
     const store = new CommitChecksStore({
       runGraphql: respond({ c0: { oid: SHA_A, statusCheckRollup: null }, c1: null }),

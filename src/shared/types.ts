@@ -1857,6 +1857,27 @@ export interface ChatCommitChecks {
   url?: string
 }
 
+/** A single check's outcome. `skipped` and `neutral` count neither way. */
+export type ChatCheckRunState = "pending" | "success" | "failure" | "skipped" | "neutral"
+
+/**
+ * One check behind a rollup (an Actions job or a commit status), for the
+ * hover cards. Kept off `ChatCommitChecks` so the History snapshot, pushed on
+ * every refresh, carries only the counts.
+ */
+export interface ChatCheckRun {
+  name: string
+  /** The Actions workflow the job ran in ("CI"). Unset for a commit status. */
+  workflowName?: string
+  state: ChatCheckRunState
+  startedAt?: string
+  completedAt?: string
+  /** The job's page, or a status's target. */
+  url?: string
+  /** A commit status's own line ("Deployment has completed"). */
+  description?: string
+}
+
 export interface ChatBranchHistoryEntry {
   sha: string
   summary: string
@@ -1900,6 +1921,8 @@ export interface ChatCommitDetails {
   totalFileCount: number
   additions: number
   deletions: number
+  /** Every check GitHub ran on the commit. Unset when it has none or GitHub can't be read. */
+  checkRuns?: ChatCheckRun[]
 }
 
 export type ChatBranchListEntryKind = "local" | "remote" | "pull_request"
@@ -1953,6 +1976,8 @@ export interface ChatPullRequestDetails {
   /** GitHub's word for it: `clean`, `dirty` (conflicts), `blocked`, `behind`, `unstable`… */
   mergeableState?: string
   checks?: ChatCommitChecks
+  /** The checks behind `checks`, on the PR's head commit. */
+  checkRuns?: ChatCheckRun[]
   labels: string[]
 }
 

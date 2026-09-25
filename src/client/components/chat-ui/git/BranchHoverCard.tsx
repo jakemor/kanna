@@ -6,12 +6,13 @@ import { cn } from "../../../lib/utils"
 import { formatPromptTimestamp } from "../../messages/ResultMessage"
 import { TURN_CARD_ROW_INSET, TurnCardMessage, TurnCardMetaRow } from "../../ui/turn-card"
 import { useCardDetails, WidgetHoverCard } from "../widgets/WidgetHoverCard"
+import { CheckRunsSection } from "./CheckRunsSection"
 import { CARD_PILL_CLASS, CardPerson, DiffFileStat } from "./shared"
 
 /*
  * These cards leave out what the row already shows: a PR's number, author,
- * age, checks and merge state; a branch's kind (its section says it) and age.
- * They carry what the row cuts short or has no room for.
+ * age, checks count and merge state; a branch's kind (its section says it)
+ * and age. They carry what the row cuts short or has no room for.
  */
 
 // Keyed by the row and its tip time, so a branch that moved reads again.
@@ -81,7 +82,7 @@ export function useBranchDetails(
 /**
  * A PR body as a preview: without the template's scaffolding (HTML comments,
  * markdown headings like "### What does this change?"), which reads as noise
- * in four lines of muted text, and with runs of blank lines collapsed.
+ * in three lines of muted text, and with runs of blank lines collapsed.
  */
 export function previewPullRequestBody(body: string) {
   return body
@@ -162,11 +163,14 @@ export function PullRequestCardContent({
   entry,
   pr,
   onOpen,
+  onOpenCheck,
 }: {
   entry: ChatBranchListEntry
   /** Absent until the read lands: the row's title and head show meanwhile. */
   pr: ChatPullRequestDetails | undefined
   onOpen?: () => void
+  /** Opens one check's page on GitHub. */
+  onOpenCheck?: (url: string) => void
 }) {
   const body = pr?.body ? previewPullRequestBody(pr.body) : ""
   const hasStats = pr && (pr.changedFiles !== undefined || pr.commits !== undefined || pr.comments || pr.additions !== undefined)
@@ -196,7 +200,7 @@ export function PullRequestCardContent({
           {pr?.title ?? entry.prTitle ?? entry.displayName}
         </TurnCardMessage>
         {body ? (
-          <div className={cn("line-clamp-4 whitespace-pre-wrap text-sm text-muted-foreground", TURN_CARD_ROW_INSET)}>{body}</div>
+          <div className={cn("line-clamp-3 whitespace-pre-wrap text-sm text-muted-foreground", TURN_CARD_ROW_INSET)}>{body}</div>
         ) : null}
       </div>
       {/* Size, as glyphs and numbers: files, commits, comments, then +/- on
@@ -223,6 +227,8 @@ export function PullRequestCardContent({
           ))}
         </TurnCardMetaRow>
       ) : null}
+      {/* The head commit's checks one by one; the row can only count them. */}
+      {pr?.checkRuns ? <CheckRunsSection runs={pr.checkRuns} checks={pr.checks} onOpen={onOpenCheck} /> : null}
     </>
   )
 }
@@ -241,11 +247,16 @@ function BranchHoverCardBody({
   const details = useCardDetails(detailsCache, detailsKey(entry), onReadBranch ? () => readDetails(entry, onReadBranch) : null)
   if (entry.kind === "pull_request") {
     const url = details?.pullRequest?.url ?? (repoSlug && entry.prNumber ? `https://github.com/${repoSlug}/pull/${entry.prNumber}` : undefined)
+    const openInNewTab = (target: string) => {
+      dismiss()
+      window.open(target, "_blank", "noopener,noreferrer")
+    }
     return (
       <PullRequestCardContent
         entry={entry}
         pr={details?.pullRequest}
-        onOpen={url ? () => { dismiss(); window.open(url, "_blank", "noopener,noreferrer") } : undefined}
+        onOpen={url ? () => openInNewTab(url) : undefined}
+        onOpenCheck={openInNewTab}
       />
     )
   }

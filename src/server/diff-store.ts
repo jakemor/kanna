@@ -1912,11 +1912,20 @@ export class DiffStore {
     const [sha = args.sha, authorEmail, committerName, authorName, committedAt, parents = ""] = meta.stdout.trim().split("\u0000")
 
     // `--root` so the first commit lists its files, and first-parent so a
-    // merge shows what it brought in rather than nothing.
-    const stats = await runGit(
-      ["diff-tree", "-r", "--numstat", "-z", "-M", "--root", "--diff-merges=first-parent", args.sha, "--"],
-      repo.repoRoot,
-    )
+    // merge shows what it brought in rather than nothing. The checks read
+    // alongside: GitHub's answer is usually cached, and never fails the card.
+    const [stats, checkRuns] = await Promise.all([
+      runGit(
+        ["diff-tree", "-r", "--numstat", "-z", "-M", "--root", "--diff-merges=first-parent", args.sha, "--"],
+        repo.repoRoot,
+      ),
+      getOriginRemoteUrl(repo.repoRoot)
+        .then((url) => {
+          const repoSlug = extractGitHubRepoSlug(url)
+          return repoSlug ? commitChecksStore.readRuns(repoSlug, sha) : undefined
+        })
+        .catch(() => undefined),
+    ])
     const files = stats.exitCode === 0 ? parseNumstatZ(stats.stdout) : []
     // Biggest first, as the sidebar's chat card: with only a few shown, the
     // substantial ones are the ones worth the room. Ties on path, so the list
@@ -1934,6 +1943,7 @@ export class DiffStore {
       totalFileCount: files.length,
       additions: files.reduce((sum, file) => sum + file.additions, 0),
       deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+      checkRuns,
     }
   }
 
@@ -1960,11 +1970,13 @@ export class DiffStore {
         pr = await fetchGitHubPullRequest(repoSlug, args.branch.prNumber).catch(() => pr)
       }
       let checks: ChatPullRequestDetails["checks"]
+      let checkRuns: ChatPullRequestDetails["checkRuns"]
       const headSha = pr.head?.sha
       if (headSha) {
         // The same rollup History shows per commit, for the PR's head.
         await commitChecksStore.refresh(repoSlug, [headSha]).catch(() => {})
         checks = commitChecksStore.read(repoSlug, [headSha]).get(headSha)
+        checkRuns = await commitChecksStore.readRuns(repoSlug, headSha)
       }
       return {
         pullRequest: {
@@ -1985,6 +1997,7 @@ export class DiffStore {
           comments: pr.comments,
           mergeableState: pr.mergeable_state,
           checks,
+          checkRuns,
           labels: (pr.labels ?? []).map((label) => label.name ?? "").filter(Boolean),
         },
       }

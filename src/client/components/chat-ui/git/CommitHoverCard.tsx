@@ -1,43 +1,47 @@
 import { type RefObject, useState } from "react"
-import { Check, Copy, GitCommitHorizontal, GitMerge } from "lucide-react"
+import { Check, Copy, FileDiff, GitCommitHorizontal, GitMerge } from "lucide-react"
 import type { ChatBranchHistoryEntry, ChatCommitDetails } from "../../../../shared/types"
 import { cn } from "../../../lib/utils"
 import { formatPromptTimestamp } from "../../messages/ResultMessage"
 import { TURN_CARD_ROW_INSET, TurnCardMessage, TurnCardMetaRow, TurnCardMetaSeparator } from "../../ui/turn-card"
 import { useCardDetails, WidgetHoverCard } from "../widgets/WidgetHoverCard"
+import { CheckRunsSection } from "./CheckRunsSection"
 import { DiffFileStat } from "./shared"
 
-// Commits never change, so a card read once is good for the session.
+// A commit never changes but its checks do, so the key carries the row's
+// rollup: when the snapshot moves it (a job finished), the card reads again.
 const detailsCache = new Map<string, ChatCommitDetails>()
 
+function detailsKey(entry: ChatBranchHistoryEntry) {
+  const checks = entry.checks
+  return checks ? `${entry.sha}\u0000${checks.state}:${checks.passed}/${checks.total}` : entry.sha
+}
+
 /**
- * A commit's card: the full message, who and when, its checks, and the files
- * it changed. Everything the History row has to truncate or leave out.
+ * A commit's card: the full message, who and when, how big it is, and each
+ * of its checks. Everything the History row has to truncate or leave out.
  */
 export function CommitHoverCardContent({
   entry,
   details,
-  isPendingPush,
   onOpenCommit,
-  onOpenChecks,
-  onOpenFile,
+  onOpenCheck,
 }: {
   entry: ChatBranchHistoryEntry
   /** What the server adds; absent until the read lands (or if it fails). */
   details: ChatCommitDetails | null
-  isPendingPush: boolean
   onOpenCommit?: () => void
-  onOpenChecks?: () => void
-  onOpenFile?: (path: string) => void
+  /** Opens one check's page on GitHub. */
+  onOpenCheck?: (url: string) => void
 }) {
   const [copied, setCopied] = useState(false)
   const shortSha = entry.sha.slice(0, 7)
   const isMerge = (details?.parentCount ?? 0) > 1
-  const hiddenFiles = details ? details.totalFileCount - details.files.length : 0
 
-  // Author, age, checks, tags and "not pushed" are on the History row; the
-  // card carries what the row can't: the hash, a merge, a committer who isn't
-  // the author, the exact time, the whole message and the files.
+  // Author, age, the checks' count, tags and "not pushed" are on the History
+  // row; the card carries what the row can't: the hash, a merge, a committer
+  // who isn't the author, the exact time, the whole message, the size, and
+  // which checks passed and which didn't.
   return (
     <>
       <TurnCardMetaRow>
@@ -81,51 +85,25 @@ export function CommitHoverCardContent({
           {entry.summary}
         </TurnCardMessage>
         {entry.description ? (
-          <div className={cn("line-clamp-[10] whitespace-pre-wrap text-sm text-muted-foreground", TURN_CARD_ROW_INSET)}>
+          <div className={cn("line-clamp-3 whitespace-pre-wrap text-sm text-muted-foreground", TURN_CARD_ROW_INSET)}>
             {entry.description.trim()}
           </div>
         ) : null}
       </div>
-      {/* Last and only once read, as on the chat card: the appendix you drop
-          to when the message didn't settle it, and nothing appears until it
-          lands, so the card doesn't resize under a reader already on it. */}
-      {details && details.files.length > 0 ? (
-        <>
-          <div className="-mx-1.5 mt-2 border-t border-border/60" aria-hidden />
-          {/* The list's summary in the card's small print, its +/- on the
-              same right edge as every file's below it. */}
-          <TurnCardMetaRow className="mt-1.5">
-            <span>{details.totalFileCount} file{details.totalFileCount === 1 ? "" : "s"}</span>
-            <DiffFileStat additions={details.additions} deletions={details.deletions} className="ml-auto pl-2" />
-          </TurnCardMetaRow>
-          {details.files.map((file) => (
-            <button
-              key={file.path}
-              type="button"
-              aria-label={`Open ${file.path}`}
-              onClick={onOpenFile ? () => onOpenFile(file.path) : undefined}
-              disabled={!onOpenFile}
-              className={cn(
-                "flex w-full items-center gap-2 rounded text-left text-[12px] text-muted-foreground",
-                TURN_CARD_ROW_INSET,
-                onOpenFile
-                  ? "cursor-pointer transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  : "cursor-default",
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate" title={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path}>
-                {file.previousPath ? <span className="text-muted-foreground/70">{file.previousPath} → </span> : null}
-                {file.path}
-              </span>
-              <DiffFileStat additions={file.additions} deletions={file.deletions} className="shrink-0" />
-            </button>
-          ))}
-          {hiddenFiles > 0 ? (
-            <div className={cn("text-[12px] text-muted-foreground/70", TURN_CARD_ROW_INSET)}>
-              {hiddenFiles} more file{hiddenFiles === 1 ? "" : "s"}
-            </div>
-          ) : null}
-        </>
+      {/* Only once read, as on the chat card: nothing appears until it lands,
+          so the card doesn't resize under a reader already on it. CI is the
+          appendix you drop to when the message didn't settle it. */}
+      {details?.checkRuns ? (
+        <CheckRunsSection runs={details.checkRuns} checks={entry.checks} onOpen={onOpenCheck} />
+      ) : null}
+      {/* The size as the card's footer, a fact about the whole commit rather
+          than a section to read. Not the files: the viewer lists those. */}
+      {details && details.totalFileCount > 0 ? (
+        <TurnCardMetaRow className="-mx-1.5 -mb-2 mt-2 rounded-b-lg border-t border-border/60 bg-muted/40 px-3 py-1.5">
+          <FileDiff className="size-2.5 shrink-0" strokeWidth={2.5} />
+          <span>{details.totalFileCount} file{details.totalFileCount === 1 ? "" : "s"} changed</span>
+          <DiffFileStat additions={details.additions} deletions={details.deletions} className="ml-auto pl-2" />
+        </TurnCardMetaRow>
       ) : null}
     </>
   )
@@ -134,18 +112,14 @@ export function CommitHoverCardContent({
 /** Reads the commit's details while its card is open, then renders it. */
 function CommitHoverCardBody({
   entry,
-  isPendingPush,
   onReadCommit,
-  onOpenFile,
   dismiss,
 }: {
   entry: ChatBranchHistoryEntry
-  isPendingPush: boolean
   onReadCommit?: (sha: string) => Promise<ChatCommitDetails>
-  onOpenFile?: (path: string) => void
   dismiss: () => void
 }) {
-  const details = useCardDetails(detailsCache, entry.sha, onReadCommit ? () => onReadCommit(entry.sha) : null)
+  const details = useCardDetails(detailsCache, detailsKey(entry), onReadCommit ? () => onReadCommit(entry.sha) : null)
   const openInNewTab = (url: string) => {
     dismiss()
     window.open(url, "_blank", "noopener,noreferrer")
@@ -154,10 +128,8 @@ function CommitHoverCardBody({
     <CommitHoverCardContent
       entry={entry}
       details={details}
-      isPendingPush={isPendingPush}
       onOpenCommit={entry.githubUrl ? () => openInNewTab(entry.githubUrl!) : undefined}
-      onOpenChecks={entry.checks?.url ? () => openInNewTab(entry.checks!.url!) : undefined}
-      onOpenFile={onOpenFile ? (path) => { dismiss(); onOpenFile(path) } : undefined}
+      onOpenCheck={openInNewTab}
     />
   )
 }
@@ -166,33 +138,19 @@ function CommitHoverCardBody({
 export function CommitHoverCard({
   containerRef,
   entries,
-  aheadCount,
   onReadCommit,
-  onOpenFile,
 }: {
   /** The History list; every commit row is somewhere beneath it. */
   containerRef: RefObject<HTMLDivElement | null>
   entries: ChatBranchHistoryEntry[]
-  /** The first this many commits aren't on the remote yet. */
-  aheadCount: number
   onReadCommit?: (sha: string) => Promise<ChatCommitDetails>
-  onOpenFile?: (path: string) => void
 }) {
   return (
     <WidgetHoverCard containerRef={containerRef}>
       {(sha, dismiss) => {
-        const index = entries.findIndex((entry) => entry.sha === sha)
-        if (index === -1) return null
-        return (
-          <CommitHoverCardBody
-            key={sha}
-            entry={entries[index]!}
-            isPendingPush={index < aheadCount}
-            onReadCommit={onReadCommit}
-            onOpenFile={onOpenFile}
-            dismiss={dismiss}
-          />
-        )
+        const entry = entries.find((candidate) => candidate.sha === sha)
+        if (!entry) return null
+        return <CommitHoverCardBody key={sha} entry={entry} onReadCommit={onReadCommit} dismiss={dismiss} />
       }}
     </WidgetHoverCard>
   )

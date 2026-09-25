@@ -582,6 +582,8 @@ export function normalizeGrokAccountUsage(
     resetsAt: window.resetsAt,
     recordedAt: now,
     source,
+    windowMinutes: null,
+    modelLabel: null,
   }))
 
   const onDemandUsed = moneyVal(raw.billing.config?.onDemandUsed)

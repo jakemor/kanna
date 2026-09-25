@@ -3,14 +3,13 @@ import type { AgentProvider, UsageLimitsSnapshot } from "../../../../shared/type
 import type { KannaSocket } from "../../../app/socket"
 import {
   formatPercent,
-  formatUntil,
   planLabel,
   providerLabel,
   UsageBar,
   UsageWindowRows,
   useUsageLimits,
 } from "../../../app/settings/UsageSection"
-import { formatRelativeTime } from "../../../lib/formatters"
+import { formatRelativeTime, formatUntil } from "../../../lib/formatters"
 import { PROVIDER_ICONS } from "../ChatPreferenceControls"
 import { Button } from "../../ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip"

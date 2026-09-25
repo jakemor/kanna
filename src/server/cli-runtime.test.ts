@@ -155,6 +155,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -171,6 +172,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: true,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -187,6 +189,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -203,6 +206,7 @@ describe("parseArgs", () => {
         share: "quick",
         password: null,
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -219,6 +223,7 @@ describe("parseArgs", () => {
         share: { kind: "token", token: "secret-token" },
         password: null,
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -235,6 +240,7 @@ describe("parseArgs", () => {
         share: false,
         password: "secret",
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -261,6 +267,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -277,6 +284,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        openHosted: false,
         noCloud: false,
         directCloud: false,
       },
@@ -841,7 +849,10 @@ describe("runCli single-instance guard + hosted open", () => {
     expect(calls.openUrl).toEqual([])
   })
 
-  test("paired start opens the hosted URL when the tunnel connects (not localhost)", async () => {
+  test("paired start opens localhost, without waiting for the tunnel", async () => {
+    // The machine running the server is the one place localhost already works.
+    // Waiting on the tunnel before opening anything meant the browser arrived
+    // seconds late — and never, when the tunnel didn't come up at all.
     const fake = createFakeCloudRuntime()
     let capturedOnTunnelUp: ((kind: "started" | "recovered") => void) | undefined
     fake.runtime.start = (args: { localUrl: string; onTunnelUp?: (kind: "started" | "recovered") => void }) => {
@@ -854,6 +865,29 @@ describe("runCli single-instance guard + hosted open", () => {
     })
 
     const result = await runCli([], deps)
+
+    expect(result.kind).toBe("started")
+    expect(calls.openUrl).toEqual(["http://localhost:3210"])
+    // The tunnel coming up adds nothing — the browser is already open.
+    capturedOnTunnelUp?.("started")
+    expect(calls.openUrl).toEqual(["http://localhost:3210"])
+
+    if (result.kind === "started") await result.stop()
+  })
+
+  test("--open-hosted opens the hosted URL when the tunnel connects (not localhost)", async () => {
+    const fake = createFakeCloudRuntime()
+    let capturedOnTunnelUp: ((kind: "started" | "recovered") => void) | undefined
+    fake.runtime.start = (args: { localUrl: string; onTunnelUp?: (kind: "started" | "recovered") => void }) => {
+      fake.calls.starts.push({ localUrl: args.localUrl })
+      capturedOnTunnelUp = args.onTunnelUp
+    }
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      createCloudRuntimeImpl: () => fake.runtime,
+    })
+
+    const result = await runCli(["--open-hosted"], deps)
 
     expect(result.kind).toBe("started")
     // No local open while the tunnel is connecting…

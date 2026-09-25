@@ -22,6 +22,16 @@ export interface CliOptions {
   share: ShareMode
   password: string | null
   strictPort: boolean
+  /**
+   * On a paired machine, open the hosted URL instead of the local one.
+   *
+   * Off by default. On the machine that is doing the serving, localhost is the
+   * address that already works, and opening the hosted URL means waiting for
+   * the tunnel first — so the browser arrives seconds late, or never when the
+   * tunnel doesn't come up. The hosted URL is still logged, which is what the
+   * other devices need.
+   */
+  openHosted: boolean
   /** One-shot: skip bringing a paired machine online for this run. */
   noCloud: boolean
   /**
@@ -148,6 +158,7 @@ Options:
   --password <secret>  Require a password before loading the app
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
+  --open-hosted        On a paired machine, open the hosted URL instead of localhost
   --no-cloud           Skip bringing a paired machine online for this run
   --cloud              Run as a cloud dev-box (direct mode, no cloudflared)
   --version            Print version and exit
@@ -192,6 +203,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let port = PROD_SERVER_PORT
   let host = "127.0.0.1"
   let openBrowser = true
+  let openHosted = false
   let share: ShareMode = false
   let password: string | null = null
   let sawHost = false
@@ -251,6 +263,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       openBrowser = false
       continue
     }
+    if (arg === "--open-hosted") {
+      openHosted = true
+      continue
+    }
     if (arg === "--no-cloud") {
       noCloud = true
       continue
@@ -290,6 +306,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       share,
       password,
       strictPort,
+      openHosted,
       noCloud,
       directCloud,
     },
@@ -517,10 +534,13 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 
   if (cloudRuntime) {
     const runtime = cloudRuntime
-    // Paired machines open the hosted URL — the one that works from every
-    // device — once the tunnel is actually serving (opening it earlier would
-    // land on the offline page).
-    const openHostedOnConnect = runOptions.openBrowser && !suppressOpenBrowser
+    // Only with --open-hosted, and then only once the tunnel is actually
+    // serving (opening it earlier would land on the offline page). By default
+    // a paired machine opens localhost below, like an unpaired one: this is
+    // the machine doing the serving, so the local address already works and
+    // doesn't wait on a tunnel that may take seconds or never arrive. The
+    // hosted URL is logged either way, which is what other devices need.
+    const openHostedOnConnect = runOptions.openHosted && runOptions.openBrowser && !suppressOpenBrowser
     let openedHosted = false
     runtime.start({
       localUrl: launchUrl,
@@ -534,12 +554,13 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         }
       },
     })
-    // The supervisor logs `cloud: connected (…)` when the tunnel is live —
-    // that's also when the browser opens.
     deps.log(`${LOG_PREFIX} cloud: waiting for ${runtime.identity.appOrigin} to come online… (disable with \`${CLI_COMMAND} pair --disable\`)`)
   }
 
-  if (runOptions.openBrowser && !isShareEnabled(runOptions.share) && !suppressOpenBrowser && !cloudRuntime) {
+  // A paired machine is no longer excluded here — it opens localhost like any
+  // other, unless --open-hosted asked for the hosted URL above.
+  const openedHostedInstead = Boolean(cloudRuntime) && runOptions.openHosted
+  if (runOptions.openBrowser && !isShareEnabled(runOptions.share) && !suppressOpenBrowser && !openedHostedInstead) {
     deps.openUrl(launchUrl)
   }
 

@@ -220,7 +220,8 @@ export async function validateLlmProviderCredentials(
     await client.responses.create({
       model: snapshot.model,
       input: "Reply with ok.",
-      max_output_tokens: 5,
+      // OpenAI models such as gpt-4o-mini reject values below 16.
+      max_output_tokens: 16,
     })
     return {
       ok: true,

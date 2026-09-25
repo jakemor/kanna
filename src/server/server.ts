@@ -260,6 +260,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         router.scheduleChatStateBroadcast(chatId)
         return
       }
+      if (options?.immediate) {
+        void router.broadcastSnapshots()
+        return
+      }
       router.scheduleBroadcast()
     },
   })

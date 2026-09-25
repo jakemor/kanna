@@ -9,7 +9,12 @@ import { findTranscriptWindowStart } from "../shared/transcript-window"
 import { createEmptyState } from "./events"
 import { EventStore } from "./event-store"
 import { deriveLocalProjectsSnapshot } from "./read-models"
-import { SERVER_PROVIDERS, applyCodexModels, resetServerProvidersForTests } from "./provider-catalog"
+import {
+  SERVER_PROVIDERS,
+  applyCodexModels,
+  applyCursorModels,
+  resetServerProvidersForTests,
+} from "./provider-catalog"
 import {
   assertSafeSkillId,
   assertSafeSkillSource,
@@ -2641,5 +2646,50 @@ describe("transcript windows", () => {
     } finally {
       resetServerProvidersForTests()
     }
+  })
+})
+
+describe("ws-router provider catalog", () => {
+  test("re-pushes availableProviders after a runtime catalog overlay lands", async () => {
+    resetServerProvidersForTests()
+    const state = createEmptyState()
+    state.projectsById.set("project-1", { id: "project-1", localPath: "/tmp/project", title: "Project", createdAt: 1, updatedAt: 1 })
+    state.chatsById.set("chat-1", {
+      id: "chat-1", projectId: "project-1", title: "Chat", createdAt: 1, updatedAt: 1, unread: false,
+      provider: "cursor", planMode: false, autoPlan: false, sessionToken: null, lastTurnOutcome: null,
+    })
+    const store = createFakeStore({
+      state,
+      getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
+      getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
+      getClientTranscript: () => ({
+        messages: [{ _id: "a1", createdAt: 1, kind: "assistant_text", text: "hi" }],
+        startIndex: 0,
+        readAnchor: null,
+      }),
+    })
+    const router = createTestRouter({ store })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "subscribe", id: "sub", topic: { type: "chat", chatId: "chat-1" },
+    }))
+
+    const initial = (ws.sent[0] as { snapshot: { data: { availableProviders: Array<{ id: string; models: Array<{ id: string }> }> } } }).snapshot.data
+    const initialCursor = initial.availableProviders.find((provider) => provider.id === "cursor")
+    expect(initialCursor?.models.map((model) => model.id)).toEqual(["composer-2.5"])
+
+    applyCursorModels([
+      { id: "auto", label: "Auto", isDefault: true },
+      { id: "composer-2.5", label: "Composer 2.5" },
+      { id: "claude-opus-5-high", label: "Claude Opus 5 High" },
+    ])
+    await router.broadcastSnapshots()
+
+    const updated = (ws.sent.at(-1) as { snapshot: { data: { incremental?: boolean; availableProviders: Array<{ id: string; models: Array<{ id: string }> }> } } }).snapshot.data
+    expect(updated.incremental).toBeUndefined()
+    const updatedCursor = updated.availableProviders.find((provider) => provider.id === "cursor")
+    expect(updatedCursor?.models.map((model) => model.id)).toEqual(["composer-2.5", "claude-opus-5-high", "auto"])
   })
 })

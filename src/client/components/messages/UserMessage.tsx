@@ -41,9 +41,13 @@ function parseSystemMessage(content: string) {
   }
 }
 
-export function UserMessage({ content, attachments = [], steered = false, flash = false }: Props) {
+/**
+ * A prompt's attachments: images as previews, everything else as file cards.
+ * Shared with QueuedUserMessage so a queued prompt shows its attachments the
+ * way they will look once it is sent.
+ */
+export function UserMessageAttachments({ attachments }: { attachments: ChatAttachment[] }) {
   const renderOptions = useTranscriptRenderOptions()
-  const parsedContent = useMemo(() => parseSystemMessage(content), [content])
   const shouldShowImagePlaceholders = renderOptions.attachmentMode === "metadata"
   const canInteractWithAttachments = !renderOptions.readonly || renderOptions.attachmentMode === "bundle"
   const imageAttachments = useMemo(
@@ -73,29 +77,39 @@ export function UserMessage({ content, attachments = [], steered = false, flash 
 
   return (
     <>
+      {imageAttachments.length > 0 ? (
+        <div className="flex max-w-[85%] sm:max-w-[80%] flex-wrap justify-end gap-3">
+          {imageAttachments.map((attachment) => (
+            <AttachmentImageCard
+              key={attachment.id}
+              attachment={attachment}
+              onClick={canInteractWithAttachments ? () => handleAttachmentClick(attachment) : undefined}
+            />
+          ))}
+        </div>
+      ) : null}
+      {fileAttachments.length > 0 ? (
+        <div className="flex max-w-[85%] sm:max-w-[80%] flex-wrap justify-end gap-2">
+          {fileAttachments.map((attachment) => (
+            <AttachmentFileCard
+              key={attachment.id}
+              attachment={attachment}
+              onClick={canInteractWithAttachments ? () => handleAttachmentClick(attachment) : undefined}
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+export function UserMessage({ content, attachments = [], steered = false, flash = false }: Props) {
+  const parsedContent = useMemo(() => parseSystemMessage(content), [content])
+
+  return (
+    <>
       <div className="flex flex-col items-end gap-2">
-        {imageAttachments.length > 0 ? (
-          <div className="flex max-w-[85%] sm:max-w-[80%] flex-wrap justify-end gap-3">
-            {imageAttachments.map((attachment) => (
-              <AttachmentImageCard
-                key={attachment.id}
-                attachment={attachment}
-                onClick={canInteractWithAttachments ? () => handleAttachmentClick(attachment) : undefined}
-              />
-            ))}
-          </div>
-        ) : null}
-        {fileAttachments.length > 0 ? (
-          <div className="flex max-w-[85%] sm:max-w-[80%] flex-wrap justify-end gap-2">
-            {fileAttachments.map((attachment) => (
-              <AttachmentFileCard
-                key={attachment.id}
-                attachment={attachment}
-                onClick={canInteractWithAttachments ? () => handleAttachmentClick(attachment) : undefined}
-              />
-            ))}
-          </div>
-        ) : null}
+        <UserMessageAttachments attachments={attachments} />
         {(parsedContent.body || (!parsedContent.body && attachments.length === 0 && content && !parsedContent.systemMessage)) ? (
           <div className="flex max-w-[85%] items-center gap-2 sm:max-w-[80%]">
             {steered ? (

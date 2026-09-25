@@ -761,6 +761,7 @@ function GitWidgetsImpl({
   const fileList = hasChanges ? (
     <>
       <WidgetStrip
+        field
         leading={(
           // Everything checked is the resting state, and a full check says
           // nothing, so the strip shows what it is at rest: a search. The
@@ -801,7 +802,8 @@ function GitWidgetsImpl({
               <DiffFileStat additions={changesSummary.additions} deletions={changesSummary.deletions} />
             </span>
             {/* The eye the rows' own Review item uses, set in the rows' status
-                column: 24px wide against the strip's 8px right padding puts
+                column: 24px wide, 8px in from the card's edge (the field's
+                6px inset and 2px padding), puts
                 its centre 20px in, where every row's M / A letter centres
                 (16px slot, 1px border + 5px padding + the list's 6px inset).
                 How many it opens moves to the label and tooltip. */}

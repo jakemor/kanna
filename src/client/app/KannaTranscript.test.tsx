@@ -210,6 +210,12 @@ Please check the latest error first.`,
   test("does not render a wrapper for results hidden by context cleared", () => {
     const html = renderTranscript([
       {
+        id: "text-1",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date().toISOString(),
+      },
+      {
         id: "result-1",
         kind: "result",
         success: true,
@@ -224,7 +230,7 @@ Please check the latest error first.`,
       },
     ])
 
-    expect(countRowWrappers(html)).toBe(1)
+    expect(countRowWrappers(html)).toBe(2)
     expect(html).toContain("Context Cleared")
     expect(html).not.toContain("Completed")
   })
@@ -268,6 +274,12 @@ Please check the latest error first.`,
   test("renders wrappers for short successful result rows", () => {
     const html = renderTranscript([
       {
+        id: "text-short-1",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date().toISOString(),
+      },
+      {
         id: "result-short-1",
         kind: "result",
         success: true,
@@ -278,12 +290,18 @@ Please check the latest error first.`,
       },
     ])
 
-    expect(countRowWrappers(html)).toBe(1)
+    expect(countRowWrappers(html)).toBe(2)
     expect(html).toContain("Worked for 2s")
   })
 
   test("renders wrappers for long successful result rows", () => {
     const html = renderTranscript([
+      {
+        id: "text-long-1",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date().toISOString(),
+      },
       {
         id: "result-long-1",
         kind: "result",
@@ -295,7 +313,7 @@ Please check the latest error first.`,
       },
     ])
 
-    expect(countRowWrappers(html)).toBe(1)
+    expect(countRowWrappers(html)).toBe(2)
     expect(html).toContain("Worked for 1m 1s")
   })
 
@@ -307,6 +325,12 @@ Please check the latest error first.`,
         kind: "user_prompt",
         content: "First ask",
         timestamp: new Date("2026-07-19T08:20:00").toISOString(),
+      },
+      {
+        id: "text-1",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date("2026-07-19T08:21:00").toISOString(),
       },
       {
         id: "result-1",
@@ -324,6 +348,12 @@ Please check the latest error first.`,
         timestamp: promptTimestamp,
       },
       {
+        id: "text-2",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date().toISOString(),
+      },
+      {
         id: "result-2",
         kind: "result",
         success: true,
@@ -339,6 +369,62 @@ Please check the latest error first.`,
     expect(html).not.toContain("Worked for 8m")
     expect(html).toContain(expectedPromptLabel)
     expect(html).toContain("Worked for 12m")
+  })
+
+  test("prefixes worked-for with the turn's end time", () => {
+    const timestamp = new Date("2026-07-19T08:44:00").toISOString()
+    const html = renderTranscript([
+      {
+        id: "text-time-1",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "result-time-1",
+        kind: "result",
+        success: true,
+        cancelled: false,
+        result: "Done",
+        durationMs: 3000,
+        timestamp,
+      },
+    ])
+
+    expect(html).toContain(`${formatPromptTimestamp(timestamp)} · Worked for 3s`)
+  })
+
+  test("hides the result of a turn that showed nothing", () => {
+    const html = renderTranscript([
+      {
+        id: "text-empty-0",
+        kind: "assistant_text",
+        text: "Working on it",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "result-empty-0",
+        kind: "result",
+        success: true,
+        cancelled: false,
+        result: "Done",
+        durationMs: 5000,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "result-empty-1",
+        kind: "result",
+        success: true,
+        cancelled: false,
+        result: "",
+        durationMs: 29,
+        timestamp: new Date().toISOString(),
+      },
+    ])
+
+    expect(countRowWrappers(html)).toBe(2)
+    expect(html).toContain("Worked for 5s")
+    expect(html).not.toContain("Worked for 29ms")
   })
 
   test("does not render wrappers for duplicate system and account rows", () => {

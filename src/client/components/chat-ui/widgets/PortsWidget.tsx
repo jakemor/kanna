@@ -10,13 +10,19 @@ import {
 } from "../../../lib/localServersCache"
 import { formatPathWithTilde } from "../../../lib/pathUtils"
 import { cn } from "../../../lib/utils"
-import { useConnectionStore } from "../../../stores/connectionStore"
 import { ContextMenuItem } from "../../ui/context-menu"
 import { InputPopover, PopoverMenuItem } from "../ChatPreferenceControls"
 import { WidgetError, WidgetList, WidgetRow } from "./parts"
 import { useWidgetExpanded, WidgetCard, WidgetPresence } from "./WidgetCard"
 
 const POLL_INTERVAL_MS = 7_000
+
+function isLoopbackHost(hostname: string) {
+  return hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "[::1]"
+    || /^127(\.\d{1,3}){3}$/.test(hostname)
+}
 
 /**
  * Local HTTP servers, opened in a new tab. Hidden while nothing is listening
@@ -47,11 +53,11 @@ export function PortsWidget({
   const [error, setError] = useState<string | null>(null)
   const [scope, setScope] = useState<"project" | "all">("project")
   const [exposingPorts, setExposingPorts] = useState<ReadonlySet<number>>(() => new Set())
-  // In cloud mode the viewer's browser cannot reach localhost on the machine,
-  // so a row opens through its cloudflared URL and exposes the port on demand.
-  const connectionMode = useConnectionStore((store) => store.mode)
-  const loadConnectionMode = useConnectionStore((store) => store.load)
-  const isCloud = connectionMode === "cloud"
+  // A viewer anywhere but this machine (Kanna Cloud, a LAN or tailnet
+  // address) can't reach its localhost, so a row opens through its
+  // cloudflared URL and exposes the port on demand. The page's own host says
+  // which: a Kanna served on loopback is being viewed on the machine.
+  const viewerIsLocal = isLoopbackHost(window.location.hostname)
   const postRunRefreshTimeoutsRef = useRef<number[]>([])
 
   const projectServers = servers.filter((server) => server.sameProject)
@@ -71,10 +77,6 @@ export function PortsWidget({
       .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)))
       .finally(() => setLoaded(true))
   }, [projectId, socket])
-
-  useEffect(() => {
-    if (connectionMode === "unknown") void loadConnectionMode()
-  }, [connectionMode, loadConnectionMode])
 
   useEffect(() => {
     if (!active) return
@@ -118,28 +120,17 @@ export function PortsWidget({
   }, [socket])
 
   const openServer = useCallback((server: LocalHttpServerInfo) => {
-    if (!isCloud || server.publicUrl) {
-      window.open(isCloud ? server.publicUrl : server.address, "_blank", "noopener,noreferrer")
+    const url = viewerIsLocal ? server.address : server.publicUrl
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer")
       return
     }
-    // Exposing takes a round trip, and a window opened after an await is no
-    // longer a user gesture, so popup blockers eat it. Open the tab now and
-    // point it at the tunnel once it exists.
-    const tab = window.open("about:blank", "_blank")
-    void exposeServer(server).then((publicUrl) => {
-      if (!tab || tab.closed) return
-      if (!publicUrl) {
-        tab.close()
-        return
-      }
-      tab.location.replace(publicUrl)
-      // Cut the tunnelled page off from this one only now, in the same task
-      // as the navigation, while the tab still holds our about:blank. Cut
-      // first, and the browser no longer counts this page as the tab's
-      // opener, refuses to navigate it, and leaves it blank.
-      tab.opener = null
-    })
-  }, [exposeServer, isCloud])
+    // A remote viewer with no tunnel yet: expose, and let the next click
+    // open it. A tab opened now and pointed at the tunnel once it exists
+    // stays on about:blank in some browsers, and one opened after the round
+    // trip is no longer a user gesture, so popup blockers eat it.
+    void exposeServer(server)
+  }, [exposeServer, viewerIsLocal])
 
   const killServer = useCallback((server: LocalHttpServerInfo) => {
     setServers(removeCachedLocalHttpServer(server.port))
@@ -251,7 +242,7 @@ export function PortsWidget({
         menuLabel="Port actions"
         menu={(
           <>
-            {/* The row's own open, so in cloud mode it exposes first rather
+            {/* The row's own open, so a remote viewer exposes first rather
                 than opening a localhost this browser can't reach. */}
             <ContextMenuItem onSelect={() => openServer(server)}>
               <SquareArrowOutUpRight className="size-3.5" />

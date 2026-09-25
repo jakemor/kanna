@@ -57,12 +57,21 @@ export function WidgetIconColumn({ children, className }: { children?: ReactNode
  * slot sits in the header's icon column and its content starts where the
  * header's title does.
  */
-export function WidgetStrip({ leading, children, trailing, form }: {
+export function WidgetStrip({ leading, children, trailing, form, field = false }: {
   leading?: ReactNode
   children: ReactNode
   trailing?: ReactNode
   /** Makes the strip a form, for an input that submits (Quick Actions' add). */
   form?: Pick<FormHTMLAttributes<HTMLFormElement>, "onSubmit" | "onBlur">
+  /**
+   * Sets the strip as a filled field inset in the card rather than a bar
+   * across it, so a search reads as something to type in, not as a second
+   * header. No border and no divider: the fill is the edge, and it is the
+   * rows' hover fill, so the column keeps one gray. The 6px inset is the
+   * List's, so the field lines up with the rows under it, and its own padding
+   * keeps the leading icon at 12px and the text at 36px.
+   */
+  field?: boolean
 }) {
   const content = (
     <>
@@ -71,9 +80,11 @@ export function WidgetStrip({ leading, children, trailing, form }: {
       {trailing ? <div className="flex shrink-0 items-center gap-1">{trailing}</div> : null}
     </>
   )
-  // Divided from what follows it, but not from the card's own edge when
-  // it is all the body holds.
-  const className = "flex h-9 items-center gap-2 border-border pl-3 pr-2 not-last:border-b"
+  // A bar is divided from what follows it, but not from the card's own edge
+  // when it is all the body holds.
+  const className = field
+    ? "mx-1.5 mt-1.5 flex h-8 items-center gap-2 rounded-lg bg-muted pl-1.5 pr-0.5 last:mb-1.5"
+    : "flex h-9 items-center gap-2 border-border pl-3 pr-2 not-last:border-b"
   return form ? <form {...form} className={className}>{content}</form> : <div className={className}>{content}</div>
 }
 

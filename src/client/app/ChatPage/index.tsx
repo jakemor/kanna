@@ -376,11 +376,6 @@ const DesktopSidebarPane = memo(function DesktopSidebarPane({
       id="rightSidebar"
       defaultSize={`${sizePercent}%`}
       className="min-h-0 min-w-0"
-      // The column is at least 370px and the panel a percentage of the page,
-      // which can come out a fraction of a pixel narrower. The library's own
-      // `overflow: auto` then gave the panel a horizontal scrollbar, a thin
-      // bar in the border colour along its bottom. The column scrolls itself.
-      style={{ overflow: "hidden" }}
       elementRef={sidebarPanelRef}
       groupResizeBehavior="preserve-pixel-size"
     >

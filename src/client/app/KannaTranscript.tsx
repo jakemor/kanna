@@ -177,6 +177,23 @@ function buildTranscriptMessageRenderStates(
     }
   }
 
+  // Successful results of turns that showed nothing: background task
+  // notifications wake the agent for a turn that often writes no text and
+  // calls no tools, and each one would otherwise leave a bare "Worked for 3ms".
+  const emptyTurnResults = new Array<boolean>(messages.length).fill(false)
+  let turnHasContent = false
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!
+    if (message.kind === "user_prompt") {
+      turnHasContent = false
+    } else if ((message.kind === "assistant_text" || message.kind === "tool") && !message.hidden) {
+      turnHasContent = true
+    } else if (message.kind === "result") {
+      emptyTurnResults[index] = message.success && !turnHasContent
+      turnHasContent = false
+    }
+  }
+
   // Mark session inits whose model differs from the previous session's model.
   const modelChanges = new Array<boolean>(messages.length).fill(false)
   let previousModel: string | undefined
@@ -226,7 +243,9 @@ function buildTranscriptMessageRenderStates(
       restored: restores[index],
       isFirstAccount: firstAccountIndex === index,
       isLatestTodoWrite: message.id === latestToolIds.TodoWrite,
-      hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
+      hideResult: emptyTurnResults[index]
+        || nextMessage?.kind === "context_cleared"
+        || previousMessage?.kind === "context_cleared",
       isFinalStatus: index === messages.length - 1,
       nextPromptTimestamp: message.kind === "result" ? nextPromptTimestamps[index] : undefined,
     })

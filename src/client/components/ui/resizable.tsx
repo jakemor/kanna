@@ -42,8 +42,12 @@ const ResizableHandle = ({
           ? "h-2 w-full -my-1 cursor-row-resize"
           : "h-full w-2 -mx-1 cursor-col-resize",
         withHandle && (
+          // One pixel, just below the seam rather than astride it: what's
+          // above (the composer, drawn over the transcript's foot) covered
+          // the upper half of a centred 2px line and nothing covered it beside
+          // that, so the line doubled in thickness under the widget column.
           orientation === "vertical"
-            ? "before:absolute before:inset-x-0 before:top-1/2 before:h-0.5 before:-translate-y-1/2 before:bg-border"
+            ? "before:absolute before:inset-x-0 before:top-1/2 before:h-px before:bg-border"
             : "before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-border"
         ),
         className

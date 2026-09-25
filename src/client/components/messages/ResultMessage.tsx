@@ -72,7 +72,7 @@ export function ResultMessage({ message, nextPromptTimestamp }: Props) {
 
   const label = nextPromptTimestamp
     ? formatPromptTimestamp(nextPromptTimestamp)
-    : `Worked for ${formatDuration(message.durationMs)}`
+    : `${formatPromptTimestamp(message.timestamp)} · Worked for ${formatDuration(message.durationMs)}`
 
   return (
     <MetaRow className="px-0.5 text-xs tracking-wide">

@@ -1,6 +1,7 @@
 import type { QueuedChatMessage } from "../../../shared/types"
 import { Button } from "../ui/button"
 import { TranscriptMarkdown } from "./shared"
+import { UserMessageAttachments } from "./UserMessage"
 import { ArrowUp, X } from "lucide-react"
 
 interface QueuedUserMessageProps {
@@ -11,21 +12,9 @@ interface QueuedUserMessageProps {
 
 export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMessageProps) {
   return (
-    <div className="flex justify-end py-2">
-      <div className="flex max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5">
-        {message.attachments.length > 0 ? (
-          <div className="flex flex-wrap justify-end gap-2">
-            {message.attachments.map((attachment) => (
-              <div
-                key={attachment.id}
-                className="max-w-[220px] rounded-xl border border-dashed border-border bg-transparent px-3 py-2 text-left"
-              >
-                <div className="truncate text-[13px] font-medium text-foreground">{attachment.displayName}</div>
-                <div className="truncate text-[11px] text-muted-foreground">{attachment.mimeType}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
+    <div className="flex flex-col items-end gap-2 py-2">
+      <UserMessageAttachments attachments={message.attachments} />
+      <div className="flex max-w-[85%] sm:max-w-[80%] flex-col items-end">
         {message.content ? (
           <div className="relative group">
             {/* min-w-0 on the grid and on the text track: a `1fr` track sizes to

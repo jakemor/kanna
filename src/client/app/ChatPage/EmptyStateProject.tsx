@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, type KeyboardEvent } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { ChevronDown, Search } from "lucide-react"
 import { scorePaletteItem } from "../../components/command-palette/actions"
@@ -60,6 +60,31 @@ export function EmptyStateProjectPicker({ localPath }: { localPath: string }) {
 }
 
 /**
+ * Whether a sticky element has pinned: its sentinel, where it sits unpinned,
+ * has scrolled above the empty state's scroller top plus the header offset.
+ * An observer rather than CSS, because `@container scroll-state(stuck)`
+ * isn't in every browser Kanna runs in.
+ */
+function useStuckUnderHeader(sentinelRef: RefObject<HTMLElement | null>, mounted: boolean) {
+  const [stuck, setStuck] = useState(false)
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    const root = sentinel?.closest<HTMLElement>("[data-empty-state-scroller]")
+    if (!sentinel || !root) return
+    const offset = Number.parseFloat(getComputedStyle(root).getPropertyValue("--empty-state-header-offset")) || 0
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry) return
+      // Out of view below (a short window) isn't stuck; only above is.
+      const rootTop = (entry.rootBounds?.top ?? 0)
+      setStuck(!entry.isIntersecting && entry.boundingClientRect.top < rootTop)
+    }, { root, rootMargin: `-${offset}px 0px 0px 0px`, threshold: 0 })
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [mounted, sentinelRef])
+  return stuck
+}
+
+/**
  * The project's chats: a search field, then the palette's headings and rows
  * (getProjectChatGroups) less the archive and the chat you're on. Typing
  * swaps the headings for one list ranked by match, over titles and prompts
@@ -91,6 +116,9 @@ export function EmptyStateProjectChats({ projectId, activeChatId }: { projectId:
     return getProjectChatGroups(threads, nowMs, { includeArchived: false, limit: RECENT_CHAT_LIMIT })
   }, [nowMs, threads, trimmedQuery])
 
+  const stuckSentinelRef = useRef<HTMLDivElement | null>(null)
+  const stuck = useStuckUnderHeader(stuckSentinelRef, threads.length > 0)
+
   // Nothing to find in a project without chats: no field, no list.
   if (threads.length === 0) return null
 
@@ -111,7 +139,10 @@ export function EmptyStateProjectChats({ projectId, activeChatId }: { projectId:
   return (
     // ⌘K's width (CommandDialog's max-w-xl), so the same rows read the same
     // in both places rather than stretching to the composer here.
-    <div className="mx-auto flex w-full max-w-xl flex-col gap-px text-left">
+    <div className="relative mx-auto flex w-full max-w-xl flex-col gap-px text-left">
+      {/* Where the field sits unpinned. Once this passes under the header,
+          the field is stuck. */}
+      <div ref={stuckSentinelRef} aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px" />
       {/* On the page, not on a surface: no border or fill, only a hairline
           under it that brightens while it has focus. The same insets as a
           row (6px, then a 16px icon column), so the glyph lands on the rows'
@@ -120,8 +151,16 @@ export function EmptyStateProjectChats({ projectId, activeChatId }: { projectId:
           down a long list. The scroller runs up under the header, so it pins
           at the header's bottom edge, not the window's top. It takes the
           page's own background there, which keeps it on the page rather than
-          on a surface. */}
-      <label className="sticky top-[var(--empty-state-header-offset,0px)] z-10 flex h-9 items-center gap-2 border-b border-border bg-background px-1.5 text-sm transition-colors focus-within:border-foreground/25">
+          on a surface.
+
+          Stuck, it also blanks the column above it, up under the see-through
+          header: otherwise the rows it has passed show between the window's
+          top and the field, and the field reads as floating mid-list. Only
+          while stuck, since unpinned that strip is the picker. */}
+      <label
+        data-stuck={stuck || undefined}
+        className="sticky top-[var(--empty-state-header-offset,0px)] z-10 flex h-9 items-center gap-2 border-b border-border bg-background px-1.5 text-sm transition-colors focus-within:border-foreground/25 before:pointer-events-none before:absolute before:inset-x-0 before:bottom-full before:hidden before:h-[var(--empty-state-header-offset,0px)] before:bg-background data-[stuck]:before:block"
+      >
         <span className="flex w-4 shrink-0 items-center justify-center text-muted-foreground">
           <Search className="size-3.5" />
         </span>

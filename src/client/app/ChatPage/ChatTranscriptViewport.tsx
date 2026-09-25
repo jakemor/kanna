@@ -1162,16 +1162,19 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
           }}
         >
           {/* The composer's width, so the project card lines up with it. The
-              header's height is padding inside the scroller, so the resting
-              layout centres below the header, and the offset rides along as a
-              variable for what sticks (the chat search). */}
+              offset rides along as a variable for what sticks (the chat
+              search), which pins at the header's bottom edge. */}
           <div
+            data-empty-state-scroller
             className="pointer-events-auto mx-auto flex h-full max-w-[840px] flex-col items-center overflow-y-auto scrollbar-hide"
-            style={{
-              paddingTop: headerOffsetPx ?? 0,
-              "--empty-state-header-offset": `${headerOffsetPx ?? 0}px`,
-            } as CSSProperties}
+            style={{ "--empty-state-header-offset": `${headerOffsetPx ?? 0}px` } as CSSProperties}
           >
+            {/* The header's height as a spacer, not as the scroller's
+                padding: the resting layout still centres below the header,
+                but a sticky child's `top` then counts from the scroller's
+                edge alone. Browsers also inset sticky by the scroller's
+                padding, which pinned the search twice as far down. */}
+            <div aria-hidden className="w-full shrink-0" style={{ height: headerOffsetPx ?? 0 }} />
             {/* Flexbox-only center-or-scroll: my-auto centers the group when
                 there's room, but its auto margins collapse once the content
                 outgrows the container, so overflow-y-auto scrolls it from the

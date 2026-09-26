@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -14,6 +15,7 @@ import {
 } from "./usage-limits"
 
 const NOW = "2026-07-22T10:00:00.000Z"
+const CURSOR_RESETS_AT = new Date(1788796525000).toISOString()
 
 let tempDirs: string[] = []
 
@@ -26,6 +28,11 @@ async function createTempFilePath() {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-usage-"))
   tempDirs.push(dir)
   return path.join(dir, "usage-limits.json")
+}
+
+function loadCursorFixture(name: string): CursorUsageRaw {
+  const text = readFileSync(path.join(import.meta.dir, "__fixtures__", name), "utf8")
+  return JSON.parse(text) as CursorUsageRaw
 }
 
 describe("normalizeClaudeUsage", () => {

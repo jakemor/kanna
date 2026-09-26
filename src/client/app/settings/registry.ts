@@ -144,6 +144,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Assistant messages a chat opens with, and how many each \"load earlier\" adds.",
     keywords: ["chat", "history", "load earlier", "messages", "performance", "window"],
   },
+  usageLimitIndicators: {
+    sectionId: "general",
+    title: "Usage Limit Indicators",
+    description: "Show plan-limit rings next to the chat input's context meter for Claude Code, Codex, and Cursor",
+    keywords: ["rate limit", "5-hour", "weekly", "quota", "meter", "ring", "composer", "cursor models"],
+  },
   anonymousAnalytics: {
     sectionId: "general",
     title: "Anonymous Analytics",

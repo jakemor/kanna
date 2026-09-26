@@ -266,6 +266,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const usageLimits = new UsageLimitsManager(path.join(store.dataDir, "usage-limits.json"), {
     fetchClaudeUsage: () => agent.fetchClaudeUsage(),
     fetchCodexRateLimits: () => agent.fetchCodexRateLimits(),
+    fetchCursorUsage: () => agent.fetchCursorUsage(),
     fetchGrokUsage: () => agent.fetchGrokUsage(),
   })
   await usageLimits.initialize()

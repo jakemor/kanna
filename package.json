@@ -20,7 +20,8 @@
     "url": "git+https://github.com/jakemor/kanna.git"
   },
   "bin": {
-    "kanna": "./bin/kanna"
+    "kanna": "./bin/kanna",
+    "kanna-rc": "./bin/kanna-rc"
   },
   "packageManager": "bun@1.3.5",
   "files": [
@@ -43,6 +44,8 @@
     "dev:cloud": "KANNA_DEVBOX_UI=1 bun run ./scripts/dev.ts",
     "dev:client": "vite --host 0.0.0.0 --port 5174",
     "dev:server": "bun run ./scripts/dev-server.ts --no-open --port 5175",
+    "dev:import-chats": "bun run ./scripts/dev-import-chats.ts",
+    "rc": "bun run build && bun run ./scripts/rc.ts",
     "install:dev": "bun install && bun run build && bun install -g .",
     "start": "bun run ./src/server/cli.ts",
     "test": "bun test",

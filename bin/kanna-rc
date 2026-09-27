@@ -1,0 +1,11 @@
+#!/usr/bin/env bun
+import process from "node:process"
+import { CLI_CHILD_MODE, CLI_CHILD_MODE_ENV_VAR } from "../src/server/restart"
+
+process.env.KANNA_RUNTIME_PROFILE = "rc"
+
+if (process.env[CLI_CHILD_MODE_ENV_VAR] === CLI_CHILD_MODE) {
+  await import("../src/server/cli.ts")
+} else {
+  await import("../src/server/cli-supervisor.ts")
+}

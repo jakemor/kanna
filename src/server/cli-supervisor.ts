@@ -1,6 +1,6 @@
 import process from "node:process"
 import { spawn } from "node:child_process"
-import { CLI_COMMAND, LOG_PREFIX } from "../shared/branding"
+import { getCliCommand, LOG_PREFIX } from "../shared/branding"
 import {
   CLI_CHILD_ARGS_ENV_VAR,
   CLI_CHILD_COMMAND_ENV_VAR,
@@ -20,7 +20,7 @@ interface ChildExit {
 }
 
 function getChildProcessSpec() {
-  const command = process.env[CLI_CHILD_COMMAND_ENV_VAR] || CLI_COMMAND
+  const command = process.env[CLI_CHILD_COMMAND_ENV_VAR] || getCliCommand()
   const args = parseChildArgsEnv(process.env[CLI_CHILD_ARGS_ENV_VAR])
   return { command, args }
 }
@@ -99,7 +99,7 @@ while (true) {
     }
 
     suppressOpenOnNextChild = isUiUpdateRestart(result.code, result.signal)
-    console.log(`${LOG_PREFIX} supervisor restarting ${CLI_COMMAND} in the same terminal session`)
+    console.log(`${LOG_PREFIX} supervisor restarting ${getCliCommand()} in the same terminal session`)
     continue
   }
 

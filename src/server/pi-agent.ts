@@ -205,6 +205,20 @@ export interface PiConnection {
   provider: LlmProviderKind
   baseUrl: string
   apiKey: string
+  /** The Model Registry model, used where a pi model id can't be sent as is. */
+  model?: string
+}
+
+/**
+ * The `~vendor/model-latest` aliases in the default pi models are OpenRouter
+ * ids. Requesty rejects them with a 404, so a Requesty connection sends its
+ * configured Model Registry model instead. Explicit model ids pass through.
+ */
+export function resolveRegistryModelId(connection: PiConnection, modelId: string): string {
+  if (connection.provider === "requesty" && modelId.startsWith("~") && connection.model) {
+    return connection.model
+  }
+  return modelId
 }
 
 /**
@@ -214,9 +228,10 @@ export interface PiConnection {
  */
 export function buildRegistryModel(connection: PiConnection, modelId: string): Model<"openai-completions"> {
   const isOpenRouter = connection.baseUrl.includes("openrouter.ai")
+  const id = resolveRegistryModelId(connection, modelId)
   return {
-    id: modelId,
-    name: modelId,
+    id,
+    name: id,
     api: "openai-completions",
     provider: connection.provider,
     baseUrl: connection.baseUrl,
@@ -241,6 +256,7 @@ export async function resolvePiConnection(): Promise<PiConnection | null> {
         provider: snapshot.provider,
         baseUrl: snapshot.resolvedBaseUrl,
         apiKey: snapshot.apiKey,
+        model: snapshot.model,
       }
     }
   } catch {
@@ -254,7 +270,7 @@ export async function resolvePiConnection(): Promise<PiConnection | null> {
 }
 
 export const MISSING_PI_CONNECTION_MESSAGE =
-  "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
+  "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, Requesty, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
 
 export interface StartPiTurnArgs {
   customTools?: KannaToolHost

@@ -2,12 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { DEFAULT_OPENAI_SDK_MODEL, DEFAULT_OPENROUTER_SDK_MODEL, DEFAULT_PI_FAVE_MODELS } from "../shared/types"
+import { DEFAULT_OPENAI_SDK_MODEL, DEFAULT_OPENROUTER_SDK_MODEL, DEFAULT_PI_FAVE_MODELS, DEFAULT_REQUESTY_SDK_MODEL } from "../shared/types"
 import {
   normalizeLlmProviderSnapshot,
   OPENAI_BASE_URL,
   OPENROUTER_BASE_URL,
   readLlmProviderSnapshot,
+  REQUESTY_BASE_URL,
   resolveLlmProviderBaseUrl,
   writeLlmProviderSnapshot,
 } from "./llm-provider"
@@ -30,6 +31,7 @@ describe("resolveLlmProviderBaseUrl", () => {
   test("derives known provider URLs and preserves custom URLs", () => {
     expect(resolveLlmProviderBaseUrl("openai", "")).toBe(OPENAI_BASE_URL)
     expect(resolveLlmProviderBaseUrl("openrouter", "")).toBe(OPENROUTER_BASE_URL)
+    expect(resolveLlmProviderBaseUrl("requesty", "")).toBe(REQUESTY_BASE_URL)
     expect(resolveLlmProviderBaseUrl("custom", " https://example.com/v1 ")).toBe("https://example.com/v1")
   })
 })
@@ -102,6 +104,20 @@ describe("readLlmProviderSnapshot", () => {
 
     const snapshot = await readLlmProviderSnapshot(filePath)
     expect(snapshot.model).toBe(DEFAULT_OPENROUTER_SDK_MODEL)
+    expect(snapshot.enabled).toBe(true)
+  })
+
+  test("fills the Requesty default model when the file omits it", async () => {
+    const filePath = await createTempFilePath()
+    await writeFile(filePath, JSON.stringify({
+      provider: "requesty",
+      apiKey: "test-key",
+      baseUrl: null,
+    }), "utf8")
+
+    const snapshot = await readLlmProviderSnapshot(filePath)
+    expect(snapshot.model).toBe(DEFAULT_REQUESTY_SDK_MODEL)
+    expect(snapshot.resolvedBaseUrl).toBe(REQUESTY_BASE_URL)
     expect(snapshot.enabled).toBe(true)
   })
 })

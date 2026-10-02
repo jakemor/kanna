@@ -30,6 +30,7 @@ import type {
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
 import { AsyncQueue } from "./async-queue"
+import { isClaudeInChromeEnabled } from "./claude-chrome"
 import { resolveClaudeExecutable } from "./claude-executable"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
 import { createClaudeKannaTools } from "./kanna-tool-adapters"
@@ -930,6 +931,7 @@ async function startClaudeSession(args: {
   // The user's own `claude`, never the SDK's pinned copy (claude-executable.ts).
   const claudeExecutable = await resolveClaudeExecutable()
   if (!claudeExecutable.ok) throw new Error(claudeExecutable.message)
+  const chrome = await isClaudeInChromeEnabled()
   const promptQueue = new AsyncQueue<SDKUserMessage>()
   let promptQueueClosed = false
 
@@ -967,6 +969,8 @@ async function startClaudeSession(args: {
       // enabling it while the UI shows "Standard".
       settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
       pathToClaudeCodeExecutable: claudeExecutable.path,
+      // Headless sessions skip Claude in Chrome unless asked (claude-chrome.ts).
+      ...(chrome ? { extraArgs: { chrome: null } } : {}),
       env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
   })

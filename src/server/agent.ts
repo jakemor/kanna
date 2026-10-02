@@ -854,7 +854,7 @@ function subagentHooks(
   }
 }
 
-async function startClaudeSession(args: {
+export async function startClaudeSession(args: {
   localPath: string
   model: string
   effort?: string

@@ -1,11 +1,18 @@
-import { describe, expect, test } from "bun:test"
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { claudeGlobalConfigPath, isClaudeInChromeEnabled } from "./claude-chrome"
 
+const dirs: string[] = []
+
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+})
+
 async function configDir(contents: string | null) {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-claude-chrome-"))
+  dirs.push(dir)
   if (contents !== null) await writeFile(path.join(dir, ".claude.json"), contents)
   return { CLAUDE_CONFIG_DIR: dir }
 }

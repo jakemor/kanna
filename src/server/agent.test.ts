@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -15,6 +15,7 @@ import {
   normalizeClaudeStreamMessage,
   normalizeClaudeUsageSnapshot,
   RESUME_AFTER_RESTART_MESSAGE,
+  startClaudeSession,
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { SubagentActivityUpdate } from "./background-tasks"
@@ -3270,5 +3271,59 @@ describe("subagent activity", () => {
     expect(byId.get("a1")?.endedAt).toBeDefined()
     // Work that already finished keeps its outcome.
     expect(byId.get("a2")).toMatchObject({ status: "completed", endedAt: 2000 })
+  })
+})
+
+describe("startClaudeSession launch flags", () => {
+  const envKeys = ["CLAUDE_EXECUTABLE", "CLAUDE_CONFIG_DIR", "KANNA_TEST_ARGV_FILE"] as const
+  const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]))
+  const dirs: string[] = []
+
+  afterEach(() => {
+    for (const key of envKeys) {
+      if (savedEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedEnv[key]
+    }
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  // Runs the real session start against a fake `claude` that records its
+  // argv and exits, with Claude's global config saying `chromeDefault`.
+  async function launchArgv(chromeDefault: boolean): Promise<string[]> {
+    const dir = mkdtempSync(path.join(tmpdir(), "kanna-claude-launch-"))
+    dirs.push(dir)
+    writeFileSync(path.join(dir, ".claude.json"), JSON.stringify({ claudeInChromeDefaultEnabled: chromeDefault }))
+    const fakeClaude = path.join(dir, "claude")
+    writeFileSync(fakeClaude, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$KANNA_TEST_ARGV_FILE\"\n", { mode: 0o755 })
+    const argvFile = path.join(dir, "argv")
+    process.env.CLAUDE_EXECUTABLE = fakeClaude
+    process.env.CLAUDE_CONFIG_DIR = dir
+    process.env.KANNA_TEST_ARGV_FILE = argvFile
+
+    const session = await startClaudeSession({
+      localPath: dir,
+      model: "sonnet",
+      planMode: false,
+      autoPlan: false,
+      sessionToken: null,
+      forkSession: false,
+      onToolRequest: async () => ({}),
+    })
+    try {
+      for (let attempt = 0; attempt < 100 && !(await Bun.file(argvFile).exists()); attempt += 1) {
+        await Bun.sleep(20)
+      }
+      return (await Bun.file(argvFile).text()).split("\n").filter(Boolean)
+    } finally {
+      session.close()
+    }
+  }
+
+  test("passes --chrome when Claude has Claude in Chrome on by default", async () => {
+    expect(await launchArgv(true)).toContain("--chrome")
+  })
+
+  test("omits --chrome when it is off", async () => {
+    expect(await launchArgv(false)).not.toContain("--chrome")
   })
 })

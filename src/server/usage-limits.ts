@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { LOG_PREFIX } from "../shared/branding"
-import { deriveModelLabel } from "../shared/types"
+import { deriveModelLabel, FIVE_HOUR_WINDOW_MINUTES, WEEKLY_WINDOW_MINUTES } from "../shared/types"
 import type {
   AgentProvider,
   ProviderUsageSnapshot,
@@ -19,6 +19,13 @@ import { grokProductUsageWindows, moneyVal, type GrokBillingRaw, type GrokUserRa
 // ---------------------------------------------------------------------------
 
 interface ClaudeUsageWindowRaw {
+  utilization?: number | null
+  resets_at?: string | null
+}
+
+/** One entry of `rate_limits.model_scoped`: a weekly window for a single model. */
+interface ClaudeModelScopedRaw {
+  display_name?: string | null
   utilization?: number | null
   resets_at?: string | null
 }
@@ -73,6 +80,58 @@ export interface CodexRateLimitsRaw {
   rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshotRaw | null | undefined> | null
 }
 
+/** Cursor `GetCurrentPeriodUsage` planUsage block (amounts in cents). */
+interface CursorPlanUsageRaw {
+  totalSpend?: number | null
+  includedSpend?: number | null
+  bonusSpend?: number | null
+  limit?: number | null
+  autoPercentUsed?: number | null
+  apiPercentUsed?: number | null
+  totalPercentUsed?: number | null
+}
+
+interface CursorSpendLimitUsageRaw {
+  limitType?: string | null
+  /** Minor currency units (cents). */
+  individualUsed?: number | null
+  /** Minor currency units (cents). */
+  individualLimit?: number | null
+  pooledLimit?: number | null
+}
+
+/** Cursor `GetCurrentPeriodUsage` response (subset). */
+export interface CursorCurrentPeriodUsageRaw {
+  billingCycleStart?: string | null
+  billingCycleEnd?: string | null
+  planUsage?: CursorPlanUsageRaw | null
+  spendLimitUsage?: CursorSpendLimitUsageRaw | null
+  enabled?: boolean | null
+}
+
+/** Cursor `GetPlanInfo` response (subset). */
+export interface CursorPlanInfoRaw {
+  planInfo?: {
+    planName?: string | null
+    includedAmountCents?: number | null
+    billingCycleEnd?: string | null
+  } | null
+}
+
+/** Cursor `GetHardLimit` response (subset). */
+export interface CursorHardLimitRaw {
+  noUsageBasedAllowed?: boolean | null
+  /** Spend cap in major currency units (dollars) when set. */
+  hardLimit?: number | null
+}
+
+/** Combined on-demand Cursor usage read (DashboardService RPCs). */
+export interface CursorUsageRaw {
+  currentPeriodUsage?: CursorCurrentPeriodUsageRaw | null
+  planInfo?: CursorPlanInfoRaw | null
+  hardLimit?: CursorHardLimitRaw | null
+}
+
 // ---------------------------------------------------------------------------
 // Label helpers
 // ---------------------------------------------------------------------------
@@ -94,6 +153,29 @@ function prettifyKey(key: string): string {
 
 function claudeWindowLabel(key: string): string {
   return CLAUDE_WINDOW_LABELS[key] ?? prettifyKey(key)
+}
+
+/** Claude keys its windows by period rather than reporting a duration. */
+function claudeWindowMinutes(key: string): number | null {
+  if (key === "five_hour") return FIVE_HOUR_WINDOW_MINUTES
+  if (key.startsWith("seven_day")) return WEEKLY_WINDOW_MINUTES
+  return null
+}
+
+/** These keyed weekly windows cover one model family, so they carry a model label like `model_scoped` entries do. */
+const CLAUDE_WINDOW_MODEL_LABELS: Record<string, string> = {
+  seven_day_opus: "Opus",
+  seven_day_sonnet: "Sonnet",
+}
+
+function claudeWindowModelLabel(key: string): string | null {
+  return CLAUDE_WINDOW_MODEL_LABELS[key] ?? null
+}
+
+/** Stable id for a model-scoped weekly window: "Fable" becomes "model_scoped:fable". */
+function modelScopedWindowId(displayName: string): string {
+  const slug = displayName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
+  return `model_scoped:${slug || "model"}`
 }
 
 function codexWindowLabel(windowDurationMins: number | null | undefined, suffix: string): string {
@@ -120,6 +202,19 @@ function clampPercent(value: number | null | undefined): number | null {
 function unixSecondsToIso(seconds: number | null | undefined): string | null {
   if (seconds == null || !Number.isFinite(seconds)) return null
   return new Date(seconds * 1000).toISOString()
+}
+
+/** Cursor billing-cycle timestamps arrive as unix-ms strings from DashboardService. */
+function cursorEpochMillisToIso(value: string | number | null | undefined): string | null {
+  if (value == null) return null
+  const ms = typeof value === "string" ? Number(value) : value
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms).toISOString()
+}
+
+function cursorCentsToDollars(cents: number | null | undefined): number | null {
+  if (cents == null || !Number.isFinite(cents)) return null
+  return cents / 100
 }
 
 function latestRecordedAt(snapshot: ProviderUsageSnapshot): string | null {
@@ -187,6 +282,26 @@ export function normalizeClaudeUsage(
       }
       continue
     }
+    // Per-model weekly windows arrive as an array of {display_name,
+    // utilization, resets_at} rather than as keyed entries.
+    if (key === "model_scoped") {
+      if (!Array.isArray(value)) continue
+      for (const entry of value as ClaudeModelScopedRaw[]) {
+        const displayName = typeof entry?.display_name === "string" ? entry.display_name.trim() : ""
+        if (!displayName) continue
+        windows.push({
+          id: modelScopedWindowId(displayName),
+          label: `Weekly · ${displayName}`,
+          usedPercent: clampPercent(entry.utilization),
+          resetsAt: entry.resets_at ?? null,
+          windowMinutes: WEEKLY_WINDOW_MINUTES,
+          modelLabel: displayName,
+          recordedAt: now,
+          source,
+        })
+      }
+      continue
+    }
     // Only keyed entries shaped like windows count; the response also carries
     // non-window keys (a `limits` array, a `spend` object, booleans) we skip.
     if (!value || typeof value !== "object" || Array.isArray(value)) continue
@@ -197,6 +312,8 @@ export function normalizeClaudeUsage(
       label: claudeWindowLabel(key),
       usedPercent: clampPercent(window.utilization),
       resetsAt: window.resets_at ?? null,
+      windowMinutes: claudeWindowMinutes(key),
+      modelLabel: claudeWindowModelLabel(key),
       recordedAt: now,
       source,
     })
@@ -254,13 +371,18 @@ export function mergeClaudeRateLimitPush(
 
   const windows = [...base.windows]
   const existingIndex = windows.findIndex((w) => w.id === id)
+  const existing = windows[existingIndex]
+  // A push can carry only a reset time, so the last known figure and its own recordedAt survive it.
+  const keepPrevious = usedPercent === null && existing?.usedPercent != null
   const merged: UsageLimitWindow = {
     id,
     label: claudeWindowLabel(id),
-    usedPercent,
-    resetsAt: resetsAt ?? windows[existingIndex]?.resetsAt ?? null,
-    recordedAt: now,
-    source: "turn_push",
+    usedPercent: keepPrevious ? existing.usedPercent : usedPercent,
+    resetsAt: resetsAt ?? existing?.resetsAt ?? null,
+    windowMinutes: claudeWindowMinutes(id),
+    modelLabel: claudeWindowModelLabel(id),
+    recordedAt: keepPrevious ? existing.recordedAt : now,
+    source: keepPrevious ? existing.source : "turn_push",
   }
   if (existingIndex >= 0) {
     windows[existingIndex] = merged
@@ -284,24 +406,21 @@ function codexBucketWindows(
   now: string,
   source: UsageLimitSource,
   labelSuffix: string,
+  modelLabel: string | null,
 ): UsageLimitWindow[] {
   const windows: UsageLimitWindow[] = []
-  if (bucket.primary) {
+  // primary/secondary are positional slots, not fixed periods: a plan with one
+  // window reports it as primary whatever its duration.
+  for (const slot of ["primary", "secondary"] as const) {
+    const window = bucket[slot]
+    if (!window) continue
     windows.push({
-      id: `${keyPrefix}:primary`,
-      label: codexWindowLabel(bucket.primary.windowDurationMins, labelSuffix),
-      usedPercent: clampPercent(bucket.primary.usedPercent),
-      resetsAt: unixSecondsToIso(bucket.primary.resetsAt),
-      recordedAt: now,
-      source,
-    })
-  }
-  if (bucket.secondary) {
-    windows.push({
-      id: `${keyPrefix}:secondary`,
-      label: codexWindowLabel(bucket.secondary.windowDurationMins, labelSuffix),
-      usedPercent: clampPercent(bucket.secondary.usedPercent),
-      resetsAt: unixSecondsToIso(bucket.secondary.resetsAt),
+      id: `${keyPrefix}:${slot}`,
+      label: codexWindowLabel(window.windowDurationMins, labelSuffix),
+      usedPercent: clampPercent(window.usedPercent),
+      resetsAt: unixSecondsToIso(window.resetsAt),
+      windowMinutes: window.windowDurationMins ?? null,
+      modelLabel,
       recordedAt: now,
       source,
     })
@@ -362,14 +481,12 @@ export function normalizeCodexRateLimits(
     // model-specific lanes whose limitName is a model id — run it through the
     // shared model-label formatter so "GPT-5.3-Codex-Spark" → "GPT 5.3 Codex
     // Spark", matching the rest of the app.
+    const modelLabel = bucket.limitName ? deriveModelLabel(bucket.limitName) : null
     const suffix = !multiple
       ? ""
-      : bucket.limitName
-        ? deriveModelLabel(bucket.limitName)
-        : limitId === "codex"
-          ? "All models"
-          : limitId
-    windows.push(...codexBucketWindows(bucket, limitId, now, source, suffix))
+      : modelLabel
+        ?? (limitId === "codex" ? "All models" : limitId)
+    windows.push(...codexBucketWindows(bucket, limitId, now, source, suffix, modelLabel))
     if (!credits && bucket.credits && (bucket.credits.hasCredits || bucket.credits.unlimited)) {
       credits = {
         label: "Credits",
@@ -458,6 +575,8 @@ export function normalizeGrokAccountUsage(
     resetsAt: window.resetsAt,
     recordedAt: now,
     source,
+    windowMinutes: null,
+    modelLabel: null,
   }))
 
   const onDemandUsed = moneyVal(raw.billing.config?.onDemandUsed)
@@ -491,6 +610,112 @@ export function normalizeGrokAccountUsage(
   return snapshot
 }
 
+export function normalizeCursorUsageLimits(
+  raw: CursorUsageRaw | null,
+  now: string,
+  source: UsageLimitSource = "on_demand",
+): ProviderUsageSnapshot {
+  const base: ProviderUsageSnapshot = {
+    provider: "cursor",
+    status: "unknown",
+    plan: null,
+    windows: [],
+    credits: null,
+    detail: null,
+    updatedAt: null,
+  }
+
+  if (!raw?.currentPeriodUsage) {
+    return { ...base, status: "unavailable", detail: "Could not read Cursor usage." }
+  }
+
+  const period = raw.currentPeriodUsage
+  const plan = raw.planInfo?.planInfo?.planName ?? null
+  const planUsage = period.planUsage
+
+  if (period.enabled === false || !planUsage) {
+    return {
+      ...base,
+      status: "unavailable",
+      plan,
+      detail: "Plan limits are not available for this account (sign in with cursor-agent login).",
+    }
+  }
+
+  const resetsAt = cursorEpochMillisToIso(
+    period.billingCycleEnd ?? raw.planInfo?.planInfo?.billingCycleEnd,
+  )
+
+  const windows: UsageLimitWindow[] = []
+  if (planUsage.autoPercentUsed != null) {
+    windows.push({
+      id: "cursor_models",
+      label: "Cursor Models",
+      usedPercent: clampPercent(planUsage.autoPercentUsed),
+      resetsAt,
+      windowMinutes: null,
+      modelLabel: null,
+      recordedAt: now,
+      source,
+    })
+  }
+  if (planUsage.apiPercentUsed != null) {
+    windows.push({
+      id: "other_models",
+      label: "Other Models",
+      usedPercent: clampPercent(planUsage.apiPercentUsed),
+      resetsAt,
+      windowMinutes: null,
+      modelLabel: null,
+      recordedAt: now,
+      source,
+    })
+  }
+
+  let credits: UsageLimitCredits | null = null
+  const hardLimit = raw.hardLimit
+  const spend = period.spendLimitUsage
+  const onDemandBlocked = hardLimit?.noUsageBasedAllowed === true
+  const usedCents = spend?.individualUsed
+  // `individualLimit` covers a personal account; a team/pooled account instead
+  // reports its shared cap in `pooledLimit` with `individualLimit` unset. This
+  // is an unofficial, undocumented endpoint and we don't have a real pooled
+  // account to confirm `individualUsed` is still the right numerator against
+  // it — falling back to it is a best-effort improvement over ignoring
+  // `pooledLimit` entirely, not a verified-correct reading.
+  const limitCents = spend?.individualLimit
+    ?? spend?.pooledLimit
+    ?? (hardLimit?.hardLimit != null && hardLimit.hardLimit > 0 ? hardLimit.hardLimit * 100 : null)
+
+  if (!onDemandBlocked && (usedCents != null || (limitCents != null && limitCents > 0))) {
+    const usedAmount = cursorCentsToDollars(usedCents)
+    const limitAmount = cursorCentsToDollars(limitCents)
+    credits = {
+      label: "On-demand",
+      usedPercent: usedAmount != null && limitAmount != null && limitAmount > 0
+        ? clampPercent((usedAmount / limitAmount) * 100)
+        : null,
+      usedAmount,
+      limitAmount,
+      currency: "USD",
+      detail: null,
+      recordedAt: now,
+      source,
+    }
+  }
+
+  const snapshot: ProviderUsageSnapshot = {
+    ...base,
+    status: windows.length > 0 || credits ? "ok" : "unavailable",
+    plan,
+    windows,
+    credits,
+    detail: windows.length > 0 || credits ? null : "No plan limit windows reported.",
+  }
+  snapshot.updatedAt = latestRecordedAt(snapshot)
+  return snapshot
+}
+
 function staticProviderSnapshot(provider: AgentProvider): ProviderUsageSnapshot {
   if (provider === "pi") {
     return {
@@ -514,7 +739,7 @@ function staticProviderSnapshot(provider: AgentProvider): ProviderUsageSnapshot 
       updatedAt: null,
     }
   }
-  // cursor (this phase): not wired up.
+  // Cursor may stay unavailable until its CLI reports an authenticated session.
   return {
     provider,
     status: "unavailable",
@@ -545,6 +770,8 @@ export interface UsageLimitsManagerDeps {
   fetchClaudeUsage?: () => Promise<ClaudeUsageRaw | null>
   /** Fetch a fresh Codex rate-limit read, or null when unavailable. */
   fetchCodexRateLimits?: () => Promise<CodexRateLimitsRaw | null>
+  /** Fetch a fresh Cursor usage read, or null when unavailable. */
+  fetchCursorUsage?: () => Promise<CursorUsageRaw | null>
   /** Fetch Grok Build billing + subscription from cli-chat-proxy. */
   fetchGrokUsage?: () => Promise<GrokUsageRaw | null>
   now?: () => Date
@@ -573,6 +800,9 @@ export class UsageLimitsManager {
     this.snapshots.set("codex", {
       provider: "codex", status: "unknown", plan: null, windows: [], credits: null, detail: null, updatedAt: null,
     })
+    this.snapshots.set("cursor", {
+      provider: "cursor", status: "unknown", plan: null, windows: [], credits: null, detail: null, updatedAt: null,
+    })
   }
 
   private nowIso() {
@@ -585,13 +815,19 @@ export class UsageLimitsManager {
       const text = await readFile(this.filePath, "utf8")
       if (text.trim()) {
         const parsed = JSON.parse(text) as UsageLimitsFile
-        for (const provider of ["claude", "codex", "grok"] as const) {
+        for (const provider of ["claude", "codex", "cursor", "grok"] as const) {
           const persisted = parsed.providers?.[provider]
           if (persisted && typeof persisted === "object") {
             // Mark persisted windows as cache-sourced so the UI can show staleness.
+            // Fields added after a cache was written come back undefined.
             this.snapshots.set(provider, {
               ...persisted,
-              windows: persisted.windows?.map((w) => ({ ...w, source: "cache" as const })) ?? [],
+              windows: persisted.windows?.map((w) => ({
+                ...w,
+                windowMinutes: w.windowMinutes ?? null,
+                modelLabel: w.modelLabel ?? null,
+                source: "cache" as const,
+              })) ?? [],
               credits: persisted.credits ? { ...persisted.credits, source: "cache" } : null,
             })
           }
@@ -645,7 +881,7 @@ export class UsageLimitsManager {
   }
 
   /**
-   * On-demand refresh of claude + codex; coalesces concurrent calls. Reads may
+   * On-demand refresh of claude, codex, cursor and grok; coalesces concurrent calls. Reads may
    * spawn short-lived harness probe processes, so non-forced calls (e.g. every
    * usage-limits subscription) are throttled to once per TTL — the explicit
    * Refresh button passes force.
@@ -663,7 +899,7 @@ export class UsageLimitsManager {
   }
 
   private async doRefresh() {
-    await Promise.all([this.refreshClaude(), this.refreshCodex(), this.refreshGrok()])
+    await Promise.all([this.refreshClaude(), this.refreshCodex(), this.refreshCursor(), this.refreshGrok()])
     this.lastRefreshAt = (this.deps.now?.() ?? new Date()).getTime()
     // Make refresh() a durable point: the persisted cache reflects this read.
     await this.persistChain
@@ -734,12 +970,43 @@ export class UsageLimitsManager {
     }
   }
 
+  private async refreshCursor() {
+    if (!this.deps.fetchCursorUsage) return
+    try {
+      const raw = await this.deps.fetchCursorUsage()
+      if (!raw) {
+        this.applyRefreshed("cursor", {
+          provider: "cursor",
+          status: "unavailable",
+          plan: null,
+          windows: [],
+          credits: null,
+          detail: "Sign in to Cursor with cursor-agent login to see limits (API-key auth has no subscription limits).",
+          updatedAt: null,
+        })
+        return
+      }
+      this.applyRefreshed("cursor", normalizeCursorUsageLimits(raw, this.nowIso()))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const isAuth = /auth|login|sign|not logged/i.test(message)
+      this.applyRefreshed("cursor", {
+        provider: "cursor", status: "unavailable", plan: null, windows: [], credits: null,
+        detail: isAuth
+          ? "Sign in to Cursor with cursor-agent login to see limits (API-key auth has no subscription limits)."
+          : `Failed to read Cursor usage: ${message}`,
+        updatedAt: null,
+      })
+    }
+  }
+
   private async persist() {
     const file: UsageLimitsFile = {
       version: 1,
       providers: {
         claude: this.snapshots.get("claude"),
         codex: this.snapshots.get("codex"),
+        cursor: this.snapshots.get("cursor"),
         grok: this.snapshots.get("grok"),
       },
     }

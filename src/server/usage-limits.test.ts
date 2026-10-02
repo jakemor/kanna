@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -9,9 +10,12 @@ import {
   normalizeClaudeUsage,
   normalizeCodexRateLimits,
   normalizeGrokAccountUsage,
+  normalizeCursorUsageLimits,
+  type CursorUsageRaw,
 } from "./usage-limits"
 
 const NOW = "2026-07-22T10:00:00.000Z"
+const CURSOR_RESETS_AT = new Date(1788796525000).toISOString()
 
 let tempDirs: string[] = []
 
@@ -24,6 +28,11 @@ async function createTempFilePath() {
   const dir = await mkdtemp(path.join(tmpdir(), "kanna-usage-"))
   tempDirs.push(dir)
   return path.join(dir, "usage-limits.json")
+}
+
+function loadCursorFixture(name: string): CursorUsageRaw {
+  const text = readFileSync(path.join(import.meta.dir, "__fixtures__", name), "utf8")
+  return JSON.parse(text) as CursorUsageRaw
 }
 
 describe("normalizeClaudeUsage", () => {
@@ -106,9 +115,67 @@ describe("normalizeClaudeUsage", () => {
     expect(snapshot.windows[0]?.label).toBe("Seven Day Fable")
   })
 
+  test("the fixed per-model weekly keys carry their model label", () => {
+    const snapshot = normalizeClaudeUsage(
+      {
+        rate_limits_available: true,
+        rate_limits: {
+          seven_day: { utilization: 15 },
+          seven_day_opus: { utilization: 40 },
+          seven_day_sonnet: { utilization: 12 },
+          seven_day_oauth_apps: { utilization: 3 },
+        },
+      },
+      NOW,
+    )
+    const byId = new Map(snapshot.windows.map((w) => [w.id, w]))
+    expect(byId.get("seven_day_opus")?.modelLabel).toBe("Opus")
+    expect(byId.get("seven_day_sonnet")?.modelLabel).toBe("Sonnet")
+    expect(byId.get("seven_day")?.modelLabel).toBeNull()
+    expect(byId.get("seven_day_oauth_apps")?.modelLabel).toBeNull()
+  })
+
   test("API-key sessions come back unavailable", () => {
     const snapshot = normalizeClaudeUsage({ rate_limits_available: false, rate_limits: null }, NOW)
     expect(snapshot.status).toBe("unavailable")
+    expect(snapshot.windows).toHaveLength(0)
+  })
+
+  test("per-model weekly lanes from model_scoped become windows", () => {
+    const snapshot = normalizeClaudeUsage(
+      {
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 18, resets_at: "2026-08-15T12:19:59+00:00" },
+          seven_day: { utilization: 15, resets_at: "2026-08-20T03:00:00+00:00" },
+          model_scoped: [
+            { display_name: "Fable", utilization: 17, resets_at: "2026-08-20T03:00:00+00:00" },
+          ],
+        },
+      },
+      NOW,
+    )
+
+    expect(snapshot.windows.find((w) => w.id === "five_hour")?.windowMinutes).toBe(300)
+    const scoped = snapshot.windows.find((w) => w.id === "model_scoped:fable")
+    expect(scoped).toMatchObject({
+      label: "Weekly · Fable",
+      usedPercent: 17,
+      windowMinutes: 10_080,
+      modelLabel: "Fable",
+    })
+    expect(snapshot.windows.find((w) => w.id === "seven_day")?.usedPercent).toBe(15)
+    expect(snapshot.windows.find((w) => w.id === "seven_day")?.modelLabel).toBeNull()
+  })
+
+  test("model_scoped entries without a display name are skipped", () => {
+    const snapshot = normalizeClaudeUsage(
+      {
+        rate_limits_available: true,
+        rate_limits: { model_scoped: [{ utilization: 5 }, { display_name: "  ", utilization: 5 }] },
+      },
+      NOW,
+    )
     expect(snapshot.windows).toHaveLength(0)
   })
 })
@@ -147,6 +214,24 @@ describe("mergeClaudeRateLimitPush", () => {
     const merged = mergeClaudeRateLimitPush(null, { rateLimitType: "seven_day", utilization: 0.2 }, NOW)
     expect(merged.windows).toHaveLength(1)
     expect(merged.windows[0]).toMatchObject({ id: "seven_day", usedPercent: 20 })
+  })
+
+  test("a push without utilization updates the reset time but keeps the known percentage", () => {
+    const prev = normalizeClaudeUsage(
+      {
+        rate_limits_available: true,
+        rate_limits: { five_hour: { utilization: 21, resets_at: "2026-07-22T14:00:00Z" } },
+      },
+      "2026-07-22T09:00:00.000Z",
+    )
+
+    const merged = mergeClaudeRateLimitPush(prev, { rateLimitType: "five_hour", resetsAt: 1784736000 }, NOW)
+
+    const fiveHour = merged.windows.find((w) => w.id === "five_hour")
+    expect(fiveHour?.usedPercent).toBe(21)
+    expect(fiveHour?.resetsAt).toBe(new Date(1784736000 * 1000).toISOString())
+    // The figure is still the older reading, so its timestamp must stay older too.
+    expect(fiveHour?.recordedAt).toBe("2026-07-22T09:00:00.000Z")
   })
 
   test("ignores overage-only pushes", () => {
@@ -210,6 +295,21 @@ describe("normalizeCodexRateLimits", () => {
       "Weekly · All models",
       "Weekly · GPT 5.3 Codex Spark",
     ])
+    expect(snapshot.windows.map((w) => w.modelLabel)).toEqual([null, "GPT 5.3 Codex Spark"])
+  })
+
+  test("a plan with one weekly window reports it in the primary slot", () => {
+    const snapshot = normalizeCodexRateLimits(
+      { rateLimits: { limitId: "codex", primary: { usedPercent: 21, windowDurationMins: 10080 }, planType: "prolite" } },
+      NOW,
+    )
+    expect(snapshot.windows).toHaveLength(1)
+    expect(snapshot.windows[0]).toMatchObject({
+      id: "codex:primary",
+      label: "Weekly",
+      windowMinutes: 10_080,
+      modelLabel: null,
+    })
   })
 
   test("empty response is unavailable", () => {
@@ -218,6 +318,75 @@ describe("normalizeCodexRateLimits", () => {
   })
 })
 
+describe("normalizeCursorUsageLimits", () => {
+  test("maps Cursor Models / Other Models windows from a Pro account fixture", () => {
+    const snapshot = normalizeCursorUsageLimits(loadCursorFixture("cursor-usage-pro.json"), NOW)
+
+    expect(snapshot.status).toBe("ok")
+    expect(snapshot.plan).toBe("Pro")
+    expect(snapshot.windows.map((w) => w.id)).toEqual(["cursor_models", "other_models"])
+    expect(snapshot.windows[0]).toMatchObject({
+      label: "Cursor Models",
+      usedPercent: 10.96,
+      resetsAt: CURSOR_RESETS_AT,
+      windowMinutes: null,
+      modelLabel: null,
+      recordedAt: NOW,
+      source: "on_demand",
+    })
+    expect(snapshot.windows[1]).toMatchObject({
+      label: "Other Models",
+      usedPercent: 37.644444444444446,
+      resetsAt: CURSOR_RESETS_AT,
+      windowMinutes: null,
+      modelLabel: null,
+    })
+    expect(snapshot.credits).toBeNull()
+    expect(snapshot.updatedAt).toBe(NOW)
+  })
+
+  test("renders on-demand spend when the account has an individual cap", () => {
+    const snapshot = normalizeCursorUsageLimits(loadCursorFixture("cursor-usage-ondemand.json"), NOW)
+
+    expect(snapshot.credits).toMatchObject({
+      label: "On-demand",
+      usedAmount: 12.5,
+      limitAmount: 50,
+      usedPercent: 25,
+      currency: "USD",
+    })
+  })
+
+  test("missing usage payload is unavailable", () => {
+    expect(normalizeCursorUsageLimits(null, NOW).status).toBe("unavailable")
+    expect(normalizeCursorUsageLimits({ planInfo: { planInfo: { planName: "Pro" } } }, NOW).status)
+      .toBe("unavailable")
+  })
+
+  // Team/pooled accounts report their shared cap in `pooledLimit` with
+  // `individualLimit` unset — best-effort mapping, see the comment in
+  // normalizeCursorUsageLimits. We don't have a real pooled-account fixture
+  // to confirm `individualUsed` is the right numerator against it.
+  test("falls back to the pooled limit when there is no individual cap", () => {
+    const raw: CursorUsageRaw = {
+      currentPeriodUsage: {
+        planUsage: {},
+        spendLimitUsage: { limitType: "pooled", individualUsed: 500, pooledLimit: 10_000 },
+        enabled: true,
+      },
+      planInfo: null,
+      hardLimit: null,
+    }
+
+    const snapshot = normalizeCursorUsageLimits(raw, NOW)
+
+    expect(snapshot.credits).toMatchObject({
+      usedAmount: 5,
+      limitAmount: 100,
+      usedPercent: 5,
+    })
+  })
+})
 describe("mergeCodexRateLimitPush", () => {
   test("overlays pushed windows onto the previous full read", () => {
     const prev = normalizeCodexRateLimits(
@@ -304,7 +473,7 @@ describe("UsageLimitsManager", () => {
     expect(snapshot.providers.map((p) => p.provider)).toEqual(["claude", "codex", "cursor", "grok", "pi"])
     expect(snapshot.providers[0]?.status).toBe("ok")
     expect(snapshot.providers[1]?.status).toBe("ok")
-    expect(snapshot.providers[2]?.status).toBe("unavailable")
+    expect(snapshot.providers[2]?.status).toBe("unknown")
     expect(snapshot.providers[3]?.status).toBe("unknown")
     expect(snapshot.providers[4]?.status).toBe("not_applicable")
     expect(emitted).toBeGreaterThanOrEqual(2)

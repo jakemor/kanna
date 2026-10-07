@@ -916,6 +916,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }
 
   function handleKeyDown(event: React.KeyboardEvent) {
+    // Keys pressed during an IME composition are the IME's: Enter commits the
+    // candidate and the arrows move through its list. 229 is what Safari
+    // reports for the keydown that ends one, after `isComposing` is off.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return
+
     if (skillMenuOpen) {
       // Best match renders at the bottom: ArrowUp walks toward worse matches,
       // ArrowDown back toward the input.

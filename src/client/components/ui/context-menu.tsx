@@ -26,6 +26,8 @@ function ContextMenu({
   )
 }
 
+const ContextMenuGroup = ContextMenuPrimitive.Group
+
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger
 
 const ContextMenuContent = React.forwardRef<
@@ -82,6 +84,7 @@ ContextMenuSeparator.displayName = ContextMenuPrimitive.Separator.displayName
 
 export {
   ContextMenu,
+  ContextMenuGroup,
   ContextMenuTrigger,
   ContextMenuContent,
   ContextMenuItem,

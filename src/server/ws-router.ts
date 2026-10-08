@@ -1671,6 +1671,10 @@ export function createWsRouter({
           await finishChatCommand(ws, id, await chatCommands.markRead(command.chatId))
           return
         }
+        case "chat.markUnread": {
+          await finishChatCommand(ws, id, await chatCommands.markUnread(command.chatId))
+          return
+        }
         case "chat.setDone": {
           await finishChatCommand(ws, id, await chatCommands.setDone(command.chatId, command.done))
           return

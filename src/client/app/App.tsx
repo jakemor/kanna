@@ -350,6 +350,7 @@ function KannaLayout() {
       onForkChat={handleSidebarForkChat}
       currentProjectId={state.activeProjectId}
       keybindings={state.keybindings}
+      onMarkChatUnread={state.handleMarkChatUnread}
       onRenameChat={handleSidebarRenameChat}
       onShareChat={handleSidebarShareChat}
       onToggleChatPin={state.handleToggleChatPin}

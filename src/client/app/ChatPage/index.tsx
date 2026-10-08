@@ -625,6 +625,7 @@ export function ChatPage({ view = "transcript" }: { view?: ChatPageView }) {
   // The chat's sidebar-row menu, on the title or tab that stands in for that row.
   const navbarTitleActions = useMemo<ThreadRowMenuActions>(() => ({
     onCreateChat: (id) => { void state.handleCreateChat(id) },
+    onMarkChatUnread: (chat) => { void state.handleMarkChatUnread(chat) },
     onRenameChat: (chat) => { void state.handleRenameChat(chat) },
     onShareChat: (id) => { void state.handleShareChat(id) },
     onCopyPath: (path) => { void state.handleCopyPath(path) },
@@ -634,7 +635,7 @@ export function ChatPage({ view = "transcript" }: { view?: ChatPageView }) {
     onArchiveChat: (chat) => { void state.handleArchiveChat(chat) },
     onRestoreChat: (id) => { void state.handleRestoreChat(id) },
     onDeleteChat: (chat) => { void state.handleDeleteChat(chat) },
-  }), [state.handleArchiveChat, state.handleCopyPath, state.handleCreateChat, state.handleDeleteChat, state.handleForkChat, state.handleOpenExternalPath, state.handleRenameChat, state.handleRestoreChat, state.handleShareChat, state.handleToggleChatPin])
+  }), [state.handleMarkChatUnread, state.handleArchiveChat, state.handleCopyPath, state.handleCreateChat, state.handleDeleteChat, state.handleForkChat, state.handleOpenExternalPath, state.handleRenameChat, state.handleRestoreChat, state.handleShareChat, state.handleToggleChatPin])
   // Straight to the socket: the sidebar's rename asks for the name in a
   // dialog, and here it has already been typed, in the tab.
   const handleRenameChatTab = useCallback((chatId: string, title: string) => {

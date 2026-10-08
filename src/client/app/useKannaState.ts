@@ -235,6 +235,7 @@ export interface KannaState {
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
+  handleMarkChatUnread: (chat: SidebarChatRow) => Promise<void>
   handleRenameChat: (chat: SidebarChatRow) => Promise<void>
   handleRenameProject: (target: string | { localPath: string }, sidebarTitle: string | undefined, realTitle: string) => Promise<void>
   handleShareChat: (chatId?: string | null) => Promise<void>
@@ -604,15 +605,31 @@ export function useKannaState(activeChatId: string | null): KannaState {
   // is read off the store at the moment of the switch, so this effect only runs
   // on chat switches, and chats that no longer exist are skipped (which avoids
   // spurious markRead commands).
+  const manuallyUnreadChatIdRef = useRef<string | null>(null)
   const previousActiveChatIdRef = useRef<string | null>(null)
   useEffect(() => {
     const previousChatId = previousActiveChatIdRef.current
     previousActiveChatIdRef.current = activeChatId ?? null
     if (!previousChatId || previousChatId === activeChatId) return
-    if (!findSidebarChat(previousChatId)?.unread) return
+    const preserveUnread = manuallyUnreadChatIdRef.current === previousChatId
+    manuallyUnreadChatIdRef.current = null
+    if (preserveUnread || !findSidebarChat(previousChatId)?.unread) return
     void socket.command({ type: "chat.markRead", chatId: previousChatId }).catch((error) => {
       setCommandError(error instanceof Error ? error.message : String(error))
     })
+  }, [activeChatId, socket])
+
+  const handleMarkChatUnread = useCallback(async (chat: SidebarChatRow) => {
+    // Preserve the explicit unread choice when leaving this visit. Returning
+    // to the chat later restores the usual mark-read-on-leave behavior.
+    if (chat.chatId === activeChatId) manuallyUnreadChatIdRef.current = chat.chatId
+    try {
+      await socket.command({ type: "chat.markUnread", chatId: chat.chatId })
+      setCommandError(null)
+    } catch (error) {
+      if (manuallyUnreadChatIdRef.current === chat.chatId) manuallyUnreadChatIdRef.current = null
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
   }, [activeChatId, socket])
 
   const activeChatSnapshot = useMemo(
@@ -1189,6 +1206,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleRemoveQueuedMessage,
     handleCancel,
     handleStopDraining,
+    handleMarkChatUnread,
     handleRenameChat,
     handleRenameProject,
     handleShareChat,

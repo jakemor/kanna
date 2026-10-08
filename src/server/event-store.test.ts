@@ -231,6 +231,21 @@ describe("EventStore", () => {
     expect(reloaded.getChat(chat.id)?.unread).toBe(true)
   })
 
+  test("manually marking a chat unread persists across reloads", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.setChatReadState(chat.id, true)
+    await store.compact()
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getChat(chat.id)?.unread).toBe(true)
+    await reloaded.setChatReadState(chat.id, false)
+    expect(reloaded.getChat(chat.id)?.unread).toBe(false)
+  })
+
   test("stores and resolves a read anchor across restart", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)

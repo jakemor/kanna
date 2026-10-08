@@ -1,9 +1,10 @@
 import type { ReactNode } from "react"
-import { Archive, Code, Copy, EyeOff, FolderOpen, Github, Pencil, PencilOff, Pin, PinOff, RotateCcw, Split, SquarePen, Trash2, UserRoundPlus } from "lucide-react"
+import { Archive, Code, Copy, EyeOff, FolderOpen, Github, Mail, Pencil, PencilOff, Pin, PinOff, RotateCcw, Split, SquarePen, Trash2, UserRoundPlus } from "lucide-react"
 import { getRepoUrlLabel } from "../../../../shared/git-url"
 import {
   ContextMenu,
   ContextMenuContent,
+  ContextMenuGroup,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
@@ -150,6 +151,7 @@ export function ChatRowMenu({
   editorLabel,
   repoUrl,
   onNewChat,
+  onMarkUnread,
   onRename,
   onShare,
   onCopyPath,
@@ -173,6 +175,7 @@ export function ChatRowMenu({
   repoUrl?: string
   /** Starts a fresh chat in this chat's project. */
   onNewChat: () => void
+  onMarkUnread?: () => void
   onRename: () => void
   onShare: () => void
   onCopyPath: () => void
@@ -206,7 +209,15 @@ export function ChatRowMenu({
         {children}
       </ContextMenuTrigger>
       {!menuOpened ? null : (
-        <ContextMenuContent>
+        <ContextMenuContent className="[&_svg]:size-3.5">
+          {onMarkUnread ? (
+            <ContextMenuGroup>
+              <ContextMenuItem onSelect={onMarkUnread}>
+                <Mail />
+                <span>Unread</span>
+              </ContextMenuItem>
+            </ContextMenuGroup>
+          ) : null}
           {leadingItems ? (
             <>
               {leadingItems}

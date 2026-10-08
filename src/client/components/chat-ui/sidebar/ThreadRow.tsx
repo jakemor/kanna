@@ -37,6 +37,7 @@ interface ThreadRowProps {
   showProjectIcon?: boolean
   onSelect: (chatId: string) => void
   onCreateChat: (projectId: string) => void
+  onMarkChatUnread?: (chat: SidebarThread["row"]) => void
   onRenameChat: (chat: SidebarThread["row"]) => void
   onShareChat: (chatId: string) => void
   onCopyPath: (localPath: string) => void
@@ -199,6 +200,7 @@ function ThreadRowImpl({
   showProjectIcon = false,
   onSelect,
   onCreateChat,
+  onMarkChatUnread,
   onRenameChat,
   onShareChat,
   onCopyPath,
@@ -215,6 +217,7 @@ function ThreadRowImpl({
       archived={archived}
       editorLabel={editorLabel}
       onCreateChat={onCreateChat}
+      onMarkChatUnread={onMarkChatUnread}
       onRenameChat={onRenameChat}
       onShareChat={onShareChat}
       onCopyPath={onCopyPath}
@@ -246,7 +249,7 @@ function ThreadRowImpl({
 /** What a chat's right-click menu does, as the sidebar hands it to a row. */
 export type ThreadRowMenuActions = Pick<
   ThreadRowProps,
-  | "onCreateChat" | "onRenameChat" | "onShareChat" | "onCopyPath" | "onOpenExternalPath"
+  | "onCreateChat" | "onMarkChatUnread" | "onRenameChat" | "onShareChat" | "onCopyPath" | "onOpenExternalPath"
   | "onForkChat" | "onToggleChatPin" | "onArchiveChat" | "onRestoreChat" | "onDeleteChat"
 >
 
@@ -262,6 +265,7 @@ export function ThreadRowMenu({
   archived = false,
   editorLabel,
   onCreateChat,
+  onMarkChatUnread,
   onRenameChat,
   onShareChat,
   onCopyPath,
@@ -292,6 +296,7 @@ export function ThreadRowMenu({
       repoUrl={thread.projectLabel.repoUrl}
       onNewChat={() => onCreateChat(thread.projectId)}
       onRestore={archived ? () => onRestoreChat(thread.row.chatId) : undefined}
+      onMarkUnread={!archived && onMarkChatUnread ? () => onMarkChatUnread(thread.row) : undefined}
       onRename={() => onRenameChat(thread.row)}
       onShare={() => onShareChat(thread.row.chatId)}
       onCopyPath={() => onCopyPath(thread.row.localPath)}

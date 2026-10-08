@@ -228,6 +228,7 @@ export type ClientCommand =
    */
   | { type: "chat.touchedFiles"; chatId: string }
   | { type: "chat.markRead"; chatId: string }
+  | { type: "chat.markUnread"; chatId: string }
   | { type: "chat.setDone"; chatId: string; done: boolean }
   /**
    * Persist where the user left off reading. Sent on a throttle while

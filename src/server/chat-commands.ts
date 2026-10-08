@@ -139,6 +139,11 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
       return { result: undefined, changed: chatAndSidebar(chatId) }
     },
 
+    async markUnread(chatId: string): Promise<ChatCommandOutcome> {
+      await store.setChatReadState(chatId, true)
+      return { result: undefined, changed: chatAndSidebar(chatId) }
+    },
+
     async setDone(chatId: string, done: boolean): Promise<ChatCommandOutcome> {
       await store.setChatDoneState(chatId, done)
       return { result: undefined, changed: chatAndSidebar(chatId) }

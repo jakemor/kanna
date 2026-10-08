@@ -475,7 +475,8 @@ export class DemoBackend {
         return null
 
       case "chat.markRead":
-        this.requireChat(command.chatId).unread = false
+      case "chat.markUnread":
+        this.requireChat(command.chatId).unread = command.type === "chat.markUnread"
         return null
       case "chat.setDone": {
         const chat = this.requireChat(command.chatId)

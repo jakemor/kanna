@@ -110,3 +110,8 @@ describe("ThreadRow", () => {
     expect(render({ isActive: true })).toContain("bg-muted")
   })
 })
+
+test("an unread idle chat restores the green status bubble", () => {
+  expect(render({ thread: thread({ unread: false }) })).not.toContain("bg-emerald-400")
+  expect(render({ thread: thread({ unread: true }) })).toContain("bg-emerald-400")
+})

@@ -92,6 +92,7 @@ interface KannaSidebarProps {
   onForkChat: (chat: SidebarChatRow) => void
   currentProjectId: string | null
   keybindings: KeybindingsSnapshot | null
+  onMarkChatUnread?: (chat: SidebarChatRow) => void
   onRenameChat: (chat: SidebarChatRow) => void
   onShareChat: (chatId: string) => void
   onToggleChatPin: (chat: SidebarChatRow) => void
@@ -335,6 +336,7 @@ function KannaSidebarImpl({
   onForkChat,
   currentProjectId,
   keybindings,
+  onMarkChatUnread,
   onRenameChat,
   onShareChat,
   onToggleChatPin,
@@ -577,6 +579,7 @@ function KannaSidebarImpl({
       thread={thread}
       editorLabel={editorLabel}
       onCreateChat={(projectId) => { closeCard(); onCreateChat(projectId) }}
+      onMarkChatUnread={(chat) => { closeCard(); onMarkChatUnread?.(chat) }}
       onRenameChat={(chat) => { closeCard(); onRenameChat(chat) }}
       onShareChat={(chatId) => { closeCard(); onShareChat(chatId) }}
       onForkChat={(chat) => { closeCard(); onForkChat(chat) }}
@@ -589,7 +592,7 @@ function KannaSidebarImpl({
     >
       {row}
     </ThreadRowMenu>
-  ), [editorLabel, handleRestoreChat, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, onToggleChatPin])
+  ), [editorLabel, handleRestoreChat, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onMarkChatUnread, onRenameChat, onShareChat, onToggleChatPin])
 
   const channelActions = useMemo<ChannelActions>(() => ({
     editorLabel,
@@ -645,6 +648,7 @@ function KannaSidebarImpl({
         ) : undefined}
         onSelect={selectChat}
         onCreateChat={onCreateChat}
+        onMarkChatUnread={onMarkChatUnread}
         onRenameChat={onRenameChat}
         onShareChat={onShareChat}
         onCopyPath={onCopyPath}
@@ -656,7 +660,7 @@ function KannaSidebarImpl({
         onDeleteChat={onDeleteChat}
       />
     )
-  }, [activeChatId, editorLabel, nowMs, onToggleChatPin, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, handleRestoreChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, threadByChatId, visibleIndexByChatId])
+  }, [activeChatId, editorLabel, nowMs, onToggleChatPin, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onMarkChatUnread, onRenameChat, handleRestoreChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, threadByChatId, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -1266,6 +1270,7 @@ function KannaSidebarImpl({
                 onOpenArchivedChat={onOpenArchivedChat}
                 onRestoreChat={handleRestoreChat}
                 onCreateChat={onCreateChat}
+                onMarkChatUnread={onMarkChatUnread}
                 onRenameChat={onRenameChat}
                 onShareChat={onShareChat}
                 onForkChat={onForkChat}
@@ -1286,6 +1291,7 @@ function KannaSidebarImpl({
                 onOpenArchivedChat={onOpenArchivedChat}
                 onRestoreChat={handleRestoreChat}
                 onCreateChat={onCreateChat}
+                onMarkChatUnread={onMarkChatUnread}
                 onRenameChat={onRenameChat}
                 onShareChat={onShareChat}
                 onForkChat={onForkChat}

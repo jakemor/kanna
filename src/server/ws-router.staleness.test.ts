@@ -501,6 +501,11 @@ const CASES: StalenessCase[] = [
     expectChanged: [TOPIC_IDS.sidebar],
   },
   {
+    name: "chat.markUnread",
+    command: { type: "chat.markUnread", chatId: "chat-1" },
+    expectChanged: [TOPIC_IDS.sidebar],
+  },
+  {
     name: "chat.setDone",
     command: { type: "chat.setDone", chatId: "chat-1", done: true },
     expectChanged: [TOPIC_IDS.sidebar],

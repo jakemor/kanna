@@ -1653,6 +1653,17 @@ describe("ws-router", () => {
         },
       },
     })
+    await router.handleMessage(wsA as never, JSON.stringify({
+      v: 1, type: "command", id: "mark-unread-1",
+      command: { type: "chat.markUnread", chatId: "chat-1" },
+    }))
+    expect(wsA.sent.at(-2)).toEqual({ v: PROTOCOL_VERSION, type: "ack", id: "mark-unread-1" })
+    for (const client of [wsA, wsB]) {
+      expect(client.sent.at(-1)).toMatchObject({
+        type: "snapshot",
+        snapshot: { type: "sidebar", data: { projectGroups: [{ chats: [{ chatId: "chat-1", unread: true }] }] } },
+      })
+    }
   })
 
   test("a patch subscription gets a reset and then only the rows that changed, a plain one full snapshots", async () => {

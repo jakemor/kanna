@@ -934,6 +934,7 @@ export function createDemoAppSettings(theme: AppThemePreference): AppSettingsSna
     paneVisibility: { widgets: "chat", terminal: "chat" },
     providerDefaults: createDefaultProviderDefaults(),
     newSidebarEnabled: true,
+    usageLimitIndicatorsEnabled: true,
     newProjectsDirectory: "~/Kanna",
     // Setup is marked done so the onboarding wizard never opens over the demo.
     setupShown: true,

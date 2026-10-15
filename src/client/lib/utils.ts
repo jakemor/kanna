@@ -18,7 +18,13 @@ export function generateUUID(): string {
   const randomBytes = typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function"
     ? crypto.getRandomValues.bind(crypto)
     : null
-  const bytes = randomBytes ? randomBytes(new Uint8Array(16)) : null
+  // A hardened/CSP-restricted embedder can expose getRandomValues but throw from
+  // it. Callers use this for UI identifiers on the startup path, so degrade to
+  // Math.random rather than throwing.
+  let bytes: Uint8Array | null = null
+  if (randomBytes) {
+    try { bytes = randomBytes(new Uint8Array(16)) } catch { bytes = null }
+  }
   let i = 0
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const byte = bytes?.[i >> 1]

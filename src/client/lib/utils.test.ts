@@ -42,6 +42,13 @@ test("falls back to a valid v4 UUID when crypto.randomUUID is missing", () => {
   expect(ids.size).toBe(1000)
 })
 
+test("degrades to Math.random when getRandomValues throws", () => {
+  useInsecureContext({
+    getRandomValues: () => { throw new Error("blocked by CSP") },
+  })
+  expect(generateUUID()).toMatch(V4)
+})
+
 test("uses every bit of every random byte", () => {
   // A fixed buffer whose high and low nibbles are both distinct, so reusing a
   // byte or dropping half of it produces an observably wrong string.
@@ -82,8 +89,9 @@ test("produces a valid v4 UUID with no crypto at all", () => {
 test("uses crypto.randomUUID when it is available", () => {
   const spy = () => "11111111-2222-4333-8444-555555555555"
   Object.defineProperty(globalThis, "crypto", {
-    configurable: true, writable: true, value: { randomUUID: spy, getRandomValues: realCrypto.getRandomValues },
+    configurable: true, writable: true, value: { randomUUID: spy, getRandomValues: realCrypto.getRandomValues.bind(realCrypto) },
   })
   expect(generateUUID()).toBe("11111111-2222-4333-8444-555555555555")
 })
+
 

@@ -46,7 +46,10 @@ function stubWindow() {
     value: {
       setInterval: (fn: () => void) => { tick = fn; return 1 },
       clearInterval: () => {},
-      setTimeout: (fn: () => void) => { fn(); return 2 },
+      // Capture, don't fire: this is the 5s abort for the diagnostics POST.
+      // Firing it synchronously would hand `fetch` an already-aborted signal and
+      // make any assertion about that path vacuous.
+      setTimeout: () => 2,
       clearTimeout: () => {},
     },
   })
@@ -82,27 +85,33 @@ test("posts a usable clientId in an insecure context", async () => {
   useInsecureContext()
 
   type Posted = { clientId: string; metrics: Record<string, { count: number; total: number; max: number }> }
-  const captured: { body: Posted | null } = { body: null }
+  const captured: { body: Posted | null; aborted: boolean | null } = { body: null, aborted: null }
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     writable: true,
-    value: (_url: string, init: { body: string }) => {
+    value: (_url: string, init: { body: string; signal?: AbortSignal }) => {
       captured.body = JSON.parse(init.body) as Posted
+      captured.aborted = init.signal?.aborted ?? null
       return Promise.resolve(new Response("{}"))
     },
   })
 
   const stop = startClientPerformance(() => ({ socket_subscriptions: 1 }))
-  expect(tick).not.toBeNull()
-  // The real interval is 60s; fire the captured callback directly.
-  ;(tick as unknown as () => void)()
-  await Bun.sleep(10)
+  try {
+    expect(tick).not.toBeNull()
+    // The real interval is 60s; fire the captured callback directly.
+    ;(tick as unknown as () => void)()
+    await Bun.sleep(10)
 
-  const posted = captured.body
-  expect(posted).not.toBeNull()
-  expect(posted!.clientId).toMatch(V4)
-  expect(posted!.metrics.socket_subscriptions).toEqual({ count: 1, total: 1, max: 1 })
-  stop()
+    const posted = captured.body
+    expect(posted).not.toBeNull()
+    expect(posted!.clientId).toMatch(V4)
+    expect(posted!.metrics.socket_subscriptions).toEqual({ count: 1, total: 1, max: 1 })
+    // The 5s abort must not have fired before the POST went out.
+    expect(captured.aborted).toBe(false)
+  } finally {
+    stop()
+  }
 })
 
 test("startClientPerformance still does not throw with no crypto at all", () => {
@@ -112,4 +121,5 @@ test("startClientPerformance still does not throw with no crypto at all", () => 
   expect(() => { stop = startClientPerformance(() => ({})) }).not.toThrow()
   stop?.()
 })
+
 

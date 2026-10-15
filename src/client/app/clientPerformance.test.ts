@@ -112,3 +112,4 @@ test("startClientPerformance still does not throw with no crypto at all", () => 
   expect(() => { stop = startClientPerformance(() => ({})) }).not.toThrow()
   stop?.()
 })
+

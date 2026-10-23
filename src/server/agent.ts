@@ -1672,11 +1672,11 @@ export class AgentCoordinator {
    * missing, signed out, or too old for model/list — so it stays quiet and
    * the static catalog remains in place. Concurrent callers share one fetch.
    */
-  refreshCodexModelCatalog(): Promise<void> {
+  refreshCodexModelCatalog(preferredChatId?: string): Promise<void> {
     if (this.codexModelCatalogRefresh) return this.codexModelCatalogRefresh
     this.codexModelCatalogRefresh = (async () => {
       try {
-        const models = await this.codexManager.listModels(homedir())
+        const models = await this.codexManager.listModels(homedir(), preferredChatId)
         if (models && applyCodexModels(models)) {
           this.emitStateChange(undefined, { immediate: true })
         }
@@ -2253,7 +2253,7 @@ export class AgentCoordinator {
         await this.store.setPendingForkSessionToken(args.chatId, null)
       }
       // Off the turn's critical path; the session just started answers it.
-      void this.refreshCodexModelCatalog()
+      void this.refreshCodexModelCatalog(args.chatId)
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
         content: buildPromptText(wireContent, args.attachments),

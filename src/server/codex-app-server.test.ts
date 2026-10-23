@@ -543,6 +543,58 @@ describe("CodexAppServerManager", () => {
     expect(process.killed).toBe(false)
   })
 
+  test("listModels prefers the requested chat over an older live session", async () => {
+    const processFor = (threadId: string, model: string) => new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: `codex-${threadId}` } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: threadId }, model, reasoningEffort: "medium" },
+        })
+      } else if (message.method === "model/list") {
+        child.writeServerMessage({
+          id: message.id,
+          result: {
+            data: [{
+              id: model,
+              model,
+              displayName: model,
+              description: "",
+              hidden: false,
+              isDefault: true,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "" }],
+            }],
+            nextCursor: null,
+          },
+        })
+      }
+    })
+    const oldProcess = processFor("thread-old", "gpt-5.6-sol")
+    const currentProcess = processFor("thread-current", "gpt-6.1-sol")
+    const processes = [oldProcess, currentProcess]
+    const manager = new CodexAppServerManager({ spawnProcess: () => processes.shift() as never })
+
+    await manager.startSession({
+      chatId: "chat-old",
+      cwd: "/tmp/old",
+      model: "gpt-5.6-sol",
+      sessionToken: null,
+    })
+    await manager.startSession({
+      chatId: "chat-current",
+      cwd: "/tmp/current",
+      model: "gpt-6.1-sol",
+      sessionToken: null,
+    })
+
+    const models = await manager.listModels("/tmp/home", "chat-current")
+    expect(models?.map((entry) => entry.model)).toEqual(["gpt-6.1-sol"])
+    expect(oldProcess.messages.filter((message: any) => message.method === "model/list")).toHaveLength(0)
+    expect(currentProcess.messages.filter((message: any) => message.method === "model/list")).toHaveLength(1)
+  })
+
   test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
     const combinations = [
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)

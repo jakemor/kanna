@@ -870,14 +870,21 @@ export class CodexAppServerManager {
   }
 
   /**
-   * The models the signed-in account can run, from `model/list`. Reuses a
-   * live session's app-server process when one exists; otherwise spawns a
-   * short-lived probe. Hidden rows (internal models the picker should not
-   * show) are left out. Returns null only when Codex is unusable (binary
-   * missing). Throws on protocol errors, including "method not found" from a
-   * codex older than model/list — callers keep the static catalog then.
+   * The models the signed-in account can run, from `model/list`. When a chat
+   * just started a session, prefer that exact app-server process: another
+   * idle chat may still be backed by a Codex binary from before an upgrade
+   * and would otherwise keep the picker on its stale list. Falls back to any
+   * live session, then a short-lived probe. Hidden rows (internal models the
+   * picker should not show) are left out. Returns null only when Codex is
+   * unusable (binary missing). Throws on protocol errors, including "method
+   * not found" from a codex older than model/list — callers keep the static
+   * catalog then.
    */
-  async listModels(probeCwd: string): Promise<CodexModelSummary[] | null> {
+  async listModels(probeCwd: string, preferredChatId?: string): Promise<CodexModelSummary[] | null> {
+    const preferred = preferredChatId ? this.sessions.get(preferredChatId) : undefined
+    if (preferred && !preferred.closed) {
+      return await this.requestModelList(preferred)
+    }
     for (const context of this.sessions.values()) {
       if (context.closed) continue
       return await this.requestModelList(context)

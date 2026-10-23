@@ -543,6 +543,47 @@ describe("CodexAppServerManager", () => {
     expect(process.killed).toBe(false)
   })
 
+  test("listModels uses the newest live session without spawning a probe", async () => {
+    const processFor = (model: string) => new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: `thread-${model}` }, model, reasoningEffort: "medium" },
+        })
+      } else if (message.method === "model/list") {
+        child.writeServerMessage({
+          id: message.id,
+          result: {
+            data: [{
+              id: model,
+              model,
+              displayName: model,
+              description: "",
+              hidden: false,
+              isDefault: true,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [],
+            }],
+            nextCursor: null,
+          },
+        })
+      }
+    })
+    const older = processFor("older-model")
+    const newer = processFor("newer-model")
+    const processes = [older, newer]
+    const manager = new CodexAppServerManager({ spawnProcess: () => processes.shift() as never })
+
+    await manager.startSession({ chatId: "older", cwd: "/tmp/older", model: "older-model", sessionToken: null })
+    await manager.startSession({ chatId: "newer", cwd: "/tmp/newer", model: "newer-model", sessionToken: null })
+
+    expect((await manager.listModels("/tmp/home"))?.map((model) => model.model)).toEqual(["newer-model"])
+    expect(older.messages.some((message: any) => message.method === "model/list")).toBe(false)
+    expect(processes).toHaveLength(0)
+  })
+
   test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
     const combinations = [
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)

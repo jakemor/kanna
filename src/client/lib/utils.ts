@@ -9,9 +9,27 @@ export function generateUUID(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID()
   }
-  // Fallback for browsers without crypto.randomUUID
+  // randomUUID() is secure-context only, so it is missing over plain http on a
+  // LAN/Tailscale hostname. getRandomValues() is not restricted that way, so
+  // prefer it over Math.random for the fallback bytes. Grab the function rather
+  // than re-reading the global, and fill one buffer instead of one per nibble.
+  // The template has 31 `x`/`y` placeholders, so 16 bytes cover it: take each
+  // byte's low nibble then its high nibble, which uses every bit of every byte.
+  const randomBytes = typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function"
+    ? crypto.getRandomValues.bind(crypto)
+    : null
+  // A hardened/CSP-restricted embedder can expose getRandomValues but throw from
+  // it. Callers use this for UI identifiers on the startup path, so degrade to
+  // Math.random rather than throwing.
+  let bytes: Uint8Array | null = null
+  if (randomBytes) {
+    try { bytes = randomBytes(new Uint8Array(16)) } catch { bytes = null }
+  }
+  let i = 0
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
+    const byte = bytes?.[i >> 1]
+    i += 1
+    const r = byte === undefined ? ((Math.random() * 256) | 0) % 16 : (i % 2 === 1 ? byte & 0x0f : byte >> 4)
     const v = c === "x" ? r : (r & 0x3) | 0x8
     return v.toString(16)
   })

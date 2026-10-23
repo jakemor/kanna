@@ -16,14 +16,14 @@
  * provider card offers `claude update`.
  */
 
-import { statSync } from "node:fs"
-import { homedir } from "node:os"
+import { Effect, FileSystem, Option, Schema } from "effect"
 // Read at build time: the published server is a bundle with the SDK inlined
 // (scripts/build-server.ts), so there's no SDK folder on disk to look in. By
 // path, because the SDK's `exports` doesn't list package.json.
 import sdkPackage from "../../node_modules/@anthropic-ai/claude-agent-sdk/package.json" with { type: "json" }
 import { compareVersions } from "./cli-runtime"
-import { resolveCommandPath } from "./process-utils"
+import { Machine } from "./platform/machine"
+import { type CommandSpawnError, resolveCommandPath, runCommand } from "./process-utils"
 
 /** Set to a wrapper script (Bedrock, Foundry…) to run it instead of `claude`. */
 export const CLAUDE_EXECUTABLE_ENV_VAR = "CLAUDE_EXECUTABLE"
@@ -31,10 +31,22 @@ export const CLAUDE_EXECUTABLE_ENV_VAR = "CLAUDE_EXECUTABLE"
 export const CLAUDE_INSTALL_HINT =
   "Install Claude Code from Settings → Providers, or run `curl -fsSL https://claude.ai/install.sh | bash`."
 
+/** How long `claude --version` may run before it is killed and read as unknown. */
+const VERSION_TIMEOUT_MS = 15_000
+
 export type ClaudeExecutable =
   | { ok: true; path: string; version: string | null }
   | { ok: false; reason: "not_installed"; message: string }
   | { ok: false; reason: "outdated"; message: string; path: string; version: string }
+
+/** No usable `claude`: not installed, or older than the SDK pairs with. */
+export class ClaudeExecutableError extends Schema.TaggedError<ClaudeExecutableError>()(
+  "@kanna/server/claude-executable/ClaudeExecutableError",
+  {
+    reason: Schema.Literals(["not_installed", "outdated"]),
+    message: Schema.String,
+  },
+) {}
 
 /**
  * The Claude Code version this Agent SDK was built against (its
@@ -45,11 +57,17 @@ export function claudeCodeMinimumVersion(): string {
   return typeof version === "string" ? version : "0.0.0"
 }
 
-/** `CLAUDE_EXECUTABLE`, with a leading ~ expanded (the SDK spawns it verbatim). */
-export function claudeExecutableOverride(env: Record<string, string | undefined> = process.env): string | null {
+/** `CLAUDE_EXECUTABLE`, with a leading ~ expanded to `homeDirectory` (the SDK spawns it verbatim). */
+export function claudeExecutableOverride(env: Record<string, string | undefined>, homeDirectory: string): string | null {
   const value = env[CLAUDE_EXECUTABLE_ENV_VAR]?.trim()
-  return value ? value.replace(/^~(?=\/|$)/, homedir()) : null
+  return value ? value.replace(/^~(?=\/|$)/, homeDirectory) : null
 }
+
+/** `claudeExecutableOverride` for the machine's environment and home. */
+export const machineClaudeExecutableOverride = Effect.fn("ClaudeExecutable.machineOverride")(function* () {
+  const machine = yield* Machine
+  return claudeExecutableOverride(machine.env.snapshot(), machine.homeDirectory)
+})
 
 /** "2.1.280 (Claude Code)" → "2.1.280". */
 export function parseClaudeVersion(output: string): string | null {
@@ -65,11 +83,23 @@ export function outdatedClaudeMessage(version: string, minimum = claudeCodeMinim
 }
 
 export interface ResolveClaudeExecutableDeps {
+  /** Default: the machine's environment. */
   env?: Record<string, string | undefined>
-  resolveCommandPath?: (command: string) => string | null
-  readVersion?: (binaryPath: string) => Promise<string | null>
+  /** Where `command` is on PATH (default: process-utils' login-shell lookup). */
+  resolveCommandPath?: (command: string) => Effect.Effect<string | null, never, ResolveCommandPathServices>
+  /** `claude --version`, parsed (default: run it, cached per binary). */
+  readVersion?: (binaryPath: string) => Effect.Effect<string | null, CommandSpawnError, FileSystem.FileSystem>
   minimumVersion?: string
 }
+
+/** What process-utils' lookup runs on. */
+export type ResolveCommandPathServices = Effect.Services<ReturnType<typeof resolveCommandPath>>
+
+/** process-utils' lookup, which asks a login shell when PATH misses. */
+export const resolveCommandPathEffect = (command: string) => resolveCommandPath(command)
+
+/** Types a result in place, so its `ok` stays a literal. */
+const executable = (value: ClaudeExecutable): ClaudeExecutable => value
 
 /**
  * `claude --version` costs a process start, so it runs once per binary and
@@ -77,50 +107,66 @@ export interface ResolveClaudeExecutableDeps {
  */
 const versionCache = new Map<string, { mtimeMs: number; version: string | null }>()
 
-async function readClaudeVersion(binaryPath: string): Promise<string | null> {
-  let mtimeMs = -1
-  try {
-    mtimeMs = statSync(binaryPath).mtimeMs
-  } catch {
-    // Unreadable: run it anyway and let the spawn report the problem.
-  }
+export const readClaudeVersion = Effect.fn("ClaudeExecutable.readVersion")(function* (binaryPath: string) {
+  yield* Effect.annotateCurrentSpan("binaryPath", binaryPath)
+  const fs = yield* FileSystem.FileSystem
+  // Unreadable: run it anyway and let the spawn report the problem.
+  const mtimeMs = yield* fs.stat(binaryPath).pipe(
+    Effect.map((info) => Option.match(info.mtime, { onNone: () => -1, onSome: (mtime) => mtime.getTime() })),
+    Effect.orElseSucceed(() => -1),
+  )
   const cached = versionCache.get(binaryPath)
   if (cached && cached.mtimeMs === mtimeMs) return cached.version
 
-  const child = Bun.spawn([binaryPath, "--version"], { stdout: "pipe", stderr: "pipe", stdin: "ignore" })
-  const timeout = setTimeout(() => child.kill(), 15_000)
-  const [stdout, stderr] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()])
-  await child.exited
-  clearTimeout(timeout)
-  const version = parseClaudeVersion(`${stdout}\n${stderr}`)
+  // A CLI that hangs is killed after the timeout, and its version is unknown.
+  const output = yield* runCommand([binaryPath, "--version"], { stdout: true, stderr: true }).pipe(
+    Effect.timeoutOption(VERSION_TIMEOUT_MS),
+  )
+  const version = Option.match(output, {
+    onNone: () => null,
+    onSome: ({ stdout, stderr }) => parseClaudeVersion(`${stdout}\n${stderr}`),
+  })
   versionCache.set(binaryPath, { mtimeMs, version })
   return version
-}
+})
 
-export async function resolveClaudeExecutable(deps: ResolveClaudeExecutableDeps = {}): Promise<ClaudeExecutable> {
+export const resolveClaudeExecutable = Effect.fn("ClaudeExecutable.resolve")(function* (
+  deps: ResolveClaudeExecutableDeps = {},
+) {
   // An explicit override is trusted as-is: wrappers often don't answer
   // --version the way claude does.
-  const override = claudeExecutableOverride(deps.env)
-  if (override) return { ok: true, path: override, version: null }
+  const machine = yield* Machine
+  const override = claudeExecutableOverride(deps.env ?? machine.env.snapshot(), machine.homeDirectory)
+  if (override) return executable({ ok: true, path: override, version: null })
 
-  const binaryPath = (deps.resolveCommandPath ?? resolveCommandPath)("claude")
+  const binaryPath = yield* (deps.resolveCommandPath ?? resolveCommandPathEffect)("claude")
   if (!binaryPath) {
-    return { ok: false, reason: "not_installed", message: `Claude Code isn't installed. ${CLAUDE_INSTALL_HINT}` }
+    return executable({ ok: false, reason: "not_installed", message: `Claude Code isn't installed. ${CLAUDE_INSTALL_HINT}` })
   }
 
-  const version = await (deps.readVersion ?? readClaudeVersion)(binaryPath)
+  const version = yield* (deps.readVersion ?? readClaudeVersion)(binaryPath)
   const minimum = deps.minimumVersion ?? claudeCodeMinimumVersion()
   // An unreadable version is let through: the turn's own error is more
   // useful than a guess.
   if (version && !isClaudeVersionSupported(version, minimum)) {
-    return { ok: false, reason: "outdated", message: outdatedClaudeMessage(version, minimum), path: binaryPath, version }
+    return executable({
+      ok: false,
+      reason: "outdated",
+      message: outdatedClaudeMessage(version, minimum),
+      path: binaryPath,
+      version,
+    })
   }
-  return { ok: true, path: binaryPath, version }
-}
+  return executable({ ok: true, path: binaryPath, version })
+})
 
-/** The path to hand the SDK, or an Error that explains what to do. */
-export async function requireClaudeExecutable(deps?: ResolveClaudeExecutableDeps): Promise<string> {
-  const resolved = await resolveClaudeExecutable(deps)
-  if (!resolved.ok) throw new Error(resolved.message)
+/** The path to hand the SDK, or a `ClaudeExecutableError` that explains what to do. */
+export const requireClaudeExecutable = Effect.fn("ClaudeExecutable.require")(function* (
+  deps?: ResolveClaudeExecutableDeps,
+) {
+  const resolved = yield* resolveClaudeExecutable(deps)
+  if (!resolved.ok) {
+    return yield* new ClaudeExecutableError({ reason: resolved.reason, message: resolved.message })
+  }
   return resolved.path
-}
+})

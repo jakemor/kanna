@@ -63,6 +63,16 @@ React client (src/client)
 ## Conventions
 
 - `src/shared/` is imported by both sides — no Bun/node imports there.
+- Server modules reach Bun and the OS only through the platform services in
+  `src/server/platform/` (`ProcessSpawner`, `PtySpawner`, `Machine`,
+  `HostProcess`, `FileSystemExtras`, `HttpHost`, plus Effect's `FileSystem`
+  and `Path`), so another host can bind them. `platform/bun/` is the Bun
+  binding; `platform/portability.test.ts` enforces this. Capture services for
+  later with `capturePlatform()`, not bare `Effect.context()`.
+- Transcript IO is async. For a snapshot's synchronous transcript views,
+  hold `EventStore.retainTranscript(chatId)` in a scope until the reads finish.
+  Whole entries and payloads use `readMessages` / `readEntriesById`; an
+  unloaded synchronous read throws instead of falling back to disk.
 - New WS commands: add to `shared/protocol.ts`, handle in `ws-router.ts`,
   and prefer targeted `broadcastFilteredSnapshots({...})` over full
   broadcasts (name exactly the topics the command can change).

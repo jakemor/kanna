@@ -1,15 +1,9 @@
-import { readFile, stat } from "node:fs/promises"
 import path from "node:path"
+import { Context, Effect, FileSystem, Layer, Option, PubSub, Ref, Schedule, Semaphore, Stream } from "effect"
 import { buildRepoBrowseUrl } from "../shared/git-url"
+import type { WorkingTreeLocation, WorkingTreeProbe as WorkingTreeReading, WorkingTreeScan } from "./diff-store"
 import type { StoreState } from "./events"
-import {
-  probeWorkingTree,
-  readTreeBlobs,
-  resolveWorkingTreeLocation,
-  type WorkingTreeLocation,
-  type WorkingTreeProbe,
-  type WorkingTreeScan,
-} from "./diff-store"
+import { bindWorktreeGit, type WorktreeGitError } from "./worktree-git"
 
 /**
  * Tracks, per project, whether the working tree is dirty, which paths are dirty
@@ -20,22 +14,23 @@ import {
  * behind the sidebar's `repo/branch` label.
  *
  * Entirely in-memory and derived: nothing is persisted, so a restart just
- * repopulates lazily. Reads are synchronous because the sidebar snapshot
- * builder can't await git.
+ * repopulates lazily. Reads answer from memory and never wait on git, because
+ * the sidebar snapshot builder reads them synchronously.
  *
  * Three update paths, none of which sweeps `git status` across projects:
  *
- * 1. **Turn end** (`refreshForProject`) — a finished turn is the likeliest
+ * 1. **Turn end** (`refreshForChat`) — a finished turn is the likeliest
  *    moment for the dirty set to have changed. One `git status` for one
  *    project.
- * 2. **The tick** (`start`) — stats `<gitDir>/index` and `<gitDir>/HEAD` per
- *    project and runs the real probe only when that stamp changed. A commit
- *    always rewrites the index and a checkout rewrites HEAD, so this catches
- *    the case that leaves dots stale: committing outside Kanna. At idle it
- *    spawns zero processes.
- * 3. **`DiffStore.onWorkingTreeProbe`** — free; `performRefresh` already lists
- *    every dirty path. Keeps the client's active project current and clears the
- *    dot immediately when a commit goes through Kanna's git panel.
+ * 2. **The tick** (`start`, then every 30 s) — stats `<gitDir>/index` and
+ *    `<gitDir>/HEAD` per project and runs the real probe only when that stamp
+ *    changed. A commit always rewrites the index and a checkout rewrites HEAD,
+ *    so this catches the case that leaves dots stale: committing outside
+ *    Kanna. At idle it spawns zero processes.
+ * 3. **`DiffStore.onWorkingTreeProbe`** (`recordExternalProbe`) — free;
+ *    `performRefresh` already lists every dirty path. Keeps the client's active
+ *    project current and clears the dot immediately when a commit goes through
+ *    Kanna's git panel.
  *
  * A plain hand edit touches no git metadata and so is missed by (2) until the
  * next turn ends or the client refreshes that project's diff. The dot is a
@@ -52,8 +47,8 @@ import {
 const PROBE_TICK_INTERVAL_MS = 30_000
 
 interface ProjectProbeEntry {
-  /** Cached because resolving it costs two git invocations. */
-  location: WorkingTreeLocation | null
+  /** Cached because resolving it costs two git invocations. None: not in a repo. */
+  location: Option.Option<WorkingTreeLocation>
   /** Combined mtime of the git dir's `index` and `HEAD`; "" when unreadable. */
   stamp: string
   /**
@@ -97,7 +92,7 @@ export interface ProjectRepoLabel {
   repoUrl?: string
 }
 
-function probesEqual(left: WorkingTreeProbe | undefined, right: WorkingTreeProbe) {
+function probesEqual(left: WorkingTreeReading | undefined, right: WorkingTreeReading) {
   if (!left || left.dirty !== right.dirty || left.paths.size !== right.paths.size) return false
   for (const dirtyPath of right.paths) {
     if (!left.paths.has(dirtyPath)) return false
@@ -112,15 +107,8 @@ function probesEqual(left: WorkingTreeProbe | undefined, right: WorkingTreeProbe
   return true
 }
 
-/**
- * Current branch straight out of `<gitDir>/HEAD`, which is either
- * `ref: refs/heads/<branch>` or a raw commit sha (detached). Reading the file
- * beats `git symbolic-ref` here: this runs for every project on every tick, and
- * a subprocess per project per 30s is a real cost for a label.
- */
-async function readHeadBranch(gitDir: string) {
-  const head = await readFile(path.join(gitDir, "HEAD"), "utf8").catch(() => null)
-  if (head === null) return undefined
+/** The branch a `<gitDir>/HEAD` names: `ref: refs/heads/<branch>`, or a raw sha when detached. */
+function parseHeadBranch(head: string) {
   const trimmed = head.trim()
   if (!trimmed.startsWith("ref:")) return undefined
   const ref = trimmed.slice("ref:".length).trim()
@@ -163,43 +151,33 @@ export function extractRemoteOwner(remoteUrl: string | undefined): string | unde
   const scp = /^[^/@]+@[^/:]+:(?<path>.+)$/u.exec(remoteUrl)
   let rawPath = scp?.groups?.path
   if (rawPath === undefined) {
-    try {
-      rawPath = new URL(remoteUrl).pathname
-    } catch {
-      return undefined
-    }
+    if (!URL.canParse(remoteUrl)) return undefined
+    rawPath = new URL(remoteUrl).pathname
   }
   const segments = rawPath.replace(/\.git$/u, "").split("/").filter((segment) => segment.length > 0)
   return segments.length >= 2 ? segments[segments.length - 2] : undefined
 }
 
+export interface WorktreeProbeOptions {
+  /**
+   * The store's state, read on every pass. Lazy because the store is built
+   * after the layer; nothing reads it before startup has finished.
+   */
+  readonly state: Effect.Effect<StoreState>
+}
+
 /**
- * A linked worktree's git dir holds no `config` of its own — the remotes live
- * in the common dir it points at, named by a `commondir` file beside HEAD.
+ * The per-project readings above, kept current by the three update paths.
+ *
+ * `changes` emits once per pass that moved anything the sidebar shows (a
+ * reading, a repo label, or learning a folder is not a repo), coalesced per
+ * project pass. It never replays: subscribe, then read.
  */
-async function resolveCommonDir(gitDir: string) {
-  const commonDir = await readFile(path.join(gitDir, "commondir"), "utf8").catch(() => null)
-  const trimmed = commonDir?.trim()
-  return trimmed ? path.resolve(gitDir, trimmed) : gitDir
-}
-
-/** One config read, both readings of `origin` — the owner and the browse URL. */
-async function readOrigin(gitDir: string): Promise<{ repoOwner?: string, repoUrl?: string }> {
-  const configPath = path.join(await resolveCommonDir(gitDir), "config")
-  const config = await readFile(configPath, "utf8").catch(() => null)
-  if (config === null) return {}
-  const originUrl = extractOriginUrl(config)
-  return {
-    repoOwner: extractRemoteOwner(originUrl),
-    repoUrl: buildRepoBrowseUrl(originUrl)?.url,
-  }
-}
-
-export class WorktreeProbe {
-  private readonly entries = new Map<string, ProjectProbeEntry>()
-  private readonly probes = new Map<string, WorkingTreeProbe>()
-  /** Absent for projects that aren't in a repo (or haven't been resolved yet). */
-  private readonly repoLabels = new Map<string, ProjectRepoLabel>()
+export class WorktreeProbe extends Context.Service<WorktreeProbe, {
+  /** Per-project working-tree readings, for the sidebar builder. */
+  readonly states: Effect.Effect<ReadonlyMap<string, WorkingTreeReading>>
+  /** Per-project repo identity, for the sidebar builder. Projects not (yet) known to be in a repo are absent. */
+  readonly repoLabels: Effect.Effect<ReadonlyMap<string, ProjectRepoLabel>>
   /**
    * Projects a resolution pass has looked at and found *not* to be in a repo.
    *
@@ -208,174 +186,54 @@ export class WorktreeProbe {
    * that would offer to `git init` a folder: doing it off "no label" would
    * flash the offer at every repo in the sidebar for the first pass after boot.
    */
-  private readonly noRepoProjects = new Set<string>()
-  private timer: ReturnType<typeof setInterval> | null = null
-  private ticking = false
-  private batchDepth = 0
-  private batchedChange = false
-
-  constructor(
-    private readonly getState: () => StoreState,
-    private readonly onChange: () => void
-  ) {}
-
-  /** Synchronous snapshot for the sidebar builder. */
-  getStates(): ReadonlyMap<string, WorkingTreeProbe> {
-    return this.probes
-  }
-
-  /** Synchronous snapshot for the sidebar builder. */
-  getRepoLabels(): ReadonlyMap<string, ProjectRepoLabel> {
-    return this.repoLabels
-  }
-
-  /** Synchronous snapshot for the sidebar builder — see `noRepoProjects`. */
-  getProjectsWithoutRepo(): ReadonlySet<string> {
-    return this.noRepoProjects
-  }
-
-  start() {
-    if (this.timer) return
-    // Kick one pass immediately: without it every project's label reads as a
-    // bare folder name for the first tick interval after boot.
-    void this.tick()
-    this.timer = setInterval(() => {
-      void this.tick()
-    }, PROBE_TICK_INTERVAL_MS)
-    // Don't hold the process open just to poll git metadata.
-    this.timer.unref?.()
-  }
-
-  stop() {
-    if (!this.timer) return
-    clearInterval(this.timer)
-    this.timer = null
-  }
-
+  readonly projectsWithoutRepo: Effect.Effect<ReadonlySet<string>>
+  readonly changes: Stream.Stream<void>
+  /** Runs a pass now and then every 30 s, until the layer closes. Idempotent. */
+  readonly start: Effect.Effect<void>
+  /** One stamp-gated pass over every project with a live chat; skipped when one is already running. */
+  readonly tick: Effect.Effect<void>
+  /** Full probe for a single project. */
+  readonly refreshForProject: (projectId: string) => Effect.Effect<void>
+  /** Full probe for a chat's project. Called when one of its turns ends. */
+  readonly refreshForChat: (chatId: string) => Effect.Effect<void>
   /**
-   * Record a probe supplied by someone who already did the filesystem work
+   * Record a scan supplied by someone who already did the filesystem work
    * (see `DiffStore.onWorkingTreeProbe`). Also refreshes the stamp so the tick
    * doesn't immediately redo the same scan.
    *
-   * Returns the work rather than swallowing it: production fires and forgets,
-   * but the scan still has to be paired with a `HEAD` read before it can be
-   * published, so callers that need the state settled can await it.
+   * Succeeds once the scan, paired with a `HEAD` read, is published, so
+   * callers that need the state settled can wait for it.
    */
-  recordExternalProbe(projectId: string, scan: WorkingTreeScan): Promise<void> {
-    return this.applyProbe(projectId, scan)
-  }
+  readonly recordExternalProbe: (projectId: string, scan: WorkingTreeScan) => Effect.Effect<void>
+}>()("@kanna/server/WorktreeProbe") {
+  static readonly layer = (options: WorktreeProbeOptions) => Layer.effect(this, makeWorktreeProbe(options))
+}
 
-  /** Full probe for a single project. Called when one of its turns ends. */
-  async refreshForProject(projectId: string) {
-    const project = this.getState().projectsById.get(projectId)
-    if (!project || project.deletedAt) return
+const makeWorktreeProbe = Effect.fn("WorktreeProbe.make")(function* (options: WorktreeProbeOptions) {
+  const fs = yield* FileSystem.FileSystem
+  const { resolveLocation, scanWorkingTree, treeBlobs } = yield* bindWorktreeGit
+  const entries = new Map<string, ProjectProbeEntry>()
+  const probes = new Map<string, WorkingTreeReading>()
+  /** Absent for projects that aren't in a repo (or haven't been resolved yet). */
+  const repoLabels = new Map<string, ProjectRepoLabel>()
+  /** See `projectsWithoutRepo` on the service. */
+  const noRepoProjects = new Set<string>()
+  const changes = yield* PubSub.unbounded<void>()
+  yield* Effect.addFinalizer(() => PubSub.shutdown(changes))
+  const ticking = yield* Semaphore.make(1)
+  const started = yield* Ref.make(false)
+  let batchDepth = 0
+  let batchedChange = false
 
-    await this.batchChanges(async () => {
-      const entry = await this.ensureEntry(projectId, project.localPath)
-      if (!entry.location) {
-        this.applyRepoLabel(projectId, null)
-        await this.applyProbe(projectId, { dirty: false, paths: [] })
-        return
-      }
-      // Banked before the read, never after — see `labelStamp`.
-      entry.labelStamp = (await this.readStamp(entry.location.gitDir)).head
-      this.applyRepoLabel(projectId, await this.readRepoLabel(entry.location))
-      await this.applyProbe(projectId, await probeWorkingTree(entry.location.repoRoot))
-    })
-  }
+  const announce = PubSub.publish(changes, undefined).pipe(Effect.asVoid)
 
-  async refreshForChat(chatId: string) {
-    const chat = this.getState().chatsById.get(chatId)
-    if (!chat) return
-    await this.refreshForProject(chat.projectId)
-  }
-
-  private async tick() {
-    if (this.ticking) return
-    this.ticking = true
-    try {
-      const { labelled, dirtyCandidates } = this.getTickProjectIds()
-      for (const projectId of labelled) {
-        const project = this.getState().projectsById.get(projectId)
-        if (!project) continue
-        await this.batchChanges(async () => {
-          const entry = await this.ensureEntry(projectId, project.localPath)
-          if (!entry.location) {
-            this.applyRepoLabel(projectId, null)
-            return
-          }
-
-          const stamp = await this.readStamp(entry.location.gitDir)
-          // A checkout rewrites HEAD, so this covers every branch switch.
-          if (stamp.head === "" || stamp.head !== entry.labelStamp || !this.repoLabels.has(projectId)) {
-            // Banked before the read, never after — see `labelStamp`.
-            entry.labelStamp = stamp.head
-            this.applyRepoLabel(projectId, await this.readRepoLabel(entry.location))
-          }
-
-          // An unreadable stamp falls through to a full probe rather than being
-          // skipped — better one wasted `git status` than a silently stuck dot.
-          const changed = stamp.combined === "" || stamp.combined !== entry.stamp
-          if (!changed || !dirtyCandidates.has(projectId)) {
-            // Label-only projects never reach `applyProbe`, so bank the stamp
-            // here or every tick would re-read a HEAD that hasn't moved.
-            entry.stamp = stamp.combined
-            return
-          }
-
-          await this.applyProbe(projectId, await probeWorkingTree(entry.location.repoRoot))
-        })
-      }
-    } finally {
-      this.ticking = false
+  const notifyChanged = Effect.suspend(() => {
+    if (batchDepth > 0) {
+      batchedChange = true
+      return Effect.void
     }
-  }
-
-  /**
-   * Two nested sets, in one pass over the chats:
-   *
-   * - `labelled` — projects with a live chat, i.e. everything the sidebar can
-   *   put a `repo/branch` label on. Only cheap work runs for these.
-   * - `dirtyCandidates` — of those, the ones with a chat that finished a turn.
-   *   A chat can only dot if `lastTurnEndedAt` is set, so running `git status`
-   *   for any other project is wasted work.
-   */
-  private getTickProjectIds() {
-    const state = this.getState()
-    const labelled = new Set<string>()
-    const dirtyCandidates = new Set<string>()
-    for (const chat of state.chatsById.values()) {
-      if (chat.deletedAt) continue
-      const project = state.projectsById.get(chat.projectId)
-      if (!project || project.deletedAt) continue
-      labelled.add(chat.projectId)
-      if (chat.lastTurnEndedAt != null) dirtyCandidates.add(chat.projectId)
-    }
-    return { labelled, dirtyCandidates }
-  }
-
-  private async ensureEntry(projectId: string, localPath: string) {
-    const existing = this.entries.get(projectId)
-    // A null location is retried rather than cached forever: a folder can become
-    // a repo later (`git init` through Kanna), and re-resolving costs two
-    // `rev-parse` calls only for the rare project that isn't a repo yet.
-    if (existing?.location) return existing
-    const entry: ProjectProbeEntry = {
-      location: await resolveWorkingTreeLocation(localPath),
-      stamp: existing?.stamp ?? "",
-      labelStamp: existing?.labelStamp ?? "",
-    }
-    this.entries.set(projectId, entry)
-    // Notified separately from the repo label: a folder that has never been a
-    // repo has no label to drop, so `applyRepoLabel(null)` sees nothing change
-    // and stays quiet — but the sidebar has just learned something about it.
-    if (this.noRepoProjects.has(projectId) !== !entry.location) {
-      if (entry.location) this.noRepoProjects.delete(projectId)
-      else this.noRepoProjects.add(projectId)
-      this.notifyChanged()
-    }
-    return entry
-  }
+    return announce
+  })
 
   /**
    * One pass over a project can move both its repo label and its dirty state —
@@ -383,89 +241,142 @@ export class WorktreeProbe {
    * broadcast for that. Coalesces the notifications; nested batches collapse
    * into the outermost.
    */
-  private async batchChanges<T>(run: () => Promise<T>): Promise<T> {
-    this.batchDepth += 1
-    try {
-      return await run()
-    } finally {
-      this.batchDepth -= 1
-      if (this.batchDepth === 0 && this.batchedChange) {
-        this.batchedChange = false
-        this.onChange()
-      }
-    }
-  }
+  const batchChanges = <A, E>(run: Effect.Effect<A, E>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        batchDepth += 1
+      }),
+      () => run,
+      () => Effect.suspend(() => {
+        batchDepth -= 1
+        if (batchDepth > 0 || !batchedChange) return Effect.void
+        batchedChange = false
+        return announce
+      }),
+    )
 
-  private notifyChanged() {
-    if (this.batchDepth > 0) {
-      this.batchedChange = true
-      return
-    }
-    this.onChange()
-  }
+  /** A small file's text, or none when it can't be read. */
+  const readOptionalFile = (filePath: string) =>
+    fs.readFileString(filePath).pipe(
+      Effect.map(Option.some),
+      Effect.catchTag("PlatformError", () => Effect.succeedNone),
+    )
 
-  private async readRepoLabel(location: WorkingTreeLocation): Promise<ProjectRepoLabel> {
-    const [branchName, origin] = await Promise.all([
-      readHeadBranch(location.gitDir),
-      readOrigin(location.gitDir),
-    ])
+  /**
+   * Current branch straight out of `<gitDir>/HEAD`, which is either
+   * `ref: refs/heads/<branch>` or a raw commit sha (detached). Reading the file
+   * beats `git symbolic-ref` here: this runs for every project on every tick, and
+   * a subprocess per project per 30s is a real cost for a label.
+   */
+  const readHeadBranch = (gitDir: string) =>
+    readOptionalFile(path.join(gitDir, "HEAD")).pipe(
+      Effect.map((head) => Option.isSome(head) ? parseHeadBranch(head.value) : undefined),
+    )
+
+  /**
+   * A linked worktree's git dir holds no `config` of its own — the remotes live
+   * in the common dir it points at, named by a `commondir` file beside HEAD.
+   */
+  const resolveCommonDir = (gitDir: string) =>
+    readOptionalFile(path.join(gitDir, "commondir")).pipe(
+      Effect.map((commonDir) => {
+        const trimmed = Option.getOrUndefined(commonDir)?.trim()
+        return trimmed ? path.resolve(gitDir, trimmed) : gitDir
+      }),
+    )
+
+  /** One config read, both readings of `origin` — the owner and the browse URL. */
+  const readOrigin = Effect.fnUntraced(function* (gitDir: string) {
+    const config = yield* readOptionalFile(path.join(yield* resolveCommonDir(gitDir), "config"))
+    if (Option.isNone(config)) return {}
+    const originUrl = extractOriginUrl(config.value)
     return {
+      repoOwner: extractRemoteOwner(originUrl),
+      repoUrl: buildRepoBrowseUrl(originUrl)?.url,
+    }
+  })
+
+  const readRepoLabel = Effect.fnUntraced(function* (location: WorkingTreeLocation) {
+    const [branchName, origin] = yield* Effect.all(
+      [readHeadBranch(location.gitDir), readOrigin(location.gitDir)],
+      { concurrency: 2 },
+    )
+    const label: ProjectRepoLabel = {
       repoName: path.basename(location.repoRoot),
       ...(branchName ? { branchName } : {}),
       ...(origin.repoOwner ? { repoOwner: origin.repoOwner } : {}),
       ...(origin.repoUrl ? { repoUrl: origin.repoUrl } : {}),
     }
-  }
+    return label
+  })
 
-  /** `null` means "not in a repo" — the label is dropped, not blanked. */
-  private applyRepoLabel(projectId: string, label: ProjectRepoLabel | null) {
-    const previous = this.repoLabels.get(projectId)
-    if (!label) {
-      if (!previous) return
-      this.repoLabels.delete(projectId)
-      this.notifyChanged()
-      return
+  /**
+   * Both readings of the git dir's mtimes in one pair of stats: `combined`
+   * gates the dirty probe, `head` gates the repo label. See `labelStamp` for
+   * why the label can't ride on the combined one. `""` means unreadable, which
+   * every caller treats as "assume changed".
+   *
+   * Through `FileSystem.stat`, which rounds to whole milliseconds. The stamp
+   * is only ever compared with itself, in memory, so that costs nothing.
+   */
+  const readStamp = Effect.fnUntraced(function* (gitDir: string) {
+    const mtimeOf = (filePath: string) =>
+      fs.stat(filePath).pipe(
+        Effect.map((info) => Option.getOrNull(Option.map(info.mtime, (mtime) => mtime.getTime()))),
+        Effect.catchTag("PlatformError", () => Effect.succeed(null)),
+      )
+    const [index, head] = yield* Effect.all(
+      [mtimeOf(path.join(gitDir, "index")), mtimeOf(path.join(gitDir, "HEAD"))],
+      { concurrency: 2 },
+    )
+    return {
+      combined: index === null && head === null ? "" : `${index ?? ""}:${head ?? ""}`,
+      head: head === null ? "" : String(head),
     }
+  })
+
+  const ensureEntry = Effect.fnUntraced(function* (projectId: string, localPath: string) {
+    const existing = entries.get(projectId)
+    // A missing location is retried rather than cached forever: a folder can
+    // become a repo later (`git init` through Kanna), and re-resolving costs two
+    // `rev-parse` calls only for the rare project that isn't a repo yet.
+    if (existing && Option.isSome(existing.location)) return existing
+    const entry: ProjectProbeEntry = {
+      location: yield* resolveLocation(localPath),
+      stamp: existing?.stamp ?? "",
+      labelStamp: existing?.labelStamp ?? "",
+    }
+    entries.set(projectId, entry)
+    // Notified separately from the repo label: a folder that has never been a
+    // repo has no label to drop, so `applyRepoLabel(none)` sees nothing change
+    // and stays quiet — but the sidebar has just learned something about it.
+    const inRepo = Option.isSome(entry.location)
+    if (noRepoProjects.has(projectId) === inRepo) {
+      if (inRepo) noRepoProjects.delete(projectId)
+      else noRepoProjects.add(projectId)
+      yield* notifyChanged
+    }
+    return entry
+  })
+
+  /** None means "not in a repo": the label is dropped, not blanked. */
+  const applyRepoLabel = (projectId: string, label: Option.Option<ProjectRepoLabel>) => Effect.suspend(() => {
+    const previous = repoLabels.get(projectId)
+    if (Option.isNone(label)) {
+      if (!previous) return Effect.void
+      repoLabels.delete(projectId)
+      return notifyChanged
+    }
+    const next = label.value
     if (
-      previous?.repoName === label.repoName
-      && previous.branchName === label.branchName
-      && previous.repoOwner === label.repoOwner
-      && previous.repoUrl === label.repoUrl
-    ) return
-    this.repoLabels.set(projectId, label)
-    this.notifyChanged()
-  }
-
-  private async applyProbe(projectId: string, scan: WorkingTreeScan) {
-    // A scan plus what `HEAD` currently holds for its paths *is* the probe —
-    // no state carried between passes, nothing to go stale. (This used to fold
-    // scans into a per-path "first seen dirty" ledger to derive a
-    // `dirtySinceMs`; a single file left uncommitted overnight then flagged
-    // every chat that had run since, whether or not it touched that file.)
-    const probe: WorkingTreeProbe = {
-      dirty: scan.dirty,
-      paths: new Set(scan.paths),
-      headBlobs: await this.readHeadBlobs(projectId, scan.paths),
-    }
-    // Publish before the stamp read, so nothing that only wanted the reading
-    // waits on bookkeeping. The blob lookup above is the one thing publication
-    // does wait for: a probe carrying paths but no blobs would read every claim
-    // as live, i.e. flash the dot back onto chats a commit had just settled.
-    const changed = !probesEqual(this.probes.get(projectId), probe)
-    this.probes.set(projectId, probe)
-    if (changed) {
-      this.notifyChanged()
-    }
-
-    // Re-read *after* probing so a probe can never trigger itself next tick.
-    // Deliberately leaves `labelStamp` alone: this runs for probes computed
-    // elsewhere too, and banking HEAD here would tell the tick a label had been
-    // read that never was.
-    const entry = this.entries.get(projectId)
-    if (entry?.location) {
-      entry.stamp = (await this.readStamp(entry.location.gitDir)).combined
-    }
-  }
+      previous?.repoName === next.repoName
+      && previous.branchName === next.branchName
+      && previous.repoOwner === next.repoOwner
+      && previous.repoUrl === next.repoUrl
+    ) return Effect.void
+    repoLabels.set(projectId, next)
+    return notifyChanged
+  })
 
   /**
    * What `HEAD` holds for each dirty path — the half of the reading that says
@@ -477,31 +388,170 @@ export class WorktreeProbe {
    * An empty map is the honest answer when the lookup can't run — see
    * `WorkingTreeProbe.headBlobs`.
    */
-  private async readHeadBlobs(projectId: string, paths: string[]) {
+  const readHeadBlobs = Effect.fnUntraced(function* (projectId: string, paths: string[]) {
     if (paths.length === 0) return new Map<string, string | null>()
-    const project = this.getState().projectsById.get(projectId)
+    const project = (yield* options.state).projectsById.get(projectId)
     const entry = project && !project.deletedAt
-      ? await this.ensureEntry(projectId, project.localPath)
-      : this.entries.get(projectId)
-    if (!entry?.location) return new Map<string, string | null>()
-    return await readTreeBlobs(entry.location.repoRoot, "HEAD", paths)
-      ?? new Map<string, string | null>()
-  }
+      ? yield* ensureEntry(projectId, project.localPath)
+      : entries.get(projectId)
+    if (!entry || Option.isNone(entry.location)) return new Map<string, string | null>()
+    const blobs = yield* treeBlobs(entry.location.value.repoRoot, "HEAD", paths)
+    return Option.getOrElse(blobs, () => new Map<string, string | null>())
+  })
 
-  /**
-   * Both readings of the git dir's mtimes in one pair of stats: `combined`
-   * gates the dirty probe, `head` gates the repo label. See `labelStamp` for
-   * why the label can't ride on the combined one. `""` means unreadable, which
-   * every caller treats as "assume changed".
-   */
-  private async readStamp(gitDir: string): Promise<{ combined: string, head: string }> {
-    const [index, head] = await Promise.all([
-      stat(path.join(gitDir, "index")).then((info) => info.mtimeMs).catch(() => null),
-      stat(path.join(gitDir, "HEAD")).then((info) => info.mtimeMs).catch(() => null),
-    ])
-    return {
-      combined: index === null && head === null ? "" : `${index ?? ""}:${head ?? ""}`,
-      head: head === null ? "" : String(head),
+  const applyProbe = Effect.fnUntraced(function* (projectId: string, scan: WorkingTreeScan) {
+    // A scan plus what `HEAD` currently holds for its paths *is* the probe —
+    // no state carried between passes, nothing to go stale. (This used to fold
+    // scans into a per-path "first seen dirty" ledger to derive a
+    // `dirtySinceMs`; a single file left uncommitted overnight then flagged
+    // every chat that had run since, whether or not it touched that file.)
+    const probe: WorkingTreeReading = {
+      dirty: scan.dirty,
+      paths: new Set(scan.paths),
+      headBlobs: yield* readHeadBlobs(projectId, scan.paths),
     }
+    // Publish before the stamp read, so nothing that only wanted the reading
+    // waits on bookkeeping. The blob lookup above is the one thing publication
+    // does wait for: a probe carrying paths but no blobs would read every claim
+    // as live, i.e. flash the dot back onto chats a commit had just settled.
+    const changed = !probesEqual(probes.get(projectId), probe)
+    probes.set(projectId, probe)
+    if (changed) yield* notifyChanged
+
+    // Re-read *after* probing so a probe can never trigger itself next tick.
+    // Deliberately leaves `labelStamp` alone: this runs for probes computed
+    // elsewhere too, and banking HEAD here would tell the tick a label had been
+    // read that never was.
+    const entry = entries.get(projectId)
+    if (entry && Option.isSome(entry.location)) {
+      entry.stamp = (yield* readStamp(entry.location.value.gitDir)).combined
+    }
+  })
+
+  const logFailure = (what: string, projectId: string) => (error: WorktreeGitError) =>
+    Effect.logWarning(`Worktree probe ${what} failed:`, error).pipe(Effect.annotateLogs({ projectId }))
+
+  const refreshForProject = Effect.fn("WorktreeProbe.refreshForProject")(function* (projectId: string) {
+    yield* Effect.annotateCurrentSpan("projectId", projectId)
+    const project = (yield* options.state).projectsById.get(projectId)
+    if (!project || project.deletedAt) return
+
+    yield* batchChanges(Effect.gen(function* () {
+      const entry = yield* ensureEntry(projectId, project.localPath)
+      if (Option.isNone(entry.location)) {
+        yield* applyRepoLabel(projectId, Option.none())
+        yield* applyProbe(projectId, { dirty: false, paths: [] })
+        return
+      }
+      const location = entry.location.value
+      // Banked before the read, never after — see `labelStamp`.
+      entry.labelStamp = (yield* readStamp(location.gitDir)).head
+      yield* applyRepoLabel(projectId, Option.some(yield* readRepoLabel(location)))
+      yield* applyProbe(projectId, yield* scanWorkingTree(location.repoRoot))
+    }))
+  }, (effect, projectId) =>
+    effect.pipe(Effect.catchTag("@kanna/server/worktree-git/WorktreeGitError", logFailure("refresh", projectId))))
+
+  const refreshForChat = Effect.fn("WorktreeProbe.refreshForChat")(function* (chatId: string) {
+    yield* Effect.annotateCurrentSpan("chatId", chatId)
+    const chat = (yield* options.state).chatsById.get(chatId)
+    if (!chat) return
+    yield* refreshForProject(chat.projectId)
+  })
+
+  const recordExternalProbe = Effect.fn("WorktreeProbe.recordExternalProbe")(function* (projectId: string, scan: WorkingTreeScan) {
+    yield* Effect.annotateCurrentSpan("projectId", projectId)
+    yield* applyProbe(projectId, scan)
+  }, (effect, projectId) =>
+    effect.pipe(Effect.catchTag("@kanna/server/worktree-git/WorktreeGitError", logFailure("external scan", projectId))))
+
+  /** Projects the tick looks at; see `tickProjectIds`. */
+  const tickProject = Effect.fnUntraced(function* (projectId: string, dirtyCandidates: ReadonlySet<string>) {
+    const project = (yield* options.state).projectsById.get(projectId)
+    if (!project) return
+    yield* batchChanges(Effect.gen(function* () {
+      const entry = yield* ensureEntry(projectId, project.localPath)
+      if (Option.isNone(entry.location)) {
+        yield* applyRepoLabel(projectId, Option.none())
+        return
+      }
+      const location = entry.location.value
+
+      const stamp = yield* readStamp(location.gitDir)
+      // A checkout rewrites HEAD, so this covers every branch switch.
+      if (stamp.head === "" || stamp.head !== entry.labelStamp || !repoLabels.has(projectId)) {
+        // Banked before the read, never after — see `labelStamp`.
+        entry.labelStamp = stamp.head
+        yield* applyRepoLabel(projectId, Option.some(yield* readRepoLabel(location)))
+      }
+
+      // An unreadable stamp falls through to a full probe rather than being
+      // skipped — better one wasted `git status` than a silently stuck dot.
+      const changed = stamp.combined === "" || stamp.combined !== entry.stamp
+      if (!changed || !dirtyCandidates.has(projectId)) {
+        // Label-only projects never reach `applyProbe`, so bank the stamp
+        // here or every tick would re-read a HEAD that hasn't moved.
+        entry.stamp = stamp.combined
+        return
+      }
+
+      yield* applyProbe(projectId, yield* scanWorkingTree(location.repoRoot))
+    }))
+  })
+
+  const pass = Effect.fn("WorktreeProbe.tick")(function* () {
+    const { labelled, dirtyCandidates } = tickProjectIds(yield* options.state)
+    yield* Effect.forEach(labelled, (projectId) => tickProject(projectId, dirtyCandidates), { discard: true })
+  })
+
+  const tick = pass().pipe(
+    ticking.withPermitsIfAvailable(1),
+    Effect.asVoid,
+    Effect.catchTag("@kanna/server/worktree-git/WorktreeGitError", (error) =>
+      Effect.logWarning("Worktree probe pass failed:", error)),
+  )
+
+  // `start` is called from outside the layer; the passes belong to the layer,
+  // so they stop when it closes, not when the caller's scope does.
+  const layerScope = yield* Effect.scope
+  const start = Effect.gen(function* () {
+    if (yield* Ref.getAndSet(started, true)) return
+    // The first pass runs at once: without it every project's label reads as
+    // a bare folder name for the first tick interval after boot.
+    yield* tick.pipe(Effect.repeat(Schedule.fixed(PROBE_TICK_INTERVAL_MS)), Effect.forkIn(layerScope))
+  })
+
+  return {
+    states: Effect.sync((): ReadonlyMap<string, WorkingTreeReading> => probes),
+    repoLabels: Effect.sync((): ReadonlyMap<string, ProjectRepoLabel> => repoLabels),
+    projectsWithoutRepo: Effect.sync((): ReadonlySet<string> => noRepoProjects),
+    changes: Stream.fromPubSub(changes),
+    start,
+    tick,
+    refreshForProject,
+    refreshForChat,
+    recordExternalProbe,
+  } satisfies WorktreeProbe["Service"]
+})
+
+/**
+ * Two nested sets, in one pass over the chats:
+ *
+ * - `labelled` — projects with a live chat, i.e. everything the sidebar can
+ *   put a `repo/branch` label on. Only cheap work runs for these.
+ * - `dirtyCandidates` — of those, the ones with a chat that finished a turn.
+ *   A chat can only dot if `lastTurnEndedAt` is set, so running `git status`
+ *   for any other project is wasted work.
+ */
+function tickProjectIds(state: StoreState) {
+  const labelled = new Set<string>()
+  const dirtyCandidates = new Set<string>()
+  for (const chat of state.chatsById.values()) {
+    if (chat.deletedAt) continue
+    const project = state.projectsById.get(chat.projectId)
+    if (!project || project.deletedAt) continue
+    labelled.add(chat.projectId)
+    if (chat.lastTurnEndedAt != null) dirtyCandidates.add(chat.projectId)
   }
+  return { labelled, dirtyCandidates }
 }

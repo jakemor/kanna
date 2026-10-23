@@ -2,8 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { runTest } from "./effect/testing"
 import { instanceFingerprint, probeExistingInstance } from "./instance"
-import { startKannaServer } from "./server"
+import { startKannaServer } from "./server-bun"
 
 const stops: Array<() => Promise<void>> = []
 const tempDirs: string[] = []
@@ -30,16 +31,16 @@ describe("probeExistingInstance", () => {
     const server = await startKannaServer({ dataDir, port: 4381 })
     stops.push(server.stop)
 
-    const match = await probeExistingInstance(server.port, dataDir)
+    const match = await runTest(probeExistingInstance(server.port, dataDir))
     expect(match).toEqual({ localUrl: `http://localhost:${server.port}`, port: server.port })
 
     // Same server, different expected data dir (e.g. dev profile) → no match.
-    const mismatch = await probeExistingInstance(server.port, "/somewhere/else")
+    const mismatch = await runTest(probeExistingInstance(server.port, "/somewhere/else"))
     expect(mismatch).toBeNull()
   })
 
   test("nothing listening → null", async () => {
-    expect(await probeExistingInstance(4382, "/whatever")).toBeNull()
+    expect(await runTest(probeExistingInstance(4382, "/whatever"))).toBeNull()
   })
 
   test("non-kanna server → null", async () => {
@@ -49,9 +50,24 @@ describe("probeExistingInstance", () => {
       fetch: () => Response.json({ hello: "world" }),
     })
     try {
-      expect(await probeExistingInstance(4383, "/whatever")).toBeNull()
+      expect(await runTest(probeExistingInstance(4383, "/whatever"))).toBeNull()
     } finally {
       foreign.stop(true)
+    }
+  })
+
+  test("a server that never answers → null after the timeout", async () => {
+    const silent = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 4384,
+      fetch: () => new Promise<Response>(() => {}),
+    })
+    try {
+      const started = Date.now()
+      expect(await runTest(probeExistingInstance(4384, "/whatever"))).toBeNull()
+      expect(Date.now() - started).toBeLessThan(3_000)
+    } finally {
+      silent.stop(true)
     }
   })
 })

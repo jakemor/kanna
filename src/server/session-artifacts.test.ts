@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
+import { runTest } from "./effect/testing"
 import { checkSessionArtifact } from "./session-artifacts"
 
 const CWD = "/Users/jake/Projects/kanna"
@@ -38,20 +39,20 @@ describe("checkSessionArtifact", () => {
     await mkdir(dir, { recursive: true })
     await writeFile(path.join(dir, "session-abc.jsonl"), "{}")
 
-    expect(checkSessionArtifact("claude", { cwd: CWD, sessionToken: "session-abc", home })).toBe("present")
+    expect(await runTest(checkSessionArtifact("claude", { cwd: CWD, sessionToken: "session-abc", home }))).toBe("present")
   })
 
   test("claude: missing when the project dir exists but the session file is gone", async () => {
     const home = await makeHome()
     await mkdir(claudeProjectDir(home), { recursive: true })
 
-    expect(checkSessionArtifact("claude", { cwd: CWD, sessionToken: "session-abc", home })).toBe("missing")
+    expect(await runTest(checkSessionArtifact("claude", { cwd: CWD, sessionToken: "session-abc", home }))).toBe("missing")
   })
 
   test("claude: unknown when the whole project dir is absent (guards restore loops)", async () => {
     const home = await makeHome()
 
-    expect(checkSessionArtifact("claude", { cwd: CWD, sessionToken: "session-abc", home })).toBe("unknown")
+    expect(await runTest(checkSessionArtifact("claude", { cwd: CWD, sessionToken: "session-abc", home }))).toBe("unknown")
   })
 
   test("cursor: keys the chats dir by the md5 of the cwd", async () => {
@@ -59,8 +60,8 @@ describe("checkSessionArtifact", () => {
     const dir = cursorChatsDir(home)
     await mkdir(path.join(dir, "session-xyz"), { recursive: true })
 
-    expect(checkSessionArtifact("cursor", { cwd: CWD, sessionToken: "session-xyz", home })).toBe("present")
-    expect(checkSessionArtifact("cursor", { cwd: CWD, sessionToken: "other", home })).toBe("missing")
+    expect(await runTest(checkSessionArtifact("cursor", { cwd: CWD, sessionToken: "session-xyz", home }))).toBe("present")
+    expect(await runTest(checkSessionArtifact("cursor", { cwd: CWD, sessionToken: "other", home }))).toBe("missing")
   })
 
   test("returns unknown for a hostile or empty token", async () => {
@@ -68,15 +69,15 @@ describe("checkSessionArtifact", () => {
     await mkdir(claudeProjectDir(home), { recursive: true })
 
     for (const token of ["", "../escape", "a/b", ".hidden", null, undefined]) {
-      expect(checkSessionArtifact("claude", { cwd: CWD, sessionToken: token, home })).toBe("unknown")
+      expect(await runTest(checkSessionArtifact("claude", { cwd: CWD, sessionToken: token, home }))).toBe("unknown")
     }
   })
 
   test("returns unknown for providers without an on-disk artifact", async () => {
     const home = await makeHome()
 
-    expect(checkSessionArtifact("codex", { cwd: CWD, sessionToken: "thread-1", home })).toBe("unknown")
-    expect(checkSessionArtifact("pi", { cwd: CWD, sessionToken: "sess-1", home })).toBe("unknown")
+    expect(await runTest(checkSessionArtifact("codex", { cwd: CWD, sessionToken: "thread-1", home }))).toBe("unknown")
+    expect(await runTest(checkSessionArtifact("pi", { cwd: CWD, sessionToken: "sess-1", home }))).toBe("unknown")
   })
 
   test("grok: keys the session dir by encodeURIComponent(cwd)", async () => {
@@ -84,7 +85,7 @@ describe("checkSessionArtifact", () => {
     const dir = path.join(home, ".grok", "sessions", encodeURIComponent(CWD))
     await mkdir(path.join(dir, "session-xyz"), { recursive: true })
 
-    expect(checkSessionArtifact("grok", { cwd: CWD, sessionToken: "session-xyz", home })).toBe("present")
-    expect(checkSessionArtifact("grok", { cwd: CWD, sessionToken: "other", home })).toBe("missing")
+    expect(await runTest(checkSessionArtifact("grok", { cwd: CWD, sessionToken: "session-xyz", home }))).toBe("present")
+    expect(await runTest(checkSessionArtifact("grok", { cwd: CWD, sessionToken: "other", home }))).toBe("missing")
   })
 })

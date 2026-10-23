@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Effect, Result } from "effect"
 import type { TranscriptEntry } from "../shared/types"
+import { runTest } from "./effect/testing"
 import {
   buildTranscriptMediaUrl,
   copyTranscriptMedia,
@@ -59,7 +61,7 @@ describe("externalizeEntryImages", () => {
     const dataDir = await makeDataDir()
     const entry = claudeImageResult()
 
-    const stored = await externalizeEntryImages(entry, { dataDir, chatId: "c1" })
+    const stored = await runTest(externalizeEntryImages(entry, { dataDir, chatId: "c1" }))
 
     expect(stored).not.toBe(entry)
     expect((stored as { content: unknown[] }).content).toEqual([
@@ -78,35 +80,74 @@ describe("externalizeEntryImages", () => {
       _id: "r2", createdAt: 1, kind: "tool_result", toolId: "t2",
       content: [{ type: "image", data: PNG_BASE64, mimeType: "image/webp" }],
     } as unknown as TranscriptEntry
-    const stored = await externalizeEntryImages(pi, { dataDir, chatId: "c1" })
+    const stored = await runTest(externalizeEntryImages(pi, { dataDir, chatId: "c1" }))
     expect((stored as { content: unknown[] }).content).toEqual([
       { type: "image", url: "/api/chats/c1/media/r2-0.webp", mimeType: "image/webp" },
     ])
 
     // Idempotent: a second pass on the stored entry sees only URLs.
-    expect(await externalizeEntryImages(stored, { dataDir, chatId: "c1" })).toBe(stored)
+    expect(await runTest(externalizeEntryImages(stored, { dataDir, chatId: "c1" }))).toBe(stored)
     const text = { _id: "a", createdAt: 1, kind: "assistant_text", text: "hi" } as unknown as TranscriptEntry
-    expect(await externalizeEntryImages(text, { dataDir, chatId: "c1" })).toBe(text)
+    expect(await runTest(externalizeEntryImages(text, { dataDir, chatId: "c1" }))).toBe(text)
     const plain = { _id: "r3", createdAt: 1, kind: "tool_result", toolId: "t3", content: "text" } as unknown as TranscriptEntry
-    expect(await externalizeEntryImages(plain, { dataDir, chatId: "c1" })).toBe(plain)
+    expect(await runTest(externalizeEntryImages(plain, { dataDir, chatId: "c1" }))).toBe(plain)
+  })
+
+  test("a media dir that cannot be made fails with the chat and the path", async () => {
+    const dataDir = await makeDataDir()
+    // A file where the media root should be: no directory can go under it.
+    await writeFile(join(dataDir, "media"), "not a directory")
+
+    const result = await runTest(Effect.result(externalizeEntryImages(claudeImageResult(), { dataDir, chatId: "c1" })))
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/transcript-media/TranscriptMediaError")
+      expect(result.failure.operation).toBe("write")
+      expect(result.failure.chatId).toBe("c1")
+      expect(result.failure.filePath).toBe(getTranscriptMediaDir(dataDir, "c1"))
+    }
+  })
+
+  test("an entry with no inline image never touches the disk", async () => {
+    const dataDir = await makeDataDir()
+    await writeFile(join(dataDir, "media"), "not a directory")
+    const plain = {
+      _id: "r3", createdAt: 1, kind: "tool_result", toolId: "t3", content: [{ type: "text", text: "x" }],
+    } as unknown as TranscriptEntry
+    expect(await runTest(externalizeEntryImages(plain, { dataDir, chatId: "c1" }))).toBe(plain)
   })
 })
 
 describe("fork and delete", () => {
   test("copies the media dir and retargets URLs; removing the source leaves the fork intact", async () => {
     const dataDir = await makeDataDir()
-    const stored = await externalizeEntryImages(claudeImageResult(), { dataDir, chatId: "source" })
+    const stored = await runTest(externalizeEntryImages(claudeImageResult(), { dataDir, chatId: "source" }))
 
     const forked = retargetEntryMediaUrls(stored, "source", "fork")
     expect((forked as { content: Array<{ url?: string }> }).content[1]?.url).toBe("/api/chats/fork/media/r1-1.png")
     expect(retargetEntryMediaUrls(stored, "other", "fork")).toBe(stored)
 
-    await copyTranscriptMedia(dataDir, "source", "fork")
-    await removeTranscriptMedia(dataDir, "source")
+    await runTest(copyTranscriptMedia(dataDir, "source", "fork"))
+    await runTest(removeTranscriptMedia(dataDir, "source"))
     expect((await stat(join(getTranscriptMediaDir(dataDir, "fork"), "r1-1.png"))).isFile()).toBe(true)
     await expect(stat(getTranscriptMediaDir(dataDir, "source"))).rejects.toThrow()
 
     // A source with no media dir is not an error.
-    await copyTranscriptMedia(dataDir, "never-existed", "fork2")
+    await runTest(copyTranscriptMedia(dataDir, "never-existed", "fork2"))
+    // Nor is removing media that is already gone.
+    await runTest(removeTranscriptMedia(dataDir, "source"))
+  })
+
+  test("a copy over an earlier copy replaces its files", async () => {
+    const dataDir = await makeDataDir()
+    await runTest(externalizeEntryImages(claudeImageResult(), { dataDir, chatId: "source" }))
+    const forkDir = getTranscriptMediaDir(dataDir, "fork")
+    await runTest(copyTranscriptMedia(dataDir, "source", "fork"))
+    await writeFile(join(forkDir, "r1-1.png"), "stale")
+
+    await runTest(copyTranscriptMedia(dataDir, "source", "fork"))
+
+    expect(await readFile(join(forkDir, "r1-1.png"))).toEqual(PNG_BYTES)
   })
 })

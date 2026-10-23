@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { Effect } from "effect"
+import { makeFakeDiffStore } from "./diff-store.fake"
+import { makeFakeKeybindings } from "./keybindings.fake"
+import { makeFakeAppSettings } from "./app-settings.fake"
+import { makeFakeAnalytics } from "./analytics.fake"
+import { makeFakeTerminals } from "./terminal-manager.fake"
+import { makeFakeWorktreeProbe } from "./worktree-probe.fake"
+import { makeFakeProviderAuth } from "./provider-auth.fake"
+import { ProviderAuthError } from "./provider-auth"
+import { mkdtemp, rm, stat } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, SidebarData, UpdateSnapshot } from "../shared/types"
@@ -7,19 +16,14 @@ import { applySidebarPatch, type SidebarPatch } from "../shared/sidebar-patch"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { findTranscriptWindowStart } from "../shared/transcript-window"
 import { createEmptyState } from "./events"
-import { EventStore } from "./event-store"
+import { openEventStore } from "./event-store-bridge"
+import { fakeRouterStore } from "./chat-commands.fake"
 import { deriveLocalProjectsSnapshot } from "./read-models"
 import { SERVER_PROVIDERS, applyCodexModels, resetServerProvidersForTests } from "./provider-catalog"
-import {
-  assertSafeSkillId,
-  assertSafeSkillSource,
-  buildInstallSkillCommand,
-  buildUninstallSkillCommand,
-  listGlobalSkillsWithSources,
-  listInstalledSkills,
-  parseInstalledSkillsLock,
-} from "./skills"
 import { createWsRouter } from "./ws-router"
+import { makeFakeUpdateManager } from "./update-manager.fake"
+import { testLocalMachine } from "./testing/local-machine"
+import { testPlatformContext } from "./platform/testing"
 
 function withSidebarGroupDefaults(group: {
   groupKey: string
@@ -157,134 +161,6 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   filePathDisplay: "~/.kanna/data/settings.json",
 }
 
-describe("skills helpers", () => {
-  test("parses installed global skills from a lock payload", () => {
-    const snapshot = parseInstalledSkillsLock({
-      version: 1,
-      skills: {
-        zeta: {
-          source: "owner/zeta",
-          sourceType: "github",
-          sourceUrl: "https://github.com/owner/zeta",
-          skillPath: "skills/zeta/SKILL.md",
-          installedAt: "2026-05-01T01:00:00.000Z",
-          updatedAt: "2026-05-01T02:00:00.000Z",
-          pluginName: "zeta-plugin",
-        },
-        alpha: {
-          source: "owner/alpha",
-          sourceType: "github",
-        },
-        ignored: "not an object",
-      },
-    }, "/tmp/.skill-lock.json")
-
-    expect(snapshot.lockFilePath).toBe("/tmp/.skill-lock.json")
-    expect(snapshot.skills.map((skill) => skill.name)).toEqual(["alpha", "zeta"])
-    expect(snapshot.skills[0]).toMatchObject({
-      name: "alpha",
-      source: "owner/alpha",
-      sourceType: "github",
-      sourceUrl: "",
-      installedAt: "",
-      updatedAt: "",
-    })
-    expect(snapshot.skills[1]).toMatchObject({
-      name: "zeta",
-      source: "owner/zeta",
-      skillPath: "skills/zeta/SKILL.md",
-      pluginName: "zeta-plugin",
-    })
-  })
-
-  test("returns an empty installed skills snapshot when the lock file is missing or invalid", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "kanna-skills-"))
-    try {
-      const missingPath = path.join(dir, "missing.json")
-      expect(await listInstalledSkills(missingPath)).toEqual({
-        lockFilePath: missingPath,
-        skills: [],
-      })
-
-      const invalidPath = path.join(dir, ".skill-lock.json")
-      await writeFile(invalidPath, "{", "utf8")
-      expect(await listInstalledSkills(invalidPath)).toEqual({
-        lockFilePath: invalidPath,
-        skills: [],
-      })
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  })
-
-  test("listGlobalSkillsWithSources scans global roots and annotates lock-file sources", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "kanna-global-skills-"))
-    try {
-      const { mkdir } = await import("node:fs/promises")
-      const universalDir = path.join(home, ".agents", "skills", "installed-skill")
-      const handDroppedDir = path.join(home, ".claude", "skills", "hand-dropped")
-      await mkdir(universalDir, { recursive: true })
-      await mkdir(handDroppedDir, { recursive: true })
-      await writeFile(path.join(universalDir, "SKILL.md"), "---\nname: installed-skill\ndescription: From the marketplace\n---\n")
-      await writeFile(path.join(handDroppedDir, "SKILL.md"), "---\nname: hand-dropped\ndescription: Made by hand\n---\n")
-
-      const lockPath = path.join(home, ".agents", ".skill-lock.json")
-      await writeFile(lockPath, JSON.stringify({
-        version: 3,
-        skills: {
-          "installed-skill": { source: "owner/repo", sourceType: "github" },
-        },
-      }))
-
-      const snapshot = await listGlobalSkillsWithSources({ home, lockFilePath: lockPath })
-      const byName = new Map(snapshot.skills.map((skill) => [skill.name, skill]))
-
-      // Lock-tracked skill carries its marketplace source; ~/.agents attributes codex/cursor/grok/pi.
-      expect(byName.get("installed-skill")).toMatchObject({
-        source: "owner/repo",
-        providers: ["codex", "cursor", "grok", "pi"],
-      })
-      // Hand-dropped skill still listed, claude-attributed, with no source.
-      expect(byName.get("hand-dropped")?.providers).toEqual(["claude"])
-      expect(byName.get("hand-dropped")?.source).toBeUndefined()
-    } finally {
-      await rm(home, { recursive: true, force: true })
-    }
-  })
-
-  test("validates skill source and id before building commands", () => {
-    expect(assertSafeSkillSource(" owner/repo ")).toBe("owner/repo")
-    expect(assertSafeSkillId(" my-skill_1 ")).toBe("my-skill_1")
-    expect(() => assertSafeSkillSource("https://github.com/owner/repo")).toThrow("owner/repo")
-    expect(() => assertSafeSkillId("../nope")).toThrow("Skill id is invalid.")
-  })
-
-  test("builds global install and uninstall commands for universal and Claude Code aliases", () => {
-    expect(buildInstallSkillCommand("owner/repo", "my-skill").slice(1)).toEqual([
-      "skills",
-      "add",
-      "owner/repo",
-      "--skill",
-      "my-skill",
-      "--global",
-      "--agent",
-      "universal",
-      "claude-code",
-      "--yes",
-    ])
-    expect(buildUninstallSkillCommand("my-skill").slice(1)).toEqual([
-      "skills",
-      "remove",
-      "my-skill",
-      "--global",
-      "--agent",
-      "universal",
-      "claude-code",
-      "--yes",
-    ])
-  })
-})
-
 const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
   currentVersion: "0.12.0",
   latestVersion: null,
@@ -312,7 +188,7 @@ type CreateWsRouterArgs = Parameters<typeof createWsRouter>[0]
 
 /** In-memory EventStore stand-in covering the methods the router always calls. */
 function createFakeStore(overrides: Record<string, unknown> = {}) {
-  return {
+  const store = {
     state: createEmptyState(),
     getSidebarProjectOrder: () => [],
     pruneStaleEmptyChats: async () => [],
@@ -320,63 +196,14 @@ function createFakeStore(overrides: Record<string, unknown> = {}) {
     getInitialTranscriptWindowStart: () => 0,
     widenTranscriptWindowStart: (_chatId: string, current: number) => current,
     ...overrides,
-  } as never
-}
-
-function createFakeDiffStore(overrides: Record<string, unknown> = {}): CreateWsRouterArgs["diffStore"] {
-  return {
-    getProjectSnapshot: () => null,
-    getSnapshotVersion: () => 0,
-    refreshSnapshot: async () => false,
-    initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "my-repo" }),
-    checkGitHubRepoAvailability: async () => ({ available: false, message: "Unavailable" }),
-    publishToGitHub: async () => ({ ok: false, title: "Publish failed", message: "Unavailable", snapshotChanged: false }),
-    listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
-    previewMergeBranch: async () => ({ currentBranchName: undefined, targetBranchName: "", targetDisplayName: "", status: "error", commitCount: 0, hasConflicts: false, message: "Merge preview unavailable." }),
-    mergeBranch: async () => ({ ok: false, title: "Merge failed", message: "Merge unavailable.", snapshotChanged: false }),
-    syncBranch: async () => ({ ok: true, action: "fetch", branchName: undefined, snapshotChanged: false }),
-    checkoutBranch: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-    generateCommitMessage: async () => ({ subject: "Update selected files", body: "", usedFallback: true, failureMessage: null }),
-    commitFiles: async () => ({ ok: true, mode: "commit_only", branchName: undefined, pushed: false, snapshotChanged: false }),
-    discardFile: async () => ({ snapshotChanged: false }),
-    ignoreFile: async () => ({ snapshotChanged: false }),
-    readPatch: async () => ({ patch: "" }),
-    readCommit: async () => ({ sha: "", parentCount: 1, files: [], totalFileCount: 0, additions: 0, deletions: 0 }),
-    readBranch: async () => ({}),
-    ...overrides,
-  } as never
-}
-
-function createFakeAppSettings(overrides: Partial<CreateWsRouterArgs["appSettings"]> = {}): CreateWsRouterArgs["appSettings"] {
-  let snapshot = DEFAULT_APP_SETTINGS_SNAPSHOT
-  return {
-    getSnapshot: () => snapshot,
-    write: async (value) => {
-      snapshot = { ...snapshot, analyticsEnabled: value.analyticsEnabled }
-      return snapshot
-    },
-    writePatch: async (patch) => {
-      snapshot = {
-        ...snapshot,
-        ...patch,
-        terminal: { ...snapshot.terminal, ...patch.terminal },
-        editor: { ...snapshot.editor, ...patch.editor },
-        transcript: { ...snapshot.transcript, ...patch.transcript },
-        providerDefaults: snapshot.providerDefaults,
-      } as AppSettingsSnapshot
-      return snapshot
-    },
-    onChange: () => () => {},
-    ...overrides,
   }
+  return fakeRouterStore(store) as never
 }
 
 function createFakeLlmProvider(): CreateWsRouterArgs["llmProvider"] {
   return {
-    read: async () => DEFAULT_LLM_PROVIDER_SNAPSHOT,
-    write: async (value) => ({
+    read: () => Effect.succeed(DEFAULT_LLM_PROVIDER_SNAPSHOT),
+    write: (value) => Effect.succeed({
       ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
       provider: value.provider,
       apiKey: value.apiKey,
@@ -384,28 +211,23 @@ function createFakeLlmProvider(): CreateWsRouterArgs["llmProvider"] {
       baseUrl: value.baseUrl,
       faveModels: value.faveModels ?? [],
     }),
-    validate: async () => ({ ok: true, error: null }),
+    validate: () => Effect.succeed({ ok: true, error: null }),
   }
 }
 
 /** Builds a router with fake dependencies; pass overrides for the pieces a test cares about. */
 function createTestRouter(overrides: Partial<CreateWsRouterArgs> = {}) {
   return createWsRouter({
+    platform: testPlatformContext,
     store: createFakeStore(),
-    diffStore: createFakeDiffStore(),
-    worktreeProbe: { getStates: () => new Map(), getRepoLabels: () => new Map(), getProjectsWithoutRepo: () => new Set() },
+    diffStore: makeFakeDiffStore(),
+    worktreeProbe: makeFakeWorktreeProbe(),
     agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
-    terminals: {
-      getSnapshot: () => null,
-      onEvent: () => () => {},
-    } as never,
-    keybindings: {
-      getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
-      onChange: () => () => {},
-    } as never,
-    appSettings: createFakeAppSettings(),
+    terminals: makeFakeTerminals(),
+    keybindings: makeFakeKeybindings(DEFAULT_KEYBINDINGS_SNAPSHOT),
+    appSettings: makeFakeAppSettings(DEFAULT_APP_SETTINGS_SNAPSHOT),
     llmProvider: createFakeLlmProvider(),
-    refreshDiscovery: async () => [],
+    refreshDiscovery: () => Effect.succeed([]),
     getDiscoveredProjects: () => [],
     machineDisplayName: "Local Machine",
     updateManager: null,
@@ -414,13 +236,120 @@ function createTestRouter(overrides: Partial<CreateWsRouterArgs> = {}) {
 }
 
 describe("ws-router", () => {
+  test("keeps JSON and envelope errors distinct at the WebSocket boundary", async () => {
+    const router = createTestRouter()
+    const ws = new FakeWebSocket()
+    await router.handleMessage(ws as never, "{bad")
+    await router.handleMessage(ws as never, "42")
+    await router.handleMessage(ws as never, JSON.stringify({ v: 2, type: "command", id: "wrong-version" }))
+    expect(ws.sent).toEqual([
+      { v: 1, type: "error", message: "Invalid JSON" },
+      { v: 1, type: "error", message: "Invalid envelope" },
+      { v: 1, type: "error", message: "Invalid envelope" },
+    ])
+    router.dispose()
+  })
+
+  test("dispatches unknown and incomplete commands without changing their responses", async () => {
+    const router = createTestRouter({ store: createFakeStore({ getProject: () => null }) })
+    const ws = new FakeWebSocket()
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id: "future", command: { type: "future.command" } }))
+    expect(ws.sent).toEqual([])
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id: "incomplete", command: { type: "project.readCommit", projectId: "missing" } }))
+    expect(ws.sent).toEqual([{ v: 1, type: "error", id: "incomplete", message: "Project not found" }])
+    router.dispose()
+  })
+
+  test("native agent command failures keep their wire error text", async () => {
+    const router = createTestRouter({
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+        stopDrainingEffect: () => Effect.fail(new Error("Cannot stop draining")),
+      } as never,
+    })
+    const ws = new FakeWebSocket()
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "stop", command: { type: "chat.stopDraining", chatId: "chat-1" },
+    }))
+    expect(ws.sent).toEqual([{ v: 1, type: "error", id: "stop", message: "Cannot stop draining" }])
+    router.dispose()
+  })
+
+  test("skill listing uses the agent's native Effect operation", async () => {
+    const calls: unknown[] = []
+    const snapshot = { provider: "claude", skills: [], origin: "filesystem" }
+    const router = createTestRouter({
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+        listSkillsEffect: (command: unknown) => Effect.sync(() => {
+          calls.push(command)
+          return snapshot
+        }),
+      } as never,
+    })
+    const ws = new FakeWebSocket()
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "skills",
+      command: { type: "chat.listSkills", provider: "claude", projectId: "project-1" },
+    }))
+    expect(calls).toEqual([{ type: "chat.listSkills", provider: "claude", projectId: "project-1" }])
+    expect(ws.sent).toEqual([{ v: 1, type: "ack", id: "skills", result: snapshot }])
+    router.dispose()
+  })
+
+  test("passes nested and extra fields through to the command handler", async () => {
+    const router = createTestRouter()
+    const ws = new FakeWebSocket()
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "patch", extra: "outer",
+      command: { type: "settings.writeAppSettingsPatch", patch: { theme: "sepia", futureSetting: 7 }, extra: "inner" },
+    }))
+    expect(ws.sent).toContainEqual(expect.objectContaining({
+      v: 1, type: "ack", id: "patch", result: expect.objectContaining({ theme: "sepia", futureSetting: 7 }),
+    }))
+    router.dispose()
+  })
+
+  test("disposal stops the router's scoped terminal event listener", async () => {
+    const terminals = makeFakeTerminals()
+    const router = createTestRouter({ terminals })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    ws.data.subscriptions.set("terminal-sub", { type: "terminal", terminalId: "t1" })
+    terminals.emit({ type: "terminal.output", terminalId: "t1", data: "before" })
+    await Bun.sleep(5)
+    expect(ws.sent).toEqual([{ v: 1, type: "event", id: "terminal-sub", event: { type: "terminal.output", terminalId: "t1", data: "before" } }])
+    router.dispose()
+    await Bun.sleep(5)
+    terminals.emit({ type: "terminal.output", terminalId: "t1", data: "after" })
+    await Bun.sleep(5)
+    expect(ws.sent).toHaveLength(1)
+  })
+
+  test("git lookup failures retain their command error messages", async () => {
+    const router = createTestRouter({ store: createFakeStore({ getChat: () => null, getProject: () => null }) })
+    const ws = new FakeWebSocket()
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "chat-git", command: { type: "chat.refreshDiffs", chatId: "missing" },
+    }))
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "project-git", command: { type: "project.generateCommitMessage", projectId: "missing", paths: [] },
+    }))
+    expect(ws.sent).toEqual([
+      { v: 1, type: "error", id: "chat-git", message: "Chat not found" },
+      { v: 1, type: "error", id: "project-git", message: "Project not found" },
+    ])
+    router.dispose()
+  })
+
   test("renames a discovered project by path and updates all project lists", async () => {
     const projectPath = await mkdtemp(path.join(tmpdir(), "kanna-rename-project-"))
     try {
-      const store = new EventStore(path.join(projectPath, "data"))
-      await store.initialize()
+      const store = await openEventStore(path.join(projectPath, "data"))
       const discovered = [{ localPath: projectPath, title: "Project", modifiedAt: 1 }]
-      const router = createTestRouter({ store, getDiscoveredProjects: () => discovered })
+      const router = createTestRouter({ store: store.service, getDiscoveredProjects: () => discovered })
       const ws = new FakeWebSocket()
       router.handleOpen(ws as never)
       ws.data.subscriptions.set("projects", { type: "local-projects" })
@@ -432,7 +361,7 @@ describe("ws-router", () => {
         command: { type: "project.rename", localPath: projectPath, title: "Display Name" },
       }))
 
-      const projects = deriveLocalProjectsSnapshot(store.state, discovered, "Local Machine").projects
+      const projects = deriveLocalProjectsSnapshot(store.state, discovered, { ...testLocalMachine, displayName: "Local Machine" }).projects
       expect(projects).toHaveLength(1)
       expect(projects[0]).toMatchObject({ localPath: projectPath, sidebarTitle: "Display Name", chatCount: 0 })
       expect(store.state.chatsById.size).toBe(0)
@@ -455,11 +384,10 @@ describe("ws-router", () => {
     const projectPath = await mkdtemp(path.join(tmpdir(), "kanna-hide-project-"))
     try {
       const dataDir = path.join(projectPath, "data")
-      const store = new EventStore(dataDir)
-      await store.initialize()
+      const store = await openEventStore(dataDir)
       const savedProject = source === "saved" ? await store.openProject(projectPath) : null
       const discovered = [{ localPath: projectPath, title: "Project", modifiedAt: 1 }]
-      const router = createTestRouter({ store, getDiscoveredProjects: () => discovered })
+      const router = createTestRouter({ store: store.service, getDiscoveredProjects: () => discovered })
       const ws = new FakeWebSocket()
       router.handleOpen(ws as never)
       ws.data.subscriptions.set("projects", { type: "local-projects" })
@@ -489,9 +417,8 @@ describe("ws-router", () => {
         },
       })
 
-      const reloaded = new EventStore(dataDir)
-      await reloaded.initialize()
-      expect(deriveLocalProjectsSnapshot(reloaded.state, discovered, "Machine").projects).toEqual([])
+      const reloaded = await openEventStore(dataDir)
+      expect(deriveLocalProjectsSnapshot(reloaded.state, discovered, { ...testLocalMachine, displayName: "Machine" }).projects).toEqual([])
       expect((await stat(projectPath)).isDirectory()).toBe(true)
     } finally {
       await rm(projectPath, { recursive: true, force: true })
@@ -527,8 +454,8 @@ describe("ws-router", () => {
     const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>> = []
     const router = createTestRouter({
       llmProvider: {
-        read: async () => DEFAULT_LLM_PROVIDER_SNAPSHOT,
-        write: async (value) => {
+        read: () => Effect.succeed(DEFAULT_LLM_PROVIDER_SNAPSHOT),
+        write: (value) => Effect.sync(() => {
           writes.push(value)
           return {
             ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
@@ -537,8 +464,8 @@ describe("ws-router", () => {
             faveModels: [],
             enabled: Boolean(value.apiKey && value.model),
           }
-        },
-        validate: async () => ({
+        }),
+        validate: () => Effect.succeed({
           ok: true,
           error: null,
         }),
@@ -609,22 +536,15 @@ describe("ws-router", () => {
 
   test("reads and writes app settings via commands", async () => {
     const writes: Array<{ analyticsEnabled: boolean }> = []
-    let analyticsEnabled = DEFAULT_APP_SETTINGS_SNAPSHOT.analyticsEnabled
+    const settings = makeFakeAppSettings(DEFAULT_APP_SETTINGS_SNAPSHOT)
     const router = createTestRouter({
-      appSettings: createFakeAppSettings({
-        getSnapshot: () => ({
-          ...DEFAULT_APP_SETTINGS_SNAPSHOT,
-          analyticsEnabled,
-        }),
-        write: async (value) => {
+      appSettings: {
+        ...settings,
+        write: (value) => {
           writes.push(value)
-          analyticsEnabled = value.analyticsEnabled
-          return {
-            ...DEFAULT_APP_SETTINGS_SNAPSHOT,
-            analyticsEnabled: value.analyticsEnabled,
-          }
+          return settings.write(value)
         },
-      }),
+      },
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -676,39 +596,8 @@ describe("ws-router", () => {
   })
 
   test("subscribes to app settings and writes patches through the router", async () => {
-    let snapshot: AppSettingsSnapshot = DEFAULT_APP_SETTINGS_SNAPSHOT
-    let listener: ((nextSnapshot: AppSettingsSnapshot) => void) | null = null
     const router = createTestRouter({
-      appSettings: {
-        getSnapshot: () => snapshot,
-        write: async (value) => {
-          snapshot = { ...snapshot, analyticsEnabled: value.analyticsEnabled }
-          return snapshot
-        },
-        writePatch: async (patch) => {
-          snapshot = {
-            ...snapshot,
-            analyticsEnabled: patch.analyticsEnabled ?? snapshot.analyticsEnabled,
-            browserSettingsMigrated: patch.browserSettingsMigrated ?? snapshot.browserSettingsMigrated,
-            theme: patch.theme ?? snapshot.theme,
-            chatSoundPreference: patch.chatSoundPreference ?? snapshot.chatSoundPreference,
-            chatSoundId: patch.chatSoundId ?? snapshot.chatSoundId,
-            chatBrowserNotificationPreference: patch.chatBrowserNotificationPreference ?? snapshot.chatBrowserNotificationPreference,
-            defaultProvider: patch.defaultProvider ?? snapshot.defaultProvider,
-            terminal: { ...snapshot.terminal, ...patch.terminal },
-            editor: { ...snapshot.editor, ...patch.editor },
-        transcript: { ...snapshot.transcript, ...patch.transcript },
-          }
-          listener?.(snapshot)
-          return snapshot
-        },
-        onChange: (nextListener) => {
-          listener = nextListener
-          return () => {
-            listener = null
-          }
-        },
-      },
+      appSettings: makeFakeAppSettings(DEFAULT_APP_SETTINGS_SNAPSHOT),
     })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
@@ -739,17 +628,23 @@ describe("ws-router", () => {
       })
     )
 
-    expect(ws.sent).toEqual([
-      {
-        v: PROTOCOL_VERSION,
-        type: "snapshot",
-        id: "app-settings-sub-1",
-        snapshot: {
-          type: "app-settings",
-          // The live provider catalog rides along for pickers outside a chat.
-          data: { ...DEFAULT_APP_SETTINGS_SNAPSHOT, availableProviders: SERVER_PROVIDERS },
-        },
+    // The change reaches subscribers from the settings' change stream, so
+    // the push and the ack can land in either order.
+    for (let attempt = 0; ws.sent.length < 3 && attempt < 100; attempt += 1) {
+      await Bun.sleep(1)
+    }
+    expect(ws.sent).toHaveLength(3)
+    expect(ws.sent[0]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "app-settings-sub-1",
+      snapshot: {
+        type: "app-settings",
+        // The live provider catalog rides along for pickers outside a chat.
+        data: { ...DEFAULT_APP_SETTINGS_SNAPSHOT, availableProviders: SERVER_PROVIDERS },
       },
+    })
+    expect(ws.sent.slice(1)).toEqual(expect.arrayContaining([
       {
         v: PROTOCOL_VERSION,
         type: "snapshot",
@@ -781,32 +676,14 @@ describe("ws-router", () => {
           },
         },
       },
-    ])
+    ]))
   })
 
   test("tracks analytics preference transitions in the correct order", async () => {
-    const analyticsEvents: string[] = []
-    let analyticsEnabled = true
+    const { analytics, events: analyticsEvents } = makeFakeAnalytics()
     const router = createTestRouter({
-      appSettings: createFakeAppSettings({
-        getSnapshot: () => ({
-          ...DEFAULT_APP_SETTINGS_SNAPSHOT,
-          analyticsEnabled,
-        }),
-        write: async (value) => {
-          analyticsEnabled = value.analyticsEnabled
-          return {
-            ...DEFAULT_APP_SETTINGS_SNAPSHOT,
-            analyticsEnabled: value.analyticsEnabled,
-          }
-        },
-      }),
-      analytics: {
-        track: (eventName: string) => {
-          analyticsEvents.push(eventName)
-        },
-        trackLaunch: () => {},
-      },
+      appSettings: makeFakeAppSettings({ ...DEFAULT_APP_SETTINGS_SNAPSHOT, analyticsEnabled: true }),
+      analytics,
     })
     const ws = new FakeWebSocket()
 
@@ -856,7 +733,7 @@ describe("ws-router", () => {
   })
 
   test("tracks project lifecycle analytics", async () => {
-    const analyticsEvents: string[] = []
+    const { analytics, events: analyticsEvents } = makeFakeAnalytics()
     const state = createEmptyState()
     const projectPath = await mkdtemp(path.join(tmpdir(), "kanna-router-project-"))
 
@@ -890,12 +767,7 @@ describe("ws-router", () => {
           getActiveStatuses: () => new Map(),
           getDrainingChatIds: () => new Set(),
         } as never,
-        analytics: {
-          track: (eventName: string) => {
-            analyticsEvents.push(eventName)
-          },
-          trackLaunch: () => {},
-        },
+        analytics,
       })
       const ws = new FakeWebSocket()
 
@@ -929,7 +801,7 @@ describe("ws-router", () => {
   })
 
   test("project.create initializes the directory, acks the resolved path, and tracks analytics", async () => {
-    const analyticsEvents: string[] = []
+    const { analytics, events: analyticsEvents } = makeFakeAnalytics()
     const state = createEmptyState()
     const parentPath = await mkdtemp(path.join(tmpdir(), "kanna-router-create-"))
     const projectPath = path.join(parentPath, "brand-new")
@@ -952,12 +824,7 @@ describe("ws-router", () => {
             return project
           },
         }),
-        analytics: {
-          track: (eventName: string) => {
-            analyticsEvents.push(eventName)
-          },
-          trackLaunch: () => {},
-        },
+        analytics,
       })
       const ws = new FakeWebSocket()
 
@@ -985,13 +852,8 @@ describe("ws-router", () => {
   })
 
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
-    const router = createTestRouter({
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-        write: () => {},
-      } as never,
-    })
+    const terminals = makeFakeTerminals()
+    const router = createTestRouter({ terminals })
     const ws = new FakeWebSocket()
 
     ws.data.subscriptions.set("sub-terminal", { type: "terminal", terminalId: "terminal-1" })
@@ -1016,21 +878,16 @@ describe("ws-router", () => {
         id: "terminal-input-1",
       },
     ])
+    expect(terminals.writes).toEqual([{ terminalId: "terminal-1", data: "ls\r" }])
   })
 
   test("terminal.create with projectId null spawns a home-directory terminal", async () => {
-    const created: Array<{ projectPath: string; terminalId: string }> = []
+    const terminals = makeFakeTerminals()
     const router = createTestRouter({
       store: createFakeStore({ getProject: () => null }),
-      terminals: {
-        getSnapshot: () => null,
-        onEvent: () => () => {},
-        createTerminal: (args: { projectPath: string; terminalId: string }) => {
-          created.push({ projectPath: args.projectPath, terminalId: args.terminalId })
-          return { terminalId: args.terminalId }
-        },
-      } as never,
+      terminals,
     })
+    const created = terminals.created
     const ws = new FakeWebSocket()
 
     await router.handleMessage(
@@ -1050,7 +907,7 @@ describe("ws-router", () => {
       })
     )
 
-    expect(created).toEqual([{ projectPath: homedir(), terminalId: "home" }])
+    expect(created.map(({ projectPath, terminalId }) => ({ projectPath, terminalId }))).toEqual([{ projectPath: homedir(), terminalId: "home" }])
     expect(ws.sent[0]).toMatchObject({ type: "ack", id: "terminal-create-home" })
 
     // A string projectId still resolves through the store (unknown → error).
@@ -1078,21 +935,7 @@ describe("ws-router", () => {
     // Regression: a pane subscribes before its session exists (signature
     // "null"), creates, then clears (close). The post-close null snapshot
     // must not be deduped away — it's what tells the pane to recreate.
-    const sessions = new Map<string, { terminalId: string }>()
-    const router = createTestRouter({
-      terminals: {
-        getSnapshot: (terminalId: string) => sessions.get(terminalId) ?? null,
-        onEvent: () => () => {},
-        createTerminal: (args: { terminalId: string }) => {
-          const snapshot = { terminalId: args.terminalId }
-          sessions.set(args.terminalId, snapshot)
-          return snapshot
-        },
-        close: (terminalId: string) => {
-          sessions.delete(terminalId)
-        },
-      } as never,
-    })
+    const router = createTestRouter({ terminals: makeFakeTerminals() })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
 
@@ -1319,7 +1162,7 @@ describe("ws-router", () => {
         state,
         getProject: () => state.projectsById.get("project-1") ?? null,
       }),
-      diffStore: createFakeDiffStore({
+      diffStore: makeFakeDiffStore({
         getProjectSnapshot: () => ({
           status: "ready",
           branchName: "main",
@@ -1372,8 +1215,8 @@ describe("ws-router", () => {
         state,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
       }),
-      diffStore: createFakeDiffStore({
-        readPatch: async () => ({ patch: "diff --git a/app.txt b/app.txt" }),
+      diffStore: makeFakeDiffStore({
+        readPatch: () => Effect.succeed({ patch: "diff --git a/app.txt b/app.txt" }),
       }),
     })
     const ws = new FakeWebSocket()
@@ -1430,10 +1273,10 @@ describe("ws-router", () => {
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
       }),
-      diffStore: createFakeDiffStore({
+      diffStore: makeFakeDiffStore({
         getProjectSnapshot: () => ({ status: "ready", branchName: "main", files: [], branchHistory: { entries: [] } }),
-        previewMergeBranch: async () => ({ currentBranchName: "main", targetBranchName: "feature/test", targetDisplayName: "feature/test", status: "mergeable", commitCount: 2, hasConflicts: false, message: "2 commits from feature/test will merge into main." }),
-        mergeBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: true }),
+        previewMergeBranch: () => Effect.succeed({ currentBranchName: "main", targetBranchName: "feature/test", targetDisplayName: "feature/test", status: "mergeable", commitCount: 2, hasConflicts: false, message: "2 commits from feature/test will merge into main." }),
+        mergeBranch: () => Effect.succeed({ ok: true, branchName: "main", snapshotChanged: true }),
       }),
     })
     const ws = new FakeWebSocket()
@@ -2146,20 +1989,10 @@ describe("ws-router", () => {
 
   test("subscribes to keybindings snapshots and writes keybindings through the router", async () => {
     const initialSnapshot: KeybindingsSnapshot = DEFAULT_KEYBINDINGS_SNAPSHOT
-    const keybindings = {
-      snapshot: initialSnapshot,
-      getSnapshot() {
-        return this.snapshot
-      },
-      onChange: () => () => {},
-      async write(bindings: KeybindingsSnapshot["bindings"]) {
-        this.snapshot = { bindings, warning: null, filePathDisplay: "~/.kanna/keybindings.json" }
-        return this.snapshot
-      },
-    }
+    const keybindings = makeFakeKeybindings(initialSnapshot)
 
     const router = createTestRouter({
-      keybindings: keybindings as never,
+      keybindings,
     })
     const ws = new FakeWebSocket()
 
@@ -2179,7 +2012,7 @@ describe("ws-router", () => {
       id: "keybindings-sub-1",
       snapshot: {
         type: "keybindings",
-        data: keybindings.snapshot,
+        data: initialSnapshot,
       },
     })
 
@@ -2230,37 +2063,27 @@ describe("ws-router", () => {
   })
 
   test("subscribes to update snapshots and handles update.check commands", async () => {
-    const updateManager = {
-      snapshot: { ...DEFAULT_UPDATE_SNAPSHOT },
-      getSnapshot() {
-        return this.snapshot
+    const { updateManager } = makeFakeUpdateManager({ ...DEFAULT_UPDATE_SNAPSHOT }, {
+      check: (snapshot, force) => ({
+        ...snapshot,
+        latestVersion: force ? "0.13.0" : "0.12.1",
+        status: "available",
+        updateAvailable: true,
+        lastCheckedAt: 123,
+      }),
+      install: {
+        ok: false,
+        action: "restart",
+        errorCode: "version_not_live_yet",
+        userTitle: "Update not live yet",
+        userMessage: "This update is still propagating. Try again in a few minutes.",
       },
-      onChange: () => () => {},
-      async checkForUpdates({ force }: { force?: boolean }) {
-        this.snapshot = {
-          ...this.snapshot,
-          latestVersion: force ? "0.13.0" : "0.12.1",
-          status: "available",
-          updateAvailable: true,
-          lastCheckedAt: 123,
-        }
-        return this.snapshot
-      },
-      async installUpdate() {
-        return {
-          ok: false,
-          action: "restart",
-          errorCode: "version_not_live_yet",
-          userTitle: "Update not live yet",
-          userMessage: "This update is still propagating. Try again in a few minutes.",
-        }
-      },
-    }
-
-    const router = createTestRouter({
-      updateManager: updateManager as never,
     })
+
+    const router = createTestRouter({ updateManager })
     const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    const sentWithId = (id: string) => ws.sent.find((message) => (message as { id?: string }).id === id && (message as { type?: string }).type === "ack")
 
     await router.handleMessage(
       ws as never,
@@ -2296,7 +2119,7 @@ describe("ws-router", () => {
     )
 
     await Promise.resolve()
-    expect(ws.sent[1]).toEqual({
+    expect(sentWithId("update-check-1")).toEqual({
       v: PROTOCOL_VERSION,
       type: "ack",
       id: "update-check-1",
@@ -2325,7 +2148,7 @@ describe("ws-router", () => {
     )
 
     await Promise.resolve()
-    expect(ws.sent[2]).toEqual({
+    expect(sentWithId("update-install-1")).toEqual({
       v: PROTOCOL_VERSION,
       type: "ack",
       id: "update-install-1",
@@ -2336,6 +2159,13 @@ describe("ws-router", () => {
         userTitle: "Update not live yet",
         userMessage: "This update is still propagating. Try again in a few minutes.",
       },
+    })
+
+    // The check changed the snapshot, so the subscriber was pushed the new one.
+    await Bun.sleep(0)
+    expect(ws.sent.filter((message) => (message as { id?: string }).id === "update-sub-1").at(-1)).toMatchObject({
+      type: "snapshot",
+      snapshot: { type: "update", data: { latestVersion: "0.13.0", status: "available" } },
     })
   })
 
@@ -2371,12 +2201,12 @@ describe("ws-router", () => {
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
         getClientTranscript: () => ({ messages: [], startIndex: 0, readAnchor: null }),
       }),
-      diffStore: createFakeDiffStore({
+      diffStore: makeFakeDiffStore({
         getProjectSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
-        discardFile: async (args: { projectId: string; projectPath: string; path: string }) => {
+        discardFile: (args) => Effect.sync(() => {
           discardCalls.push(args)
           return { snapshotChanged: true }
-        },
+        }),
       }),
     })
     const ws = new FakeWebSocket()
@@ -2450,12 +2280,12 @@ describe("ws-router", () => {
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
       }),
-      diffStore: createFakeDiffStore({
+      diffStore: makeFakeDiffStore({
         getProjectSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
-        ignoreFile: async (args: { projectId: string; projectPath: string; path: string }) => {
+        ignoreFile: (args) => Effect.sync(() => {
           ignoreCalls.push(args)
           return { snapshotChanged: false }
-        },
+        }),
       }),
     })
     const ws = new FakeWebSocket()
@@ -2510,48 +2340,14 @@ describe("ws-router provider auth", () => {
   }
 
   function createFakeProviderAuth() {
-    const calls: string[] = []
-    let changeListener: (() => void) | null = null
-    const manager = {
-      getSnapshot: () => AUTH_SERVICES_SNAPSHOT,
-      refresh: async () => {
-        calls.push("refresh")
-      },
-      probeService: async (service: string) => {
-        calls.push(`probe:${service}`)
-      },
-      install: async (service: string) => {
-        calls.push(`install:${service}`)
-      },
-      startLogin: (service: string) => {
-        calls.push(`start:${service}`)
-      },
-      submitLoginCode: (service: string, code: string) => {
-        calls.push(`submit:${service}:${code}`)
-      },
-      cancelLogin: (service: string) => {
-        calls.push(`cancel:${service}`)
-      },
-      startOpenRouterAuth: (callbackUrl: string) => ({
-        authUrl: `https://openrouter.ai/auth?callback_url=${encodeURIComponent(callbackUrl)}&code_challenge=x&code_challenge_method=S256`,
-      }),
-      exchangeOpenRouterCode: async (code: string) => {
-        calls.push(`exchange:${code}`)
-        return { ...DEFAULT_LLM_PROVIDER_SNAPSHOT, provider: "openrouter" as const, apiKey: "sk-or-key" }
-      },
-      onChange: (listener: () => void) => {
-        changeListener = listener
-        return () => {
-          changeListener = null
-        }
-      },
-    }
-    return { manager: manager as never, calls, fireChange: () => changeListener?.() }
+    return makeFakeProviderAuth(AUTH_SERVICES_SNAPSHOT, {
+      openRouterSnapshot: { ...DEFAULT_LLM_PROVIDER_SNAPSHOT, provider: "openrouter", apiKey: "sk-or-key" },
+    })
   }
 
   test("subscribing pushes the snapshot and kicks a refresh; onChange fanout dedupes", async () => {
     const fake = createFakeProviderAuth()
-    const router = createTestRouter({ providerAuth: fake.manager })
+    const router = createTestRouter({ providerAuth: fake.providerAuth })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
 
@@ -2571,13 +2367,48 @@ describe("ws-router provider auth", () => {
     expect(fake.calls).toContain("refresh")
 
     // Unchanged snapshot on change → deduped, nothing new sent.
-    fake.fireChange()
+    fake.setSnapshot(AUTH_SERVICES_SNAPSHOT)
+    await new Promise((resolve) => setTimeout(resolve, 10))
     expect(ws.sent).toHaveLength(1)
+
+    // A changed one is pushed.
+    const signedIn = {
+      services: [{ ...AUTH_SERVICES_SNAPSHOT.services[0]!, authStatus: "signed_in" as const, account: "jakemny" }],
+    }
+    fake.setSnapshot(signedIn)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(ws.sent).toHaveLength(2)
+    expect(ws.sent[1]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "sub-auth",
+      snapshot: { type: "provider-auth", data: signedIn },
+    })
+  })
+
+  test("a refused login is an error reply with the service's message", async () => {
+    const fake = createFakeProviderAuth()
+    const router = createTestRouter({
+      providerAuth: {
+        ...fake.providerAuth,
+        startLogin: (service) =>
+          Effect.fail(new ProviderAuthError({ operation: "login", service, message: "Codex is not installed." })),
+      },
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "command", id: "c1", command: { type: "auth.login.start", service: "codex" } })
+    )
+
+    expect(ws.sent).toEqual([{ v: PROTOCOL_VERSION, type: "error", id: "c1", message: "Codex is not installed." }])
   })
 
   test("auth commands route to the manager and ack", async () => {
     const fake = createFakeProviderAuth()
-    const router = createTestRouter({ providerAuth: fake.manager })
+    const router = createTestRouter({ providerAuth: fake.providerAuth })
     const ws = new FakeWebSocket()
     router.handleOpen(ws as never)
 
@@ -2656,9 +2487,7 @@ describe("transcript windows", () => {
         return findTranscriptWindowStart(typed, { endExclusive: current, assistantMessages: options.assistantMessages })
       },
     })
-    const settings = createFakeAppSettings({
-      getSnapshot: () => ({ ...DEFAULT_APP_SETTINGS_SNAPSHOT, transcript: { windowAssistantMessages: 2 } }),
-    })
+    const settings = makeFakeAppSettings({ ...DEFAULT_APP_SETTINGS_SNAPSHOT, transcript: { windowAssistantMessages: 2 } })
     return createTestRouter({ store: fake, appSettings: settings, ...overrides })
   }
 
@@ -2697,6 +2526,24 @@ describe("transcript windows", () => {
     await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id: "older-2", command: { type: "chat.loadOlder", chatId: "chat-1", untilMessageId: "p1" } }))
     expect(chatData(ws, 3).messages.map((entry) => entry._id)).toEqual(["p1", "a1", "b1"])
     expect(ws.sent[4]).toEqual({ v: PROTOCOL_VERSION, type: "ack", id: "older-2", result: { startIndex: 0 } })
+  })
+
+  test("transcript window failures retain their command errors", async () => {
+    const router = createWindowedRouter([...turn(1)])
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "missing-chat",
+      command: { type: "chat.loadOlder", chatId: "missing" },
+    }))
+    expect(ws.sent.at(-1)).toEqual({ v: PROTOCOL_VERSION, type: "error", id: "missing-chat", message: "Chat not found" })
+
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: 1, type: "command", id: "too-many-entries",
+      command: { type: "chat.getToolEntries", chatId: "chat-1", entryIds: Array.from({ length: 257 }, (_, index) => String(index)) },
+    }))
+    expect(ws.sent.at(-1)).toEqual({ v: PROTOCOL_VERSION, type: "error", id: "too-many-entries", message: "Too many entry ids (max 256)" })
   })
 
   test("a cached span reaching further back than the default keeps the client's window", async () => {
@@ -2827,10 +2674,9 @@ describe("transcript windows", () => {
   test.each(["create first", "subscribe first"])("a chat made with the client's id reaches a subscription sent alongside it (%s)", async (order) => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-client-chat-id-"))
     try {
-      const store = new EventStore(dataDir)
-      await store.initialize()
+      const store = await openEventStore(dataDir)
       const project = await store.openProject(dataDir)
-      const router = createTestRouter({ store })
+      const router = createTestRouter({ store: store.service })
       const ws = new FakeWebSocket()
       router.handleOpen(ws as never)
       const chatId = "0b9c4d0e-6f0a-4a57-9d55-1f3a6c1d2e77"
@@ -2860,10 +2706,9 @@ describe("transcript windows", () => {
   test("what names a chat still being made waits for it", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-client-chat-id-"))
     try {
-      const store = new EventStore(dataDir)
-      await store.initialize()
+      const store = await openEventStore(dataDir)
       const project = await store.openProject(dataDir)
-      const router = createTestRouter({ store })
+      const router = createTestRouter({ store: store.service })
       const ws = new FakeWebSocket()
       router.handleOpen(ws as never)
       const chatId = "5d2f8a10-3c4b-4e6f-8a9b-0c1d2e3f4a5b"
@@ -2889,9 +2734,8 @@ describe("transcript windows", () => {
   test("a chat that could not be made fails what waited on it, and holds nothing back afterwards", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-client-chat-id-"))
     try {
-      const store = new EventStore(dataDir)
-      await store.initialize()
-      const router = createTestRouter({ store })
+      const store = await openEventStore(dataDir)
+      const router = createTestRouter({ store: store.service })
       const ws = new FakeWebSocket()
       router.handleOpen(ws as never)
       const chatId = "7e1a9b22-4d5c-4f70-9b8a-1d2e3f4a5b6c"

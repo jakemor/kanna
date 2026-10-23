@@ -181,4 +181,146 @@ describe("hydrateToolResult", () => {
       ],
     })
   })
+
+  // The parsing moved to Schema; what it returns must not move with it.
+  // `legacyHydrateToolResult` is the implementation it replaced, verbatim.
+  test("returns exactly what the typeof-guard implementation returned", () => {
+    const tools = [
+      normalizeToolCall({ toolName: "AskUserQuestion", toolId: "a", input: { questions: [] } }),
+      normalizeToolCall({ toolName: "ExitPlanMode", toolId: "b", input: {} }),
+      normalizeToolCall({ toolName: "Read", toolId: "c", input: { file_path: "/tmp/x" } }),
+      normalizeToolCall({ toolName: "Bash", toolId: "d", input: { command: "ls" } }),
+    ]
+    const corpus: unknown[] = [
+      undefined, null, "", "plain text", "{not json", "123", "null", "[1,2]", 0, 7, true, [], {},
+      JSON.stringify({ answers: { a: "x", b: ["y", 2], c: null, d: "", e: { answers: [1, "z"] }, f: { answers: "no" }, g: 0, h: false } }),
+      { answers: ["not", "a", "record"], discarded: true },
+      { q1: "direct", q2: ["list"], discarded: "yes" },
+      { answers: { a: "x" }, discarded: true },
+      { confirmed: "true", clearContext: 1, message: 5 },
+      { confirmed: false, clearContext: true, message: "keep going", discarded: true },
+      JSON.stringify({ confirmed: true }),
+      [{ type: "text", text: "a" }, { type: "text", text: 1 }, { type: "image", url: "", data: "d", mimeType: 3 }],
+      { content: [{ type: "image", url: "/media/x.png", mimeType: "image/png" }, { type: "image", url: "/media/y.png" }] },
+      { content: [{ type: "image", source: { type: "base64", data: "AA", media_type: 9 } }, { type: "image", source: { type: "url", data: "AA" } }] },
+      { content: [null, 1, "s", ["type"], { type: "video" }, { text: "no type" }] },
+      { content: "a string, not blocks" },
+      { content: "plain", other: 1 },
+      { notContent: [] },
+      JSON.stringify({ content: [{ type: "text", text: "from json" }] }),
+    ]
+    for (const tool of tools) {
+      for (const raw of corpus) {
+        expect(hydrateToolResult(tool, raw)).toStrictEqual(legacyHydrateToolResult(tool, raw))
+      }
+    }
+  })
 })
+
+function legacyAsRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function legacyParseJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+function legacyNormalizeReadBlocks(value: unknown): unknown[] {
+  const blocks = (
+    value
+    && typeof value === "object"
+    && "content" in value
+    && Array.isArray((value as { content?: unknown }).content)
+  )
+    ? (value as { content: unknown[] }).content
+    : Array.isArray(value)
+      ? value
+      : []
+  const normalized: Array<{ type: "text"; text: string } | { type: "image"; data?: string; url?: string; mimeType?: string }> = []
+  for (const block of blocks) {
+    if (!block || typeof block !== "object" || !("type" in block)) continue
+    if (block.type === "text" && "text" in block && typeof block.text === "string") {
+      normalized.push({ type: "text", text: block.text })
+      continue
+    }
+    if (block.type === "image") {
+      const mimeType = "mimeType" in block && typeof block.mimeType === "string" ? block.mimeType : undefined
+      if ("url" in block && typeof block.url === "string" && block.url) {
+        normalized.push({ type: "image", url: block.url, mimeType })
+        continue
+      }
+      if ("data" in block && typeof block.data === "string") {
+        normalized.push({ type: "image", data: block.data, mimeType })
+        continue
+      }
+      if (
+        "source" in block
+        && block.source
+        && typeof block.source === "object"
+        && "type" in block.source
+        && block.source.type === "base64"
+        && "data" in block.source
+        && typeof block.source.data === "string"
+      ) {
+        normalized.push({
+          type: "image",
+          data: block.source.data,
+          mimeType: "media_type" in block.source && typeof block.source.media_type === "string" ? block.source.media_type : undefined,
+        })
+      }
+    }
+  }
+  return normalized
+}
+
+function legacyHydrateToolResult(tool: ReturnType<typeof normalizeToolCall>, raw: unknown): unknown {
+  const parsed = legacyParseJsonValue(raw)
+  switch (tool.toolKind) {
+    case "ask_user_question": {
+      const record = legacyAsRecord(parsed)
+      const answers = legacyAsRecord(record?.answers) ?? (record ? record : {})
+      return {
+        answers: Object.fromEntries(
+          Object.entries(answers).map(([key, value]) => {
+            if (Array.isArray(value)) return [key, value.map((entry) => String(entry))]
+            if (value && typeof value === "object" && Array.isArray((value as { answers?: unknown }).answers)) {
+              return [key, (value as { answers: unknown[] }).answers.map((entry) => String(entry))]
+            }
+            if (value == null || value === "") return [key, []]
+            return [key, [String(value)]]
+          })
+        ),
+        ...(record?.discarded === true ? { discarded: true } : {}),
+      }
+    }
+    case "exit_plan_mode": {
+      const record = legacyAsRecord(parsed)
+      return {
+        confirmed: typeof record?.confirmed === "boolean" ? record.confirmed : undefined,
+        clearContext: typeof record?.clearContext === "boolean" ? record.clearContext : undefined,
+        message: typeof record?.message === "string" ? record.message : undefined,
+        ...(record?.discarded === true ? { discarded: true } : {}),
+      }
+    }
+    case "read_file": {
+      if (typeof parsed === "string") return parsed
+      const blocks = legacyNormalizeReadBlocks(parsed)
+      if (blocks.length > 0) {
+        return {
+          content: blocks.flatMap((block) => (block as { type: string; text?: string }).type === "text" ? [(block as { text: string }).text] : []).join(""),
+          blocks,
+        }
+      }
+      const record = legacyAsRecord(parsed)
+      return { content: typeof record?.content === "string" ? record.content : JSON.stringify(parsed, null, 2) }
+    }
+    default:
+      return parsed
+  }
+}

@@ -2,8 +2,59 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Effect, Result } from "effect"
+import { createAuthManager } from "./auth"
+import { runTest } from "./effect/testing"
 import { persistProjectUpload } from "./uploads"
-import { startKannaServer } from "./server"
+import { startKannaServer } from "./server-bun"
+
+describe("createAuthManager.handleLogin", () => {
+  const origin = "http://localhost:3210"
+  const login = (body: BodyInit, contentType: string, headers: Record<string, string> = {}) =>
+    new Request(`${origin}/auth/login`, { method: "POST", body, headers: { "content-type": contentType, origin, ...headers } })
+
+  test("accepts the password from JSON and from a form, and the cookie then authenticates", async () => {
+    const auth = createAuthManager("secret")
+
+    const fromJson = await runTest(auth.handleLogin(login(JSON.stringify({ password: "secret", next: "/chat/a" }), "application/json"), "/"))
+    expect(fromJson.status).toBe(200)
+    expect(await fromJson.json()).toEqual({ ok: true, nextPath: "/chat/a" })
+    const cookie = fromJson.headers.get("set-cookie")!.split(";")[0]!
+    expect(auth.isAuthenticated(new Request(`${origin}/`, { headers: { cookie } }))).toBe(true)
+
+    const form = new URLSearchParams({ password: "secret", next: "//evil.example" })
+    const fromForm = await runTest(auth.handleLogin(login(form, "application/x-www-form-urlencoded"), "/"))
+    expect(fromForm.status).toBe(200)
+    expect(await fromForm.json()).toEqual({ ok: true, nextPath: "/" })
+  })
+
+  test("refuses a wrong, missing, or non-string password", async () => {
+    const auth = createAuthManager("secret")
+    for (const body of [{ password: "secrex" }, {}, { password: ["secret"] }, "secret", 7]) {
+      const response = await runTest(auth.handleLogin(login(JSON.stringify(body), "application/json"), "/"))
+      expect(response.status).toBe(401)
+      expect(response.headers.get("set-cookie")).toBeNull()
+    }
+  })
+
+  test("refuses a login from another origin before reading it", async () => {
+    const auth = createAuthManager("secret")
+    const response = await runTest(auth.handleLogin(
+      login(JSON.stringify({ password: "secret" }), "application/json", { origin: "https://evil.example" }),
+      "/",
+    ))
+    expect(response.status).toBe(403)
+  })
+
+  test("fails, rather than answers, on a body that isn't JSON", async () => {
+    const auth = createAuthManager("secret")
+    const result = await runTest(Effect.result(auth.handleLogin(login("{not json", "application/json"), "/")))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/auth/LoginFormError")
+    }
+  })
+})
 
 const tempDirs: string[] = []
 
@@ -23,7 +74,7 @@ async function startPasswordServer(options: { trustProxy?: boolean; port?: numbe
     password: "secret",
     trustProxy: options.trustProxy ?? false,
   })
-  const project = await server.store.openProject(projectDir, "Project")
+  const project = await Effect.runPromise(server.store.openProject(projectDir, "Project"))
   return { server, projectDir, project }
 }
 
@@ -147,13 +198,13 @@ describe("password auth", () => {
     const { server, project, projectDir } = await startPasswordServer()
 
     try {
-      const attachment = await persistProjectUpload({
+      const attachment = await runTest(persistProjectUpload({
         projectId: project.id,
         localPath: projectDir,
         fileName: "hello.txt",
         bytes: new TextEncoder().encode("hello from upload"),
         fallbackMimeType: "text/plain",
-      })
+      }))
 
       const loginResponse = await fetch(`http://localhost:${server.port}/auth/login`, {
         method: "POST",

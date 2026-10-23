@@ -1,13 +1,137 @@
 import { describe, expect, test } from "bun:test"
+import { Effect, Exit, Fiber, Scope, Stream } from "effect"
 import { normalizeToolCall } from "../shared/tools"
+import type { HarnessEvent } from "./harness-types"
 import {
   buildRegistryModel,
   extractPiToolResultContent,
+  MISSING_PI_CONNECTION_MESSAGE,
   normalizePiUsage,
+  PiAgentManager,
   translatePiTool,
   PI_TOOL_NAMES,
   type PiConnection,
 } from "./pi-agent"
+import { runTest } from "./effect/testing"
+
+/**
+ * The parts of pi's AgentSession a turn uses. The model call is a promise
+ * that `finish` settles; `abort` ends it the way pi does, with an assistant
+ * message whose stop reason is "aborted".
+ */
+class FakePiSession {
+  readonly listeners = new Set<(event: unknown) => void>()
+  readonly prompts: string[] = []
+  isStreaming = false
+  aborts = 0
+  sessionFile = "/tmp/pi-sessions/chat-1.jsonl"
+  model = { contextWindow: 200_000 }
+  private settle: (() => void) | null = null
+
+  subscribe(listener: (event: unknown) => void) {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+  emit(event: unknown) {
+    for (const listener of this.listeners) listener(event)
+  }
+  prompt(text: string) {
+    this.prompts.push(text)
+    this.isStreaming = true
+    return new Promise<void>((resolve) => { this.settle = resolve })
+  }
+  finish() {
+    this.isStreaming = false
+    this.settle?.()
+  }
+  abort() {
+    this.aborts += 1
+    this.emit({ type: "message_end", message: { role: "assistant", stopReason: "aborted", content: [] } })
+    this.finish()
+    return Promise.resolve()
+  }
+  setModel() { return Promise.reject(new Error("Unknown model: nope")) }
+  setThinkingLevel() {}
+  dispose() {}
+}
+
+const connection: PiConnection = { provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "k" }
+const turnArgs = { chatId: "chat-1", cwd: "/tmp/project", content: "hello", model: "m", effort: "medium" as const, sessionToken: null, forkSession: false, connection }
+
+/** A manager whose chat already has `session` open, as after its first turn. */
+function managerWith(session: FakePiSession) {
+  const manager = new PiAgentManager({ dataDir: "/tmp/kanna-pi-test" })
+  const sessions: Map<string, unknown> = Reflect.get(manager, "sessions")
+  sessions.set("chat-1", {
+    session, authStorage: { setRuntimeApiKey() {} }, modelRegistry: { find: () => undefined }, resourceLoader: {},
+    cwd: turnArgs.cwd, model: turnArgs.model, promptAgentId: "pi/m", delegator: false, effort: turnArgs.effort,
+    connectionProvider: connection.provider, connectionBaseUrl: connection.baseUrl,
+  })
+  return manager
+}
+
+const kinds = (events: ReadonlyArray<HarnessEvent>) => events.map((event) => event.entry?.kind ?? event.type)
+
+describe("PiAgentManager.startTurn", () => {
+  test("a turn without a connection is its error result", async () => {
+    const events = await runTest(Effect.gen(function* () {
+      const turn = yield* new PiAgentManager({ dataDir: "/tmp/kanna-pi-test" }).startTurn({ ...turnArgs, connection: null })
+      return yield* Stream.runCollect(turn.events)
+    }))
+    expect(events.map((event) => event.entry)).toMatchObject([{ kind: "result", isError: true, result: MISSING_PI_CONNECTION_MESSAGE }])
+  })
+
+  test("a session that will not open is the turn's error result", async () => {
+    const events = await runTest(Effect.gen(function* () {
+      const turn = yield* managerWith(new FakePiSession()).startTurn({ ...turnArgs, model: "nope" })
+      return yield* Stream.runCollect(turn.events)
+    }))
+    expect(events.map((event) => event.entry)).toMatchObject([{ kind: "result", isError: true, result: "Unknown model: nope" }])
+  })
+
+  test("streams what the session reports and ends with the result", async () => {
+    const session = new FakePiSession()
+    const events = await runTest(Effect.gen(function* () {
+      const turn = yield* managerWith(session).startTurn(turnArgs)
+      session.emit({ type: "tool_execution_start", toolName: "read", toolCallId: "t1", args: { path: "a.ts" } })
+      session.emit({ type: "tool_execution_end", toolCallId: "t1", result: { content: [{ type: "text", text: "ok" }] }, isError: false })
+      session.emit({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }], usage: { input: 10, output: 5, cost: { total: 0.25 } } } })
+      session.finish()
+      return yield* Stream.runCollect(turn.events)
+    }))
+    expect(session.prompts).toEqual(["hello"])
+    expect(kinds(events)).toEqual(["system_init", "session_token", "tool_call", "tool_result", "context_window_updated", "assistant_text", "session_token", "result"])
+    expect(events.at(-1)!.entry).toMatchObject({ kind: "result", isError: false, costUsd: 0.25 })
+    expect(session.listeners.size).toBe(0)
+  })
+
+  test("interrupt stops pi's run, and the events end without a result", async () => {
+    const session = new FakePiSession()
+    const events = await runTest(Effect.gen(function* () {
+      const turn = yield* managerWith(session).startTurn(turnArgs)
+      const collected = yield* Effect.forkChild(Stream.runCollect(turn.events))
+      yield* turn.interrupt
+      return yield* Fiber.join(collected)
+    }))
+    expect(session.aborts).toBe(1)
+    expect(kinds(events)).toEqual(["system_init", "session_token", "session_token"])
+  })
+
+  test("closing the turn's scope aborts the model call and ends the events", async () => {
+    const session = new FakePiSession()
+    const events = await runTest(Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const turn = yield* managerWith(session).startTurn(turnArgs).pipe(Scope.provide(scope))
+      const collected = yield* Effect.forkChild(Stream.runCollect(turn.events))
+      yield* Effect.yieldNow
+      yield* Scope.close(scope, Exit.void)
+      return yield* Fiber.join(collected)
+    }))
+    expect(session.aborts).toBe(1)
+    expect(session.listeners.size).toBe(0)
+    expect(kinds(events)).toEqual(["system_init", "session_token", "session_token"])
+  })
+})
 
 describe("translatePiTool", () => {
   test("maps read onto Read/read_file with offset and limit", () => {

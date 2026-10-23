@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { AppSettingsManager, readAppSettingsSnapshot } from "./app-settings"
+import { Effect, Fiber, Option, Result, type Scope, Stream } from "effect"
+import { AppSettings, readAppSettingsSnapshot } from "./app-settings"
+import { runTest } from "./effect/testing"
 import type { AppSettingsSnapshot } from "../shared/types"
 
 let tempDirs: string[] = []
@@ -17,6 +19,20 @@ async function createTempFilePath() {
   tempDirs.push(dir)
   return path.join(dir, "settings.json")
 }
+
+/** Runs `body` with an `AppSettings` built on `filePath`, released when it returns. */
+function withSettings<A, E>(
+  filePath: string,
+  body: (settings: AppSettings["Service"]) => Effect.Effect<A, E, Scope.Scope>,
+  options: { devbox?: boolean } = {},
+) {
+  return runTest(Effect.gen(function* () {
+    return yield* body(yield* AppSettings)
+  }).pipe(Effect.provide(AppSettings.layer(filePath, options))))
+}
+
+const readJson = (filePath: string) =>
+  Effect.promise(async () => JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>)
 
 function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettingsSnapshot> = {}): AppSettingsSnapshot {
   return {
@@ -103,91 +119,101 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
 describe("readAppSettingsSnapshot", () => {
   test("returns defaults when the file does not exist", async () => {
     const filePath = await createTempFilePath()
-    const snapshot = await readAppSettingsSnapshot(filePath)
+    const snapshot = await runTest(readAppSettingsSnapshot(filePath))
 
     expect(snapshot).toEqual(expectedSettingsSnapshot(filePath))
   })
 
   test("devbox extra is server-computed: in every snapshot, never persisted", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath, { devbox: true })
-    await manager.initialize()
-    try {
-      expect(manager.getSnapshot().devbox).toBe(true)
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      expect((yield* settings.snapshot).devbox).toBe(true)
 
       // Survives a settings write and is present on the returned snapshot…
-      const written = await manager.writePatch({ theme: "dark" })
+      const written = yield* settings.writePatch({ theme: "dark" })
       expect(written.devbox).toBe(true)
 
       // …but never lands in the file.
-      const raw = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>
+      const raw = yield* readJson(filePath)
       expect("devbox" in raw).toBe(false)
-    } finally {
-      manager.dispose()
-    }
+    }), { devbox: true })
 
     // Default (no extras) is false.
-    const plain = new AppSettingsManager(filePath)
-    expect(plain.getSnapshot().devbox).toBe(false)
-    plain.dispose()
+    const plain = await withSettings(filePath, (settings) => settings.snapshot)
+    expect(plain.devbox).toBe(false)
   })
 
   test("returns a warning when the file contains invalid json", async () => {
     const filePath = await createTempFilePath()
     await writeFile(filePath, "{not-json", "utf8")
 
-    const snapshot = await readAppSettingsSnapshot(filePath)
+    const snapshot = await runTest(readAppSettingsSnapshot(filePath))
     expect(snapshot.analyticsEnabled).toBe(true)
     expect(snapshot.warning).toContain("invalid JSON")
+  })
+
+  test("returns a warning when the file is empty", async () => {
+    const filePath = await createTempFilePath()
+    await writeFile(filePath, "  \n", "utf8")
+
+    const snapshot = await runTest(readAppSettingsSnapshot(filePath))
+    expect(snapshot).toEqual(expectedSettingsSnapshot(filePath, { warning: "Settings file was empty. Using defaults." }))
+  })
+
+  test("fails with a read error when the path cannot be read as a file", async () => {
+    const filePath = await createTempFilePath()
+    await mkdir(filePath)
+
+    const result = await runTest(Effect.result(readAppSettingsSnapshot(filePath)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/app-settings/AppSettingsFileError")
+      expect(result.failure.operation).toBe("read")
+      expect(result.failure.filePath).toBe(filePath)
+    }
   })
 
   test("newProjectsDirectory defaults to ~/Kanna, trims, and warns on invalid values", async () => {
     const filePath = await createTempFilePath()
 
     // Missing → default, no warning.
-    expect((await readAppSettingsSnapshot(filePath)).newProjectsDirectory).toBe("~/Kanna")
+    expect((await runTest(readAppSettingsSnapshot(filePath))).newProjectsDirectory).toBe("~/Kanna")
 
     // Custom value trims.
     await writeFile(filePath, JSON.stringify({ newProjectsDirectory: "  ~/Dev/Projects  " }), "utf8")
-    const custom = await readAppSettingsSnapshot(filePath)
+    const custom = await runTest(readAppSettingsSnapshot(filePath))
     expect(custom.newProjectsDirectory).toBe("~/Dev/Projects")
     expect(custom.warning).toBeNull()
 
     // Wrong type → default + warning.
     await writeFile(filePath, JSON.stringify({ newProjectsDirectory: 42 }), "utf8")
-    const invalid = await readAppSettingsSnapshot(filePath)
+    const invalid = await runTest(readAppSettingsSnapshot(filePath))
     expect(invalid.newProjectsDirectory).toBe("~/Kanna")
     expect(invalid.warning).toContain("newProjectsDirectory")
 
     // Empty string → default + warning.
     await writeFile(filePath, JSON.stringify({ newProjectsDirectory: "  " }), "utf8")
-    const empty = await readAppSettingsSnapshot(filePath)
+    const empty = await runTest(readAppSettingsSnapshot(filePath))
     expect(empty.newProjectsDirectory).toBe("~/Kanna")
     expect(empty.warning).toContain("newProjectsDirectory")
   })
 
   test("newProjectsDirectory survives a writePatch round-trip and lands in the file", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
-    await manager.initialize()
-    try {
-      const snapshot = await manager.writePatch({ newProjectsDirectory: "~/Dev" })
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      const snapshot = yield* settings.writePatch({ newProjectsDirectory: "~/Dev" })
       expect(snapshot.newProjectsDirectory).toBe("~/Dev")
 
-      const raw = JSON.parse(await readFile(filePath, "utf8")) as { newProjectsDirectory: string }
+      const raw = yield* readJson(filePath)
       expect(raw.newProjectsDirectory).toBe("~/Dev")
-    } finally {
-      manager.dispose()
-    }
+    }))
   })
 })
 
-describe("AppSettingsManager", () => {
+describe("AppSettings", () => {
   test("creates a settings file with analytics enabled and a stable anonymous id", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
-
-    await manager.initialize()
+    const snapshot = await withSettings(filePath, (settings) => settings.snapshot)
 
     const payload = JSON.parse(await readFile(filePath, "utf8")) as {
       analyticsEnabled: boolean
@@ -195,198 +221,198 @@ describe("AppSettingsManager", () => {
     }
     expect(payload.analyticsEnabled).toBe(true)
     expect(payload.analyticsUserId).toMatch(/^anon_/)
-    expect(manager.getSnapshot()).toEqual(expectedSettingsSnapshot(filePath))
+    expect(snapshot).toEqual(expectedSettingsSnapshot(filePath))
+  })
 
-    manager.dispose()
+  test("state carries the stored analytics user id the snapshot leaves out", async () => {
+    const filePath = await createTempFilePath()
+    const state = await withSettings(filePath, (settings) => settings.state)
+
+    const payload = JSON.parse(await readFile(filePath, "utf8")) as { analyticsUserId: string }
+    expect(state.analyticsUserId).toBe(payload.analyticsUserId)
+  })
+
+  test("rewrites invalid json with defaults at startup and warns", async () => {
+    const filePath = await createTempFilePath()
+    await writeFile(filePath, "{not-json", "utf8")
+
+    const snapshot = await withSettings(filePath, (settings) => settings.snapshot)
+    expect(snapshot.warning).toBe("Settings file is invalid JSON. Using defaults.")
+    const payload = JSON.parse(await readFile(filePath, "utf8")) as { analyticsUserId: string }
+    expect(payload.analyticsUserId).toMatch(/^anon_/)
   })
 
   test("writes analyticsEnabled without replacing the stored user id", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      const initialPayload = yield* readJson(filePath)
 
-    await manager.initialize()
-    const initialPayload = JSON.parse(await readFile(filePath, "utf8")) as {
-      analyticsEnabled: boolean
-      analyticsUserId: string
-    }
+      const snapshot = yield* settings.write({ analyticsEnabled: false })
+      const nextPayload = yield* readJson(filePath)
 
-    const snapshot = await manager.write({ analyticsEnabled: false })
-    const nextPayload = JSON.parse(await readFile(filePath, "utf8")) as {
-      analyticsEnabled: boolean
-      analyticsUserId: string
-    }
-
-    expect(snapshot).toEqual(expectedSettingsSnapshot(filePath, { analyticsEnabled: false }))
-    expect(nextPayload.analyticsEnabled).toBe(false)
-    expect(nextPayload.analyticsUserId).toBe(initialPayload.analyticsUserId)
-
-    manager.dispose()
+      expect(snapshot).toEqual(expectedSettingsSnapshot(filePath, { analyticsEnabled: false }))
+      expect(nextPayload.analyticsEnabled).toBe(false)
+      expect(nextPayload.analyticsUserId).toBe(initialPayload.analyticsUserId)
+    }))
   })
 
   test("persists setup-wizard markers across restarts so onboarding is per machine", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      expect((yield* settings.snapshot).setupCompleted).toBe(false)
 
-    await manager.initialize()
-    expect(manager.getSnapshot().setupCompleted).toBe(false)
+      yield* settings.writePatch({ setupShown: true, setupCompleted: true, setupDismissed: true })
 
-    await manager.writePatch({ setupShown: true, setupCompleted: true, setupDismissed: true })
-
-    const payload = JSON.parse(await readFile(filePath, "utf8")) as {
-      setupShown: boolean
-      setupCompleted: boolean
-      setupDismissed: boolean
-    }
-    expect(payload).toMatchObject({ setupShown: true, setupCompleted: true, setupDismissed: true })
-    manager.dispose()
+      const payload = yield* readJson(filePath)
+      expect(payload).toMatchObject({ setupShown: true, setupCompleted: true, setupDismissed: true })
+    }))
 
     // A second process (or any other browser) reads the same completed state.
-    const reopened = new AppSettingsManager(filePath)
-    await reopened.initialize()
-    expect(reopened.getSnapshot()).toMatchObject({
+    const reopened = await withSettings(filePath, (settings) => settings.snapshot)
+    expect(reopened).toMatchObject({
       setupShown: true,
       setupCompleted: true,
       setupDismissed: true,
     })
-    reopened.dispose()
   })
 
   test("patches expanded settings without replacing the stored user id", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      const initialPayload = yield* readJson(filePath)
 
-    await manager.initialize()
-    const initialPayload = JSON.parse(await readFile(filePath, "utf8")) as {
-      analyticsUserId: string
-    }
-
-    const snapshot = await manager.writePatch({
-      theme: "dark",
-      chatSoundId: "glass",
-      chatBrowserNotificationPreference: "unfocused",
-      terminal: { scrollbackLines: 2_500 },
-      editor: { preset: "vscode" },
-      providerDefaults: {
-        codex: {
-          modelOptions: { reasoningEffort: "high", fastMode: true },
+      const snapshot = yield* settings.writePatch({
+        theme: "dark",
+        chatSoundId: "glass",
+        chatBrowserNotificationPreference: "unfocused",
+        terminal: { scrollbackLines: 2_500 },
+        editor: { preset: "vscode" },
+        providerDefaults: {
+          codex: {
+            modelOptions: { reasoningEffort: "high", fastMode: true },
+          },
         },
-      },
-    })
-    const nextPayload = JSON.parse(await readFile(filePath, "utf8")) as {
-      analyticsUserId: string
-      theme: string
-      chatSoundId: string
-      chatBrowserNotificationPreference: string
-      terminal: { scrollbackLines: number; minColumnWidth: number }
-      editor: { preset: string; commandTemplate: string }
-      providerDefaults: { codex: { modelOptions: { fastMode: boolean } } }
-    }
+      })
+      const nextPayload = yield* readJson(filePath)
 
-    expect(snapshot.theme).toBe("dark")
-    expect(snapshot.chatSoundId).toBe("glass")
-    expect(snapshot.chatBrowserNotificationPreference).toBe("unfocused")
-    expect(snapshot.terminal.scrollbackLines).toBe(2_500)
-    expect(snapshot.terminal.minColumnWidth).toBe(450)
-    expect(snapshot.editor.preset).toBe("vscode")
-    expect(snapshot.editor.commandTemplate).toBe("cursor {path}")
-    expect(snapshot.providerDefaults.codex.modelOptions.fastMode).toBe(true)
-    expect(nextPayload.analyticsUserId).toBe(initialPayload.analyticsUserId)
-    expect(nextPayload.theme).toBe("dark")
-    expect(nextPayload.chatSoundId).toBe("glass")
-    expect(nextPayload.chatBrowserNotificationPreference).toBe("unfocused")
-
-    manager.dispose()
+      expect(snapshot.theme).toBe("dark")
+      expect(snapshot.chatSoundId).toBe("glass")
+      expect(snapshot.chatBrowserNotificationPreference).toBe("unfocused")
+      expect(snapshot.terminal.scrollbackLines).toBe(2_500)
+      expect(snapshot.terminal.minColumnWidth).toBe(450)
+      expect(snapshot.editor.preset).toBe("vscode")
+      expect(snapshot.editor.commandTemplate).toBe("cursor {path}")
+      expect(snapshot.providerDefaults.codex.modelOptions.fastMode).toBe(true)
+      expect(nextPayload.analyticsUserId).toBe(initialPayload.analyticsUserId)
+      expect(nextPayload.theme).toBe("dark")
+      expect(nextPayload.chatSoundId).toBe("glass")
+      expect(nextPayload.chatBrowserNotificationPreference).toBe("unfocused")
+    }))
   })
 
   test("persists the composer's queue-or-steer default, and ignores junk", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
-    await manager.initialize()
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      expect((yield* settings.snapshot).submitWhileRunning).toBe("queue")
+      expect((yield* settings.writePatch({ submitWhileRunning: "steer" })).submitWhileRunning).toBe("steer")
 
-    expect(manager.getSnapshot().submitWhileRunning).toBe("queue")
-    expect((await manager.writePatch({ submitWhileRunning: "steer" })).submitWhileRunning).toBe("steer")
+      const payload = yield* readJson(filePath)
+      expect(payload.submitWhileRunning).toBe("steer")
 
-    const payload = JSON.parse(await readFile(filePath, "utf8")) as { submitWhileRunning: string }
-    expect(payload.submitWhileRunning).toBe("steer")
-
-    // Anything unrecognised falls back to queueing rather than to the more
-    // disruptive action.
-    await writeFile(filePath, JSON.stringify({ submitWhileRunning: "yolo" }), "utf8")
-    await manager.reload()
-    expect(manager.getSnapshot().submitWhileRunning).toBe("queue")
-
-    manager.dispose()
+      // Anything unrecognised falls back to queueing rather than to the more
+      // disruptive action.
+      yield* Effect.promise(() => writeFile(filePath, JSON.stringify({ submitWhileRunning: "yolo" }), "utf8"))
+      yield* settings.reload
+      expect((yield* settings.snapshot).submitWhileRunning).toBe("queue")
+    }))
   })
 
   test("keeps pane visibility per chat by default, and patches one pane without the other", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
-    await manager.initialize()
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      expect((yield* settings.snapshot).paneVisibility).toEqual({ widgets: "chat", terminal: "chat" })
+      const next = yield* settings.writePatch({ paneVisibility: { terminal: "project" } })
+      expect(next.paneVisibility).toEqual({ widgets: "chat", terminal: "project" })
 
-    expect(manager.getSnapshot().paneVisibility).toEqual({ widgets: "chat", terminal: "chat" })
-    const next = await manager.writePatch({ paneVisibility: { terminal: "project" } })
-    expect(next.paneVisibility).toEqual({ widgets: "chat", terminal: "project" })
-
-    await writeFile(filePath, JSON.stringify({ paneVisibility: { widgets: "tab", terminal: "project" } }), "utf8")
-    await manager.reload()
-    expect(manager.getSnapshot().paneVisibility).toEqual({ widgets: "chat", terminal: "project" })
-
-    manager.dispose()
+      yield* Effect.promise(() => writeFile(filePath, JSON.stringify({ paneVisibility: { widgets: "tab", terminal: "project" } }), "utf8"))
+      yield* settings.reload
+      expect((yield* settings.snapshot).paneVisibility).toEqual({ widgets: "chat", terminal: "project" })
+    }))
   })
 
   test("does not rewrite a settings file that already carries the composer default", async () => {
     // Every field the file payload has must be in the comparison too, or the
     // file is rewritten on every launch for no change.
     const filePath = await createTempFilePath()
-    const first = new AppSettingsManager(filePath)
-    await first.initialize()
-    await first.writePatch({ submitWhileRunning: "steer" })
-    first.dispose()
+    await withSettings(filePath, (settings) => settings.writePatch({ submitWhileRunning: "steer" }))
     const written = await readFile(filePath, "utf8")
 
-    const second = new AppSettingsManager(filePath)
-    await second.initialize()
-    second.dispose()
+    await withSettings(filePath, (settings) => settings.snapshot)
 
     expect(await readFile(filePath, "utf8")).toBe(written)
   })
 
   test("normalizes GPT-5.6 reasoning levels when settings are written", async () => {
     const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
-    await manager.initialize()
+    await withSettings(filePath, (settings) => Effect.gen(function* () {
+      const sol = yield* settings.writePatch({
+        providerDefaults: {
+          codex: { model: "gpt-5.6-sol", modelOptions: { reasoningEffort: "ultra" } },
+        },
+      })
+      expect(sol.providerDefaults.codex.modelOptions.reasoningEffort).toBe("ultra")
 
-    const sol = await manager.writePatch({
-      providerDefaults: {
-        codex: { model: "gpt-5.6-sol", modelOptions: { reasoningEffort: "ultra" } },
-      },
-    })
-    expect(sol.providerDefaults.codex.modelOptions.reasoningEffort).toBe("ultra")
+      const terra = yield* settings.writePatch({
+        providerDefaults: {
+          codex: { model: "gpt-5.6-terra", modelOptions: { reasoningEffort: "max" } },
+        },
+      })
+      expect(terra.providerDefaults.codex.modelOptions.reasoningEffort).toBe("max")
 
-    const terra = await manager.writePatch({
-      providerDefaults: {
-        codex: { model: "gpt-5.6-terra", modelOptions: { reasoningEffort: "max" } },
-      },
-    })
-    expect(terra.providerDefaults.codex.modelOptions.reasoningEffort).toBe("max")
+      const luna = yield* settings.writePatch({
+        providerDefaults: {
+          codex: { model: "gpt-5.6-luna", modelOptions: { reasoningEffort: "ultra" } },
+        },
+      })
+      expect(luna.providerDefaults.codex.modelOptions.reasoningEffort).toBe("max")
 
-    const luna = await manager.writePatch({
-      providerDefaults: {
-        codex: { model: "gpt-5.6-luna", modelOptions: { reasoningEffort: "ultra" } },
-      },
-    })
-    expect(luna.providerDefaults.codex.modelOptions.reasoningEffort).toBe("max")
+      const legacy = yield* settings.writePatch({
+        providerDefaults: {
+          codex: { model: "gpt-5.5", modelOptions: { reasoningEffort: "xhigh" } },
+        },
+      })
+      expect(legacy.providerDefaults.codex).toMatchObject({
+        model: "gpt-5.5",
+        modelOptions: { reasoningEffort: "xhigh", fastMode: false },
+      })
+    }))
+  })
 
-    const legacy = await manager.writePatch({
-      providerDefaults: {
-        codex: { model: "gpt-5.5", modelOptions: { reasoningEffort: "xhigh" } },
-      },
-    })
-    expect(legacy.providerDefaults.codex).toMatchObject({
-      model: "gpt-5.5",
-      modelOptions: { reasoningEffort: "xhigh", fastMode: false },
-    })
+  test("emits detected editors as a change, and never replays the current value", async () => {
+    const filePath = await createTempFilePath()
+    const emitted = await withSettings(filePath, (settings) => Effect.gen(function* () {
+      const next = yield* settings.changes.pipe(Stream.runHead, Effect.forkScoped)
+      yield* Effect.yieldNow
+      yield* settings.setInstalledEditors(["cursor", "vscode"])
+      return yield* Fiber.join(next).pipe(Effect.timeout("5 seconds"))
+    }))
 
-    manager.dispose()
+    expect(Option.getOrThrow(emitted).installedEditors).toEqual(["cursor", "vscode"])
+  })
+
+  test("reloads when the file is edited by hand", async () => {
+    const filePath = await createTempFilePath()
+    const reloaded = await withSettings(filePath, (settings) => Effect.gen(function* () {
+      const next = yield* settings.changes.pipe(
+        Stream.filter((snapshot) => snapshot.theme === "dark"),
+        Stream.runHead,
+        Effect.forkScoped,
+      )
+      yield* Effect.yieldNow
+      yield* Effect.promise(() => writeFile(filePath, JSON.stringify({ theme: "dark" }), "utf8"))
+      return yield* Fiber.join(next).pipe(Effect.timeout("5 seconds"))
+    }))
+
+    expect(Option.getOrThrow(reloaded).theme).toBe("dark")
   })
 })

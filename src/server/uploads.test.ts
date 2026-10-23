@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
+import { Effect, Result } from "effect"
+import { runTest } from "./effect/testing"
 import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
-import { persistUploadedFiles, startKannaServer } from "./server"
+import { persistUploadedFiles, UploadBatchError } from "./server"
+import { startKannaServer } from "./server-bun"
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9sAAAAASUVORK5CYII="
@@ -30,20 +33,20 @@ describe("uploads", () => {
     const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-upload-test-"))
     tempDirs.push(projectDir)
 
-    const first = await persistProjectUpload({
+    const first = await runTest(persistProjectUpload({
       projectId: "project-1",
       localPath: projectDir,
       fileName: "notes.txt",
       bytes: new TextEncoder().encode("hello"),
       fallbackMimeType: "text/plain",
-    })
-    const second = await persistProjectUpload({
+    }))
+    const second = await runTest(persistProjectUpload({
       projectId: "project-1",
       localPath: projectDir,
       fileName: "notes.txt",
       bytes: new TextEncoder().encode("world"),
       fallbackMimeType: "text/plain",
-    })
+    }))
 
     expect(first.absolutePath).toBe(path.join(projectDir, ".kanna/uploads/notes.txt"))
     expect(first.relativePath).toBe("./.kanna/uploads/notes.txt")
@@ -60,27 +63,27 @@ describe("uploads", () => {
     tempDirs.push(projectDir)
 
     const attachments = await Promise.all([
-      persistProjectUpload({
+      runTest(persistProjectUpload({
         projectId: "project-1",
         localPath: projectDir,
         fileName: "notes.txt",
         bytes: new TextEncoder().encode("first"),
         fallbackMimeType: "text/plain",
-      }),
-      persistProjectUpload({
+      })),
+      runTest(persistProjectUpload({
         projectId: "project-1",
         localPath: projectDir,
         fileName: "notes.txt",
         bytes: new TextEncoder().encode("second"),
         fallbackMimeType: "text/plain",
-      }),
-      persistProjectUpload({
+      })),
+      runTest(persistProjectUpload({
         projectId: "project-1",
         localPath: projectDir,
         fileName: "notes.txt",
         bytes: new TextEncoder().encode("third"),
         fallbackMimeType: "text/plain",
-      }),
+      })),
     ])
 
     const storedNames = attachments.map((attachment) => path.basename(attachment.absolutePath)).sort()
@@ -94,16 +97,16 @@ describe("uploads", () => {
     const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-upload-image-"))
     tempDirs.push(projectDir)
 
-    const attachment = await persistProjectUpload({
+    const attachment = await runTest(persistProjectUpload({
       projectId: "project-2",
       localPath: projectDir,
       fileName: "pixel.png",
       bytes: Buffer.from(PNG_BASE64, "base64"),
-    })
+    }))
 
     expect(attachment.kind).toBe("image")
     expect(attachment.mimeType).toBe("image/png")
-    expect(getProjectUploadDir(projectDir)).toBe(path.join(projectDir, ".kanna", "uploads"))
+    expect(getProjectUploadDir(projectDir, homedir())).toBe(path.join(projectDir, ".kanna", "uploads"))
     expect(attachment.absolutePath).toBe(path.join(projectDir, ".kanna/uploads/pixel.png"))
     expect(attachment.relativePath).toBe("./.kanna/uploads/pixel.png")
     expect(attachment.contentUrl).toBe("/api/projects/project-2/uploads/pixel.png/content")
@@ -116,14 +119,14 @@ describe("uploads", () => {
     const server = await startIsolatedServer({ port: 4310 })
 
     try {
-      const project = await server.store.openProject(projectDir, "Project")
-      const attachment = await persistProjectUpload({
+      const project = await Effect.runPromise(server.store.openProject(projectDir, "Project"))
+      const attachment = await runTest(persistProjectUpload({
         projectId: project.id,
         localPath: projectDir,
         fileName: "hello.txt",
         bytes: new TextEncoder().encode("hello from upload"),
         fallbackMimeType: "text/plain",
-      })
+      }))
 
       const response = await fetch(`http://localhost:${server.port}${attachment.contentUrl}`)
       expect(response.status).toBe(200)
@@ -141,14 +144,14 @@ describe("uploads", () => {
     const server = await startIsolatedServer({ port: 4314 })
 
     try {
-      const project = await server.store.openProject(projectDir, "Project")
-      const attachment = await persistProjectUpload({
+      const project = await Effect.runPromise(server.store.openProject(projectDir, "Project"))
+      const attachment = await runTest(persistProjectUpload({
         projectId: project.id,
         localPath: projectDir,
         fileName: "main.ts",
         bytes: new TextEncoder().encode("export const value = 1\n"),
         fallbackMimeType: "video/mp2t",
-      })
+      }))
 
       const response = await fetch(`http://localhost:${server.port}${attachment.contentUrl}`)
       expect(response.status).toBe(200)
@@ -166,14 +169,14 @@ describe("uploads", () => {
     const server = await startIsolatedServer({ port: 4312 })
 
     try {
-      const project = await server.store.openProject(projectDir, "Project")
-      const attachment = await persistProjectUpload({
+      const project = await Effect.runPromise(server.store.openProject(projectDir, "Project"))
+      const attachment = await runTest(persistProjectUpload({
         projectId: project.id,
         localPath: projectDir,
         fileName: "hello.txt",
         bytes: new TextEncoder().encode("hello from upload"),
         fallbackMimeType: "text/plain",
-      })
+      }))
 
       const response = await fetch(`http://localhost:${server.port}${attachment.contentUrl}`, { method: "POST" })
       expect(response.status).toBe(405)
@@ -190,7 +193,7 @@ describe("uploads", () => {
     const server = await startIsolatedServer({ port: 4313 })
 
     try {
-      const project = await server.store.openProject(projectDir, "Project")
+      const project = await Effect.runPromise(server.store.openProject(projectDir, "Project"))
       const formData = new FormData()
       formData.append("files", new File([new Uint8Array(100 * 1024 * 1024 + 1)], "big.bin", { type: "application/octet-stream" }))
 
@@ -218,7 +221,7 @@ describe("uploads", () => {
     ]
 
     await expect(
-      persistUploadedFiles({
+      runTest(persistUploadedFiles({
         projectId: "project-4",
         localPath: projectDir,
         files,
@@ -227,34 +230,93 @@ describe("uploads", () => {
             throw new Error("disk full")
           }
 
-          return persistProjectUpload(args)
+          return runTest(persistProjectUpload(args))
         },
-      })
+      }))
     ).rejects.toThrow("disk full")
 
     expect(await Bun.file(path.join(projectDir, ".kanna/uploads/first.txt")).exists()).toBe(false)
     expect(await Bun.file(path.join(projectDir, ".kanna/uploads/second.txt")).exists()).toBe(false)
   })
 
+  test("keeps the batch failure typed after rolling back earlier files", async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-upload-failed-read-"))
+    tempDirs.push(projectDir)
+    const first = new File(["first"], "first.txt")
+    const second = new File(["second"], "second.txt")
+    second.arrayBuffer = async () => { throw new Error("read failed") }
+
+    const result = await runTest(Effect.result(persistUploadedFiles({
+      projectId: "project-4",
+      localPath: projectDir,
+      files: [first, second],
+    })))
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure).toBeInstanceOf(UploadBatchError)
+      expect(result.failure.message).toBe("read failed")
+    }
+    expect(await Bun.file(path.join(projectDir, ".kanna/uploads/first.txt")).exists()).toBe(false)
+  })
+
   test("deletes uploaded attachments from the project uploads directory", async () => {
     const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-upload-delete-"))
     tempDirs.push(projectDir)
 
-    const attachment = await persistProjectUpload({
+    const attachment = await runTest(persistProjectUpload({
       projectId: "project-3",
       localPath: projectDir,
       fileName: "delete-me.txt",
       bytes: new TextEncoder().encode("bye"),
       fallbackMimeType: "text/plain",
-    })
+    }))
 
-    const deleted = await deleteProjectUpload({
+    const deleted = await runTest(deleteProjectUpload({
       localPath: projectDir,
       storedName: "delete-me.txt",
-    })
+    }))
 
     expect(deleted).toBe(true)
     expect(await Bun.file(attachment.absolutePath).exists()).toBe(false)
+  })
+
+  test("refuses to delete names outside the uploads dir, and reports a failed delete as false", async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-upload-delete-guard-"))
+    tempDirs.push(projectDir)
+    await writeFile(path.join(projectDir, "keep.txt"), "keep")
+
+    for (const storedName of ["", ".", "..", "../keep.txt", "a\\b"]) {
+      expect(await runTest(deleteProjectUpload({ localPath: projectDir, storedName }))).toBe(false)
+    }
+    expect(await Bun.file(path.join(projectDir, "keep.txt")).exists()).toBe(true)
+
+    // A directory where the file would be cannot be removed without `recursive`.
+    await mkdir(path.join(getProjectUploadDir(projectDir, homedir()), "folder"), { recursive: true })
+    expect(await runTest(deleteProjectUpload({ localPath: projectDir, storedName: "folder" }))).toBe(false)
+    // Already gone is fine.
+    expect(await runTest(deleteProjectUpload({ localPath: projectDir, storedName: "never.txt" }))).toBe(true)
+  })
+
+  test("fails with the project and path when the uploads dir cannot be made", async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-upload-blocked-"))
+    tempDirs.push(projectDir)
+    await writeFile(path.join(projectDir, ".kanna"), "a file, not a directory")
+
+    const result = await runTest(Effect.result(persistProjectUpload({
+      projectId: "project-5",
+      localPath: projectDir,
+      fileName: "notes.txt",
+      bytes: new TextEncoder().encode("hello"),
+    })))
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/uploads/UploadError")
+      expect(result.failure.operation).toBe("write")
+      expect(result.failure.projectId).toBe("project-5")
+      expect(result.failure.filePath).toBe(getProjectUploadDir(projectDir, homedir()))
+    }
   })
 
   test("deletes uploaded attachment content through the project delete URL", async () => {
@@ -264,14 +326,14 @@ describe("uploads", () => {
     const server = await startIsolatedServer({ port: 4311 })
 
     try {
-      const project = await server.store.openProject(projectDir, "Project")
-      const attachment = await persistProjectUpload({
+      const project = await Effect.runPromise(server.store.openProject(projectDir, "Project"))
+      const attachment = await runTest(persistProjectUpload({
         projectId: project.id,
         localPath: projectDir,
         fileName: "bye.txt",
         bytes: new TextEncoder().encode("delete over http"),
         fallbackMimeType: "text/plain",
-      })
+      }))
 
       const deleteUrl = `http://localhost:${server.port}${attachment.contentUrl.replace(/\/content$/, "")}`
       const response = await fetch(deleteUrl, { method: "DELETE" })

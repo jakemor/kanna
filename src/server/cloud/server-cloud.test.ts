@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
+import { Effect } from "effect"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
@@ -9,7 +10,7 @@ import {
   PROXY_AUTH_HEADER,
   type CloudWsEndpointResponse,
 } from "../../shared/cloud-api"
-import { startKannaServer } from "../server"
+import { startKannaServer } from "../server-bun"
 import { createConnectTokenManager } from "./connect-token"
 import type { PairSessionSnapshot } from "./pair-session"
 import type { CloudIdentity } from "./identity"
@@ -36,12 +37,12 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
-function fakeCloudRuntime(): CloudRuntime {
+function fakeCloudRuntime(identity: CloudIdentity = IDENTITY): CloudRuntime {
   return {
-    identity: IDENTITY,
+    identity,
     connectTokens: createConnectTokenManager(),
-    start: () => {},
-    stop: async () => {},
+    start: () => Effect.void,
+    stop: Effect.void,
   }
 }
 
@@ -156,13 +157,12 @@ describe("server cloud integration", () => {
   })
 
   test("ws-endpoint on a direct-mode dev-box points at the sandbox host", async () => {
-    const cloud = fakeCloudRuntime()
-    cloud.identity = {
+    const cloud = fakeCloudRuntime({
       ...IDENTITY,
       tunnelToken: "",
       tunnelHost: "3210-sbx123.e2b.app",
       mode: "direct",
-    }
+    })
     const server = await startCloudServer({ port: 4368, cloud })
     const base = `http://127.0.0.1:${server.port}`
 

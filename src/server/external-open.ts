@@ -1,10 +1,10 @@
-import { stat } from "node:fs/promises"
 import path from "node:path"
-import process from "node:process"
+import { Effect, FileSystem, Match, Option, Schema } from "effect"
 import type { ClientCommand, EditorOpenSettings, EditorPreset } from "../shared/protocol"
 import { EDITOR_SPECS, isEditorPreset } from "../shared/editor-presets"
 import { TERMINAL_SPECS, type TerminalPreset } from "../shared/terminal-presets"
-import { resolveLocalPath } from "./paths"
+import { resolveProjectPath } from "./paths"
+import { Machine } from "./platform/machine"
 import { canOpenMacApp, hasCommand, spawnDetached } from "./process-utils"
 
 type OpenExternalCommand = Extract<ClientCommand, { type: "system.openExternal" }>
@@ -14,220 +14,212 @@ interface CommandSpec {
   args: string[]
 }
 
+/** Nothing on this machine can open `localPath` the way the user asked. */
+export class ExternalOpenError extends Schema.TaggedError<ExternalOpenError>()(
+  "@kanna/server/external-open/ExternalOpenError",
+  {
+    localPath: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+/** The user's custom editor command can't be turned into a command line. */
+export class EditorTemplateError extends Schema.TaggedError<EditorTemplateError>()(
+  "@kanna/server/external-open/EditorTemplateError",
+  {
+    template: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 const DEFAULT_EDITOR_SETTINGS: EditorOpenSettings = {
   preset: "cursor",
   commandTemplate: "cursor {path}",
 }
 
-export async function openExternal(command: OpenExternalCommand) {
-  const resolvedPath = resolveLocalPath(command.localPath)
-  const platform = process.platform
+export const openExternal = Effect.fn("ExternalOpen.open")(function* (command: OpenExternalCommand) {
+  const fs = yield* FileSystem.FileSystem
+  const resolvedPath = yield* resolveProjectPath(command.localPath)
+  yield* Effect.annotateCurrentSpan("action", command.action)
+  yield* Effect.annotateCurrentSpan("path", resolvedPath)
+  const platform = (yield* Machine).platform
   const info = command.action === "open_editor" || command.action === "open_finder" || command.action === "open_preview" || command.action === "open_default"
-    ? await stat(resolvedPath).catch(() => null)
-    : null
+    ? yield* fs.stat(resolvedPath).pipe(
+      Effect.map(Option.some),
+      Effect.catchTag("PlatformError", () => Effect.succeedNone),
+    )
+    : Option.none()
+  const isDirectory = Option.isSome(info) && info.value.type === "Directory"
+  const pathNotFound = new ExternalOpenError({ localPath: resolvedPath, message: `Path not found: ${resolvedPath}` })
+  const spawn = (spec: CommandSpec) => spawnDetached(spec.command, spec.args)
 
   if (command.action === "open_editor") {
-    if (!info) {
-      throw new Error(`Path not found: ${resolvedPath}`)
+    if (Option.isNone(info)) {
+      return yield* pathNotFound
     }
-    const editorCommand = buildEditorCommand({
+    return yield* spawn(yield* buildEditorCommand({
       localPath: resolvedPath,
-      isDirectory: info.isDirectory(),
+      isDirectory,
       line: command.line,
       column: command.column,
       editor: command.editor ?? DEFAULT_EDITOR_SETTINGS,
       platform,
-    })
-    await spawnDetached(editorCommand.command, editorCommand.args)
-    return
+    }))
   }
 
   if (platform === "darwin") {
     if (command.action === "open_default") {
-      if (!info) {
-        throw new Error(`Path not found: ${resolvedPath}`)
+      if (Option.isNone(info)) {
+        return yield* pathNotFound
       }
-      const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
-      await spawnDetached(defaultCommand.command, defaultCommand.args)
-      return
+      return yield* spawn(buildDefaultOpenCommand({ localPath: resolvedPath, platform }))
     }
     if (command.action === "open_preview") {
-      if (!info) {
-        throw new Error(`Path not found: ${resolvedPath}`)
+      if (Option.isNone(info)) {
+        return yield* pathNotFound
       }
-      if (!canOpenMacApp("Preview")) {
-        throw new Error("Preview is not installed")
+      if (!(yield* canOpenMacApp("Preview"))) {
+        return yield* new ExternalOpenError({ localPath: resolvedPath, message: "Preview is not installed" })
       }
-      const previewCommand = buildPreviewCommand({
-        localPath: resolvedPath,
-        isDirectory: info.isDirectory(),
-        platform,
-      })
-      await spawnDetached(previewCommand.command, previewCommand.args)
-      return
+      return yield* spawn(yield* buildPreviewCommand({ localPath: resolvedPath, isDirectory, platform }))
     }
     if (command.action === "open_finder") {
-      if (info?.isDirectory()) {
-        await spawnDetached("open", [resolvedPath])
-      } else {
-        await spawnDetached("open", ["-R", resolvedPath])
-      }
-      return
+      return yield* isDirectory
+        ? spawnDetached("open", [resolvedPath])
+        : spawnDetached("open", ["-R", resolvedPath])
     }
     if (command.action === "open_terminal") {
-      const terminalCommand = buildTerminalCommand({
+      return yield* spawn(yield* buildTerminalCommand({
         preset: command.terminal,
         localPath: resolvedPath,
         platform,
-      })
-      await spawnDetached(terminalCommand.command, terminalCommand.args)
-      return
+      }))
     }
   }
 
   if (platform === "win32") {
     if (command.action === "open_default") {
-      if (!info) {
-        throw new Error(`Path not found: ${resolvedPath}`)
+      if (Option.isNone(info)) {
+        return yield* pathNotFound
       }
-      const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
-      await spawnDetached(defaultCommand.command, defaultCommand.args)
-      return
+      return yield* spawn(buildDefaultOpenCommand({ localPath: resolvedPath, platform }))
     }
     if (command.action === "open_finder") {
-      if (info?.isDirectory()) {
-        await spawnDetached("explorer", [resolvedPath])
-      } else {
-        await spawnDetached("explorer", ["/select,", resolvedPath])
-      }
-      return
+      return yield* isDirectory
+        ? spawnDetached("explorer", [resolvedPath])
+        : spawnDetached("explorer", ["/select,", resolvedPath])
     }
     if (command.action === "open_terminal") {
       // A named emulator wins over the Windows Terminal / cmd fallback, the
       // same way it does on Linux — the menu only offers one when it found it.
       if (command.terminal) {
-        const named = buildTerminalCommand({ preset: command.terminal, localPath: resolvedPath, platform })
-        await spawnDetached(named.command, named.args)
-        return
+        return yield* spawn(yield* buildTerminalCommand({ preset: command.terminal, localPath: resolvedPath, platform }))
       }
-      if (hasCommand("wt")) {
-        await spawnDetached("wt", ["-d", resolvedPath])
-        return
+      if (yield* hasCommand("wt")) {
+        return yield* spawnDetached("wt", ["-d", resolvedPath])
       }
-      await spawnDetached("cmd", ["/c", "start", "", "cmd", "/K", `cd /d ${resolvedPath}`])
-      return
+      return yield* spawnDetached("cmd", ["/c", "start", "", "cmd", "/K", `cd /d ${resolvedPath}`])
     }
   }
 
   if (command.action === "open_preview") {
-    throw new Error("Preview is only available on macOS")
+    return yield* new ExternalOpenError({ localPath: resolvedPath, message: "Preview is only available on macOS" })
   }
 
   if (command.action === "open_default") {
-    if (!info) {
-      throw new Error(`Path not found: ${resolvedPath}`)
+    if (Option.isNone(info)) {
+      return yield* pathNotFound
     }
-    const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
-    await spawnDetached(defaultCommand.command, defaultCommand.args)
-    return
+    return yield* spawn(buildDefaultOpenCommand({ localPath: resolvedPath, platform }))
   }
 
   if (command.action === "open_finder") {
-    await spawnDetached("xdg-open", [info?.isDirectory() ? resolvedPath : path.dirname(resolvedPath)])
-    return
+    return yield* spawnDetached("xdg-open", [isDirectory ? resolvedPath : path.dirname(resolvedPath)])
   }
   if (command.action === "open_terminal") {
     if (command.terminal) {
-      const named = buildTerminalCommand({ preset: command.terminal, localPath: resolvedPath, platform })
-      await spawnDetached(named.command, named.args)
-      return
+      return yield* spawn(yield* buildTerminalCommand({ preset: command.terminal, localPath: resolvedPath, platform }))
     }
     for (const terminalCommand of ["x-terminal-emulator", "gnome-terminal", "konsole"]) {
-      if (!hasCommand(terminalCommand)) continue
-      if (terminalCommand === "gnome-terminal") {
-        await spawnDetached(terminalCommand, ["--working-directory", resolvedPath])
-      } else if (terminalCommand === "konsole") {
-        await spawnDetached(terminalCommand, ["--workdir", resolvedPath])
-      } else {
-        await spawnDetached(terminalCommand, ["--working-directory", resolvedPath])
-      }
-      return
+      if (!(yield* hasCommand(terminalCommand))) continue
+      return yield* spawnDetached(
+        terminalCommand,
+        terminalCommand === "konsole" ? ["--workdir", resolvedPath] : ["--working-directory", resolvedPath],
+      )
     }
-    await spawnDetached("xdg-open", [resolvedPath])
+    return yield* spawnDetached("xdg-open", [resolvedPath])
   }
-}
+})
 
-export function buildEditorCommand(args: {
+export const buildEditorCommand = Effect.fn("ExternalOpen.buildEditorCommand")(function* (args: {
   localPath: string
   isDirectory: boolean
   line?: number
   column?: number
   editor: EditorOpenSettings
   platform: NodeJS.Platform
-}): CommandSpec {
+}) {
   const editor = normalizeEditorSettings(args.editor)
   if (editor.preset === "custom") {
-    return buildCustomEditorCommand({
+    return yield* buildCustomEditorCommand({
       commandTemplate: editor.commandTemplate,
       localPath: args.localPath,
       line: args.line,
       column: args.column,
     })
   }
-  return buildPresetEditorCommand(args, editor.preset)
-}
+  return yield* buildPresetEditorCommand(args, editor.preset)
+})
 
 /**
  * Launch a specific terminal emulator in a directory. Each one takes its
  * working directory differently, and on macOS the GUI-only ones have to go
  * through `open` — Ghostty's own --help says as much.
  */
-export function buildTerminalCommand(args: {
+export const buildTerminalCommand = Effect.fn("ExternalOpen.buildTerminalCommand")(function* (args: {
   preset?: TerminalPreset
   localPath: string
   platform: NodeJS.Platform
-}): CommandSpec {
+}) {
   const { localPath, platform } = args
   const preset = args.preset ?? (platform === "darwin" ? "terminal" : undefined)
   if (!preset) {
-    throw new Error("No terminal specified")
+    return yield* new ExternalOpenError({ localPath, message: "No terminal specified" })
   }
   const spec = TERMINAL_SPECS[preset]
 
   if (platform === "darwin") {
-    if (!canOpenMacApp(spec.macApp)) {
+    if (!(yield* canOpenMacApp(spec.macApp))) {
       // Fall through to the CLI when one exists — a Homebrew install without
       // an app bundle still works.
-      if (!spec.cli || !hasCommand(spec.cli)) {
-        throw new Error(`${spec.label} is not installed`)
+      if (!spec.cli || !(yield* hasCommand(spec.cli))) {
+        return yield* new ExternalOpenError({ localPath, message: `${spec.label} is not installed` })
       }
       return buildTerminalCliCommand(preset, spec.cli, localPath)
     }
-    switch (preset) {
+    return Match.value(preset).pipe(
       // Terminal, iTerm, Warp and Hyper open a path handed to them directly.
-      case "terminal":
-      case "iterm":
-      case "warp":
-      case "hyper":
-        return { command: "open", args: ["-a", spec.macApp, localPath] }
+      Match.whenOr("terminal", "iterm", "warp", "hyper", (): CommandSpec =>
+        ({ command: "open", args: ["-a", spec.macApp, localPath] })),
       // The rest want the directory as a launch flag, and `-n` so a running
       // instance still gets a new window in the right place.
-      case "ghostty":
-        return { command: "open", args: ["-na", spec.macApp, "--args", `--working-directory=${localPath}`] }
-      case "wezterm":
-        return { command: "open", args: ["-na", spec.macApp, "--args", "start", "--cwd", localPath] }
-      case "kitty":
-        return { command: "open", args: ["-na", spec.macApp, "--args", "--directory", localPath] }
-      case "alacritty":
-        return { command: "open", args: ["-na", spec.macApp, "--args", "--working-directory", localPath] }
-    }
+      Match.when("ghostty", (): CommandSpec =>
+        ({ command: "open", args: ["-na", spec.macApp, "--args", `--working-directory=${localPath}`] })),
+      Match.when("wezterm", (): CommandSpec =>
+        ({ command: "open", args: ["-na", spec.macApp, "--args", "start", "--cwd", localPath] })),
+      Match.when("kitty", (): CommandSpec =>
+        ({ command: "open", args: ["-na", spec.macApp, "--args", "--directory", localPath] })),
+      Match.when("alacritty", (): CommandSpec =>
+        ({ command: "open", args: ["-na", spec.macApp, "--args", "--working-directory", localPath] })),
+      Match.exhaustive,
+    )
   }
 
   if (!spec.cli) {
-    throw new Error(`${spec.label} is only available on macOS`)
+    return yield* new ExternalOpenError({ localPath, message: `${spec.label} is only available on macOS` })
   }
   return buildTerminalCliCommand(preset, spec.cli, localPath)
-}
+})
 
 function buildTerminalCliCommand(preset: TerminalPreset, cli: string, localPath: string): CommandSpec {
   switch (preset) {
@@ -240,19 +232,19 @@ function buildTerminalCliCommand(preset: TerminalPreset, cli: string, localPath:
   }
 }
 
-export function buildPreviewCommand(args: {
+export const buildPreviewCommand = Effect.fn("ExternalOpen.buildPreviewCommand")(function* (args: {
   localPath: string
   isDirectory: boolean
   platform: NodeJS.Platform
-}): CommandSpec {
+}) {
   if (args.platform !== "darwin") {
-    throw new Error("Preview is only available on macOS")
+    return yield* new ExternalOpenError({ localPath: args.localPath, message: "Preview is only available on macOS" })
   }
   if (args.isDirectory) {
-    throw new Error("Preview cannot open directories")
+    return yield* new ExternalOpenError({ localPath: args.localPath, message: "Preview cannot open directories" })
   }
-  return { command: "open", args: ["-a", "Preview", args.localPath] }
-}
+  return { command: "open", args: ["-a", "Preview", args.localPath] } satisfies CommandSpec
+})
 
 export function buildDefaultOpenCommand(args: {
   localPath: string
@@ -267,7 +259,7 @@ export function buildDefaultOpenCommand(args: {
   return { command: "xdg-open", args: [args.localPath] }
 }
 
-function buildPresetEditorCommand(
+const buildPresetEditorCommand = Effect.fn("ExternalOpen.buildPresetEditorCommand")(function* (
   args: {
     localPath: string
     isDirectory: boolean
@@ -275,10 +267,19 @@ function buildPresetEditorCommand(
     column?: number
     platform: NodeJS.Platform
   },
-  preset: Exclude<EditorPreset, "custom">
-): CommandSpec {
+  preset: Exclude<EditorPreset, "custom">,
+) {
   const gotoTarget = `${args.localPath}:${args.line ?? 1}:${args.column ?? 1}`
-  const opener = resolveEditorExecutable(preset, args.platform)
+  const opener = yield* resolveEditorExecutable(preset, args.platform, args.localPath)
+  return presetEditorCommand(args, preset, opener, gotoTarget)
+})
+
+function presetEditorCommand(
+  args: { localPath: string; isDirectory: boolean; line?: number },
+  preset: Exclude<EditorPreset, "custom">,
+  opener: CommandSpec,
+  gotoTarget: string,
+): CommandSpec {
   if (preset === "xcode") {
     if (args.isDirectory || !args.line) {
       return { command: opener.command, args: [...opener.args, args.localPath] }
@@ -299,27 +300,31 @@ function buildPresetEditorCommand(
   return { command: opener.command, args: [...opener.args, "--goto", gotoTarget] }
 }
 
-function resolveEditorExecutable(preset: Exclude<EditorPreset, "custom">, platform: NodeJS.Platform) {
+const resolveEditorExecutable = Effect.fn("ExternalOpen.resolveEditorExecutable")(function* (
+  preset: Exclude<EditorPreset, "custom">,
+  platform: NodeJS.Platform,
+  localPath: string,
+) {
   const spec = EDITOR_SPECS[preset]
-  if (hasCommand(spec.cli)) return { command: spec.cli, args: [] }
+  if (yield* hasCommand(spec.cli)) return { command: spec.cli, args: [] } satisfies CommandSpec
   if (platform === "darwin") {
-    if (canOpenMacApp(spec.macApp)) return { command: "open", args: ["-a", spec.macApp] }
+    if (yield* canOpenMacApp(spec.macApp)) return { command: "open", args: ["-a", spec.macApp] } satisfies CommandSpec
     // Only macOS can say for sure that an app is absent; elsewhere fall
     // through to the CLI and let the spawn report what went wrong.
-    throw new Error(`${spec.label} is not installed`)
+    return yield* new ExternalOpenError({ localPath, message: `${spec.label} is not installed` })
   }
-  return { command: spec.cli, args: [] }
-}
+  return { command: spec.cli, args: [] } satisfies CommandSpec
+})
 
-function buildCustomEditorCommand(args: {
+const buildCustomEditorCommand = Effect.fn("ExternalOpen.buildCustomEditorCommand")(function* (args: {
   commandTemplate: string
   localPath: string
   line?: number
   column?: number
-}): CommandSpec {
+}) {
   const template = args.commandTemplate.trim()
   if (!template.includes("{path}")) {
-    throw new Error("Custom editor command must include {path}")
+    return yield* new EditorTemplateError({ template, message: "Custom editor command must include {path}" })
   }
 
   const line = String(args.line ?? 1)
@@ -329,15 +334,15 @@ function buildCustomEditorCommand(args: {
     .replaceAll("{line}", line)
     .replaceAll("{column}", column)
 
-  const tokens = tokenizeCommandTemplate(replaced)
+  const tokens = yield* tokenizeCommandTemplate(replaced)
   const [command, ...commandArgs] = tokens
   if (!command) {
-    throw new Error("Custom editor command is empty")
+    return yield* new EditorTemplateError({ template, message: "Custom editor command is empty" })
   }
-  return { command, args: commandArgs }
-}
+  return { command, args: commandArgs } satisfies CommandSpec
+})
 
-export function tokenizeCommandTemplate(template: string) {
+export const tokenizeCommandTemplate = Effect.fn("ExternalOpen.tokenizeCommandTemplate")(function* (template: string) {
   const tokens: string[] = []
   let current = ""
   let quote: "'" | "\"" | null = null
@@ -377,13 +382,13 @@ export function tokenizeCommandTemplate(template: string) {
   }
 
   if (quote) {
-    throw new Error("Custom editor command has an unclosed quote")
+    return yield* new EditorTemplateError({ template, message: "Custom editor command has an unclosed quote" })
   }
   if (current.length > 0) {
     tokens.push(current)
   }
   return tokens
-}
+})
 
 function normalizeEditorSettings(editor: EditorOpenSettings): EditorOpenSettings {
   const preset = normalizeEditorPreset(editor.preset)

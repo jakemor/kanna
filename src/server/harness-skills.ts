@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
-import { homedir } from "node:os"
 import path from "node:path"
+import { Effect, FileSystem, Option } from "effect"
 import type { AgentProvider, GlobalSkillSummary, HarnessSkill, HarnessSkillSource } from "../shared/types"
+import { FileSystemExtras } from "./platform/file-system-extras"
+import { Machine } from "./platform/machine"
 
 /**
  * Harness-agnostic skill plumbing for the composer's "/" menu.
@@ -131,75 +132,77 @@ export function normalizeSkillDescription(name: string, description: string): st
   return description
 }
 
-function readSkillFile(skillFilePath: string, fallbackName: string): HarnessSkill | null {
-  let markdown: string
-  try {
-    markdown = readFileSync(skillFilePath, "utf8")
-  } catch {
-    return null
-  }
-  const frontmatter = parseFrontmatter(markdown)
+// Every read below treats a file or directory it cannot read as absent, as
+// the scans always have: a skill root that is missing or unreadable is not
+// an error, it just has no skills in it.
+
+/** Whether `filePath` exists. Unreadable counts as absent. */
+const exists = (fs: FileSystem.FileSystem, filePath: string) =>
+  fs.exists(filePath).pipe(Effect.catchTag("PlatformError", () => Effect.succeed(false)))
+
+/** A directory's entry names, or none when it cannot be read. */
+const readDirectoryNames = (fs: FileSystem.FileSystem, dir: string) =>
+  fs.readDirectory(dir).pipe(Effect.catchTag("PlatformError", () => Effect.succeed<string[]>([])))
+
+const readSkillFile = Effect.fn("HarnessSkills.readSkillFile")(function* (
+  fs: FileSystem.FileSystem,
+  skillFilePath: string,
+  fallbackName: string,
+) {
+  const markdown = yield* fs.readFileString(skillFilePath).pipe(
+    Effect.map(Option.some),
+    Effect.catchTag("PlatformError", () => Effect.succeedNone),
+  )
+  if (Option.isNone(markdown)) return Option.none<HarnessSkill>()
+  const frontmatter = parseFrontmatter(markdown.value)
   const name = frontmatter.name || fallbackName
-  if (!name || name.startsWith("._")) return null
-  return {
+  if (!name || name.startsWith("._")) return Option.none<HarnessSkill>()
+  return Option.some<HarnessSkill>({
     name,
     description: normalizeSkillDescription(name, frontmatter.description ?? ""),
     source: "skill",
     path: skillFilePath,
-  }
-}
+  })
+})
 
 /** Scan a `<root>/<skill-name>/SKILL.md` directory (the Agent Skills layout). */
-export function scanSkillsRoot(root: string): HarnessSkill[] {
-  let entries: string[]
-  try {
-    entries = readdirSync(root)
-  } catch {
-    return []
-  }
-  const skills: HarnessSkill[] = []
-  for (const entry of entries.sort()) {
-    if (entry.startsWith(".")) continue
+export const scanSkillsRoot = Effect.fn("HarnessSkills.scanSkillsRoot")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem
+  const entries = yield* readDirectoryNames(fs, root)
+  const skills = yield* Effect.forEach(entries.sort(), (entry) => Effect.gen(function* () {
+    if (entry.startsWith(".")) return Option.none<HarnessSkill>()
     const skillFile = path.join(root, entry, "SKILL.md")
-    if (!existsSync(skillFile)) continue
-    const skill = readSkillFile(skillFile, entry)
-    if (skill) skills.push(skill)
-  }
-  return skills
-}
+    if (!(yield* exists(fs, skillFile))) return Option.none<HarnessSkill>()
+    return yield* readSkillFile(fs, skillFile, entry)
+  }))
+  return skills.flatMap(Option.toArray)
+})
 
 /** Scan a directory of `*.md` command files (claude `.claude/commands` layout). */
-export function scanCommandsRoot(root: string): HarnessSkill[] {
-  let entries: string[]
-  try {
-    entries = readdirSync(root)
-  } catch {
-    return []
-  }
-  const commands: HarnessSkill[] = []
-  for (const entry of entries.sort()) {
-    if (entry.startsWith(".") || !entry.endsWith(".md")) continue
+export const scanCommandsRoot = Effect.fn("HarnessSkills.scanCommandsRoot")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem
+  const entries = yield* readDirectoryNames(fs, root)
+  const commands = yield* Effect.forEach(entries.sort(), (entry) => Effect.gen(function* () {
+    if (entry.startsWith(".") || !entry.endsWith(".md")) return Option.none<HarnessSkill>()
     const filePath = path.join(root, entry)
-    let markdown: string
-    try {
-      if (!statSync(filePath).isFile()) continue
-      markdown = readFileSync(filePath, "utf8")
-    } catch {
-      continue
-    }
-    const frontmatter = parseFrontmatter(markdown)
+    const markdown = yield* fs.stat(filePath).pipe(
+      Effect.flatMap((info) => info.type === "File" ? Effect.map(fs.readFileString(filePath), Option.some) : Effect.succeedNone),
+      Effect.catchTag("PlatformError", () => Effect.succeedNone),
+    )
+    if (Option.isNone(markdown)) return Option.none<HarnessSkill>()
+    const frontmatter = parseFrontmatter(markdown.value)
     const name = entry.slice(0, -3)
-    if (name.startsWith("._")) continue
-    commands.push({
+    if (name.startsWith("._")) return Option.none<HarnessSkill>()
+    return Option.some<HarnessSkill>({
       name,
       description: frontmatter.description ?? "",
       ...(frontmatter["argument-hint"] ? { argumentHint: frontmatter["argument-hint"] } : {}),
       source: "command",
       path: filePath,
     })
-  }
-  return commands
-}
+  }))
+  return commands.flatMap(Option.toArray)
+})
 
 /** First occurrence of a name wins — pass roots in precedence order. */
 export function dedupeSkillsByName(skills: HarnessSkill[]): HarnessSkill[] {
@@ -214,12 +217,13 @@ export function dedupeSkillsByName(skills: HarnessSkill[]): HarnessSkill[] {
 }
 
 /** Walk from `cwd` up to the enclosing git repo root (inclusive), or just `cwd` when not in a repo. */
-export function collectAncestorDirsToRepoRoot(cwd: string): string[] {
+export const collectAncestorDirsToRepoRoot = Effect.fn("HarnessSkills.collectAncestorDirsToRepoRoot")(function* (cwd: string) {
+  const fs = yield* FileSystem.FileSystem
   const dirs: string[] = []
   let dir = path.resolve(cwd)
   let repoRoot: string | null = null
   for (let probe = dir; ; ) {
-    if (existsSync(path.join(probe, ".git"))) {
+    if (yield* exists(fs, path.join(probe, ".git"))) {
       repoRoot = probe
       break
     }
@@ -235,39 +239,50 @@ export function collectAncestorDirsToRepoRoot(cwd: string): string[] {
     dir = parent
   }
   return repoRoot === null ? [path.resolve(cwd)] : dirs
-}
+})
 
 const WALK_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", ".next", "vendor", ".venv", "target"])
 const WALK_MAX_DEPTH = 8
+
+/**
+ * A directory's subdirectories, symlinks not followed. `FileSystem` lists
+ * names only, and telling a directory from a file or a symlink through it
+ * costs a stat per entry across the whole repo, so this one read keeps
+ * the entries' kinds.
+ */
+const readSubdirectories = (dir: string) =>
+  Effect.gen(function* () {
+    const files = yield* FileSystemExtras
+    return yield* files.readDirectoryEntries(dir).pipe(
+      Effect.map((entries) => entries.filter((entry) => entry.kind === "Directory").map((entry) => entry.name)),
+      Effect.catchTag("PlatformError", () => Effect.succeed<string[]>([])),
+    )
+  })
 
 /**
  * Find every `<dir>/<marker>/skills` root nested anywhere under `base` (cursor
  * treats `.cursor/skills` and `.agents/skills` as valid in any subdirectory of
  * the repo). Bounded walk: skips dependency/build dirs and caps depth.
  */
-export function findNestedSkillRoots(base: string, markers: string[]): string[] {
+export const findNestedSkillRoots = Effect.fn("HarnessSkills.findNestedSkillRoots")(function* (base: string, markers: string[]) {
+  const fs = yield* FileSystem.FileSystem
   const roots: string[] = []
-  const walk = (dir: string, depth: number) => {
+  const walk = (dir: string, depth: number): Effect.Effect<void, never, FileSystemExtras> => Effect.gen(function* () {
     for (const marker of markers) {
       const candidate = path.join(dir, marker, "skills")
-      if (existsSync(candidate)) roots.push(candidate)
+      if (yield* exists(fs, candidate)) roots.push(candidate)
     }
     if (depth >= WALK_MAX_DEPTH) return
-    let entries: import("node:fs").Dirent[]
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      if (entry.name.startsWith(".") || WALK_SKIP_DIRS.has(entry.name)) continue
-      walk(path.join(dir, entry.name), depth + 1)
-    }
-  }
-  walk(path.resolve(base), 0)
+    const children = yield* readSubdirectories(dir)
+    yield* Effect.forEach(
+      children.filter((name) => !name.startsWith(".") && !WALK_SKIP_DIRS.has(name)),
+      (name) => walk(path.join(dir, name), depth + 1),
+      { discard: true },
+    )
+  })
+  yield* walk(path.resolve(base), 0)
   return roots
-}
+})
 
 export interface ScanArgs {
   cwd: string
@@ -275,20 +290,24 @@ export interface ScanArgs {
   home?: string
 }
 
+/** Every skill under each root, roots in order. */
+const scanSkillsRoots = (roots: string[]) =>
+  Effect.forEach(roots, (root) => scanSkillsRoot(root)).pipe(Effect.map((skills) => skills.flat()))
+
 /**
  * Claude cold-start fallback (no live session to ask): project + user
  * `.claude/skills` and `.claude/commands`. Built-ins, plugins, and bundled
  * skills only appear once the live session's supportedCommands() is available.
  */
-export function scanClaudeSkills(args: ScanArgs): HarnessSkill[] {
-  const home = args.home ?? homedir()
+export const scanClaudeSkills = Effect.fn("HarnessSkills.scanClaudeSkills")(function* (args: ScanArgs) {
+  const home = args.home ?? (yield* Machine).homeDirectory
   return dedupeSkillsByName([
-    ...scanSkillsRoot(path.join(args.cwd, ".claude", "skills")),
-    ...scanCommandsRoot(path.join(args.cwd, ".claude", "commands")),
-    ...scanSkillsRoot(path.join(home, ".claude", "skills")),
-    ...scanCommandsRoot(path.join(home, ".claude", "commands")),
+    ...yield* scanSkillsRoot(path.join(args.cwd, ".claude", "skills")),
+    ...yield* scanCommandsRoot(path.join(args.cwd, ".claude", "commands")),
+    ...yield* scanSkillsRoot(path.join(home, ".claude", "skills")),
+    ...yield* scanCommandsRoot(path.join(home, ".claude", "commands")),
   ])
-}
+})
 
 /**
  * Codex discovery roots, mirrored from codex-rs/core-skills loader: repo-scope
@@ -297,49 +316,49 @@ export function scanClaudeSkills(args: ScanArgs): HarnessSkill[] {
  * is running for the chat; paths match server discovery, so structured skill
  * input items still resolve on capable codex versions.
  */
-export function scanCodexSkills(args: ScanArgs): HarnessSkill[] {
-  const home = args.home ?? homedir()
-  const repoRoots = collectAncestorDirsToRepoRoot(args.cwd)
+export const scanCodexSkills = Effect.fn("HarnessSkills.scanCodexSkills")(function* (args: ScanArgs) {
+  const home = args.home ?? (yield* Machine).homeDirectory
+  const repoRoots = (yield* collectAncestorDirsToRepoRoot(args.cwd))
     .map((dir) => path.join(dir, ".agents", "skills"))
-  return dedupeSkillsByName([
-    ...repoRoots.flatMap(scanSkillsRoot),
-    ...scanSkillsRoot(path.join(home, ".agents", "skills")),
-    ...scanSkillsRoot(path.join(home, ".codex", "skills")),
-    ...scanSkillsRoot("/etc/codex/skills"),
-  ])
-}
+  return dedupeSkillsByName(yield* scanSkillsRoots([
+    ...repoRoots,
+    path.join(home, ".agents", "skills"),
+    path.join(home, ".codex", "skills"),
+    "/etc/codex/skills",
+  ]))
+})
 
 /**
  * Cursor has no enumeration protocol — this scan mirrors the CLI's own
  * AgentSkillsCursorRulesService roots: `.cursor/skills` and `.agents/skills`
  * anywhere in the repo, plus the user-level equivalents.
  */
-export function scanCursorSkills(args: ScanArgs): HarnessSkill[] {
-  const home = args.home ?? homedir()
-  return dedupeSkillsByName([
-    ...findNestedSkillRoots(args.cwd, [".cursor", ".agents"]).flatMap(scanSkillsRoot),
-    ...scanSkillsRoot(path.join(home, ".cursor", "skills")),
-    ...scanSkillsRoot(path.join(home, ".agents", "skills")),
-  ])
-}
+export const scanCursorSkills = Effect.fn("HarnessSkills.scanCursorSkills")(function* (args: ScanArgs) {
+  const home = args.home ?? (yield* Machine).homeDirectory
+  return dedupeSkillsByName(yield* scanSkillsRoots([
+    ...yield* findNestedSkillRoots(args.cwd, [".cursor", ".agents"]),
+    path.join(home, ".cursor", "skills"),
+    path.join(home, ".agents", "skills"),
+  ]))
+})
 
 /**
  * Grok discovery: project + user `.grok/skills`, shared `.agents/skills`
  * (repo → git root and $HOME), matching grok inspect's resource loader.
  */
-export function scanGrokSkills(args: ScanArgs): HarnessSkill[] {
-  const home = args.home ?? homedir()
-  const repoRoots = collectAncestorDirsToRepoRoot(args.cwd)
+export const scanGrokSkills = Effect.fn("HarnessSkills.scanGrokSkills")(function* (args: ScanArgs) {
+  const home = args.home ?? (yield* Machine).homeDirectory
+  const repoRoots = (yield* collectAncestorDirsToRepoRoot(args.cwd))
     .flatMap((dir) => [
       path.join(dir, ".grok", "skills"),
       path.join(dir, ".agents", "skills"),
     ])
-  return dedupeSkillsByName([
-    ...repoRoots.flatMap(scanSkillsRoot),
-    ...scanSkillsRoot(path.join(home, ".grok", "skills")),
-    ...scanSkillsRoot(path.join(home, ".agents", "skills")),
-  ])
-}
+  return dedupeSkillsByName(yield* scanSkillsRoots([
+    ...repoRoots,
+    path.join(home, ".grok", "skills"),
+    path.join(home, ".agents", "skills"),
+  ]))
+})
 
 /** Resolve a typed `/name` against a skill list (exact match on the namespaced name). */
 export function findSkillByName(skills: HarnessSkill[], name: string): HarnessSkill | null {
@@ -370,11 +389,11 @@ export function globalSkillRoots(home: string): { dir: string; providers: AgentP
  * roots (e.g. the marketplace installs to both ~/.agents and ~/.claude) shows
  * once with the union of supporting harnesses.
  */
-export function listGlobalSkills(args: { home?: string } = {}): GlobalSkillSummary[] {
-  const home = args.home ?? homedir()
+export const listGlobalSkills = Effect.fn("HarnessSkills.listGlobalSkills")(function* (args: { home?: string } = {}) {
+  const home = args.home ?? (yield* Machine).homeDirectory
   const byName = new Map<string, { name: string; description: string; providers: Set<AgentProvider>; paths: string[] }>()
   for (const root of globalSkillRoots(home)) {
-    for (const skill of scanSkillsRoot(root.dir)) {
+    for (const skill of yield* scanSkillsRoot(root.dir)) {
       const existing = byName.get(skill.name)
       if (existing) {
         for (const provider of root.providers) existing.providers.add(provider)
@@ -392,13 +411,13 @@ export function listGlobalSkills(args: { home?: string } = {}): GlobalSkillSumma
   }
   return [...byName.values()]
     .sort((left, right) => left.name.localeCompare(right.name))
-    .map((entry) => ({
+    .map((entry): GlobalSkillSummary => ({
       name: entry.name,
       description: entry.description,
       providers: PROVIDER_ORDER.filter((provider) => entry.providers.has(provider)),
       paths: entry.paths,
     }))
-}
+})
 
 export function toHarnessSkillSource(value: string): HarnessSkillSource {
   switch (value) {

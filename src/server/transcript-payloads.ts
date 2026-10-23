@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs"
+import { Effect, FileSystem, Option, Schema } from "effect"
 import type { TranscriptEntry } from "../shared/types"
 import { INLINE_TOOL_KINDS, UNBOUNDED_TOOL_INPUT_FIELDS, trimToolCallEntry } from "./events"
 
@@ -19,6 +19,10 @@ import { INLINE_TOOL_KINDS, UNBOUNDED_TOOL_INPUT_FIELDS, trimToolCallEntry } fro
  * Reads are by byte offset. The index (id to offset and length) is built
  * once per chat by scanning the sidecar for newlines, without parsing, and
  * then kept current as lines are appended.
+ *
+ * Every read (`loadTranscriptPayloadIndex`, `readTranscriptPayloadsById`,
+ * `readTranscriptPayloads`) goes through `FileSystem` and backs the
+ * EventStore's Effect reads (`readEntriesById`, `readMessages`).
  */
 
 /** A header's dropped fields, keyed by entry id. */
@@ -94,7 +98,7 @@ export function mergeTranscriptPayload(header: TranscriptEntry, payload: Transcr
   return header
 }
 
-interface PayloadSpan {
+export interface PayloadSpan {
   offset: number
   length: number
 }
@@ -112,8 +116,9 @@ export class TranscriptPayloadIndex {
   /** Bytes of the sidecar covered by the index; the next append starts here. */
   private scannedBytes = 0
 
-  constructor(private readonly sidecarPath: string) {
-    if (existsSync(sidecarPath)) this.scan(readFileSync(sidecarPath))
+  /** Scans `bytes`, the sidecar as `loadTranscriptPayloadIndex` read it. */
+  constructor(readonly sidecarPath: string, bytes: Uint8Array) {
+    this.scan(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength))
   }
 
   /** Account for a line this process just appended, without touching disk. */
@@ -126,21 +131,9 @@ export class TranscriptPayloadIndex {
     return this.spans.has(payloadId)
   }
 
-  /** One positional read; null when the id is not in the sidecar. */
-  read(payloadId: string): TranscriptPayload | null {
-    const span = this.spans.get(payloadId)
-    if (!span) return null
-    const fd = openSync(this.sidecarPath, "r")
-    try {
-      const buffer = Buffer.alloc(span.length)
-      readSync(fd, buffer, 0, span.length, span.offset)
-      return JSON.parse(buffer.toString("utf8")) as TranscriptPayload
-    } catch {
-      // A truncated or garbled line loses one payload, not the transcript.
-      return null
-    } finally {
-      closeSync(fd)
-    }
+  /** Where a payload's line sits, for `readTranscriptPayloadsById`. */
+  span(payloadId: string): PayloadSpan | undefined {
+    return this.spans.get(payloadId)
   }
 
   private scan(bytes: Buffer) {
@@ -174,18 +167,94 @@ export function serializeTranscriptPayload(payload: TranscriptPayload) {
   return `${JSON.stringify({ _id, ...rest })}\n`
 }
 
-/** Every payload in a sidecar, for the full-fidelity readers. */
-export function readAllTranscriptPayloads(sidecarPath: string): Map<string, TranscriptPayload> {
+function parsePayloadLines(text: string) {
   const payloads = new Map<string, TranscriptPayload>()
-  if (!existsSync(sidecarPath)) return payloads
-  for (const line of readFileSync(sidecarPath, "utf8").split("\n")) {
+  for (const line of text.split("\n")) {
     if (!line) continue
-    try {
-      const payload = JSON.parse(line) as TranscriptPayload
-      payloads.set(payload._id, payload)
-    } catch {
-      // Skip a garbled line rather than fail the whole read.
-    }
+    // Skip a garbled line rather than fail the whole read.
+    const payload = decodePayloadLine(line)
+    if (Option.isSome(payload)) payloads.set(payload.value._id, payload.value)
   }
   return payloads
 }
+
+export class TranscriptPayloadReadError extends Schema.TaggedError<TranscriptPayloadReadError>()(
+  "@kanna/server/transcript-payloads/TranscriptPayloadReadError",
+  {
+    sidecarPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
+/** The index of a sidecar, read through `FileSystem`. No sidecar is an empty index. */
+export const loadTranscriptPayloadIndex = Effect.fn("TranscriptPayloads.loadIndex")(function* (sidecarPath: string) {
+  const fs = yield* FileSystem.FileSystem
+  const bytes = yield* fs.readFile(sidecarPath).pipe(
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(new Uint8Array(0))),
+    Effect.catchTag("PlatformError", (cause) => Effect.fail(new TranscriptPayloadReadError({ sidecarPath, cause }))),
+  )
+  return new TranscriptPayloadIndex(sidecarPath, bytes)
+})
+
+/**
+ * The payloads of `payloadIds`, one positional read each through one open
+ * file. Ids the index does not have are absent. A line that cannot be read
+ * or decoded loses that payload, not the batch.
+ */
+export const readTranscriptPayloadsById = Effect.fn("TranscriptPayloads.readById")(function* (
+  index: TranscriptPayloadIndex,
+  payloadIds: Iterable<string>,
+) {
+  const payloads = new Map<string, TranscriptPayload>()
+  const spans = [...payloadIds].flatMap((payloadId) => {
+    const span = index.span(payloadId)
+    return span ? [[payloadId, span] as const] : []
+  })
+  if (spans.length === 0) return payloads
+  const fs = yield* FileSystem.FileSystem
+  yield* Effect.scoped(Effect.gen(function* () {
+    const file = yield* fs.open(index.sidecarPath)
+    for (const [payloadId, span] of spans) {
+      const bytes = yield* file.readAlloc(span.length, { position: BigInt(span.offset) }).pipe(
+        Effect.catchTag("PlatformError", () => Effect.succeedNone),
+      )
+      if (Option.isNone(bytes)) continue
+      const line = Buffer.from(bytes.value.buffer, bytes.value.byteOffset, bytes.value.byteLength).toString("utf8")
+      const payload = decodePayloadLine(line)
+      if (Option.isSome(payload)) payloads.set(payloadId, payload.value)
+    }
+  })).pipe(Effect.catchTag("PlatformError", () => Effect.void))
+  return payloads
+})
+
+/** Every payload in a sidecar, through `FileSystem`. */
+export const readTranscriptPayloads = Effect.fn("TranscriptPayloads.readAll")(function* (sidecarPath: string) {
+  const fs = yield* FileSystem.FileSystem
+  const text = yield* fs.readFileString(sidecarPath).pipe(
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed("")),
+    Effect.catchTag("PlatformError", (cause) => Effect.fail(new TranscriptPayloadReadError({ sidecarPath, cause }))),
+  )
+  return parsePayloadLines(text)
+})
+
+/**
+ * One sidecar line. Only `_id` is checked: the bodies are whatever the
+ * provider sent, and every sidecar line ever written has to keep loading.
+ * Keys this does not name are dropped; `mergeTranscriptPayload` reads only
+ * these.
+ */
+const TranscriptPayloadLine = Schema.Struct({
+  _id: Schema.String,
+  tool: Schema.optionalKey(Schema.Struct({
+    rawInput: Schema.optionalKey(Schema.Unknown),
+    input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  })),
+  content: Schema.optionalKey(Schema.Unknown),
+})
+
+const decodePayloadLine: (line: string) => Option.Option<TranscriptPayload> =
+  Schema.decodeUnknownOption(Schema.fromJsonString(TranscriptPayloadLine))

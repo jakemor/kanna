@@ -10,9 +10,9 @@ import {
   type SDKUserMessage,
   type SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk"
-import { homedir } from "node:os"
 import type {
   AgentProvider,
+  AccountInfo,
   AskUserQuestionItem,
   ChatAttachment,
   ChatSkillsSnapshot,
@@ -31,22 +31,24 @@ import type {
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
-import { AsyncQueue } from "./async-queue"
 import { resolveClaudeExecutable } from "./claude-executable"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
-import type { ChatOrchestrator } from "./orchestrator"
+import type { Orchestrator } from "./orchestrator"
 import { createClaudeKannaTools } from "./kanna-tool-adapters"
-import { EventStore } from "./event-store"
+import type { EventStore } from "./event-store"
 import { STRUCTURED_RESULT_TOOL_KINDS } from "./events"
-import type { AnalyticsReporter } from "./analytics"
-import { NoopAnalyticsReporter } from "./analytics"
-import { CodexAppServerManager } from "./codex-app-server"
-import { CursorCliManager } from "./cursor-cli"
-import { fetchGrokAccountUsage, GrokCliManager } from "./grok-cli"
-import { PiAgentManager, resolvePiConnection } from "./pi-agent"
+import { NoopAnalytics, type Analytics } from "./analytics"
+import { runKannaSync } from "./effect/bridge"
+import { type CodexAppServer, createCodexAppServer } from "./codex-app-server"
+import { makeCursorCli, type CursorCli } from "./cursor-cli"
+import { makeGrokCli, type GrokCli } from "./grok-cli"
+import { openHarnessTurn } from "./harness-bridge"
+import { PiAgentManager, piDataDir, resolvePiConnection } from "./pi-agent"
+import { Machine, type MachineEnv } from "./platform/machine"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
+import { QuickResponse, withSharedQuickResponse } from "./quick-response"
 import type { ClaudeRateLimitInfoRaw, ClaudeUsageRaw } from "./usage-limits"
-import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
+import type { HarnessEvent, HarnessToolRequest, ManagedHarnessTurn } from "./harness-types"
 import {
   appendSystemMessageBlock,
   buildSkillSystemMessage,
@@ -81,9 +83,13 @@ import {
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
-import { asNumber, asRecord } from "../shared/json"
-import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
+import { asRecord } from "../shared/json"
+import { maxClaudeContextWindowFromModelUsage, normalizeClaudeContextUsage, normalizeClaudeUsageSnapshot } from "./claude-usage"
+import { buildHandoffContext, buildHandoffMessageContent } from "./handoff"
 import { checkSessionArtifact, type SessionArtifactStatus } from "./session-artifacts"
+import { Cause, Context, Effect, Exit, Fiber, Queue, Schema, Stream } from "effect"
+import { runKanna } from "./effect/bridge"
+import type { PlatformServices } from "./platform"
 import { timestamped } from "./transcript"
 import {
   findWorkflowOf,
@@ -97,6 +103,22 @@ import {
 } from "./background-tasks"
 
 export type { SubagentActivityUpdate } from "./background-tasks"
+export { maxClaudeContextWindowFromModelUsage, normalizeClaudeContextUsage, normalizeClaudeUsageSnapshot } from "./claude-usage"
+
+/** Existing agent tests inject Promise stores; production passes EventStore's Effect service. */
+function runStoreWrite<A, E>(operation: Effect.Effect<A, E>): Promise<A> {
+  return runKanna(storeWriteEffect(operation))
+}
+
+/** Older agent fixtures return Promises from store writes. Production uses Effects. */
+function storeWriteEffect<A, E>(operation: Effect.Effect<A, E>): Effect.Effect<A, E | Error> {
+  return Effect.isEffect(operation)
+    ? operation
+    : Effect.tryPromise({
+      try: () => operation as unknown as Promise<A>,
+      catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+    })
+}
 
 /**
  * Tools every Claude session gets. `EnterPlanMode` is deliberately absent — it
@@ -180,7 +202,7 @@ interface ActiveTurn {
   customTools?: KannaToolRuntime
   chatId: string
   provider: AgentProvider
-  turn: HarnessTurn
+  turn: ManagedHarnessTurn<unknown, unknown, unknown>
   claudePromptSeq?: number
   /** The Claude session this turn runs in (`ClaudeSessionState.id`). See `runClaudeSession`'s cleanup. */
   claudeSessionId?: string
@@ -202,7 +224,7 @@ interface ActiveTurn {
 interface ClaudeSessionHandle {
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
-  getAccountInfo?: () => Promise<any>
+  getAccountInfo?: () => Promise<AccountInfo | null>
   getUsage?: () => Promise<ClaudeUsageRaw | null>
   interrupt: () => Promise<void>
   /** Stops one background task; the CLI then reports it ended as `stopped`. */
@@ -219,10 +241,80 @@ interface ClaudeSessionHandle {
   supportedCommands?: () => Promise<SlashCommand[]>
 }
 
+export class ClaudeSessionError extends Schema.TaggedError<ClaudeSessionError>()(
+  "@kanna/server/agent/ClaudeSessionError",
+  {
+    chatId: Schema.String,
+    operation: Schema.Literals([
+      "events", "accountInfo", "usage", "interrupt", "stopTask", "sendPrompt",
+      "setModel", "setPermissionMode", "setFastMode", "supportedModels", "supportedCommands",
+    ]),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
+export class AgentCancelError extends Schema.TaggedError<AgentCancelError>()(
+  "@kanna/server/agent/AgentCancelError",
+  { chatId: Schema.String, cause: Schema.Defect() },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
+export class AgentEventError extends Schema.TaggedError<AgentEventError>()(
+  "@kanna/server/agent/AgentEventError",
+  { chatId: Schema.String, provider: Schema.String, cause: Schema.Defect() },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
+interface ClaudeSessionEffect {
+  readonly events: Stream.Stream<HarnessEvent, ClaudeSessionError>
+  readonly accountInfo?: Effect.Effect<AccountInfo | null, ClaudeSessionError>
+  readonly usage?: Effect.Effect<ClaudeUsageRaw | null, ClaudeSessionError>
+  readonly interrupt: Effect.Effect<void, ClaudeSessionError>
+  readonly stopTask?: (taskId: string) => Effect.Effect<void, ClaudeSessionError>
+  readonly close: Effect.Effect<void>
+  readonly sendPrompt: (content: string, promptId?: string) => Effect.Effect<void, ClaudeSessionError>
+  readonly setModel: (model: string) => Effect.Effect<void, ClaudeSessionError>
+  readonly setPermissionMode: (planMode: boolean) => Effect.Effect<void, ClaudeSessionError>
+  readonly setFastMode?: (fastMode: boolean) => Effect.Effect<void, ClaudeSessionError>
+  readonly supportedCommands?: Effect.Effect<SlashCommand[], ClaudeSessionError>
+}
+
+/** The SDK and injected test sessions are Promise based; adapt them once. */
+function effectClaudeSession(chatId: string, handle: ClaudeSessionHandle): ClaudeSessionEffect {
+  const attempt = <A>(operation: ClaudeSessionError["operation"], run: () => Promise<A>) =>
+    Effect.tryPromise({
+      try: run,
+      catch: (cause) => new ClaudeSessionError({ chatId, operation, cause }),
+    })
+  return {
+    events: Stream.fromAsyncIterable(handle.stream, (cause) => new ClaudeSessionError({ chatId, operation: "events", cause })),
+    ...(handle.getAccountInfo ? { accountInfo: attempt("accountInfo", handle.getAccountInfo) } : {}),
+    ...(handle.getUsage ? { usage: attempt("usage", handle.getUsage) } : {}),
+    interrupt: attempt("interrupt", handle.interrupt),
+    ...(handle.stopTask ? { stopTask: (taskId: string) => attempt("stopTask", () => handle.stopTask!(taskId)) } : {}),
+    close: Effect.sync(() => handle.close()),
+    sendPrompt: (content, promptId) => attempt("sendPrompt", () => handle.sendPrompt(content, promptId)),
+    setModel: (model) => attempt("setModel", () => handle.setModel(model)),
+    setPermissionMode: (planMode) => attempt("setPermissionMode", () => handle.setPermissionMode(planMode)),
+    ...(handle.setFastMode ? { setFastMode: (fastMode: boolean) => attempt("setFastMode", () => handle.setFastMode!(fastMode)) } : {}),
+    ...(handle.supportedCommands ? { supportedCommands: attempt("supportedCommands", handle.supportedCommands) } : {}),
+  }
+}
+
 interface ClaudeSessionState {
   id: string
   chatId: string
-  session: ClaudeSessionHandle
+  session: ClaudeSessionEffect
   localPath: string
   model: string
   /**
@@ -264,16 +356,26 @@ interface ClaudeSessionState {
 }
 
 interface AgentCoordinatorArgs {
-  store: EventStore
+  /** The native service; a `{ service }` wrapper remains accepted for older test fixtures. */
+  store: EventStore["Service"] | { readonly service: EventStore["Service"] }
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
-  analytics?: AnalyticsReporter
-  codexManager?: CodexAppServerManager
-  cursorManager?: CursorCliManager
-  grokManager?: GrokCliManager
+  analytics?: Analytics["Service"]
+  codexManager?: CodexAppServer["Service"]
+  quickResponse?: QuickResponse["Service"]
+  cursorManager?: CursorCli["Service"]
+  grokManager?: GrokCli["Service"]
   piManager?: PiAgentManager
+  /**
+   * The platform the agents run on: processes, files, the machine's facts.
+   * The server passes the one its runtime was built with.
+   */
+  platform: Context.Context<PlatformServices>
+  /** The machine the agents run on (default: the platform's). */
+  machine?: Machine["Service"]
   resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
+    platform: Context.Context<PlatformServices>
     localPath: string
     model: string
     effort?: string
@@ -288,6 +390,7 @@ interface AgentCoordinatorArgs {
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
     onSubagentActivity?: (update: SubagentActivityUpdate) => void
+    signal?: AbortSignal
   }) => Promise<ClaudeSessionHandle>
   /**
    * Probe whether a provider's native session artifact still exists on disk.
@@ -297,7 +400,7 @@ interface AgentCoordinatorArgs {
   checkSessionArtifact?: (
     provider: AgentProvider,
     query: { cwd: string; sessionToken: string | null | undefined }
-  ) => SessionArtifactStatus
+  ) => SessionArtifactStatus | Promise<SessionArtifactStatus>
 }
 
 
@@ -309,12 +412,12 @@ function tracksSubagentsFromTranscript(provider: AgentProvider) {
   return provider !== "claude" && provider !== "codex"
 }
 
-function isClaudeSteerLoggingEnabled() {
-  return process.env.KANNA_LOG_CLAUDE_STEER === "1"
+function isClaudeSteerLoggingEnabled(env: MachineEnv) {
+  return env.get("KANNA_LOG_CLAUDE_STEER") === "1"
 }
 
-function logClaudeSteer(stage: string, details?: Record<string, unknown>) {
-  if (!isClaudeSteerLoggingEnabled()) return
+function logClaudeSteer(env: MachineEnv, stage: string, details?: Record<string, unknown>) {
+  if (!isClaudeSteerLoggingEnabled(env)) return
   console.log("[kanna/claude-steer]", JSON.stringify({
     stage,
     ...details,
@@ -472,76 +575,6 @@ function discardedToolResult(
 
   return {
     discarded: true,
-  }
-}
-
-export function normalizeClaudeUsageSnapshot(
-  value: unknown,
-  maxTokens?: number,
-): ContextWindowUsageSnapshot | null {
-  const usage = asRecord(value)
-  if (!usage) return null
-
-  const directInputTokens = asNumber(usage.input_tokens) ?? asNumber(usage.inputTokens) ?? 0
-  const cacheCreationInputTokens =
-    asNumber(usage.cache_creation_input_tokens) ?? asNumber(usage.cacheCreationInputTokens) ?? 0
-  const cacheReadInputTokens =
-    asNumber(usage.cache_read_input_tokens) ?? asNumber(usage.cacheReadInputTokens) ?? 0
-  const outputTokens = asNumber(usage.output_tokens) ?? asNumber(usage.outputTokens) ?? 0
-  const reasoningOutputTokens =
-    asNumber(usage.reasoning_output_tokens) ?? asNumber(usage.reasoningOutputTokens)
-  const toolUses = asNumber(usage.tool_uses) ?? asNumber(usage.toolUses)
-  const durationMs = asNumber(usage.duration_ms) ?? asNumber(usage.durationMs)
-
-  const inputTokens = directInputTokens + cacheCreationInputTokens + cacheReadInputTokens
-  const usedTokens = inputTokens + outputTokens
-  if (usedTokens <= 0) {
-    return null
-  }
-
-  return {
-    usedTokens,
-    inputTokens,
-    ...(cacheReadInputTokens > 0 ? { cachedInputTokens: cacheReadInputTokens } : {}),
-    ...(outputTokens > 0 ? { outputTokens } : {}),
-    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
-    lastUsedTokens: usedTokens,
-    lastInputTokens: inputTokens,
-    ...(cacheReadInputTokens > 0 ? { lastCachedInputTokens: cacheReadInputTokens } : {}),
-    ...(outputTokens > 0 ? { lastOutputTokens: outputTokens } : {}),
-    ...(reasoningOutputTokens !== undefined ? { lastReasoningOutputTokens: reasoningOutputTokens } : {}),
-    ...(toolUses !== undefined ? { toolUses } : {}),
-    ...(durationMs !== undefined ? { durationMs } : {}),
-    ...(typeof maxTokens === "number" && maxTokens > 0 ? { maxTokens } : {}),
-    compactsAutomatically: false,
-  }
-}
-
-export function maxClaudeContextWindowFromModelUsage(modelUsage: unknown): number | undefined {
-  const record = asRecord(modelUsage)
-  if (!record) return undefined
-
-  let maxContextWindow: number | undefined
-  for (const value of Object.values(record)) {
-    const usage = asRecord(value)
-    const contextWindow = asNumber(usage?.contextWindow) ?? asNumber(usage?.context_window)
-    if (contextWindow === undefined) continue
-    maxContextWindow = Math.max(maxContextWindow ?? 0, contextWindow)
-  }
-  return maxContextWindow
-}
-
-export function normalizeClaudeContextUsage(value: unknown): { usedTokens: number; maxTokens?: number } | null {
-  const record = asRecord(value)
-  if (!record) return null
-
-  const usedTokens = asNumber(record.totalTokens)
-  if (usedTokens === undefined || usedTokens <= 0) return null
-
-  const maxTokens = asNumber(record.maxTokens)
-  return {
-    usedTokens,
-    ...(maxTokens !== undefined && maxTokens > 0 ? { maxTokens } : {}),
   }
 }
 
@@ -890,6 +923,8 @@ function subagentHooks(
 }
 
 async function startClaudeSession(args: {
+  /** The platform to resolve `claude` and read the environment through. */
+  platform: Context.Context<PlatformServices>
   localPath: string
   model: string
   effort?: string
@@ -915,6 +950,7 @@ async function startClaudeSession(args: {
    * (background-tasks.ts) and SDK hooks (`subagentHooks`).
    */
   onSubagentActivity?: (update: SubagentActivityUpdate) => void
+  signal?: AbortSignal
 }): Promise<ClaudeSessionHandle> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
@@ -972,13 +1008,15 @@ async function startClaudeSession(args: {
   }
 
   // The user's own `claude`, never the SDK's pinned copy (claude-executable.ts).
-  const claudeExecutable = await resolveClaudeExecutable()
+  const claudeExecutable = await runKanna(resolveClaudeExecutable().pipe(Effect.provide(args.platform)))
+  const machine = Context.get(args.platform, Machine)
+  if (args.signal?.aborted) throw new Error("Claude session startup was interrupted")
   if (!claudeExecutable.ok) throw new Error(claudeExecutable.message)
-  const promptQueue = new AsyncQueue<SDKUserMessage>()
+  const promptQueue = runKannaSync(Queue.unbounded<SDKUserMessage, Cause.Done>())
   let promptQueueClosed = false
 
   const q = query({
-    prompt: promptQueue,
+    prompt: Stream.toAsyncIterable(Stream.fromQueue(promptQueue)),
     options: {
       cwd: args.localPath,
       model: args.model,
@@ -1012,9 +1050,16 @@ async function startClaudeSession(args: {
       // enabling it while the UI shows "Standard".
       settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
+      env: (() => { const { CLAUDECODE: _, ...env } = machine.env.snapshot(); return env })(),
+      // The SDK spawns `claude` itself, on this computer. A binding whose
+      // machine is elsewhere would hand it `spawnClaudeCodeProcess`, backed by
+      // that machine's `ProcessSpawner`.
     },
   })
+  if (args.signal?.aborted) {
+    q.close()
+    throw new Error("Claude session startup was interrupted")
+  }
 
   // Latest command list pushed via system/commands_changed; null until the
   // first push. supportedCommands() below prefers this over a q re-fetch.
@@ -1065,7 +1110,7 @@ async function startClaudeSession(args: {
       if (promptQueueClosed) {
         throw new Error("Cannot push to a closed queue")
       }
-      promptQueue.push({
+      Queue.offerUnsafe(promptQueue, {
         type: "user",
         message: {
           role: "user",
@@ -1089,31 +1134,38 @@ async function startClaudeSession(args: {
     supportedCommands: async () => commandsRef.current ?? await q.supportedCommands(),
     close: () => {
       promptQueueClosed = true
-      promptQueue.finish()
+      Queue.endUnsafe(promptQueue)
       q.close()
     },
   }
 }
 
 export class AgentCoordinator {
-  private readonly store: EventStore
+  private readonly store: EventStore["Service"]
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
-  private readonly analytics: AnalyticsReporter
-  private readonly codexManager: CodexAppServerManager
-  private readonly cursorManager: CursorCliManager
-  private readonly grokManager: GrokCliManager
+  private readonly analytics: Analytics["Service"]
+  private readonly codexManager: CodexAppServer["Service"]
+  private readonly cursorManager: CursorCli["Service"]
+  private readonly grokManager: GrokCli["Service"]
   private readonly piManager: PiAgentManager
-  private readonly resolvePiConnection: () => Promise<import("./pi-agent").PiConnection | null>
-  private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
+  private readonly platform: Context.Context<PlatformServices>
+  private readonly machine: Machine["Service"]
+  private readonly ownsPiManager: boolean
+  private readonly resolvePiConnectionEffect: () => Effect.Effect<import("./pi-agent").PiConnection | null, Error>
+  private readonly generateTitleEffect: (messageContent: string, cwd: string) => Effect.Effect<GenerateChatTitleResult, Error>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
-  private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
+  private readonly checkSessionArtifactEffect: (
+    provider: AgentProvider,
+    query: { cwd: string; sessionToken: string | null | undefined },
+  ) => Effect.Effect<SessionArtifactStatus, Error>
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
   private grokModelCatalogApplied = false
-  private codexModelCatalogRefresh: Promise<void> | null = null
+  private codexModelCatalogRefresh: { fiber: Fiber.Fiber<void, never> | null } | null = null
+  private readonly backgroundTasks = new Set<{ fiber: Fiber.Fiber<unknown, unknown> | null }>()
   readonly activeTurns = new Map<string, ActiveTurn>()
-  readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
+  readonly drainingStreams = new Map<string, { turn: ManagedHarnessTurn<unknown, unknown, unknown> }>()
   /**
    * Delegated work per chat, keyed by the provider's agent id: a log that
    * runs across turns. Finished entries stay, so the widgets can say what ran
@@ -1146,7 +1198,17 @@ export class AgentCoordinator {
    * Chats, schedules and the links between them. Set after construction,
    * because the orchestrator is built on top of this coordinator.
    */
-  orchestration: ChatOrchestrator | null = null
+  private orchestrationService: Orchestrator["Service"] | null = null
+
+  get orchestration(): Orchestrator["Service"] | null {
+    return this.orchestrationService
+  }
+
+  /** Native service in server composition; old test fixtures expose it as `.service`. */
+  set orchestration(value: Orchestrator["Service"] | { readonly service: Orchestrator["Service"] } | null) {
+    this.orchestrationService = value && "service" in value ? value.service : value
+  }
+
   /**
    * Fired when a chat has no turn left to run: its turn ended and nothing
    * queued started another. Not fired for a steer or a shutdown, where the
@@ -1157,19 +1219,53 @@ export class AgentCoordinator {
   onChatStopped?: (chatId: string) => void
 
   constructor(args: AgentCoordinatorArgs) {
-    this.store = args.store
+    this.store = "service" in args.store ? args.store.service : args.store
     this.onStateChange = args.onStateChange
-    this.analytics = args.analytics ?? NoopAnalyticsReporter
-    this.codexManager = args.codexManager ?? new CodexAppServerManager()
-    // Optional: test stand-ins for the manager predate it.
-    this.codexManager.setTaskActivityListener?.((chatId, update) => this.applySubagentActivity(chatId, update))
-    this.cursorManager = args.cursorManager ?? new CursorCliManager()
-    this.grokManager = args.grokManager ?? new GrokCliManager()
-    this.piManager = args.piManager ?? new PiAgentManager()
-    this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
-    this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
+    this.analytics = args.analytics ?? NoopAnalytics
+    this.platform = args.platform
+    this.codexManager = args.codexManager ?? createCodexAppServer(args.platform)
+    this.codexManager.setTaskActivityListener((chatId, update) => this.applySubagentActivity(chatId, update))
+    this.cursorManager = args.cursorManager ?? runKannaSync(makeCursorCli().pipe(Effect.provide(args.platform)))
+    this.grokManager = args.grokManager ?? runKannaSync(makeGrokCli().pipe(Effect.provide(args.platform)))
+    this.ownsPiManager = args.piManager === undefined
+    this.machine = args.machine ?? Context.get(args.platform, Machine)
+    this.piManager = args.piManager ?? new PiAgentManager({ dataDir: piDataDir(this.machine.homeDirectory) })
+    this.resolvePiConnectionEffect = args.resolvePiConnection
+      ? () => Effect.tryPromise({
+        try: () => args.resolvePiConnection!(),
+        catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+      })
+      : () => resolvePiConnection().pipe(Effect.provide(args.platform))
+    const quickResponse = args.quickResponse
+    this.generateTitleEffect = args.generateTitle
+      ? (messageContent, cwd) => Effect.tryPromise({
+        try: () => args.generateTitle!(messageContent, cwd),
+        catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+      })
+      : (quickResponse
+        ? (messageContent, cwd) => generateTitleForChatDetailed(messageContent, cwd).pipe(
+          Effect.provideService(QuickResponse, quickResponse),
+        )
+        : (messageContent, cwd) => withSharedQuickResponse(args.platform, generateTitleForChatDetailed(messageContent, cwd)))
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
-    this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
+    this.checkSessionArtifactEffect = args.checkSessionArtifact
+      ? (provider, query) => Effect.tryPromise({
+        try: () => Promise.resolve(args.checkSessionArtifact!(provider, query)),
+        catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+      })
+      : (provider, query) => checkSessionArtifact(provider, query).pipe(Effect.provide(args.platform))
+  }
+
+  private forkBackground<A, E>(effect: Effect.Effect<A, E>): Fiber.Fiber<A, E> {
+    const task: { fiber: Fiber.Fiber<unknown, unknown> | null } = { fiber: null }
+    this.backgroundTasks.add(task)
+    task.fiber = Effect.runFork(effect.pipe(
+      Effect.tapCause((cause) => Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.logError("agent background task failed", { cause })),
+      Effect.ensuring(Effect.sync(() => { this.backgroundTasks.delete(task) })),
+    ))
+    return task.fiber as Fiber.Fiber<A, E>
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -1188,15 +1284,16 @@ export class AgentCoordinator {
    */
   async fetchClaudeUsage(): Promise<ClaudeUsageRaw | null> {
     for (const state of this.claudeSessions.values()) {
-      if (state.session.getUsage) {
-        const usage = await state.session.getUsage()
+      if (state.session.usage) {
+        const usage = await runKanna(state.session.usage)
         if (usage) return usage
       }
     }
     let probe: ClaudeSessionHandle | null = null
     try {
       probe = await this.startClaudeSessionFn({
-        localPath: homedir(),
+        platform: this.platform,
+        localPath: this.machine.homeDirectory,
         // Model choice is irrelevant for the usage read; use the catalog default.
         model: "sonnet",
         planMode: false,
@@ -1214,48 +1311,68 @@ export class AgentCoordinator {
   }
 
   /** Read Codex account rate limits on demand (reuses a live app-server or probes). */
-  async fetchCodexRateLimits() {
-    return await this.codexManager.readAccountRateLimits(homedir())
+  fetchCodexRateLimitsEffect = Effect.fn("Agent.fetchCodexRateLimits")(() =>
+    this.codexManager.readAccountRateLimits(this.machine.homeDirectory))
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  fetchCodexRateLimits() {
+    return runKanna(this.fetchCodexRateLimitsEffect())
   }
 
-  async fetchGrokUsage() {
-    return await fetchGrokAccountUsage()
-  }
+  refreshGrokModelCatalogEffect = Effect.fn("Agent.refreshGrokModelCatalog")(() => {
+    const self = this
+    return Effect.gen(function* () {
+      if (self.grokModelCatalogApplied) return
+      const result = yield* Effect.exit(Effect.suspend(() => self.grokManager.listModels()))
+      if (Exit.isFailure(result)) return // Grok missing or signed out; keep the static catalog.
+      self.grokModelCatalogApplied = true
+      if (applyGrokModels(result.value)) self.emitStateChange(undefined, { immediate: true })
+    })
+  })
 
-  async refreshGrokModelCatalog() {
-    if (this.grokModelCatalogApplied) return
-    try {
-      const models = await this.grokManager.listModels()
-      this.grokModelCatalogApplied = true
-      if (applyGrokModels(models)) {
-        this.emitStateChange(undefined, { immediate: true })
-      }
-    } catch {
-      // grok missing or signed out — keep the static catalog.
-    }
+  /** Compatibility for callers that have not moved to Effect yet. */
+  refreshGrokModelCatalog(): Promise<void> {
+    return runKanna(this.refreshGrokModelCatalogEffect())
   }
 
   getCodexManager() {
     return this.codexManager
   }
 
-  getResourceCounts() {
-    return {
+  getResourceCountsEffect = Effect.fn("Agent.getResourceCounts")(() =>
+    this.codexManager.resourceCounts.pipe(Effect.map((codex) => ({
       activeTurns: this.activeTurns.size,
       drainingStreams: this.drainingStreams.size,
       claudeSessions: this.claudeSessions.size,
-      ...this.codexManager.getResourceCounts(),
+      ...codex,
       ...this.piManager.getResourceCounts(),
-    }
+    }))))
+
+  /** Compatibility for synchronous diagnostics callers. */
+  getResourceCounts() {
+    return runKannaSync(this.getResourceCountsEffect())
   }
 
-  dispose() {
-    for (const session of this.claudeSessions.values()) session.session.close()
-    this.claudeSessions.clear()
-    for (const stream of this.drainingStreams.values()) stream.turn.close()
-    this.drainingStreams.clear()
-    this.codexManager.stopAll()
-    this.piManager.dispose()
+  disposeEffect = Effect.fn("Agent.dispose")(() => {
+    const self = this
+    return Effect.gen(function* () {
+      yield* Effect.forEach([...self.backgroundTasks], (task) =>
+        task.fiber ? Fiber.interrupt(task.fiber) : Effect.void, { discard: true })
+      const sessions = [...self.claudeSessions.values()]
+      const streams = [...self.drainingStreams.values()]
+      self.claudeSessions.clear()
+      self.drainingStreams.clear()
+      if (self.ownsPiManager) self.piManager.dispose()
+      yield* Effect.forEach(sessions, (session) => session.session.close, { discard: true })
+      yield* Effect.forEach(streams, (stream) => stream.turn.close, { discard: true })
+      yield* self.codexManager.stopAll
+    })
+  })
+
+  /** Compatibility for synchronous server teardown and older tests. */
+  /** Closes every session; the Promise settles once they are closed. */
+  dispose(): Promise<void> {
+    return runKanna(this.disposeEffect())
   }
 
   getActiveStatuses() {
@@ -1519,7 +1636,9 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
     // Outside a turn there is no turn start to tell the chats above this one
     // that it is back at work.
-    if (update.kind === "started" && !this.isBusy(chatId)) this.orchestration?.handleBackgroundWorkStarted(chatId)
+    if (update.kind === "started" && !this.isBusy(chatId) && this.orchestration) {
+      runKannaSync(this.orchestration.handleBackgroundWorkStarted(chatId))
+    }
     // A chat whose turn ended with background work still going is finished
     // only now, and no turn end is coming to say so.
     if (update.kind === "stopped" || update.kind === "inFlight") this.notifySettled(chatId)
@@ -1530,25 +1649,35 @@ export class AgentCoordinator {
    * Tasks row's menu, or on a workflow's card. The CLI answers with the
    * task's end, reported as `stopped`, which is what updates the row.
    */
-  async stopBackgroundTask(chatId: string, taskId: string) {
-    if (await this.orchestration?.stopChildTask(chatId, taskId)) return
-    const task = this.subagents.get(chatId)?.get(taskId)
+  stopBackgroundTaskEffect(chatId: string, taskId: string) {
+    const self = this
+    return Effect.gen(function* () {
+    yield* Effect.annotateCurrentSpan("chatId", chatId)
+    const orchestration = self.orchestration
+    if (orchestration && (yield* orchestration.stopChildTask(chatId, taskId))) return
+    const task = self.subagents.get(chatId)?.get(taskId)
     if (!task || task.status !== "running") return
-    if (task.stoppable && this.store.getChat(chatId)?.provider === "codex") {
+    if (task.stoppable && self.store.getChat(chatId)?.provider === "codex") {
       // Codex does not tell a turn that the agent it is waiting on was
       // stopped: its wait runs out after two minutes and it waits again. So
       // an agent is stopped on its own only once the chat's turn is over.
-      if (this.isBusy(chatId)) {
-        throw new Error("This chat's turn is still using this agent. Stop the chat to end both.")
+      if (self.isBusy(chatId)) {
+        return yield* Effect.fail(new Error("This chat's turn is still using this agent. Stop the chat to end both."))
       }
       // A Codex agent is a thread with a turn of its own to interrupt.
-      if (await this.codexManager.stopAgent?.(chatId, taskId)) return
+      if (yield* self.codexManager.stopAgent(chatId, taskId)) return
     }
-    const stopTask = this.claudeSessions.get(chatId)?.session.stopTask
+    const stopTask = self.claudeSessions.get(chatId)?.session.stopTask
     if (!task.stoppable || !stopTask) {
-      throw new Error("This task can't be stopped on its own. Stop the chat to end it.")
+      return yield* Effect.fail(new Error("This task can't be stopped on its own. Stop the chat to end it."))
     }
-    await stopTask(taskId)
+    yield* stopTask(taskId)
+    }).pipe(Effect.withSpan("Agent.stopBackgroundTask"))
+  }
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  stopBackgroundTask(chatId: string, taskId: string): Promise<void> {
+    return runKanna(this.stopBackgroundTaskEffect(chatId, taskId))
   }
 
   /**
@@ -1623,17 +1752,20 @@ export class AgentCoordinator {
    * expected — cursor-agent missing or logged out — so it stays quiet and the
    * static catalog remains in place.
    */
-  async refreshCursorModelCatalog() {
-    if (this.cursorModelCatalogApplied) return
-    try {
-      const models = await this.cursorManager.listModels()
-      this.cursorModelCatalogApplied = true
-      if (applyCursorModels(models)) {
-        this.emitStateChange(undefined, { immediate: true })
-      }
-    } catch {
-      // Keep the static fallback catalog; the next cursor turn retries.
-    }
+  refreshCursorModelCatalogEffect = Effect.fn("Agent.refreshCursorModelCatalog")(() => {
+    const self = this
+    return Effect.gen(function* () {
+      if (self.cursorModelCatalogApplied) return
+      const result = yield* Effect.exit(Effect.suspend(() => self.cursorManager.listModels()))
+      if (Exit.isFailure(result)) return // Keep the static catalog; the next cursor turn retries.
+      self.cursorModelCatalogApplied = true
+      if (applyCursorModels(result.value)) self.emitStateChange(undefined, { immediate: true })
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  refreshCursorModelCatalog(): Promise<void> {
+    return runKanna(this.refreshCursorModelCatalogEffect())
   }
 
   /**
@@ -1646,42 +1778,70 @@ export class AgentCoordinator {
    * missing, signed out, or too old for model/list — so it stays quiet and
    * the static catalog remains in place. Concurrent callers share one fetch.
    */
-  refreshCodexModelCatalog(): Promise<void> {
-    if (this.codexModelCatalogRefresh) return this.codexModelCatalogRefresh
-    this.codexModelCatalogRefresh = (async () => {
-      try {
-        const models = await this.codexManager.listModels(homedir())
-        if (models && applyCodexModels(models)) {
-          this.emitStateChange(undefined, { immediate: true })
-        }
-      } catch {
-        // Keep the static fallback catalog; the next codex turn retries.
-      } finally {
-        this.codexModelCatalogRefresh = null
+  refreshCodexModelCatalogEffect = Effect.fn("Agent.refreshCodexModelCatalog")(() => {
+    const self = this
+    return Effect.gen(function* () {
+      let refresh = self.codexModelCatalogRefresh
+      if (!refresh) {
+        refresh = { fiber: null }
+        self.codexModelCatalogRefresh = refresh
+        const current = refresh
+        refresh.fiber = self.forkBackground(Effect.gen(function* () {
+          const result = yield* Effect.exit(self.codexManager.listModels(self.machine.homeDirectory))
+          if (Exit.isSuccess(result) && result.value && applyCodexModels(result.value)) {
+            self.emitStateChange(undefined, { immediate: true })
+          }
+          // A missing or signed-out Codex CLI leaves the static catalog in place.
+        }).pipe(Effect.ensuring(Effect.sync(() => {
+          if (self.codexModelCatalogRefresh === current) self.codexModelCatalogRefresh = null
+        }))))
       }
-    })()
-    return this.codexModelCatalogRefresh
+      if (refresh.fiber) yield* Fiber.await(refresh.fiber)
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  refreshCodexModelCatalog(): Promise<void> {
+    return runKanna(this.refreshCodexModelCatalogEffect())
   }
 
 
-  async stopDraining(chatId: string) {
-    const draining = this.drainingStreams.get(chatId)
-    if (!draining) return
-    draining.turn.close()
-    this.drainingStreams.delete(chatId)
-    this.emitStateChange(chatId)
+  stopDrainingEffect(chatId: string) {
+    const self = this
+    return Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan("chatId", chatId)
+      const draining = self.drainingStreams.get(chatId)
+      if (!draining) return
+      yield* draining.turn.close
+      self.drainingStreams.delete(chatId)
+      self.emitStateChange(chatId)
+    }).pipe(Effect.withSpan("Agent.stopDraining"))
   }
 
-  async closeChat(chatId: string) {
-    await this.stopDraining(chatId)
-    const claudeSession = this.claudeSessions.get(chatId)
-    if (claudeSession) {
-      claudeSession.session.close()
-      this.claudeSessions.delete(chatId)
-    }
-    this.codexManager.stopSession(chatId)
-    this.piManager.closeChat(chatId)
-    this.emitStateChange(chatId)
+  /** Compatibility for callers that have not moved to Effect yet. */
+  stopDraining(chatId: string): Promise<void> {
+    return runKanna(this.stopDrainingEffect(chatId))
+  }
+
+  closeChatEffect(chatId: string) {
+    const self = this
+    return Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan("chatId", chatId)
+      yield* self.stopDrainingEffect(chatId)
+      const claudeSession = self.claudeSessions.get(chatId)
+      if (claudeSession) {
+        yield* claudeSession.session.close
+        self.claudeSessions.delete(chatId)
+      }
+      self.forkBackground(self.codexManager.stopSession(chatId))
+      self.piManager.closeChat(chatId)
+      self.emitStateChange(chatId)
+    }).pipe(Effect.withSpan("Agent.closeChat"))
+  }
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  closeChat(chatId: string): Promise<void> {
+    return runKanna(this.closeChatEffect(chatId))
   }
 
   /**
@@ -1751,13 +1911,13 @@ export class AgentCoordinator {
     }
   }
 
-  private async enqueueMessage(
+  private enqueueMessageEffect = Effect.fn("Agent.enqueueMessage")((
     chatId: string,
     content: string,
     attachments: ChatAttachment[],
     options?: SendMessageOptions & { source?: MessageSource },
-  ) {
-    const queued = await this.store.enqueueMessage(chatId, {
+  ) => {
+    const queued = this.store.enqueueMessage(chatId, {
       content,
       attachments,
       provider: options?.provider,
@@ -1768,16 +1928,21 @@ export class AgentCoordinator {
       autoPlan: options?.autoPlan,
       source: options?.source,
     })
-    this.emitStateChange(chatId)
-    return queued
-  }
+    return storeWriteEffect(queued).pipe(
+      Effect.tap(() => Effect.sync(() => this.emitStateChange(chatId))),
+    )
+  })
 
-  private async dequeueAndStartQueuedMessage(chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean }) {
-    await this.store.removeQueuedMessage(chatId, queuedMessage.id)
-    const chat = this.store.requireChat(chatId)
-    const provider = this.resolveProvider(queuedMessage, chat.provider)
-    const settings = this.getProviderSettings(provider, queuedMessage)
-    await this.startTurnForChat({
+  private dequeueAndStartQueuedMessageEffect = Effect.fn("Agent.dequeueAndStartQueuedMessage")((
+    chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean },
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+    yield* storeWriteEffect(self.store.removeQueuedMessage(chatId, queuedMessage.id))
+    const chat = self.store.requireChat(chatId)
+    const provider = self.resolveProvider(queuedMessage, chat.provider)
+    const settings = self.getProviderSettings(provider, queuedMessage)
+    yield* self.startTurnForChatEffect({
       chatId,
       provider,
       content: queuedMessage.content,
@@ -1791,24 +1956,26 @@ export class AgentCoordinator {
       steered: options?.steered,
       source: queuedMessage.source,
     })
-  }
+    })
+  })
 
-  private async maybeStartNextQueuedMessage(chatId: string) {
-    if (this.isBusy(chatId)) return false
-    const nextQueuedMessage = typeof this.store.getQueuedMessages === "function"
-      ? this.store.getQueuedMessages(chatId)[0]
-      : undefined
-    if (!nextQueuedMessage) return false
-    // Marked before the first await: two callers that both saw the chat idle
-    // would otherwise both take the head of the queue.
-    this.markStarting(chatId)
-    try {
-      await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
-    } finally {
-      this.unmarkStarting(chatId)
-    }
-    return true
-  }
+  private maybeStartNextQueuedMessageEffect = Effect.fn("Agent.maybeStartNextQueuedMessage")((chatId: string) => {
+    const self = this
+    return Effect.gen(function* () {
+      if (self.isBusy(chatId)) return false
+      const nextQueuedMessage = typeof self.store.getQueuedMessages === "function"
+        ? self.store.getQueuedMessages(chatId)[0]
+        : undefined
+      if (!nextQueuedMessage) return false
+      // Marked before the first wait: two callers that both saw the chat idle
+      // would otherwise both take the head of the queue.
+      self.markStarting(chatId)
+      yield* self.dequeueAndStartQueuedMessageEffect(chatId, nextQueuedMessage).pipe(
+        Effect.ensuring(Effect.sync(() => self.unmarkStarting(chatId))),
+      )
+      return true
+    })
+  })
 
   /**
    * Other chats with an active turn in the same project directory as
@@ -1837,39 +2004,42 @@ export class AgentCoordinator {
    * handoff context to prepend to this turn's prompt, or null when the
    * transcript has nothing worth handing off (the switch still happens).
    */
-  private async prepareProviderHandoff(
+  private prepareProviderHandoffEffect = Effect.fn("Agent.prepareProviderHandoff")((
     chatId: string,
     fromProvider: AgentProvider,
     toProvider: AgentProvider,
     entries: TranscriptEntry[],
-  ): Promise<HandoffContext | null> {
-    const claudeSession = this.claudeSessions.get(chatId)
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+    const claudeSession = self.claudeSessions.get(chatId)
     if (claudeSession) {
-      claudeSession.session.close()
-      this.claudeSessions.delete(chatId)
+      yield* claudeSession.session.close
+      self.claudeSessions.delete(chatId)
     }
     // Codex keeps a warm per-chat app-server session that would silently
     // resume the old thread on switch-back; kill it so the cleared session
     // token actually takes effect. Cursor spawns per turn — nothing to close.
-    this.codexManager.stopSession(chatId)
-    this.piManager.closeChat(chatId)
-    await this.store.setSessionToken(chatId, null)
-    await this.store.setPendingForkSessionToken(chatId, null)
+    self.forkBackground(self.codexManager.stopSession(chatId))
+    self.piManager.closeChat(chatId)
+    yield* storeWriteEffect(self.store.setSessionToken(chatId, null))
+    yield* storeWriteEffect(self.store.setPendingForkSessionToken(chatId, null))
 
     const handoff = buildHandoffContext({
       entries,
       fromProvider,
       toProvider,
-      transcriptPath: this.store.getTranscriptPath(chatId),
+      transcriptPath: self.store.getTranscriptPath(chatId),
     })
-    await this.store.appendMessage(chatId, timestamped({
+    yield* storeWriteEffect(self.store.appendMessage(chatId, timestamped({
       kind: "handoff_boundary",
       fromProvider,
       toProvider,
       ...(handoff ? { stats: handoff.stats } : {}),
-    }))
+    })))
     return handoff
-  }
+    })
+  })
 
   /**
    * Decide whether this chat's native provider session is gone and should be
@@ -1886,7 +2056,7 @@ export class AgentCoordinator {
    *   with today's ordering.
    * - pi: out of scope.
    */
-  private async detectLostProviderSession(args: {
+  private detectLostProviderSessionEffect = Effect.fn("Agent.detectLostProviderSession")((args: {
     chatId: string
     provider: AgentProvider
     cwd: string
@@ -1894,41 +2064,45 @@ export class AgentCoordinator {
     serviceTier?: "fast"
     sessionToken: string | null | undefined
     pendingForkSessionToken: string | null | undefined
-  }): Promise<boolean> {
+  }) => {
+    const self = this
+    return Effect.gen(function* () {
     switch (args.provider) {
       case "claude": {
-        if (this.claudeSessions.has(args.chatId)) return false
+        if (self.claudeSessions.has(args.chatId)) return false
         const token = args.pendingForkSessionToken ?? args.sessionToken
-        return this.checkSessionArtifactFn("claude", { cwd: args.cwd, sessionToken: token }) === "missing"
+        const status = yield* self.checkSessionArtifactEffect("claude", { cwd: args.cwd, sessionToken: token })
+        return status === "missing"
       }
-      case "cursor":
-        return this.checkSessionArtifactFn("cursor", { cwd: args.cwd, sessionToken: args.sessionToken }) === "missing"
-      case "grok":
-        return this.checkSessionArtifactFn("grok", {
+      case "cursor": {
+        const status = yield* self.checkSessionArtifactEffect("cursor", { cwd: args.cwd, sessionToken: args.sessionToken })
+        return status === "missing"
+      }
+      case "grok": {
+        const status = yield* self.checkSessionArtifactEffect("grok", {
           cwd: args.cwd,
           sessionToken: args.pendingForkSessionToken ?? args.sessionToken,
-        }) === "missing"
+        })
+        return status === "missing"
+      }
       case "codex": {
         // No token → nothing to resume; a fork in progress must not be disturbed.
         if (!args.sessionToken || args.pendingForkSessionToken) return false
-        try {
-          const started = await this.codexManager.startSession({
+        const started = yield* Effect.exit(self.codexManager.startSession({
             chatId: args.chatId,
             cwd: args.cwd,
             model: args.model,
             serviceTier: args.serviceTier,
             sessionToken: args.sessionToken,
             pendingForkSessionToken: null,
-          })
-          return started?.resumeFellBack === true
-        } catch {
-          return false
-        }
+          }))
+        return Exit.isSuccess(started) && started.value?.resumeFellBack === true
       }
       default:
         return false
     }
-  }
+    })
+  })
 
   /**
    * Recover a chat whose native session is gone: clear the stale token, mark a
@@ -1938,150 +2112,156 @@ export class AgentCoordinator {
    * construction here, and codex's warm context IS the fresh replacement
    * thread, whose id the turn's session_token stream event persists.
    */
-  private async prepareSessionRestore(
+  private prepareSessionRestoreEffect = Effect.fn("Agent.prepareSessionRestore")((
     chatId: string,
     provider: AgentProvider,
     entries: TranscriptEntry[],
-  ): Promise<HandoffContext | null> {
-    await this.store.setSessionToken(chatId, null)
-    await this.store.setPendingForkSessionToken(chatId, null)
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+    yield* storeWriteEffect(self.store.setSessionToken(chatId, null))
+    yield* storeWriteEffect(self.store.setPendingForkSessionToken(chatId, null))
 
     const restore = buildHandoffContext({
       entries,
       fromProvider: provider,
       toProvider: provider,
-      transcriptPath: this.store.getTranscriptPath(chatId),
+      transcriptPath: self.store.getTranscriptPath(chatId),
       reason: "session_restore",
     })
-    await this.store.appendMessage(chatId, timestamped({
+    yield* storeWriteEffect(self.store.appendMessage(chatId, timestamped({
       kind: "session_restored",
       provider,
       ...(restore ? { stats: restore.stats } : {}),
-    }))
+    })))
     return restore
-  }
+    })
+  })
 
-  private async startTurnForChat(args: StartTurnArgs) {
-    this.markStarting(args.chatId)
-    try {
-      await this.startTurn(args)
-    } finally {
-      this.unmarkStarting(args.chatId)
-    }
-  }
+  private startTurnForChatEffect = Effect.fn("Agent.startTurnForChat")((args: StartTurnArgs) => {
+    const self = this
+    return Effect.gen(function* () {
+      const previousActive = self.activeTurns.get(args.chatId)
+      const previousClaudeSession = self.claudeSessions.get(args.chatId)
+      self.markStarting(args.chatId)
+      yield* self.startTurnEffect(args).pipe(
+        Effect.onInterrupt(() => Effect.gen(function* () {
+          // Startup may have acquired a turn or Claude session before an SDK
+          // prompt finishes. Recovery interruption must not leave either live.
+          const active = self.activeTurns.get(args.chatId)
+          if (active && active !== previousActive) {
+            active.cancelRequested = true
+            active.cancelRecorded = true
+            active.customTools?.abort()
+            self.activeTurns.delete(args.chatId)
+            yield* Effect.exit(active.turn.close)
+          }
+          // Codex opens a reusable app-server session before its scoped turn.
+          // If startup is interrupted in that interval, the turn has no scope
+          // yet to release the session for us.
+          if (args.provider === "codex") {
+            yield* Effect.exit(self.codexManager.stopSession(args.chatId))
+          }
+          const session = self.claudeSessions.get(args.chatId)
+          if (args.provider === "claude" && session && (session !== previousClaudeSession || active !== previousActive)) {
+            self.claudeSessions.delete(args.chatId)
+            yield* Effect.exit(session.session.close)
+          }
+          self.emitStateChange(args.chatId)
+        })),
+        Effect.ensuring(Effect.sync(() => self.unmarkStarting(args.chatId))),
+      )
+    })
+  })
 
-  private async startTurn(args: StartTurnArgs) {
+  private startTurnEffect = Effect.fn("Agent.startTurn")((args: StartTurnArgs) => {
+    const self = this
+    return Effect.gen(function* () {
+    const { chat, project, handoff, restore, shouldGenerateTitle, optimisticTitle } = yield* Effect.gen(function* () {
+      // A prior result can leave its provider stream draining after the UI is idle.
+      const draining = self.drainingStreams.get(args.chatId)
+      if (draining) {
+        yield* draining.turn.close
+        self.drainingStreams.delete(args.chatId)
+      }
 
-    // Close any lingering draining stream before starting a new turn.
-    const draining = this.drainingStreams.get(args.chatId)
-    if (draining) {
-      draining.turn.close()
-      this.drainingStreams.delete(args.chatId)
-    }
+      const chat = self.store.requireChat(args.chatId)
+      if (self.activeTurns.has(args.chatId)) return yield* Effect.fail(new Error("Chat is already running"))
+      const previousProvider = chat.provider
+      if (previousProvider !== args.provider) yield* storeWriteEffect(self.store.setChatProvider(args.chatId, args.provider))
+      yield* storeWriteEffect(self.store.setPlanMode(args.chatId, args.planMode))
+      yield* storeWriteEffect(self.store.setAutoPlan(args.chatId, args.autoPlan))
 
-    const chat = this.store.requireChat(args.chatId)
-    if (this.activeTurns.has(args.chatId)) {
-      throw new Error("Chat is already running")
-    }
+      // Only handoff and restore need the full payload sidecar. The first-title
+      // check reads it once for an empty chat; later turns skip it entirely.
+      let existingMessagesCache: TranscriptEntry[] | null = null
+      const existingMessages = Effect.suspend(() => existingMessagesCache
+        ? Effect.succeed(existingMessagesCache)
+        : storeWriteEffect(self.store.readMessages(args.chatId)).pipe(
+          Effect.tap((messages) => Effect.sync(() => { existingMessagesCache = messages })),
+        ))
+      const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat"
+        && (yield* existingMessages).length === 0
+      const optimisticTitle = shouldGenerateTitle ? fallbackTitleFromMessage(args.content) : null
+      if (optimisticTitle) yield* storeWriteEffect(self.store.renameChat(args.chatId, optimisticTitle))
 
-    const previousProvider = chat.provider
-    if (chat.provider !== args.provider) {
-      await this.store.setChatProvider(args.chatId, args.provider)
-    }
-    await this.store.setPlanMode(args.chatId, args.planMode)
-    await this.store.setAutoPlan(args.chatId, args.autoPlan)
+      const project = self.store.getProject(chat.projectId)
+      if (!project) return yield* Effect.fail(new Error("Project not found"))
 
-    // Lazy: `getMessages` reads the whole payload sidecar (its own docstring
-    // says it is "for export, handoff and fork, not for anything that runs per
-    // push"), which measures 3 ms on a short chat and ~45 ms on a 2,300-entry
-    // one. Only the handoff and session-restore paths below actually need it;
-    // the empty-chat check just needs a count.
-    let existingMessagesCache: ReturnType<typeof this.store.getMessages> | null = null
-    const existingMessages = () => (existingMessagesCache ??= this.store.getMessages(args.chatId))
-    // `chat.title === "New Chat"` short-circuits first, and it is only true for
-    // a chat that has never been titled - whose sidecar is empty. So on every
-    // later message the sidecar is never read at all.
-    const shouldGenerateTitle = args.appendUserPrompt && chat.title === "New Chat"
-      && existingMessages().length === 0
-    const optimisticTitle = shouldGenerateTitle ? fallbackTitleFromMessage(args.content) : null
+      const handoff = previousProvider !== null && previousProvider !== args.provider
+        ? yield* self.prepareProviderHandoffEffect(args.chatId, previousProvider, args.provider, (yield* existingMessages))
+        : null
+      const restore = !handoff && previousProvider !== null
+        && (yield* self.detectLostProviderSessionEffect({
+          chatId: args.chatId,
+          provider: args.provider,
+          cwd: project.localPath,
+          model: args.model,
+          serviceTier: args.serviceTier,
+          sessionToken: chat.sessionToken,
+          pendingForkSessionToken: chat.pendingForkSessionToken,
+        }))
+        ? yield* self.prepareSessionRestoreEffect(args.chatId, args.provider, (yield* existingMessages))
+        : null
 
-    if (optimisticTitle) {
-      await this.store.renameChat(args.chatId, optimisticTitle)
-    }
-
-    const project = this.store.getProject(chat.projectId)
-    if (!project) {
-      throw new Error("Project not found")
-    }
-
-    // Mid-conversation harness switch: drop the old provider's session (its
-    // native context is stale the moment another harness takes a turn — we
-    // never resume it, even when switching back), mark the boundary in the
-    // transcript, and build the wire-only handoff context from the entries
-    // that precede this turn's prompt.
-    const handoff = previousProvider !== null && previousProvider !== args.provider
-      ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages())
-      : null
-
-    // Same-provider session recovery: when we're NOT switching harnesses but
-    // the provider's native session for this chat is gone (e.g. the CLI
-    // garbage-collected its session file, or codex's resume fell back to a
-    // fresh thread), rebuild context from our transcript exactly like a
-    // handoff — clear the stale token, mark a "Conversation Restored" boundary,
-    // and prepend the rebuilt context on the wire. Runs before the user prompt
-    // is appended so the boundary precedes it, mirroring the handoff ordering.
-    const restore = !handoff && previousProvider !== null
-      && await this.detectLostProviderSession({
-        chatId: args.chatId,
-        provider: args.provider,
-        cwd: project.localPath,
-        model: args.model,
-        serviceTier: args.serviceTier,
-        sessionToken: chat.sessionToken,
-        pendingForkSessionToken: chat.pendingForkSessionToken,
-      })
-      ? await this.prepareSessionRestore(args.chatId, args.provider, existingMessages())
-      : null
-
-    if (args.appendUserPrompt) {
-      const userPromptEntry = timestamped(
-        {
+      if (args.appendUserPrompt) {
+        yield* storeWriteEffect(self.store.appendMessage(args.chatId, timestamped({
           kind: "user_prompt",
           content: args.content,
           attachments: args.attachments,
           steered: args.steered,
           ...(args.source ? { source: args.source } : {}),
-        },
-        Date.now()
-      )
-      await this.store.appendMessage(args.chatId, userPromptEntry)
-    }
-    await this.store.recordTurnStarted(args.chatId, args.model)
+        }, Date.now())))
+      }
+      yield* storeWriteEffect(self.store.recordTurnStarted(args.chatId, args.model))
+      return { chat, project, handoff, restore, shouldGenerateTitle, optimisticTitle }
+    })
 
     if (shouldGenerateTitle) {
-      void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
+      self.forkBackground(self.generateTitleInBackgroundEffect(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat"))
     }
 
-    const onToolRequest = (request: HarnessToolRequest) => this.requestToolInput(args.chatId, request)
+    const onToolRequest = (request: HarnessToolRequest) => self.requestToolInput(args.chatId, request)
     let markToolsReady!: () => void
     const toolsReady = new Promise<void>((resolve) => { markToolsReady = resolve })
     const customTools: KannaToolHost = {
       execute: async (name, input, signal) => {
         await toolsReady
-        const active = this.activeTurns.get(args.chatId)
+        const active = self.activeTurns.get(args.chatId)
         if (!active || active.cancelRequested) {
           return { content: [{ type: "text", text: "Chat turn ended" }], isError: true }
         }
         active.customTools ??= new KannaToolRuntime({
+          platform: self.platform,
           chatId: args.chatId,
           cwd: project.localPath,
-          dataDir: this.store.dataDir,
+          dataDir: self.store.dataDir,
           emit: async (entry) => {
-            await this.store.appendMessage(args.chatId, entry)
-            this.emitStateChange(args.chatId)
+            await runStoreWrite(self.store.appendMessage(args.chatId, entry))
+            self.emitStateChange(args.chatId)
           },
-          requestInput: (request, callSignal) => this.requestToolInput(args.chatId, request, callSignal),
-          orchestration: this.orchestration ?? undefined,
+          requestInput: (request, callSignal) => self.requestToolInput(args.chatId, request, callSignal),
+          orchestration: self.orchestration ?? undefined,
         })
         return active.customTools.execute(name, input, signal)
       },
@@ -2108,13 +2288,13 @@ export class AgentCoordinator {
     //   codex          — structured skill input item each + failsafe (added
     //                    by the codex manager, after attachments).
     //   cursor         — <system-message> failsafe only (no headless expansion).
-    const skills = await this.resolvePromptSkills(args.provider, args.chatId, args.content)
+    const skills = yield* self.resolvePromptSkillsEffect(args.provider, args.chatId, args.content)
     let wireContent = args.steered ? buildSteeredMessageContent(args.content) : args.content
     if (args.provider !== "codex" && skills.length > 0) {
       wireContent = appendSystemMessageBlock(wireContent, buildSkillSystemMessage(skills))
     }
     const concurrentAgentsNotice = buildConcurrentAgentsNotice(
-      this.collectConcurrentProjectChats(args.chatId, project.localPath)
+      self.collectConcurrentProjectChats(args.chatId, project.localPath)
     )
     if (concurrentAgentsNotice) {
       wireContent = appendSystemMessageBlock(wireContent, concurrentAgentsNotice)
@@ -2122,11 +2302,11 @@ export class AgentCoordinator {
     // Orchestration: who sent this prompt when it was not the user, and which
     // sub-chats of this one are still running. The second matters most after a
     // steer, which ends the turn that was tracking them.
-    const turnNotices = this.orchestration?.buildTurnNotices(args.chatId, args.source, {
+    const turnNotices = self.orchestration ? yield* self.orchestration.buildTurnNotices(args.chatId, args.source, {
       provider: args.provider,
       planMode: args.planMode,
       autoPlan: args.autoPlan,
-    }) ?? []
+    }) : []
     for (const notice of turnNotices) {
       wireContent = appendSystemMessageBlock(wireContent, notice)
     }
@@ -2141,79 +2321,76 @@ export class AgentCoordinator {
 
     // Read at each turn start, so a chat made a delegator mid-way is told on
     // its next turn. Grok has no chat tools, so it is told nothing of it.
-    const delegator = Boolean(this.store.getChat(args.chatId)?.delegator)
-    let turn: HarnessTurn
-    if (args.provider === "claude") {
-      turn = await this.startClaudeTurn({
-        chatId: args.chatId,
-        localPath: project.localPath,
-        model: args.model,
-        effort: args.effort,
-        serviceTier: args.serviceTier,
-        planMode: args.planMode,
-        autoPlan: args.autoPlan,
-        delegator,
-        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
-        forkSession: Boolean(chat.pendingForkSessionToken),
-        ...(chat.pendingForkSessionToken && chat.pendingForkAt ? { resumeSessionAt: chat.pendingForkAt } : {}),
-        onToolRequest,
-        customTools,
-      })
-    } else if (args.provider === "cursor") {
-      // Refresh the model catalog off the turn's critical path if a previous
-      // fetch never succeeded (e.g. the user just logged in to cursor-agent).
-      void this.refreshCursorModelCatalog()
-      let cursorContent = buildPromptText(wireContent, args.attachments)
-      // Cursor builds its system prompt server-side and exposes no append hook,
-      // so Kanna's session instructions ride the user-text path instead.
-      cursorContent = appendSystemMessageBlock(
-        cursorContent,
-        buildKannaSystemMessage(buildKannaAgentId("cursor", args.model), { delegator })
-      )
-      // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
-      turn = await this.cursorManager.startTurn({
-        cwd: project.localPath,
-        customTools,
-        content: cursorContent,
-        model: args.model,
-        sessionToken: chat.sessionToken,
-      })
-    } else if (args.provider === "grok") {
-      void this.refreshGrokModelCatalog()
-      let grokContent = buildPromptText(wireContent, args.attachments)
-      grokContent = appendSystemMessageBlock(
-        grokContent,
-        // Grok is not handed the Kanna tools, so it is not told about them.
-        buildKannaSystemMessage(buildKannaAgentId("grok", args.model), { tools: false }),
-      )
-      turn = await this.grokManager.startTurn({
-        cwd: project.localPath,
-        content: grokContent,
-        model: args.model,
-        effort: args.effort,
-        planMode: args.planMode,
-        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
-        forkSession: Boolean(chat.pendingForkSessionToken),
-        onToolRequest,
-      })
-    } else if (args.provider === "pi") {
-      // A missing connection or session boot failure surfaces as an error
-      // result in the turn stream (like Cursor spawn failures) rather than throwing.
-      const connection = await this.resolvePiConnection()
-      turn = await this.piManager.startTurn({
-        chatId: args.chatId,
-        cwd: project.localPath,
-        customTools,
-        content: buildPromptText(wireContent, args.attachments),
-        model: args.model,
-        effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
-        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
-        forkSession: Boolean(chat.pendingForkSessionToken),
-        connection,
-        delegator,
-      })
-    } else {
-      const started = await this.codexManager.startSession({
+    const delegator = Boolean(self.store.getChat(args.chatId)?.delegator)
+    const { turn, active } = yield* Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
+    const turn: ManagedHarnessTurn<unknown, unknown, unknown> = yield* restore(Effect.gen(function* () {
+      if (args.provider === "claude") {
+        return yield* self.startClaudeTurnEffect({
+            chatId: args.chatId,
+            localPath: project.localPath,
+            model: args.model,
+            effort: args.effort,
+            serviceTier: args.serviceTier,
+            planMode: args.planMode,
+            autoPlan: args.autoPlan,
+            delegator,
+            sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+            forkSession: Boolean(chat.pendingForkSessionToken),
+            ...(chat.pendingForkSessionToken && chat.pendingForkAt ? { resumeSessionAt: chat.pendingForkAt } : {}),
+            onToolRequest,
+            customTools,
+        })
+      }
+      if (args.provider === "cursor") {
+        // A failed catalog probe must not delay the turn.
+        self.forkBackground(self.refreshCursorModelCatalogEffect())
+        let cursorContent = buildPromptText(wireContent, args.attachments)
+        // Cursor has no system prompt append hook, so instructions ride the text path.
+        cursorContent = appendSystemMessageBlock(
+          cursorContent,
+          buildKannaSystemMessage(buildKannaAgentId("cursor", args.model), { delegator }),
+        )
+        return yield* openHarnessTurn(self.cursorManager.startTurn({
+          cwd: project.localPath,
+          customTools,
+          content: cursorContent,
+          model: args.model,
+          sessionToken: chat.sessionToken,
+        }))
+      }
+      if (args.provider === "grok") {
+        self.forkBackground(self.refreshGrokModelCatalogEffect())
+        const grokContent = appendSystemMessageBlock(
+          buildPromptText(wireContent, args.attachments),
+          buildKannaSystemMessage(buildKannaAgentId("grok", args.model), { tools: false }),
+        )
+        return yield* openHarnessTurn(self.grokManager.startTurn({
+          cwd: project.localPath,
+          content: grokContent,
+          model: args.model,
+          effort: args.effort,
+          planMode: args.planMode,
+          sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+          forkSession: Boolean(chat.pendingForkSessionToken),
+          onToolRequest: (request) => Effect.tryPromise(() => onToolRequest(request)),
+        }))
+      }
+      if (args.provider === "pi") {
+        const connection = yield* self.resolvePiConnectionEffect()
+        return yield* openHarnessTurn(self.piManager.startTurn({
+          chatId: args.chatId,
+          cwd: project.localPath,
+          customTools,
+          content: buildPromptText(wireContent, args.attachments),
+          model: args.model,
+          effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
+          sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+          forkSession: Boolean(chat.pendingForkSessionToken),
+          connection,
+          delegator,
+        }).pipe(Effect.provide(self.platform)))
+      }
+      const started = yield* self.codexManager.startSession({
         chatId: args.chatId,
         cwd: project.localPath,
         customTools,
@@ -2224,11 +2401,11 @@ export class AgentCoordinator {
         pendingForkAt: chat.pendingForkAt,
       })
       if (chat.pendingForkSessionToken && started?.sessionToken) {
-        await this.store.setPendingForkSessionToken(args.chatId, null)
+        yield* storeWriteEffect(self.store.setPendingForkSessionToken(args.chatId, null))
       }
-      // Off the turn's critical path; the session just started answers it.
-      void this.refreshCodexModelCatalog()
-      turn = await this.codexManager.startTurn({
+      // The live app server answers the catalog request off the turn path.
+      self.forkBackground(self.refreshCodexModelCatalogEffect())
+      return yield* openHarnessTurn(self.codexManager.startTurn({
         chatId: args.chatId,
         content: buildPromptText(wireContent, args.attachments),
         skills: skills.flatMap((skill) => skill.path ? [{ name: skill.name, path: skill.path }] : []),
@@ -2237,12 +2414,10 @@ export class AgentCoordinator {
         serviceTier: args.serviceTier,
         planMode: args.planMode,
         delegator,
-        // Kanna, not the model, asks for a Codex plan to be approved, so the
-        // notice above cannot stop that one. See `agent-to-agent.ts`.
-        skipPlanApproval: this.orchestration?.isAgentToAgent(args.chatId, args.source) ?? false,
-        onToolRequest,
-      })
-    }
+        skipPlanApproval: self.orchestration?.isAgentToAgent(args.chatId, args.source) ?? false,
+        onToolRequest: (request) => Effect.tryPromise(() => onToolRequest(request)),
+      }))
+    }))
 
     const active: ActiveTurn = {
       chatId: args.chatId,
@@ -2260,16 +2435,18 @@ export class AgentCoordinator {
       cancelRequested: false,
       cancelRecorded: false,
     }
-    this.activeTurns.set(args.chatId, active)
+    self.activeTurns.set(args.chatId, active)
     markToolsReady()
-    this.emitStateChange(args.chatId, { immediate: active.status === "starting" })
+    self.emitStateChange(args.chatId, { immediate: active.status === "starting" })
+    return { turn, active }
+    }))
 
-    if (turn.getAccountInfo) {
-      void turn.getAccountInfo()
-        .then(async (accountInfo) => {
+    if (turn.accountInfo) {
+      self.forkBackground(Effect.gen(function* () {
+          const accountInfo = yield* turn.accountInfo!
           if (!accountInfo) return
           if (args.provider === "claude") {
-            const session = this.claudeSessions.get(args.chatId)
+            const session = self.claudeSessions.get(args.chatId)
             if (session) {
               if (session.accountInfoLoaded) return
               session.accountInfoLoaded = true
@@ -2277,16 +2454,15 @@ export class AgentCoordinator {
               return
             }
           }
-          await this.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo }))
-          this.emitStateChange(args.chatId)
-        })
-        .catch(() => undefined)
+          yield* storeWriteEffect(self.store.appendMessage(args.chatId, timestamped({ kind: "account_info", accountInfo })))
+          self.emitStateChange(args.chatId)
+        }).pipe(Effect.catch(() => Effect.void)))
     }
 
     if (args.provider === "claude") {
-      const session = this.claudeSessions.get(args.chatId)
+      const session = self.claudeSessions.get(args.chatId)
       if (!session) {
-        throw new Error("Claude session was not initialized")
+        return yield* Effect.fail(new Error("Claude session was not initialized"))
       }
       session.suppressResume = false
       const promptSeq = session.nextPromptSeq + 1
@@ -2295,7 +2471,7 @@ export class AgentCoordinator {
       session.pendingPrompts.push({ seq: promptSeq, id: promptId })
       active.claudePromptSeq = promptSeq
       active.claudeSessionId = session.id
-      logClaudeSteer("claude_prompt_sent", {
+      logClaudeSteer(self.machine.env, "claude_prompt_sent", {
         chatId: args.chatId,
         sessionId: session.id,
         promptSeq,
@@ -2309,7 +2485,7 @@ export class AgentCoordinator {
       // drift onward.
       const claudeAgentId = buildKannaAgentId("claude", args.model)
       const claudePrompt = buildPromptText(wireContent, args.attachments)
-      await session.session.sendPrompt(
+      yield* session.session.sendPrompt(
         session.promptAgentId === claudeAgentId
           ? claudePrompt
           : appendSystemMessageBlock(claudePrompt, buildKannaAgentCorrection(claudeAgentId)),
@@ -2318,10 +2494,11 @@ export class AgentCoordinator {
       return
     }
 
-    void this.runTurn(active)
-  }
+    self.forkBackground(self.runTurnEffect(active))
+    })
+  })
 
-  private async startClaudeTurn(args: {
+  private startClaudeTurnEffect = Effect.fn("Agent.startClaudeTurn")((args: {
     chatId: string
     localPath: string
     model: string
@@ -2335,8 +2512,10 @@ export class AgentCoordinator {
     resumeSessionAt?: string
     customTools?: KannaToolHost
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
-  }): Promise<HarnessTurn> {
-    let session = this.claudeSessions.get(args.chatId)
+  }) => {
+    const self = this
+    return Effect.gen(function* () {
+    let session = self.claudeSessions.get(args.chatId)
 
     // autoPlan changes the SDK's `tools` allowlist, which is fixed at query()
     // time — unlike planMode (setPermissionMode) it can only be applied by
@@ -2353,11 +2532,14 @@ export class AgentCoordinator {
       || args.forkSession
     ) {
       if (session) {
-        session.session.close()
-        this.claudeSessions.delete(args.chatId)
+        yield* session.session.close
+        self.claudeSessions.delete(args.chatId)
       }
 
-      const started = await this.startClaudeSessionFn({
+      let pendingHandle: ClaudeSessionHandle | null = null
+      const started = yield* Effect.tryPromise({
+        try: (signal) => self.startClaudeSessionFn({
+        platform: self.platform,
         localPath: args.localPath,
         model: args.model,
         effort: args.effort,
@@ -2370,15 +2552,24 @@ export class AgentCoordinator {
         ...(args.resumeSessionAt ? { resumeSessionAt: args.resumeSessionAt } : {}),
         onToolRequest: args.onToolRequest,
         customTools: args.customTools,
-        onRateLimitEvent: (info) => this.onClaudeRateLimit?.(info),
-        onSubagentActivity: (update) => this.applySubagentActivity(args.chatId, update),
-      })
-      this.refreshClaudeModelCatalog(started)
+        onRateLimitEvent: (info) => self.onClaudeRateLimit?.(info),
+        onSubagentActivity: (update) => self.applySubagentActivity(args.chatId, update),
+        signal,
+        }).then((handle) => {
+          if (signal.aborted) handle.close()
+          else pendingHandle = handle
+          return handle
+        }),
+        catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+      }).pipe(Effect.onInterrupt(() => Effect.sync(() => {
+        pendingHandle?.close()
+      })))
+      self.refreshClaudeModelCatalog(started)
 
       session = {
         id: crypto.randomUUID(),
         chatId: args.chatId,
-        session: started,
+        session: effectClaudeSession(args.chatId, started),
         localPath: args.localPath,
         model: args.model,
         promptAgentId: buildKannaAgentId("claude", args.model),
@@ -2395,64 +2586,69 @@ export class AgentCoordinator {
         suppressResume: false,
         cancelledPromptSeqs: new Set(),
       }
-      this.claudeSessions.set(args.chatId, session)
-      void this.runClaudeSession(session)
+      self.claudeSessions.set(args.chatId, session)
+      self.forkBackground(self.runClaudeSessionEffect(session))
     } else {
       if (session.model !== args.model) {
-        await session.session.setModel(args.model)
+        yield* session.session.setModel(args.model)
         session.model = args.model
       }
       if (session.planMode !== args.planMode) {
-        await session.session.setPermissionMode(args.planMode)
+        yield* session.session.setPermissionMode(args.planMode)
         session.planMode = args.planMode
       }
       if (session.serviceTier !== args.serviceTier) {
-        await session.session.setFastMode?.(args.serviceTier === "fast")
+        if (session.session.setFastMode) yield* session.session.setFastMode(args.serviceTier === "fast")
         session.serviceTier = args.serviceTier
       }
     }
 
     return {
-      provider: "claude",
-      stream: {
-        async *[Symbol.asyncIterator]() {},
-      },
-      getAccountInfo: session.session.getAccountInfo,
+      provider: "claude" as const,
+      events: Stream.empty,
+      ...(session.session.accountInfo ? {
+        accountInfo: session.session.accountInfo,
+      } : {}),
       interrupt: session.session.interrupt,
-      close: () => {},
+      close: Effect.void,
     }
-  }
+    })
+  })
 
   /**
    * `source` names the sender when it is not the user: another chat's agent,
    * a sub-chat's report, a schedule. It rides the queue and lands on the
    * transcript entry.
    */
-  async send(command: Extract<ClientCommand, { type: "chat.send" }>, extras?: { source?: MessageSource }) {
+  sendEffect = Effect.fn("Agent.send")((
+    command: Extract<ClientCommand, { type: "chat.send" }>,
+    extras?: { source?: MessageSource },
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
     let chatId = command.chatId
-
 
     if (!chatId) {
       if (!command.projectId) {
-        throw new Error("Missing projectId for new chat")
+        return yield* Effect.fail(new Error("Missing projectId for new chat"))
       }
-      const created = await this.store.createChat(command.projectId, undefined, { delegator: command.delegator })
+      const created = yield* storeWriteEffect(self.store.createChat(command.projectId, undefined, { delegator: command.delegator }))
       chatId = created.id
-      this.analytics.track("chat_created")
+      yield* self.analytics.track("chat_created")
     }
 
-    const chat = this.store.requireChat(chatId)
+    const chat = self.store.requireChat(chatId)
     // Sending a message to an archived chat resurrects it (viewing alone
     // never unarchives).
     if (chat.archivedAt) {
-      await this.store.unarchiveChat(chatId)
+      yield* storeWriteEffect(self.store.unarchiveChat(chatId))
     }
     // `isBusy`, not just a running turn: two sends can reach an idle chat
     // together (a report and a schedule, say), and the second must queue
     // behind the turn the first is still starting rather than start its own.
-    if (this.isBusy(chatId)) {
-      if (!extras?.source) this.analytics.track("message_sent")
-      const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
+    if (self.isBusy(chatId)) {
+      if (!extras?.source) yield* self.analytics.track("message_sent")
+      const queuedMessage = yield* self.enqueueMessageEffect(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
         modelOptions: command.modelOptions,
@@ -2464,11 +2660,11 @@ export class AgentCoordinator {
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
-    const provider = this.resolveProvider(command, chat.provider)
-    const settings = this.getProviderSettings(provider, command)
+    const provider = self.resolveProvider(command, chat.provider)
+    const settings = self.getProviderSettings(provider, command)
     // The count is of messages people send.
-    if (!extras?.source) this.analytics.track("message_sent")
-    await this.startTurnForChat({
+    if (!extras?.source) yield* self.analytics.track("message_sent")
+    yield* self.startTurnForChatEffect({
       chatId,
       provider,
       content: command.content,
@@ -2482,16 +2678,23 @@ export class AgentCoordinator {
       source: extras?.source,
     })
 
-
     return { chatId }
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  send(command: Extract<ClientCommand, { type: "chat.send" }>, extras?: { source?: MessageSource }) {
+    return runKanna(this.sendEffect(command, extras))
   }
 
-  async enqueue(
+  enqueueEffect = Effect.fn("Agent.enqueue")((
     command: Extract<ClientCommand, { type: "message.enqueue" }>,
     extras?: { source?: MessageSource; effort?: string },
-  ) {
-    if (!extras?.source) this.analytics.track("message_sent")
-    const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+    if (!extras?.source) yield* self.analytics.track("message_sent")
+    const queuedMessage = yield* self.enqueueMessageEffect(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,
       modelOptions: command.modelOptions,
@@ -2505,59 +2708,75 @@ export class AgentCoordinator {
       // drift. One thing it has to absorb: the turn can end while the message
       // was being queued, in which case the drain has already started it —
       // the outcome steering wanted, just not by this call.
-      try {
-        await this.steer({ type: "message.steer", chatId: command.chatId, queuedMessageId: queuedMessage.id })
-      } catch (error) {
-        const drained = !this.store.getQueuedMessage(command.chatId, queuedMessage.id)
-          && this.activeTurns.has(command.chatId)
-        if (!drained) throw error
+      const steered = yield* Effect.exit(self.steerEffect({
+        type: "message.steer", chatId: command.chatId, queuedMessageId: queuedMessage.id,
+      }))
+      if (Exit.isFailure(steered)) {
+        const drained = !self.store.getQueuedMessage(command.chatId, queuedMessage.id)
+          && self.activeTurns.has(command.chatId)
+        if (!drained) return yield* Effect.fail(Cause.squash(steered.cause))
       }
     }
     return { queuedMessageId: queuedMessage.id }
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>, extras?: { source?: MessageSource; effort?: string }) {
+    return runKanna(this.enqueueEffect(command, extras))
   }
 
-  async steer(command: Extract<ClientCommand, { type: "message.steer" }>) {
-    const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
-    if (!queuedMessage) {
-      throw new Error("Queued message not found")
-    }
+  steerEffect = Effect.fn("Agent.steer")((command: Extract<ClientCommand, { type: "message.steer" }>) => {
+    const self = this
+    return Effect.gen(function* () {
+      const queuedMessage = self.store.getQueuedMessage(command.chatId, command.queuedMessageId)
+      if (!queuedMessage) return yield* Effect.fail(new Error("Queued message not found"))
 
-    logClaudeSteer("steer_requested", {
-      chatId: command.chatId,
-      queuedMessageId: command.queuedMessageId,
-      activeTurn: this.activeTurns.has(command.chatId),
-      queuedMessagePreview: queuedMessage.content.slice(0, 160),
-    })
-
-    // The chat is not idle between the cancel and the turn that replaces it.
-    this.markStarting(command.chatId)
-    try {
-      if (this.activeTurns.has(command.chatId)) {
-        await this.cancel(command.chatId, { hideInterrupted: true })
-      }
-
-      logClaudeSteer("steer_after_cancel", {
+      logClaudeSteer(self.machine.env, "steer_requested", {
         chatId: command.chatId,
-        stillActive: this.activeTurns.has(command.chatId),
+        queuedMessageId: command.queuedMessageId,
+        activeTurn: self.activeTurns.has(command.chatId),
+        queuedMessagePreview: queuedMessage.content.slice(0, 160),
       })
 
-      if (this.activeTurns.has(command.chatId)) {
-        throw new Error("Chat is still running")
-      }
+      // The chat is not idle between the cancel and the turn that replaces it.
+      self.markStarting(command.chatId)
+      yield* Effect.gen(function* () {
+        if (self.activeTurns.has(command.chatId)) {
+          yield* self.cancelEffect(command.chatId, { hideInterrupted: true })
+        }
 
-      await this.dequeueAndStartQueuedMessage(command.chatId, queuedMessage, { steered: true })
-    } finally {
-      this.unmarkStarting(command.chatId)
-    }
+        logClaudeSteer(self.machine.env, "steer_after_cancel", {
+          chatId: command.chatId,
+          stillActive: self.activeTurns.has(command.chatId),
+        })
+
+        if (self.activeTurns.has(command.chatId)) {
+          return yield* Effect.fail(new Error("Chat is still running"))
+        }
+
+        yield* self.dequeueAndStartQueuedMessageEffect(command.chatId, queuedMessage, { steered: true })
+      }).pipe(Effect.ensuring(Effect.sync(() => self.unmarkStarting(command.chatId))))
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  steer(command: Extract<ClientCommand, { type: "message.steer" }>): Promise<void> {
+    return runKanna(this.steerEffect(command))
   }
 
-  async dequeue(command: Extract<ClientCommand, { type: "message.dequeue" }>) {
-    const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
-    if (!queuedMessage) {
-      throw new Error("Queued message not found")
-    }
+  dequeueEffect = Effect.fn("Agent.dequeue")((command: Extract<ClientCommand, { type: "message.dequeue" }>) => {
+    const self = this
+    return Effect.gen(function* () {
+      const queuedMessage = self.store.getQueuedMessage(command.chatId, command.queuedMessageId)
+      if (!queuedMessage) return yield* Effect.fail(new Error("Queued message not found"))
+      yield* storeWriteEffect(self.store.removeQueuedMessage(command.chatId, command.queuedMessageId))
+    })
+  })
 
-    await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
+  /** Compatibility for callers that have not moved to Effect yet. */
+  dequeue(command: Extract<ClientCommand, { type: "message.dequeue" }>): Promise<void> {
+    return runKanna(this.dequeueEffect(command))
   }
 
   /**
@@ -2569,66 +2788,85 @@ export class AgentCoordinator {
    * Adding a harness = one branch here (list) plus, if its wire protocol needs
    * more than leading-"/name" text, one translation in startTurnForChat.
    */
-  async listSkills(
-    command: Extract<ClientCommand, { type: "chat.listSkills" }>
-  ): Promise<ChatSkillsSnapshot> {
-    const cwd = this.resolveSkillScanCwd(command)
-    if (!cwd) {
-      return { provider: command.provider, skills: [], origin: "filesystem" }
-    }
+  listSkillsEffect = Effect.fn("Agent.listSkills")((
+    command: Extract<ClientCommand, { type: "chat.listSkills" }>,
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+      const cwd = self.resolveSkillScanCwd(command)
+      if (!cwd) return { provider: command.provider, skills: [] as HarnessSkill[], origin: "filesystem" } as const
 
-    switch (command.provider) {
-      case "claude": {
-        const handle = command.chatId ? this.claudeSessions.get(command.chatId)?.session : undefined
-        if (handle?.supportedCommands) {
-          try {
-            const commands = await handle.supportedCommands()
-            const skills: HarnessSkill[] = commands
-              .filter((entry) => !entry.name.startsWith("._"))
-              .map((entry) => ({
-                name: entry.name,
-                description: entry.description ?? "",
-                ...(entry.argumentHint ? { argumentHint: entry.argumentHint } : {}),
-                source: "command" as const,
-              }))
-            return { provider: "claude", skills, origin: "live" }
-          } catch {
+      switch (command.provider) {
+        case "claude": {
+          const handle = command.chatId ? self.claudeSessions.get(command.chatId)?.session : undefined
+          if (handle?.supportedCommands) {
+            const result = yield* Effect.exit(handle.supportedCommands)
+            if (Exit.isSuccess(result)) {
+              const skills: HarnessSkill[] = result.value
+                .filter((entry) => !entry.name.startsWith("._"))
+                .map((entry) => ({
+                  name: entry.name,
+                  description: entry.description ?? "",
+                  ...(entry.argumentHint ? { argumentHint: entry.argumentHint } : {}),
+                  source: "command" as const,
+                }))
+              return { provider: "claude", skills, origin: "live" } as const
+            }
             // Session mid-shutdown or old CLI — fall through to the scan.
           }
+          return {
+            provider: "claude",
+            skills: yield* scanClaudeSkills({ cwd }).pipe(Effect.provide(self.platform)),
+            origin: "filesystem",
+          } as const
         }
-        return { provider: "claude", skills: scanClaudeSkills({ cwd }), origin: "filesystem" }
-      }
-      case "codex": {
-        const live = command.chatId
-          ? await this.codexManager.listSkills({ chatId: command.chatId, cwd })
-          : null
-        if (live) {
-          const skills: HarnessSkill[] = live.map((skill) => ({
-            name: skill.name,
-            description: skill.shortDescription || skill.description || "",
-            source: "skill" as const,
-            path: skill.path,
-          }))
-          return { provider: "codex", skills, origin: "live" }
+        case "codex": {
+          const live = command.chatId
+            ? yield* self.codexManager.listSkills({ chatId: command.chatId, cwd })
+            : null
+          if (live) {
+            const skills: HarnessSkill[] = live.map((skill) => ({
+              name: skill.name,
+              description: skill.shortDescription || skill.description || "",
+              source: "skill" as const,
+              path: skill.path,
+            }))
+            return { provider: "codex", skills, origin: "live" } as const
+          }
+          return {
+            provider: "codex",
+            skills: yield* scanCodexSkills({ cwd }).pipe(Effect.provide(self.platform)),
+            origin: "filesystem",
+          } as const
         }
-        return { provider: "codex", skills: scanCodexSkills({ cwd }), origin: "filesystem" }
-      }
-      case "cursor":
-        // Cursor has no enumeration protocol; the scan mirrors the CLI's own
-        // skill discovery roots, and invocation is failsafe-only by design.
-        return { provider: "cursor", skills: scanCursorSkills({ cwd }), origin: "filesystem" }
-      case "grok": {
-        const live = await this.grokManager.listSkills({ cwd })
-        if (live.length > 0) {
-          return { provider: "grok", skills: live, origin: "live" }
+        case "cursor":
+          // Cursor has no enumeration protocol; the scan mirrors the CLI's own
+          // skill discovery roots, and invocation is failsafe-only by design.
+          return {
+            provider: "cursor",
+            skills: yield* scanCursorSkills({ cwd }).pipe(Effect.provide(self.platform)),
+            origin: "filesystem",
+          } as const
+        case "grok": {
+          const live = yield* self.grokManager.listSkills({ cwd })
+          if (live.length > 0) return { provider: "grok", skills: live, origin: "live" } as const
+          return {
+            provider: "grok",
+            skills: yield* scanGrokSkills({ cwd }).pipe(Effect.provide(self.platform)),
+            origin: "filesystem",
+          } as const
         }
-        return { provider: "grok", skills: scanGrokSkills({ cwd }), origin: "filesystem" }
+        case "pi": {
+          const skills = yield* self.piManager.listSkills({ chatId: command.chatId, cwd })
+          return { provider: "pi", skills, origin: "live" } as const
+        }
       }
-      case "pi": {
-        const skills = await this.piManager.listSkills({ chatId: command.chatId, cwd })
-        return { provider: "pi", skills, origin: "live" }
-      }
-    }
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  listSkills(command: Extract<ClientCommand, { type: "chat.listSkills" }>): Promise<ChatSkillsSnapshot> {
+    return runKanna(this.listSkillsEffect(command))
   }
 
   private resolveSkillScanCwd(args: { chatId?: string; projectId?: string }): string | null {
@@ -2652,13 +2890,14 @@ export class AgentCoordinator {
    * mention needs it, so an ordinary leading "/name" on claude/grok/pi costs
    * nothing extra.
    */
-  private async resolvePromptSkills(provider: AgentProvider, chatId: string, content: string): Promise<SkillReference[]> {
+  private resolvePromptSkillsEffect = Effect.fn("Agent.resolvePromptSkills")((provider: AgentProvider, chatId: string, content: string) => {
     const expandsLeading = provider === "claude" || provider === "grok" || provider === "pi"
     const mentions = findSkillMentions(content).filter((mention) => !(expandsLeading && mention.leading))
-    if (mentions.length === 0) return []
-    const { skills } = await this.listSkills({ type: "chat.listSkills", provider, chatId })
-    return resolveSkillMentions(mentions, skills)
-  }
+    if (mentions.length === 0) return Effect.succeed([] as SkillReference[])
+    return this.listSkillsEffect({ type: "chat.listSkills", provider, chatId }).pipe(
+      Effect.map(({ skills }) => resolveSkillMentions(mentions, skills)),
+    )
+  })
 
   /**
    * Cancel every in-flight turn because Kanna itself is going down, marking
@@ -2676,19 +2915,24 @@ export class AgentCoordinator {
    * would then tell the model to "continue" past a question nobody answered or
    * a plan nobody approved. Those chats stay interrupted so the user re-asks.
    */
-  async interruptForShutdown() {
-    // These turns come back on the next boot, so none of them has settled.
-    this.shuttingDown = true
-    for (const [chatId, active] of [...this.activeTurns.entries()]) {
-      if (!active.pendingTool) {
-        try {
-          await this.store.setTurnResumePending(chatId, true)
-        } catch {
+  interruptForShutdownEffect = Effect.fn("Agent.interruptForShutdown")(() => {
+    const self = this
+    return Effect.gen(function* () {
+      // These turns come back on the next boot, so none of them has settled.
+      self.shuttingDown = true
+      for (const [chatId, active] of [...self.activeTurns.entries()]) {
+        if (!active.pendingTool) {
           // Best effort — a chat we can't mark still gets cancelled cleanly.
+          yield* Effect.exit(storeWriteEffect(self.store.setTurnResumePending(chatId, true)))
         }
+        yield* self.cancelEffect(chatId)
       }
-      await this.cancel(chatId)
-    }
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  interruptForShutdown(): Promise<void> {
+    return runKanna(this.interruptForShutdownEffect())
   }
 
   /**
@@ -2704,28 +2948,31 @@ export class AgentCoordinator {
    *
    * Returns whether a turn was actually started.
    */
-  async resumeInterruptedTurn(chatId: string) {
-    const chat = this.store.getChat(chatId)
+  resumeInterruptedTurnEffect = Effect.fn("Agent.resumeInterruptedTurn")((chatId: string) => {
+    const self = this
+    return Effect.gen(function* () {
+    const chat = self.store.getChat(chatId)
     if (!chat || chat.deletedAt) return false
     if (!chat.provider) return false
-    if (this.activeTurns.has(chatId)) return false
+    if (self.activeTurns.has(chatId)) return false
     // No session to resume into means the harness never got far enough to have
     // context worth continuing; a bare "carry on" would be sent into an empty
     // session, so leave the chat interrupted instead.
     if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
+    const provider = chat.provider
 
     // Everything the chat record remembers about how the turn was running:
     // the model it actually ran with plus the two persisted modes. Reasoning
     // effort and fast mode are picked in the composer and never stored server
     // side, so the resumed turn falls back to the provider defaults for those.
-    const settings = this.getProviderSettings(chat.provider, {
+    const settings = self.getProviderSettings(provider, {
       model: chat.lastModel,
       planMode: chat.planMode,
       autoPlan: chat.autoPlan,
     })
-    await this.startTurnForChat({
+    yield* self.startTurnForChatEffect({
       chatId,
-      provider: chat.provider,
+      provider,
       content: RESUME_AFTER_RESTART_MESSAGE,
       attachments: [],
       model: settings.model,
@@ -2736,25 +2983,41 @@ export class AgentCoordinator {
       appendUserPrompt: false,
     })
     return true
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  resumeInterruptedTurn(chatId: string): Promise<boolean> {
+    return runKanna(this.resumeInterruptedTurnEffect(chatId))
   }
 
-  async forkChat(chatId: string, lineage?: { parentChatId?: string; createdByChatId?: string }) {
-    const chat = this.store.requireChat(chatId)
+  forkChatEffect = Effect.fn("Agent.forkChat")((
+    chatId: string, lineage?: { parentChatId?: string; createdByChatId?: string },
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+    const chat = self.store.requireChat(chatId)
     if (!chat.provider) {
-      throw new Error("Chat must have a provider before forking")
+      return yield* Effect.fail(new Error("Chat must have a provider before forking"))
     }
     if (!chat.sessionToken && !chat.pendingForkSessionToken) {
-      throw new Error("Chat has no session to fork")
+      return yield* Effect.fail(new Error("Chat has no session to fork"))
     }
 
     // A running chat is forkable: the fork branches from the last completed
     // turn, leaving the turn in flight out of the copy so it never inherits
     // tool calls whose results have not arrived. Nothing here touches the
     // source's turn — it keeps running.
-    const running = this.activeTurns.has(chatId) || this.drainingStreams.has(chatId)
-    const forked = await this.store.forkChat(chatId, { atLastCompletedTurn: running, ...lineage })
-    this.analytics.track("chat_created")
+    const running = self.activeTurns.has(chatId) || self.drainingStreams.has(chatId)
+    const forked = yield* storeWriteEffect(self.store.forkChat(chatId, { atLastCompletedTurn: running, ...lineage }))
+    yield* self.analytics.track("chat_created")
     return { chatId: forked.id }
+    })
+  })
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  forkChat(chatId: string, lineage?: { parentChatId?: string; createdByChatId?: string }) {
+    return runKanna(this.forkChatEffect(chatId, lineage))
   }
 
   /**
@@ -2799,18 +3062,20 @@ export class AgentCoordinator {
    * the next result that answers none of our prompts closes it through the
    * normal completion path in runClaudeSession.
    */
-  private async resumeBackgroundTurn(session: ClaudeSessionState) {
+  private resumeBackgroundTurnEffect(session: ClaudeSessionState) {
+    const self = this
+    return Effect.gen(function* () {
     const active: ActiveTurn = {
       chatId: session.chatId,
       provider: "claude",
       turn: {
         provider: "claude",
-        stream: {
-          async *[Symbol.asyncIterator]() {},
-        },
-        getAccountInfo: session.session.getAccountInfo,
+        events: Stream.empty,
+        ...(session.session.accountInfo ? {
+          accountInfo: session.session.accountInfo,
+        } : {}),
         interrupt: session.session.interrupt,
-        close: () => {},
+        close: Effect.void,
       },
       claudeSessionId: session.id,
       model: session.model,
@@ -2824,123 +3089,131 @@ export class AgentCoordinator {
       cancelRequested: false,
       cancelRecorded: false,
     }
-    this.activeTurns.set(session.chatId, active)
-    await this.store.recordTurnStarted(session.chatId, session.model)
-    this.emitStateChange(session.chatId)
+    self.activeTurns.set(session.chatId, active)
+    yield* storeWriteEffect(self.store.recordTurnStarted(session.chatId, session.model))
+    self.emitStateChange(session.chatId)
+    })
   }
 
-  private async runClaudeSession(session: ClaudeSessionState) {
+  private runClaudeSessionEffect = Effect.fn("Agent.runClaudeSession")((session: ClaudeSessionState) => {
+    const self = this
     const customToolEvents = new KannaToolEventFilter()
-    try {
-      for await (const event of session.session.stream) {
-        if (event.type === "session_token" && event.sessionToken) {
-          session.sessionToken = event.sessionToken
-          await this.store.setSessionToken(session.chatId, event.sessionToken)
-          this.emitStateChange(session.chatId)
-          continue
-        }
+    return Effect.gen(function* () {
+      const streamExit = yield* Effect.exit(session.session.events.pipe(
+        Stream.runForEach((event) => Effect.gen(function* () {
+            // Closing a session during restart can leave one SDK event in flight.
+            // It belongs to the old session, never to the replacement's turn.
+            if (self.claudeSessions.get(session.chatId) !== session) return
+            if (event.type === "session_token" && event.sessionToken) {
+              session.sessionToken = event.sessionToken
+              yield* storeWriteEffect(self.store.setSessionToken(session.chatId, event.sessionToken))
+              self.emitStateChange(session.chatId)
+              return
+            }
 
-        if (!event.entry || customToolEvents.skip(event.entry)) continue
+            if (!event.entry || customToolEvents.skip(event.entry)) return
 
-        const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
-          ? this.takeAnsweredClaudePrompts(session, event.promptIds, event.entry.kind === "interrupted" || event.entry.isError)
-          : []
+            const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
+              ? self.takeAnsweredClaudePrompts(session, event.promptIds, event.entry.kind === "interrupted" || event.entry.isError)
+              : []
 
-        // After an escape/cancel or steer, the SDK ends the cancelled turn
-        // with a result of subtype error_during_execution (is_error, usually
-        // no text). The cancel already appended an "interrupted" entry, so
-        // persisting this would render a spurious "An unknown error
-        // occurred." in the UI. Attribute the result to the prompts it
-        // answers rather than relying on suppressResume, which a steered
-        // follow-up prompt clears before the interrupt error lands.
-        const isCancelledPromptErrorResult =
-          event.entry.kind === "result"
-          && event.entry.isError
-          && completedPromptSeqs.length > 0
-          && completedPromptSeqs.every((seq) => session.cancelledPromptSeqs.has(seq))
-        if (!isCancelledPromptErrorResult) {
-          await this.store.appendMessage(session.chatId, event.entry)
-        }
+            // After an escape/cancel or steer, the SDK ends the cancelled turn
+            // with a result of subtype error_during_execution (is_error, usually
+            // no text). The cancel already appended an "interrupted" entry, so
+            // persisting this would render a spurious "An unknown error
+            // occurred." in the UI. Attribute the result to the prompts it
+            // answers rather than relying on suppressResume, which a steered
+            // follow-up prompt clears before the interrupt error lands.
+            const isCancelledPromptErrorResult =
+              event.entry.kind === "result"
+              && event.entry.isError
+              && completedPromptSeqs.length > 0
+              && completedPromptSeqs.every((seq) => session.cancelledPromptSeqs.has(seq))
+            if (!isCancelledPromptErrorResult) {
+              yield* storeWriteEffect(self.store.appendMessage(session.chatId, event.entry))
+            }
 
-        // Background wakeups (Monitor, Cron*, ScheduleWakeup, RemoteTrigger)
-        // emit new activity after the previous turn completed. Re-register an
-        // active turn so the chat reads as in-progress instead of idle.
-        if (
-          !this.activeTurns.has(session.chatId)
-          && !session.suppressResume
-          && (
-            event.entry.kind === "assistant_text"
-            || event.entry.kind === "tool_call"
-            || event.entry.kind === "tool_result"
-          )
-        ) {
-          await this.resumeBackgroundTurn(session)
-        }
+            // Background wakeups (Monitor, Cron*, ScheduleWakeup, RemoteTrigger)
+            // emit new activity after the previous turn completed. Re-register an
+            // active turn so the chat reads as in-progress instead of idle.
+            if (
+              !self.activeTurns.has(session.chatId)
+              && !session.suppressResume
+              && (
+                event.entry.kind === "assistant_text"
+                || event.entry.kind === "tool_call"
+                || event.entry.kind === "tool_result"
+              )
+            ) {
+              yield* self.resumeBackgroundTurnEffect(session)
+            }
 
-        if (event.entry.kind === "result" || event.entry.kind === "interrupted") {
-          session.suppressResume = false
-        }
+            if (event.entry.kind === "result" || event.entry.kind === "interrupted") {
+              session.suppressResume = false
+            }
 
-        const active = this.activeTurns.get(session.chatId)
-        if (event.entry.kind === "system_init" && active) {
-          active.status = "running"
-          const chat = this.store.getChat(session.chatId)
-          if (
-            chat?.pendingForkSessionToken
-            && session.sessionToken
-            && session.sessionToken !== chat.pendingForkSessionToken
-          ) {
-            await this.store.setPendingForkSessionToken(session.chatId, null)
-          }
-          logClaudeSteer("claude_event_system_init", {
-            chatId: session.chatId,
-            sessionId: session.id,
-            activePromptSeq: active.claudePromptSeq ?? null,
-            pendingPromptSeqs: session.pendingPrompts.map((prompt) => prompt.seq),
-          })
-        }
+            const active = self.activeTurns.get(session.chatId)
+            if (event.entry.kind === "system_init" && active) {
+              active.status = "running"
+              const chat = self.store.getChat(session.chatId)
+              if (
+                chat?.pendingForkSessionToken
+                && session.sessionToken
+                && session.sessionToken !== chat.pendingForkSessionToken
+              ) {
+                yield* storeWriteEffect(self.store.setPendingForkSessionToken(session.chatId, null))
+              }
+              logClaudeSteer(self.machine.env, "claude_event_system_init", {
+                chatId: session.chatId,
+                sessionId: session.id,
+                activePromptSeq: active.claudePromptSeq ?? null,
+                pendingPromptSeqs: session.pendingPrompts.map((prompt) => prompt.seq),
+              })
+            }
 
-        for (const seq of completedPromptSeqs) {
-          session.cancelledPromptSeqs.delete(seq)
-        }
+            for (const seq of completedPromptSeqs) {
+              session.cancelledPromptSeqs.delete(seq)
+            }
 
-        logClaudeSteer("claude_event", {
-          chatId: session.chatId,
-          sessionId: session.id,
-          entryKind: event.entry.kind,
-          activePromptSeq: active?.claudePromptSeq ?? null,
-          completedPromptSeqs,
-          activeStatus: active?.status ?? null,
-          pendingPromptSeqs: session.pendingPrompts.map((prompt) => prompt.seq),
-        })
+            logClaudeSteer(self.machine.env, "claude_event", {
+              chatId: session.chatId,
+              sessionId: session.id,
+              entryKind: event.entry.kind,
+              activePromptSeq: active?.claudePromptSeq ?? null,
+              completedPromptSeqs,
+              activeStatus: active?.status ?? null,
+              pendingPromptSeqs: session.pendingPrompts.map((prompt) => prompt.seq),
+            })
 
-        // A turn resumed by background activity has no prompt, so any result
-        // that answers none of ours ends it.
-        const completesActive = active?.claudePromptSeq == null
-          ? completedPromptSeqs.length === 0
-          : completedPromptSeqs.includes(active.claudePromptSeq)
-        if (event.entry.kind === "result" && active && completesActive) {
-          active.hasFinalResult = true
-          if (event.entry.isError) {
-            await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
-          } else if (!active.cancelRequested) {
-            await this.store.recordTurnFinished(session.chatId)
-          }
-          active.customTools?.abort()
-          this.activeTurns.delete(session.chatId)
-          if (!active.cancelRequested) {
-            await this.maybeStartNextQueuedMessage(session.chatId)
-          }
-          this.notifySettled(session.chatId)
-        }
+            // A turn resumed by background activity has no prompt, so any result
+            // that answers none of ours ends it.
+            const completesActive = active?.claudePromptSeq == null
+              ? completedPromptSeqs.length === 0
+              : completedPromptSeqs.includes(active.claudePromptSeq)
+            if (event.entry.kind === "result" && active && completesActive) {
+              active.hasFinalResult = true
+              if (event.entry.isError) {
+                yield* storeWriteEffect(self.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed"))
+              } else if (!active.cancelRequested) {
+                yield* storeWriteEffect(self.store.recordTurnFinished(session.chatId))
+              }
+              active.customTools?.abort()
+              self.activeTurns.delete(session.chatId)
+              if (!active.cancelRequested) {
+                yield* self.maybeStartNextQueuedMessageEffect(session.chatId)
+              }
+              self.notifySettled(session.chatId)
+            }
 
-        this.emitStateChange(session.chatId)
-      }
-    } catch (error) {
-      const active = this.activeTurns.get(session.chatId)
+            self.emitStateChange(session.chatId)
+        })),
+      ))
+      if (Exit.isFailure(streamExit) && self.claudeSessions.get(session.chatId) === session) {
+      const active = self.activeTurns.get(session.chatId)
       if (active && !active.cancelRequested) {
+        const error = Cause.squash(streamExit.cause)
         const message = error instanceof Error ? error.message : String(error)
-        await this.store.appendMessage(
+        yield* storeWriteEffect(self.store.appendMessage(
           session.chatId,
           timestamped({
             kind: "result",
@@ -2949,118 +3222,133 @@ export class AgentCoordinator {
             durationMs: 0,
             result: message,
           })
-        )
-        await this.store.recordTurnFailed(session.chatId, message)
+        ))
+        yield* storeWriteEffect(self.store.recordTurnFailed(session.chatId, message))
       }
-    } finally {
+      }
       // Only evict if this session is still the chat's current one — a restart
       // (localPath/effort/autoPlan change, or a fork) closes the old session
       // and immediately registers a replacement, and the old stream's cleanup
       // lands afterwards. Deleting by chatId alone would drop the new session.
-      if (this.claudeSessions.get(session.chatId) === session) {
-        this.claudeSessions.delete(session.chatId)
-      }
+      if (self.claudeSessions.get(session.chatId) === session) self.claudeSessions.delete(session.chatId)
       // Only this session's turn. A restart registers the replacement's turn
       // before the old stream ends (the CLI takes a while to exit), and
       // dropping that one left the chat with no turn to finish: its first
       // reply re-registered it as a background turn, the prompt's result
       // could not close that, and the chat read "running" until stopped.
-      const active = this.activeTurns.get(session.chatId)
+      const active = self.activeTurns.get(session.chatId)
       if (active?.provider === "claude" && active.claudeSessionId === session.id) {
         active.customTools?.abort()
         if (active.cancelRequested && !active.cancelRecorded) {
-          await this.store.recordTurnCancelled(session.chatId)
+          yield* storeWriteEffect(self.store.recordTurnCancelled(session.chatId))
         }
-        this.activeTurns.delete(session.chatId)
+        self.activeTurns.delete(session.chatId)
       }
       // The session is gone, so nothing it spawned can report back. Only when
-      // it is still the chat's session: a restart's replacement owns them now.
-      if (!this.claudeSessions.has(session.chatId)) {
-        this.closeRunningSubagents(session.chatId)
-        this.ambientTaskIds.delete(session.chatId)
-        this.foregroundTasks.delete(session.chatId)
+      // no session replaced it: a restart's replacement owns them now. A
+      // session closed with no replacement (closeChat, a provider handoff)
+      // left the map before its stream ended, and still gets this cleanup.
+      if (!self.claudeSessions.has(session.chatId)) {
+        self.closeRunningSubagents(session.chatId)
+        self.ambientTaskIds.delete(session.chatId)
+        self.foregroundTasks.delete(session.chatId)
       }
-      session.session.close()
-      this.emitStateChange(session.chatId)
-      this.notifySettled(session.chatId)
-    }
-  }
+      yield* session.session.close
+      self.emitStateChange(session.chatId)
+      self.notifySettled(session.chatId)
+    })
+  })
 
-  private async generateTitleInBackground(chatId: string, messageContent: string, cwd: string, expectedCurrentTitle: string) {
-    try {
-      const result = await this.generateTitle(messageContent, cwd)
+  private generateTitleInBackgroundEffect = Effect.fn("Agent.generateTitleInBackground")((
+    chatId: string, messageContent: string, cwd: string, expectedCurrentTitle: string,
+  ) => {
+    const self = this
+    return Effect.gen(function* () {
+      const generated = yield* Effect.exit(self.generateTitleEffect(messageContent, cwd))
+      if (Exit.isFailure(generated)) {
+        const error = Cause.squash(generated.cause)
+        const message = error instanceof Error ? error.message : String(error)
+        self.reportBackgroundError?.(
+          `[title-generation] chat ${chatId} failed background title generation: ${message}`
+        )
+        return
+      }
+      const result = generated.value
       if (result.failureMessage) {
-        this.reportBackgroundError?.(
+        self.reportBackgroundError?.(
           `[title-generation] chat ${chatId} failed provider title generation: ${result.failureMessage}`
         )
       }
       if (!result.title || result.usedFallback) return
 
-      const chat = this.store.requireChat(chatId)
+      const chat = self.store.requireChat(chatId)
       if (chat.title !== expectedCurrentTitle) return
 
-      await this.store.renameChat(chatId, result.title)
-      this.emitStateChange(chatId)
-    } catch (error) {
+      yield* storeWriteEffect(self.store.renameChat(chatId, result.title))
+      self.emitStateChange(chatId)
+    }).pipe(Effect.catch((error) => Effect.sync(() => {
       const message = error instanceof Error ? error.message : String(error)
-      this.reportBackgroundError?.(
-        `[title-generation] chat ${chatId} failed background title generation: ${message}`
-      )
-    }
-  }
+      self.reportBackgroundError?.(`[title-generation] chat ${chatId} failed background title generation: ${message}`)
+    })))
+  })
 
-  private async runTurn(active: ActiveTurn) {
+  private runTurnEffect = Effect.fn("Agent.runTurn")((active: ActiveTurn) => {
+    const self = this
     const customToolEvents = new KannaToolEventFilter()
-    try {
-      for await (const event of active.turn.stream) {
-        // Once cancelled, stop processing further stream events.
-        // cancel() already removed us from activeTurns and notified the UI.
-        if (active.cancelRequested) break
+    return Effect.gen(function* () {
+      const streamExit = yield* Effect.exit(active.turn.events.pipe(
+        // Once cancelled, stop processing further stream events: cancel()
+        // already removed the turn and notified the UI. One event per chunk,
+        // so the check runs before each event, not once per buffered batch.
+        Stream.rechunk(1),
+        Stream.takeWhile(() => !active.cancelRequested),
+        Stream.runForEach((event) => Effect.gen(function* () {
+            if (event.type === "session_token" && event.sessionToken) {
+              yield* storeWriteEffect(self.store.setSessionToken(active.chatId, event.sessionToken))
+              const chat = self.store.getChat(active.chatId)
+              if (
+                chat?.pendingForkSessionToken
+                && event.sessionToken !== chat.pendingForkSessionToken
+              ) {
+                yield* storeWriteEffect(self.store.setPendingForkSessionToken(active.chatId, null))
+              }
+              self.emitStateChange(active.chatId)
+              return
+            }
 
-        if (event.type === "session_token" && event.sessionToken) {
-          await this.store.setSessionToken(active.chatId, event.sessionToken)
-          const chat = this.store.getChat(active.chatId)
-          if (
-            chat?.pendingForkSessionToken
-            && event.sessionToken !== chat.pendingForkSessionToken
-          ) {
-            await this.store.setPendingForkSessionToken(active.chatId, null)
-          }
-          this.emitStateChange(active.chatId)
-          continue
-        }
+            if (!event.entry || customToolEvents.skip(event.entry)) return
+            yield* storeWriteEffect(self.store.appendMessage(active.chatId, event.entry))
+            self.trackSubagentFromEntry(active.chatId, active.provider, event.entry)
 
-        if (!event.entry || customToolEvents.skip(event.entry)) continue
-        await this.store.appendMessage(active.chatId, event.entry)
-        this.trackSubagentFromEntry(active.chatId, active.provider, event.entry)
+            if (event.entry.kind === "system_init") {
+              active.status = active.pendingTool ? "waiting_for_user" : "running"
+            }
 
-        if (event.entry.kind === "system_init") {
-          active.status = active.pendingTool ? "waiting_for_user" : "running"
-        }
+            if (event.entry.kind === "result") {
+              active.hasFinalResult = true
+              if (event.entry.isError) {
+                yield* storeWriteEffect(self.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed"))
+              } else if (!active.cancelRequested) {
+                yield* storeWriteEffect(self.store.recordTurnFinished(active.chatId))
+              }
+              // Remove from activeTurns as soon as the result arrives so the UI
+              // transitions to idle immediately. The stream may still be open
+              // (e.g. background tasks), but the user should be able to send
+              // new messages without having to hit stop first.
+              self.activeTurns.delete(active.chatId)
+              // Track the still-open stream so the UI can show a draining
+              // indicator and the user can stop background tasks.
+              self.drainingStreams.set(active.chatId, { turn: active.turn })
+            }
 
-        if (event.entry.kind === "result") {
-          active.hasFinalResult = true
-          if (event.entry.isError) {
-            await this.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed")
-          } else if (!active.cancelRequested) {
-            await this.store.recordTurnFinished(active.chatId)
-          }
-          // Remove from activeTurns as soon as the result arrives so the UI
-          // transitions to idle immediately. The stream may still be open
-          // (e.g. background tasks), but the user should be able to send
-          // new messages without having to hit stop first.
-          this.activeTurns.delete(active.chatId)
-          // Track the still-open stream so the UI can show a draining
-          // indicator and the user can stop background tasks.
-          this.drainingStreams.set(active.chatId, { turn: active.turn })
-        }
-
-        this.emitStateChange(active.chatId)
-      }
-    } catch (error) {
+            self.emitStateChange(active.chatId)
+        })),
+      ))
+      if (Exit.isFailure(streamExit)) {
       if (!active.cancelRequested) {
+        const error = Cause.squash(streamExit.cause)
         const message = error instanceof Error ? error.message : String(error)
-        await this.store.appendMessage(
+        yield* storeWriteEffect(self.store.appendMessage(
           active.chatId,
           timestamped({
             kind: "result",
@@ -3069,36 +3357,35 @@ export class AgentCoordinator {
             durationMs: 0,
             result: message,
           })
-        )
-        await this.store.recordTurnFailed(active.chatId, message)
+        ))
+        yield* storeWriteEffect(self.store.recordTurnFailed(active.chatId, message))
       }
-    } finally {
+      }
       if (active.cancelRequested && !active.cancelRecorded) {
-        await this.store.recordTurnCancelled(active.chatId)
+        yield* storeWriteEffect(self.store.recordTurnCancelled(active.chatId))
       }
       active.customTools?.abort()
-      active.turn.close()
+      yield* active.turn.close
       // Only remove if we're still the active turn for this chat.
       // We may have already been removed by result handling or cancel(),
       // and a new turn may have started for the same chatId.
-      if (this.activeTurns.get(active.chatId) === active) {
-        this.activeTurns.delete(active.chatId)
+      if (self.activeTurns.get(active.chatId) === active) {
+        self.activeTurns.delete(active.chatId)
       }
       // Stream has fully ended — no longer draining.
-      this.drainingStreams.delete(active.chatId)
+      self.drainingStreams.delete(active.chatId)
       // These providers report a subagent only on this stream, so one still
       // marked running can never be closed and would hold the chat in
       // "waiting on subagent" for good. Not when a newer turn has started:
       // the log is that turn's now. Claude's tasks and Codex's agents outlive
       // the turn, and each has its own way of saying one has ended.
-      if (tracksSubagentsFromTranscript(active.provider) && !this.activeTurns.has(active.chatId)) {
-        this.closeRunningSubagents(active.chatId)
+      if (tracksSubagentsFromTranscript(active.provider) && !self.activeTurns.has(active.chatId)) {
+        self.closeRunningSubagents(active.chatId)
       }
-      this.emitStateChange(active.chatId)
+      self.emitStateChange(active.chatId)
 
       if (active.postToolFollowUp && !active.cancelRequested) {
-        try {
-          await this.startTurnForChat({
+        const followUp = yield* Effect.exit(self.startTurnForChatEffect({
             chatId: active.chatId,
             provider: active.provider,
             content: active.postToolFollowUp.content,
@@ -3110,10 +3397,11 @@ export class AgentCoordinator {
             // Codex-only path; carry the turn's mode through unchanged.
             autoPlan: active.autoPlan,
             appendUserPrompt: false,
-          })
-        } catch (error) {
+          }))
+        if (Exit.isFailure(followUp)) {
+          const error = Cause.squash(followUp.cause)
           const message = error instanceof Error ? error.message : String(error)
-          await this.store.appendMessage(
+          yield* storeWriteEffect(self.store.appendMessage(
             active.chatId,
             timestamped({
               kind: "result",
@@ -3122,16 +3410,16 @@ export class AgentCoordinator {
               durationMs: 0,
               result: message,
             })
-          )
-          await this.store.recordTurnFailed(active.chatId, message)
-          this.emitStateChange(active.chatId)
+          ))
+          yield* storeWriteEffect(self.store.recordTurnFailed(active.chatId, message))
+          self.emitStateChange(active.chatId)
         }
       } else if (!active.cancelRequested) {
-        try {
-          await this.maybeStartNextQueuedMessage(active.chatId)
-        } catch (error) {
+        const queued = yield* Effect.exit(self.maybeStartNextQueuedMessageEffect(active.chatId))
+        if (Exit.isFailure(queued)) {
+          const error = Cause.squash(queued.cause)
           const message = error instanceof Error ? error.message : String(error)
-          await this.store.appendMessage(
+          yield* storeWriteEffect(self.store.appendMessage(
             active.chatId,
             timestamped({
               kind: "result",
@@ -3140,117 +3428,123 @@ export class AgentCoordinator {
               durationMs: 0,
               result: message,
             })
-          )
-          await this.store.recordTurnFailed(active.chatId, message)
-          this.emitStateChange(active.chatId)
+          ))
+          yield* storeWriteEffect(self.store.recordTurnFailed(active.chatId, message))
+          self.emitStateChange(active.chatId)
         }
       }
       // Here rather than at the result: the stream is closed and any follow-up
       // or queued turn has had its chance to start.
-      this.notifySettled(active.chatId)
-    }
-  }
-
-  async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {
-    // A steer hides its interrupt and replaces the turn, and a shutdown brings
-    // it back, so neither is a stop. Fired even when nothing is running here:
-    // an idle chat can still have sub-chats to stop.
-    const stopped = !options?.hideInterrupted && !this.shuttingDown
-    if (stopped) this.onChatStopped?.(chatId)
-
-    // Also clean up any draining stream for this chat.
-    const draining = this.drainingStreams.get(chatId)
-    if (draining) {
-      draining.turn.close()
-      this.drainingStreams.delete(chatId)
-    }
-
-    const active = this.activeTurns.get(chatId)
-    if (!active) return
-
-    logClaudeSteer("cancel_requested", {
-      chatId,
-      provider: active.provider,
-      activePromptSeq: active.claudePromptSeq ?? null,
+      self.notifySettled(active.chatId)
     })
+  })
 
-    // Guard against concurrent cancel() calls — only the first one does work.
-    if (active.cancelRequested) return
-    active.cancelRequested = true
+  cancelEffect(chatId: string, options?: { hideInterrupted?: boolean }) {
+    const self = this
+    const storeWrite = <A, E>(run: () => Effect.Effect<A, E>) =>
+      Effect.suspend(() => storeWriteEffect(run())).pipe(
+        Effect.catch((cause) => Effect.fail(new AgentCancelError({ chatId, cause }))),
+      )
+    return Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan("chatId", chatId)
+      // A steer hides its interrupt and replaces the turn, and a shutdown brings
+      // it back, so neither is a stop. Fired even when nothing is running here:
+      // an idle chat can still have sub-chats to stop.
+      const stopped = !options?.hideInterrupted && !self.shuttingDown
+      if (stopped) self.onChatStopped?.(chatId)
 
-    // Keep in-flight stream entries (emitted before the interrupt lands)
-    // from re-registering an active turn via resumeBackgroundTurn, and mark
-    // the cancelled prompt so its interrupt error result gets dropped.
-    if (active.provider === "claude") {
-      const session = this.claudeSessions.get(chatId)
-      if (session) {
-        session.suppressResume = true
-        if (active.claudePromptSeq != null) {
-          session.cancelledPromptSeqs.add(active.claudePromptSeq)
+      // Also clean up any draining stream for this chat.
+      const draining = self.drainingStreams.get(chatId)
+      if (draining) {
+        yield* draining.turn.close
+        self.drainingStreams.delete(chatId)
+      }
+
+      const active = self.activeTurns.get(chatId)
+      if (!active) return
+
+      logClaudeSteer(self.machine.env, "cancel_requested", {
+        chatId,
+        provider: active.provider,
+        activePromptSeq: active.claudePromptSeq ?? null,
+      })
+
+      // Guard against concurrent cancel() calls — only the first one does work.
+      if (active.cancelRequested) return
+      active.cancelRequested = true
+
+      // Keep in-flight stream entries (emitted before the interrupt lands)
+      // from re-registering an active turn via resumeBackgroundTurn, and mark
+      // the cancelled prompt so its interrupt error result gets dropped.
+      if (active.provider === "claude") {
+        const session = self.claudeSessions.get(chatId)
+        if (session) {
+          session.suppressResume = true
+          if (active.claudePromptSeq != null) {
+            session.cancelledPromptSeqs.add(active.claudePromptSeq)
+          }
         }
       }
-    }
 
-    const pendingTool = active.pendingTool
-    active.pendingTool = null
-    active.customTools?.abort()
+      const pendingTool = active.pendingTool
+      active.pendingTool = null
+      active.customTools?.abort()
 
-    if (pendingTool && pendingTool.resultOwner !== "tool") {
-      const result = discardedToolResult(pendingTool.tool)
-      await this.store.appendMessage(
-        chatId,
-        timestamped({
-          kind: "tool_result",
-          toolId: pendingTool.toolUseId,
-          content: result,
-        })
-      )
-      // These adapters hold their stream open until the request resolves.
-      if (
-        (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode")
-        || active.provider === "grok"
-      ) {
-        pendingTool.resolve(result)
+      if (pendingTool && pendingTool.resultOwner !== "tool") {
+        const result = discardedToolResult(pendingTool.tool)
+        yield* storeWrite(() => self.store.appendMessage(
+          chatId,
+          timestamped({
+            kind: "tool_result",
+            toolId: pendingTool.toolUseId,
+            content: result,
+          })
+        ))
+        // These adapters hold their stream open until the request resolves.
+        if (
+          (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode")
+          || active.provider === "grok"
+        ) {
+          pendingTool.resolve(result)
+        }
       }
-    }
 
-    await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-    await this.store.recordTurnCancelled(chatId)
-    active.cancelRecorded = true
-    active.hasFinalResult = true
+      yield* storeWrite(() => self.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted })))
+      yield* storeWrite(() => self.store.recordTurnCancelled(chatId))
+      active.cancelRecorded = true
+      active.hasFinalResult = true
 
-    // Remove from activeTurns immediately so the UI reflects the cancellation
-    // right away, rather than waiting for interrupt() which may hang.
-    this.activeTurns.delete(chatId)
-    if (active.provider === "codex") {
-      // Codex's agents run on after the turn that spawned them is interrupted,
-      // and each still reports its own end, so their rows stay as they are. A
-      // stop is meant for them too. A steer is not: its new turn can go on
-      // waiting for them.
-      if (stopped) void this.codexManager.stopAgents?.(chatId)
-    } else {
-      this.closeRunningSubagents(chatId)
-    }
-    this.emitStateChange(chatId)
-    if (stopped) this.notifySettled(chatId)
-    logClaudeSteer("cancel_active_turn_deleted", {
-      chatId,
-      provider: active.provider,
-      activePromptSeq: active.claudePromptSeq ?? null,
-    })
+      // Remove from activeTurns immediately so the UI reflects the cancellation
+      // right away, rather than waiting for interrupt() which may hang.
+      self.activeTurns.delete(chatId)
+      if (active.provider === "codex") {
+        // Codex's agents run on after the turn that spawned them is interrupted,
+        // and each still reports its own end, so their rows stay as they are. A
+        // stop is meant for them too. A steer is not: its new turn can go on
+        // waiting for them.
+        if (stopped) self.forkBackground(self.codexManager.stopAgents(chatId))
+      } else {
+        self.closeRunningSubagents(chatId)
+      }
+      self.emitStateChange(chatId)
+      if (stopped) self.notifySettled(chatId)
+      logClaudeSteer(self.machine.env, "cancel_active_turn_deleted", {
+        chatId,
+        provider: active.provider,
+        activePromptSeq: active.claudePromptSeq ?? null,
+      })
 
-    // Now attempt to interrupt/close the underlying stream in the background.
-    // This is best-effort — the turn is already removed from active state above,
-    // and runTurn()'s finally block will also call close().
-    try {
-      await Promise.race([
-        active.turn.interrupt(),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ])
-    } catch {
-      // interrupt() failed — force close
-    }
-    active.turn.close()
+      // Now attempt to interrupt/close the underlying stream in the background.
+      // This is best-effort — the turn is already removed from active state above,
+      // and runTurn()'s finally block will also call close().
+      yield* Effect.exit(Effect.raceFirst(active.turn.interrupt, Effect.sleep(5_000)))
+      yield* active.turn.close
+    }).pipe(Effect.withSpan("Agent.cancel"))
+  }
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  cancel(chatId: string, options?: { hideInterrupted?: boolean }): Promise<void> {
+    return runKanna(this.cancelEffect(chatId, options))
   }
 
   private async requestToolInput(chatId: string, request: HarnessToolRequest, signal?: AbortSignal): Promise<unknown> {
@@ -3284,27 +3578,30 @@ export class AgentCoordinator {
     })
   }
 
-  async respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {
-    const active = this.activeTurns.get(command.chatId)
+  respondToolEffect(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {
+    const self = this
+    return Effect.gen(function* () {
+    yield* Effect.annotateCurrentSpan("chatId", command.chatId)
+    const active = self.activeTurns.get(command.chatId)
     if (!active || !active.pendingTool) {
-      throw new Error("No pending tool request")
+      return yield* Effect.fail(new Error("No pending tool request"))
     }
 
     const pending = active.pendingTool
     if (pending.toolUseId !== command.toolUseId) {
-      throw new Error("Tool response does not match active request")
+      return yield* Effect.fail(new Error("Tool response does not match active request"))
     }
     pending.validateResult?.(command.result)
 
     if (pending.resultOwner !== "tool") {
-      await this.store.appendMessage(
+      yield* storeWriteEffect(self.store.appendMessage(
         command.chatId,
         timestamped({
           kind: "tool_result",
           toolId: command.toolUseId,
           content: command.result,
         })
-      )
+      ))
     }
 
     active.pendingTool = null
@@ -3320,11 +3617,11 @@ export class AgentCoordinator {
         active.planExited = true
         // The chat is no longer read-only, and the record is what a turn Kanna
         // starts on its own reads: a sub-chat's report, a schedule, a resume.
-        await this.store.setPlanMode(command.chatId, false)
+      yield* storeWriteEffect(self.store.setPlanMode(command.chatId, false))
       }
       if (result.confirmed && result.clearContext) {
-        await this.store.setSessionToken(command.chatId, null)
-        await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
+        yield* storeWriteEffect(self.store.setSessionToken(command.chatId, null))
+        yield* storeWriteEffect(self.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" })))
       }
 
       // Neither can hand the answer back to the running agent, so it goes in
@@ -3353,6 +3650,12 @@ export class AgentCoordinator {
 
     pending.resolve(command.result)
 
-    this.emitStateChange(command.chatId)
+    self.emitStateChange(command.chatId)
+    }).pipe(Effect.withSpan("Agent.respondTool"))
+  }
+
+  /** Compatibility for callers that have not moved to Effect yet. */
+  respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>): Promise<void> {
+    return runKanna(this.respondToolEffect(command))
   }
 }

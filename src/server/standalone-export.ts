@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto"
-import type { Dirent } from "node:fs"
 import path from "node:path"
-import { cp as copyPath, copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises"
+import { Effect, FileSystem, type PlatformError, Schema } from "effect"
 import type {
   StandaloneTranscriptAttachmentMode,
   StandaloneTranscriptBundle,
@@ -11,6 +10,7 @@ import type {
 } from "../shared/types"
 import { APP_VERSION } from "../shared/branding"
 import { getProjectExportDir } from "./paths"
+import { Machine } from "./platform/machine"
 
 const STANDALONE_TRANSCRIPT_BUNDLE_VERSION = 1 as const
 const STANDALONE_SHARE_UPLOAD_BASE_URL = "https://kanna.sh/api/share"
@@ -55,18 +55,36 @@ export interface WriteStandaloneTranscriptExportArgs {
 export interface StandaloneExportDeps {
   viewerDistDir?: string
   now?: Date
-  mkdir?: typeof mkdir
-  writeFile?: typeof writeFile
-  readFile?: typeof readFile
-  copyDirectory?: (sourceDir: string, targetDir: string) => Promise<void>
-  copyFile?: typeof copyFile
-  readDir?: (targetPath: string) => Promise<Dirent[]>
-  pathExists?: (targetPath: string) => Promise<boolean>
   fetch?: FetchLike
   shareUploadBaseUrl?: string
   sharePublicBaseUrl?: string
   shareSlugSuffix?: string
 }
+
+/** The export could not be written locally. The share upload failing is not this: it is an `ok: false` result. */
+export class StandaloneExportError extends Schema.TaggedError<StandaloneExportError>()(
+  "@kanna/server/standalone-export/StandaloneExportError",
+  {
+    operation: Schema.Literals(["viewer", "write"]),
+    chatId: Schema.String,
+    filePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
+/** Uploading the export to the share host failed; `message` is what the client shows. */
+export class ShareUploadError extends Schema.TaggedError<ShareUploadError>()(
+  "@kanna/server/standalone-export/ShareUploadError",
+  {
+    shareSlug: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
 interface PreparedMessagesResult {
   messages: TranscriptEntry[]
@@ -76,61 +94,45 @@ interface PreparedMessagesResult {
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
-export function getStandaloneViewerDistDir() {
-  return path.join(import.meta.dir, "..", "..", "dist", "export-viewer")
-}
-
-export async function writeStandaloneTranscriptExport(
+export const writeStandaloneTranscriptExport = Effect.fn("StandaloneExport.write")(function* (
   args: WriteStandaloneTranscriptExportArgs,
   deps: StandaloneExportDeps = {},
-): Promise<StandaloneTranscriptExportCommandResult> {
-  const viewerDistDir = deps.viewerDistDir ?? getStandaloneViewerDistDir()
-  const ensureDir = deps.mkdir ?? mkdir
-  const writeFileImpl = deps.writeFile ?? writeFile
-  const readFileImpl = deps.readFile ?? readFile
-  const copyDirectory = deps.copyDirectory ?? (async (sourceDir, targetDir) => {
-    await copyPath(sourceDir, targetDir, { recursive: true })
-  })
-  const copyFileImpl = deps.copyFile ?? copyFile
-  const readDir = deps.readDir ?? defaultReadDir
-  const pathExists = deps.pathExists ?? defaultPathExists
+): Effect.fn.Return<StandaloneTranscriptExportCommandResult, StandaloneExportError, FileSystem.FileSystem | Machine> {
+  yield* Effect.annotateCurrentSpan("chatId", args.chatId)
+  const fs = yield* FileSystem.FileSystem
+  const viewerDistDir = deps.viewerDistDir
   const fetchImpl = deps.fetch ?? fetch
   const now = deps.now ?? new Date()
   const shareUploadBaseUrl = deps.shareUploadBaseUrl ?? STANDALONE_SHARE_UPLOAD_BASE_URL
   const sharePublicBaseUrl = deps.sharePublicBaseUrl ?? STANDALONE_SHARE_PUBLIC_BASE_URL
+  const writeError = (filePath: string) => (cause: unknown) =>
+    Effect.fail(new StandaloneExportError({ operation: "write", chatId: args.chatId, filePath, cause }))
 
-  if (!(await pathExists(viewerDistDir))) {
-    throw new Error("Standalone viewer bundle not found. Run `bun run build`.")
+  if (viewerDistDir === undefined || !(yield* pathExists(fs, viewerDistDir))) {
+    return yield* new StandaloneExportError({
+      operation: "viewer",
+      chatId: args.chatId,
+      filePath: viewerDistDir ?? "",
+      cause: new Error("Standalone viewer bundle not found. Run `bun run build`."),
+    })
   }
 
-  const exportRootDir = getProjectExportDir(args.localPath)
-  await ensureDir(exportRootDir, { recursive: true })
+  const exportRootDir = getProjectExportDir(args.localPath, (yield* Machine).homeDirectory)
+  yield* fs.makeDirectory(exportRootDir, { recursive: true }).pipe(Effect.catchTag("PlatformError", writeError(exportRootDir)))
 
-  const outputDir = await resolveUniqueExportDir(exportRootDir, args.title || args.chatId, now, pathExists)
-  await copyDirectory(viewerDistDir, outputDir)
+  const outputDir = yield* resolveUniqueExportDir(fs, exportRootDir, args.title || args.chatId, now)
+  yield* fs.copy(viewerDistDir, outputDir, { overwrite: true }).pipe(Effect.catchTag("PlatformError", writeError(outputDir)))
 
   const attachmentsDir = path.join(outputDir, "attachments")
-  const prepared = await prepareStandaloneMessages(args.messages, {
+  const prepared = yield* prepareStandaloneMessages(fs, args.messages, {
     attachmentMode: args.attachmentMode,
     localPath: args.localPath,
     attachmentsDir,
-    copyFile: copyFileImpl,
-    mkdir: ensureDir,
-    pathExists,
     resolveMediaPath: args.resolveMediaPath ?? (() => null),
-  })
-
-  // Keep only the HTTP origin, never credentials, paths, or query parameters.
-  let sourceOrigin: string | undefined
-  try {
-    const url = new URL(args.sourceOrigin ?? "")
-    if (url.protocol === "http:" || url.protocol === "https:") sourceOrigin = url.origin
-  } catch {
-    // Older clients do not send an origin. Relative chat links still work.
-  }
+  }).pipe(Effect.catchTag("PlatformError", writeError(attachmentsDir)))
 
   const bundle: StandaloneTranscriptBundle = {
-    sourceOrigin,
+    sourceOrigin: readSourceOrigin(args.sourceOrigin),
     version: STANDALONE_TRANSCRIPT_BUNDLE_VERSION,
     chatId: args.chatId,
     title: args.title,
@@ -144,64 +146,70 @@ export async function writeStandaloneTranscriptExport(
 
   const transcriptJson = `${JSON.stringify(bundle, null, 2)}\n`
   const transcriptJsonPath = path.join(outputDir, "transcript.json")
-  await writeFileImpl(transcriptJsonPath, transcriptJson, "utf8")
+  yield* fs.writeFileString(transcriptJsonPath, transcriptJson).pipe(Effect.catchTag("PlatformError", writeError(transcriptJsonPath)))
   const shareSlug = buildStandaloneShareSlug(args.title || args.chatId, deps.shareSlugSuffix)
   const shareUrl = buildStandaloneShareUrl(sharePublicBaseUrl, shareSlug)
-  let uploadedFileCount = 0
 
-  try {
-    uploadedFileCount = await uploadStandaloneExportDirectory({
+  return yield* uploadStandaloneExportDirectory(fs, {
+    outputDir,
+    shareSlug,
+    uploadBaseUrl: shareUploadBaseUrl,
+    fetch: fetchImpl,
+  }).pipe(
+    Effect.map((uploadedFileCount): StandaloneTranscriptExportCommandResult => ({
+      ok: true,
       outputDir,
-      shareSlug,
-      uploadBaseUrl: shareUploadBaseUrl,
-      fetch: fetchImpl,
-      pathExists,
-      readDir,
-      readFile: readFileImpl,
-    })
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-      outputDir,
+      indexHtmlPath: path.join(outputDir, "index.html"),
       transcriptJsonPath,
-      transcriptFileName: `${path.basename(outputDir)}-transcript.json`,
-      transcriptJson,
+      attachmentMode: args.attachmentMode,
+      totalAttachmentCount: prepared.totalAttachmentCount,
+      bundledAttachmentCount: prepared.bundledAttachmentCount,
       shareSlug,
       shareUrl,
-    }
-  }
+      uploadedFileCount,
+    })),
+    // The export is on disk; the client offers the JSON as a download instead.
+    Effect.catchTag("@kanna/server/standalone-export/ShareUploadError", (error) =>
+      Effect.succeed<StandaloneTranscriptExportCommandResult>({
+        ok: false,
+        error: error.message,
+        outputDir,
+        transcriptJsonPath,
+        transcriptFileName: `${path.basename(outputDir)}-transcript.json`,
+        transcriptJson,
+        shareSlug,
+        shareUrl,
+      })),
+  )
+})
 
-  return {
-    ok: true,
-    outputDir,
-    indexHtmlPath: path.join(outputDir, "index.html"),
-    transcriptJsonPath,
-    attachmentMode: args.attachmentMode,
-    totalAttachmentCount: prepared.totalAttachmentCount,
-    bundledAttachmentCount: prepared.bundledAttachmentCount,
-    shareSlug,
-    shareUrl,
-    uploadedFileCount,
-  }
+/** Keep only the HTTP origin, never credentials, paths, or query parameters. */
+function readSourceOrigin(sourceOrigin: string | undefined): string | undefined {
+  // Older clients do not send an origin. Relative chat links still work.
+  if (!URL.canParse(sourceOrigin ?? "")) return undefined
+  const url = new URL(sourceOrigin ?? "")
+  return url.protocol === "http:" || url.protocol === "https:" ? url.origin : undefined
 }
 
-async function prepareStandaloneMessages(
+const prepareStandaloneMessages = Effect.fn("StandaloneExport.prepareMessages")(function* (
+  fs: FileSystem.FileSystem,
   messages: TranscriptEntry[],
   args: {
     attachmentMode: StandaloneTranscriptAttachmentMode
     localPath: string
     attachmentsDir: string
-    copyFile: typeof copyFile
-    mkdir: typeof mkdir
-    pathExists: (targetPath: string) => Promise<boolean>
     resolveMediaPath: (url: string) => string | null
   },
-): Promise<PreparedMessagesResult> {
+) {
   const preparedMessages = structuredClone(messages)
   let totalAttachmentCount = 0
   let bundledAttachmentCount = 0
   let attachmentsDirCreated = false
+  const ensureAttachmentsDir = Effect.suspend(() => {
+    if (attachmentsDirCreated) return Effect.void
+    attachmentsDirCreated = true
+    return fs.makeDirectory(args.attachmentsDir, { recursive: true })
+  })
 
   for (const message of preparedMessages) {
     // Tool result images are files beside the transcript; bundle them like
@@ -215,16 +223,13 @@ async function prepareStandaloneMessages(
         if (/^https?:\/\//.test(block.url)) continue
         totalAttachmentCount += 1
         const sourcePath = args.attachmentMode === "metadata" ? null : args.resolveMediaPath(block.url)
-        if (!sourcePath || !(await args.pathExists(sourcePath))) {
+        if (!sourcePath || !(yield* pathExists(fs, sourcePath))) {
           block.url = ""
           continue
         }
-        if (!attachmentsDirCreated) {
-          await args.mkdir(args.attachmentsDir, { recursive: true })
-          attachmentsDirCreated = true
-        }
+        yield* ensureAttachmentsDir
         const exportedFileName = sanitizeFileNameSegment(path.basename(sourcePath))
-        await args.copyFile(sourcePath, path.join(args.attachmentsDir, exportedFileName))
+        yield* fs.copyFile(sourcePath, path.join(args.attachmentsDir, exportedFileName))
         bundledAttachmentCount += 1
         block.url = `./attachments/${exportedFileName}`
       }
@@ -243,19 +248,16 @@ async function prepareStandaloneMessages(
         continue
       }
 
-      if (!attachment.absolutePath || !(await args.pathExists(attachment.absolutePath))) {
+      if (!attachment.absolutePath || !(yield* pathExists(fs, attachment.absolutePath))) {
         rewriteAttachmentAsMetadata(attachment)
         continue
       }
 
-      if (!attachmentsDirCreated) {
-        await args.mkdir(args.attachmentsDir, { recursive: true })
-        attachmentsDirCreated = true
-      }
+      yield* ensureAttachmentsDir
 
       const exportedFileName = `${sanitizeFileNameSegment(attachment.id)}-${sanitizeFileNameSegment(path.basename(attachment.displayName || attachment.absolutePath))}`
       const destinationPath = path.join(args.attachmentsDir, exportedFileName)
-      await args.copyFile(attachment.absolutePath, destinationPath)
+      yield* fs.copyFile(attachment.absolutePath, destinationPath)
       bundledAttachmentCount += 1
 
       const relativeDestinationPath = `./attachments/${exportedFileName}`
@@ -271,8 +273,8 @@ async function prepareStandaloneMessages(
     messages: preparedMessages,
     totalAttachmentCount,
     bundledAttachmentCount,
-  }
-}
+  } satisfies PreparedMessagesResult
+})
 
 function rewriteAttachmentAsMetadata(attachment: {
   absolutePath: string
@@ -284,23 +286,23 @@ function rewriteAttachmentAsMetadata(attachment: {
   attachment.contentUrl = ""
 }
 
-async function resolveUniqueExportDir(
+const resolveUniqueExportDir = Effect.fn("StandaloneExport.resolveUniqueExportDir")(function* (
+  fs: FileSystem.FileSystem,
   exportRootDir: string,
   title: string,
   now: Date,
-  pathExists: (targetPath: string) => Promise<boolean>,
 ) {
   const baseName = `${sanitizeFileNameSegment(title) || "chat"}-${formatExportTimestamp(now)}`
   let candidate = path.join(exportRootDir, baseName)
   let suffix = 2
 
-  while (await pathExists(candidate)) {
+  while (yield* pathExists(fs, candidate)) {
     candidate = path.join(exportRootDir, `${baseName}-${suffix}`)
     suffix += 1
   }
 
   return candidate
-}
+})
 
 function formatExportTimestamp(value: Date) {
   return value
@@ -316,90 +318,94 @@ function sanitizeFileNameSegment(value: string) {
     .replace(/^-+|-+$/g, "")
 }
 
-async function defaultPathExists(targetPath: string) {
-  try {
-    await stat(targetPath)
-    return true
-  } catch {
-    return false
-  }
-}
+/** Anything `stat` cannot see counts as absent, whatever the reason. */
+const pathExists = (fs: FileSystem.FileSystem, targetPath: string) =>
+  fs.stat(targetPath).pipe(
+    Effect.as(true),
+    Effect.catchTag("PlatformError", () => Effect.succeed(false)),
+  )
 
-async function defaultReadDir(targetPath: string) {
-  return await readdir(targetPath, { withFileTypes: true })
-}
-
-async function uploadStandaloneExportDirectory(args: {
-  outputDir: string
-  shareSlug: string
-  uploadBaseUrl: string
-  fetch: FetchLike
-  pathExists: (targetPath: string) => Promise<boolean>
-  readDir: (targetPath: string) => Promise<Dirent[]>
-  readFile: typeof readFile
-}) {
-  const filePaths = await listShareUploadFiles(args.outputDir, args.readDir, args.pathExists)
+const uploadStandaloneExportDirectory = Effect.fn("StandaloneExport.upload")(function* (
+  fs: FileSystem.FileSystem,
+  args: {
+    outputDir: string
+    shareSlug: string
+    uploadBaseUrl: string
+    fetch: FetchLike
+  },
+) {
+  const uploadError = (cause: unknown, message = cause instanceof Error ? cause.message : String(cause)) =>
+    new ShareUploadError({ shareSlug: args.shareSlug, message, cause })
+  const filePaths = yield* listShareUploadFiles(fs, args.outputDir).pipe(
+    Effect.catchTag("PlatformError", (cause) => Effect.fail(uploadError(cause))),
+  )
   let uploadedFileCount = 0
 
   for (const filePath of filePaths) {
     const relativePath = path.relative(args.outputDir, filePath).split(path.sep).join("/")
-    const body = await args.readFile(filePath)
-    const response = await args.fetch(buildShareUploadUrl(args.uploadBaseUrl, args.shareSlug, relativePath), {
-      method: "PUT",
-      headers: {
-        "Cache-Control": getShareUploadCacheControl(relativePath),
-        "Content-Type": getContentTypeForPath(relativePath),
-      },
-      body,
+    const body = yield* fs.readFile(filePath).pipe(Effect.catchTag("PlatformError", (cause) => Effect.fail(uploadError(cause))))
+    const response = yield* Effect.tryPromise({
+      try: (signal) => args.fetch(buildShareUploadUrl(args.uploadBaseUrl, args.shareSlug, relativePath), {
+        method: "PUT",
+        headers: {
+          "Cache-Control": getShareUploadCacheControl(relativePath),
+          "Content-Type": getContentTypeForPath(relativePath),
+        },
+        body,
+        signal,
+      }),
+      catch: (cause) => uploadError(cause),
     })
 
     if (!response.ok) {
-      const detail = await response.text().catch(() => "")
+      // The body is a courtesy; a status is enough to report.
+      const detail = yield* Effect.tryPromise(() => response.text()).pipe(Effect.orElseSucceed(() => ""))
       const suffix = detail ? `: ${detail}` : ` (status ${response.status})`
-      throw new Error(`Failed to upload shared transcript file ${relativePath}${suffix}`)
+      return yield* uploadError(
+        { status: response.status, relativePath },
+        `Failed to upload shared transcript file ${relativePath}${suffix}`,
+      )
     }
 
     uploadedFileCount += 1
   }
 
   return uploadedFileCount
-}
+})
 
-async function listShareUploadFiles(
+const listShareUploadFiles = Effect.fn("StandaloneExport.listShareUploadFiles")(function* (
+  fs: FileSystem.FileSystem,
   outputDir: string,
-  readDir: (targetPath: string) => Promise<Dirent[]>,
-  pathExists: (targetPath: string) => Promise<boolean>,
-): Promise<string[]> {
+) {
   const filePaths = [path.join(outputDir, "transcript.json")]
   const attachmentsDir = path.join(outputDir, "attachments")
 
-  if (await pathExists(attachmentsDir)) {
-    filePaths.push(...await listExportFiles(attachmentsDir, readDir))
+  if (yield* pathExists(fs, attachmentsDir)) {
+    filePaths.push(...yield* listExportFiles(fs, attachmentsDir))
   }
 
   return filePaths
-}
+})
 
-async function listExportFiles(
-  rootDir: string,
-  readDir: (targetPath: string) => Promise<Dirent[]>,
-): Promise<string[]> {
-  const entries = await readDir(rootDir)
-  const files: string[] = []
+const listExportFiles = (fs: FileSystem.FileSystem, rootDir: string): Effect.Effect<string[], PlatformError.PlatformError> =>
+  Effect.gen(function* () {
+    const names = yield* fs.readDirectory(rootDir)
+    const files: string[] = []
 
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const entryPath = path.join(rootDir, entry.name)
-    if (entry.isDirectory()) {
-      files.push(...await listExportFiles(entryPath, readDir))
-      continue
+    for (const name of names.sort((left, right) => left.localeCompare(right))) {
+      const entryPath = path.join(rootDir, name)
+      const info = yield* fs.stat(entryPath)
+      if (info.type === "Directory") {
+        files.push(...yield* listExportFiles(fs, entryPath))
+        continue
+      }
+      if (info.type === "File") {
+        files.push(entryPath)
+      }
     }
-    if (entry.isFile()) {
-      files.push(entryPath)
-    }
-  }
 
-  return files
-}
+    return files
+  })
 
 function buildStandaloneShareSlug(title: string, providedSuffix?: string) {
   const baseSlug = title

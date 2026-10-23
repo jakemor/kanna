@@ -1,5 +1,6 @@
 import path from "node:path"
-import { getSharedQuickResponseAdapter } from "./quick-response"
+import { Effect } from "effect"
+import { QuickResponse } from "./quick-response"
 
 interface CommitMessageFile {
   path: string
@@ -84,15 +85,14 @@ function buildCommitMessagePrompt(args: {
   ].join("\n")
 }
 
-export async function generateCommitMessageDetailed(
-  args: {
-    cwd: string
-    branchName?: string
-    files: CommitMessageFile[]
-  },
-  adapter = getSharedQuickResponseAdapter()
-): Promise<GenerateCommitMessageResult> {
-  const result = await adapter.generateStructuredWithDiagnostics<{ subject: string; body: string }>({
+/** A commit message for the selected changes, or one made from the file names when no model answers. */
+export const generateCommitMessageDetailed = Effect.fn("GenerateCommitMessage.detailed")(function* (args: {
+  cwd: string
+  branchName?: string
+  files: CommitMessageFile[]
+}) {
+  const quickResponse = yield* QuickResponse
+  const result = yield* quickResponse.generateStructuredWithDiagnostics<{ subject: string; body: string }>({
     cwd: args.cwd,
     task: "commit message generation",
     prompt: buildCommitMessagePrompt(args),
@@ -114,7 +114,7 @@ export async function generateCommitMessageDetailed(
       body: result.value.body,
       usedFallback: false,
       failureMessage: null,
-    }
+    } satisfies GenerateCommitMessageResult
   }
 
   return {
@@ -122,5 +122,5 @@ export async function generateCommitMessageDetailed(
     body: "",
     usedFallback: true,
     failureMessage: summarizeFailures(result.failures),
-  }
-}
+  } satisfies GenerateCommitMessageResult
+})

@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { watch, type FSWatcher } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import path from "node:path"
-import { getSettingsFilePath, LOG_PREFIX } from "../shared/branding"
+import { Context, Effect, FileSystem, Latch, Layer, Option, Schema, Stream, SubscriptionRef } from "effect"
+import { getSettingsFilePath } from "../shared/branding"
 import {
   DEFAULT_TRANSCRIPT_WINDOW_ASSISTANT_MESSAGES,
   MAX_TRANSCRIPT_WINDOW_ASSISTANT_MESSAGES,
@@ -11,6 +9,7 @@ import {
 } from "../shared/transcript-window"
 import { getDefaultEditorCommandTemplate, isEditorPreset } from "../shared/editor-presets"
 import { formatDisplayPath } from "./paths"
+import { Machine } from "./platform/machine"
 import {
   mergeProviderDefaultsPatch,
   normalizeProviderDefaults,
@@ -75,7 +74,7 @@ interface AppSettingsFile {
 }
 
 // devbox and the installed-app lists are server-runtime facts, not settings state.
-interface AppSettingsState extends Omit<AppSettingsSnapshot, "devbox" | "installedEditors" | "installedTerminals"> {
+export interface AppSettingsState extends Omit<AppSettingsSnapshot, "devbox" | "installedEditors" | "installedTerminals"> {
   analyticsUserId: string
 }
 
@@ -236,7 +235,8 @@ function toSnapshot(
 
 function normalizeAppSettings(
   value: unknown,
-  filePath = getSettingsFilePath(homedir())
+  filePath: string,
+  homeDir: string,
 ): NormalizedAppSettings {
   const source = value && typeof value === "object" && !Array.isArray(value)
     ? value as AppSettingsFile
@@ -321,7 +321,7 @@ function normalizeAppSettings(
     setupCompleted: source?.setupCompleted === true,
     setupDismissed: source?.setupDismissed === true,
     warning: null,
-    filePathDisplay: formatDisplayPath(filePath),
+    filePathDisplay: formatDisplayPath(filePath, homeDir),
   }
 
   const shouldWrite = JSON.stringify(source ? toComparablePayload(source) : null) !== JSON.stringify(toFilePayload(state))
@@ -365,7 +365,7 @@ function toComparablePayload(source: AppSettingsFile) {
   }
 }
 
-function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettingsState {
+function applyPatch(state: AppSettingsState, patch: AppSettingsPatch, homeDir: string): AppSettingsState {
   return normalizeAppSettings({
     ...toFilePayload(state),
     ...patch,
@@ -386,171 +386,205 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
       ...patch.paneVisibility,
     },
     providerDefaults: mergeProviderDefaultsPatch(state.providerDefaults, patch.providerDefaults),
-  }, state.filePathDisplay).payload
+  }, state.filePathDisplay, homeDir).payload
 }
 
-export async function readAppSettingsSnapshot(filePath = getSettingsFilePath(homedir())) {
-  try {
-    const text = await readFile(filePath, "utf8")
-    if (!text.trim()) {
-      const normalized = normalizeAppSettings(undefined, filePath)
-      return {
-        ...toSnapshot(normalized.payload),
-        warning: "Settings file was empty. Using defaults.",
-      } satisfies AppSettingsSnapshot
-    }
+export class AppSettingsFileError extends Schema.TaggedError<AppSettingsFileError>()(
+  "@kanna/server/app-settings/AppSettingsFileError",
+  {
+    operation: Schema.Literals(["read", "write"]),
+    filePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
-    return toSnapshot(normalizeAppSettings(JSON.parse(text), filePath).payload)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return toSnapshot(normalizeAppSettings(undefined, filePath).payload)
-    }
-    if (error instanceof SyntaxError) {
-      return {
-        ...toSnapshot(normalizeAppSettings(undefined, filePath).payload),
-        warning: "Settings file is invalid JSON. Using defaults.",
-      } satisfies AppSettingsSnapshot
-    }
-    throw error
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+
+/** The runtime profile's settings file under `homeDir` (the machine's home, `Machine.homeDirectory`). */
+export const defaultAppSettingsFilePath = (homeDir: string) => getSettingsFilePath(homeDir)
+
+/** The snapshot of a machine with no settings file. Its analytics user id is fresh each call. */
+export function defaultAppSettingsSnapshot(filePath: string, homeDir: string): AppSettingsSnapshot {
+  return toSnapshot(normalizeAppSettings(undefined, filePath, homeDir).payload)
+}
+
+/** The settings file's text, or none when it does not exist. */
+const readSettingsText = (fs: FileSystem.FileSystem, filePath: string) =>
+  fs.readFileString(filePath).pipe(
+    Effect.map(Option.some),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedNone),
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(new AppSettingsFileError({ operation: "read", filePath, cause }))),
+  )
+
+/** The parsed JSON, or none when the text is not JSON. */
+const parseSettingsJson = (text: string) =>
+  decodeJson(text).pipe(
+    Effect.map(Option.some),
+    Effect.catchTag("SchemaError", () => Effect.succeedNone),
+  )
+
+/** `filePath` defaults to the machine's settings file. */
+export const readAppSettingsSnapshot = Effect.fn("AppSettings.readSnapshot")(function* (
+  filePathOption?: string,
+) {
+  const homeDir = (yield* Machine).homeDirectory
+  const filePath = filePathOption ?? defaultAppSettingsFilePath(homeDir)
+  yield* Effect.annotateCurrentSpan("filePath", filePath)
+  const text = yield* readSettingsText(yield* FileSystem.FileSystem, filePath)
+  if (Option.isNone(text)) {
+    return toSnapshot(normalizeAppSettings(undefined, filePath, homeDir).payload)
   }
-}
+  if (!text.value.trim()) {
+    return {
+      ...toSnapshot(normalizeAppSettings(undefined, filePath, homeDir).payload),
+      warning: "Settings file was empty. Using defaults.",
+    } satisfies AppSettingsSnapshot
+  }
+  const parsed = yield* parseSettingsJson(text.value)
+  if (Option.isNone(parsed)) {
+    return {
+      ...toSnapshot(normalizeAppSettings(undefined, filePath, homeDir).payload),
+      warning: "Settings file is invalid JSON. Using defaults.",
+    } satisfies AppSettingsSnapshot
+  }
+  return toSnapshot(normalizeAppSettings(parsed.value, filePath, homeDir).payload)
+})
 
-export class AppSettingsManager {
-  readonly filePath: string
-  private watcher: FSWatcher | null = null
-  private state: AppSettingsState
-  private readonly listeners = new Set<(snapshot: AppSettingsSnapshot) => void>()
+interface AppSettingsCurrent {
+  readonly state: AppSettingsState
   /** Server-computed snapshot fields — never read from or written to the file. */
-  private extras: SnapshotExtras
-
-  constructor(filePath = getSettingsFilePath(homedir()), extras: { devbox?: boolean } = {}) {
-    this.filePath = filePath
-    this.state = normalizeAppSettings(undefined, filePath).payload
-    this.extras = { devbox: extras.devbox === true, installedEditors: null, installedTerminals: null }
-  }
-
-  async initialize() {
-    await mkdir(path.dirname(this.filePath), { recursive: true })
-    await this.reload({ persistNormalized: true })
-    this.startWatching()
-  }
-
-  dispose() {
-    this.watcher?.close()
-    this.watcher = null
-    this.listeners.clear()
-  }
-
-  getSnapshot() {
-    return toSnapshot(this.state, this.extras)
-  }
-
-  /**
-   * Publish the editor-detection result. Notifies like any other change, so
-   * the menus ungrey themselves as soon as the probe lands; the snapshot
-   * dedupe upstream drops the push when the list is unchanged.
-   */
-  setInstalledEditors(installedEditors: EditorPreset[]) {
-    this.publishExtras({ installedEditors })
-  }
-
-  /** Publish the terminal-detection result; same shape as the editor one. */
-  setInstalledTerminals(installedTerminals: TerminalPreset[]) {
-    this.publishExtras({ installedTerminals })
-  }
-
-  private publishExtras(patch: Partial<SnapshotExtras>) {
-    this.extras = { ...this.extras, ...patch }
-    const snapshot = this.getSnapshot()
-    for (const listener of this.listeners) {
-      listener(snapshot)
-    }
-  }
-
-  getState() {
-    return this.state
-  }
-
-  onChange(listener: (snapshot: AppSettingsSnapshot) => void) {
-    this.listeners.add(listener)
-    return () => {
-      this.listeners.delete(listener)
-    }
-  }
-
-  async reload(options?: { persistNormalized?: boolean }) {
-    const nextState = await this.readState(options)
-    this.setState(nextState)
-  }
-
-  async write(value: { analyticsEnabled: boolean }) {
-    return this.writePatch({ analyticsEnabled: value.analyticsEnabled })
-  }
-
-  async writePatch(patch: AppSettingsPatch) {
-    const nextState = {
-      ...applyPatch(this.state, patch),
-      warning: null,
-      filePathDisplay: formatDisplayPath(this.filePath),
-    }
-    await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, `${JSON.stringify(toFilePayload(nextState), null, 2)}\n`, "utf8")
-    this.setState(nextState)
-    return toSnapshot(nextState, this.extras)
-  }
-
-  private async readState(options?: { persistNormalized?: boolean }) {
-    const file = Bun.file(this.filePath)
-
-    try {
-      const text = await file.text()
-      const hasText = text.trim().length > 0
-      const normalized = normalizeAppSettings(hasText ? JSON.parse(text) : undefined, this.filePath)
-      if (options?.persistNormalized && (!hasText || normalized.shouldWrite)) {
-        await writeFile(this.filePath, `${JSON.stringify(toFilePayload(normalized.payload), null, 2)}\n`, "utf8")
-      }
-      return {
-        ...normalized.payload,
-        warning: !hasText ? "Settings file was empty. Using defaults." : normalized.warning,
-      } satisfies AppSettingsState
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT" && !(error instanceof SyntaxError)) {
-        throw error
-      }
-
-      const normalized = normalizeAppSettings(undefined, this.filePath)
-      if (options?.persistNormalized) {
-        await writeFile(this.filePath, `${JSON.stringify(toFilePayload(normalized.payload), null, 2)}\n`, "utf8")
-      }
-      return {
-        ...normalized.payload,
-        warning: error instanceof SyntaxError ? "Settings file is invalid JSON. Using defaults." : null,
-      } satisfies AppSettingsState
-    }
-  }
-
-  private setState(state: AppSettingsState) {
-    this.state = state
-    const snapshot = toSnapshot(state, this.extras)
-    for (const listener of this.listeners) {
-      listener(snapshot)
-    }
-  }
-
-  private startWatching() {
-    this.watcher?.close()
-    try {
-      this.watcher = watch(path.dirname(this.filePath), { persistent: false }, (_eventType, filename) => {
-        if (filename && filename !== path.basename(this.filePath)) {
-          return
-        }
-        void this.reload().catch((error: unknown) => {
-          console.warn(`${LOG_PREFIX} Failed to reload settings:`, error)
-        })
-      })
-    } catch (error) {
-      console.warn(`${LOG_PREFIX} Failed to watch settings file:`, error)
-      this.watcher = null
-    }
-  }
+  readonly extras: SnapshotExtras
 }
+
+/**
+ * The machine's settings file, read and normalized when the layer is built
+ * (rewritten when normalizing changed it), written from the client and
+ * reloaded when the user edits it by hand.
+ *
+ * `changes` emits each snapshot after the current one, never the current one
+ * itself; read that with `snapshot`.
+ */
+export class AppSettings extends Context.Service<AppSettings, {
+  readonly filePath: string
+  readonly snapshot: Effect.Effect<AppSettingsSnapshot>
+  /** The settings, with the fields the snapshot leaves out (the analytics user id). */
+  readonly state: Effect.Effect<AppSettingsState>
+  readonly changes: Stream.Stream<AppSettingsSnapshot>
+  readonly reload: Effect.Effect<void, AppSettingsFileError>
+  readonly write: (value: { analyticsEnabled: boolean }) => Effect.Effect<AppSettingsSnapshot, AppSettingsFileError>
+  readonly writePatch: (patch: AppSettingsPatch) => Effect.Effect<AppSettingsSnapshot, AppSettingsFileError>
+  /**
+   * Publish the editor-detection result. Emits like any other change, so the
+   * menus ungrey themselves as soon as the probe lands; the snapshot dedupe
+   * upstream drops the push when the list is unchanged.
+   */
+  readonly setInstalledEditors: (installedEditors: EditorPreset[]) => Effect.Effect<void>
+  /** Publish the terminal-detection result; same shape as the editor one. */
+  readonly setInstalledTerminals: (installedTerminals: TerminalPreset[]) => Effect.Effect<void>
+}>()("@kanna/server/AppSettings") {
+  /** `filePath` defaults to the machine's settings file. */
+  static readonly layer = (filePath?: string, options: { devbox?: boolean } = {}) =>
+    Layer.effect(this, makeAppSettings(filePath, options))
+}
+
+const makeAppSettings = Effect.fn("AppSettings.make")(function* (filePathOption: string | undefined, options: { devbox?: boolean }) {
+  const fs = yield* FileSystem.FileSystem
+  const homeDir = (yield* Machine).homeDirectory
+  const filePath = filePathOption ?? defaultAppSettingsFilePath(homeDir)
+  yield* Effect.annotateCurrentSpan("filePath", filePath)
+
+  const makeDirectory = fs.makeDirectory(path.dirname(filePath), { recursive: true }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(new AppSettingsFileError({ operation: "write", filePath, cause }))),
+  )
+  const writeState = (state: AppSettingsState) =>
+    fs.writeFileString(filePath, `${JSON.stringify(toFilePayload(state), null, 2)}\n`).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(new AppSettingsFileError({ operation: "write", filePath, cause }))),
+    )
+
+  /** At startup (`persistNormalized`) the file is rewritten when it is missing, empty, invalid or not normalized. */
+  const readState = Effect.fn("AppSettings.readState")(function* (persistNormalized: boolean) {
+    const text = yield* readSettingsText(fs, filePath)
+    const hasText = Option.isSome(text) && text.value.trim().length > 0
+    if (Option.isSome(text) && !hasText) {
+      const normalized = normalizeAppSettings(undefined, filePath, homeDir)
+      if (persistNormalized) yield* writeState(normalized.payload)
+      return { ...normalized.payload, warning: "Settings file was empty. Using defaults." } satisfies AppSettingsState
+    }
+    const parsed = Option.isSome(text) ? yield* parseSettingsJson(text.value) : Option.none()
+    if (Option.isSome(parsed)) {
+      const normalized = normalizeAppSettings(parsed.value, filePath, homeDir)
+      if (persistNormalized && normalized.shouldWrite) yield* writeState(normalized.payload)
+      return normalized.payload
+    }
+    const normalized = normalizeAppSettings(undefined, filePath, homeDir)
+    if (persistNormalized) yield* writeState(normalized.payload)
+    return {
+      ...normalized.payload,
+      warning: Option.isSome(text) ? "Settings file is invalid JSON. Using defaults." : null,
+    } satisfies AppSettingsState
+  })
+
+  yield* makeDirectory
+  const ref = yield* SubscriptionRef.make<AppSettingsCurrent>({
+    state: yield* readState(true),
+    extras: { devbox: options.devbox === true, installedEditors: null, installedTerminals: null },
+  })
+
+  const setState = (state: AppSettingsState) =>
+    SubscriptionRef.updateAndGet(ref, (current) => ({ ...current, state }))
+
+  const reload = Effect.fn("AppSettings.reload")(function* () {
+    yield* setState(yield* readState(false))
+  })
+
+  const writePatch = Effect.fn("AppSettings.writePatch")(function* (patch: AppSettingsPatch) {
+    const current = yield* SubscriptionRef.get(ref)
+    const nextState: AppSettingsState = {
+      ...applyPatch(current.state, patch, homeDir),
+      warning: null,
+      filePathDisplay: formatDisplayPath(filePath, homeDir),
+    }
+    yield* makeDirectory
+    yield* writeState(nextState)
+    const next = yield* setState(nextState)
+    return toSnapshot(next.state, next.extras)
+  })
+
+  const publishExtras = (patch: Partial<SnapshotExtras>) =>
+    SubscriptionRef.update(ref, (current) => ({ ...current, extras: { ...current.extras, ...patch } }))
+
+  // The directory, not the file: editors save by renaming a new file over the
+  // old one, which a watch on the file itself stops seeing. The layer waits
+  // for the watcher, so an edit made right after startup is not missed.
+  const watching = yield* Latch.make()
+  yield* fs.watch(path.dirname(filePath), { onReady: () => Latch.openUnsafe(watching) }).pipe(
+    Stream.filter((event) => path.basename(event.path) === path.basename(filePath)),
+    Stream.runForEach(() =>
+      reload().pipe(
+        Effect.catchTag("@kanna/server/app-settings/AppSettingsFileError", (error) =>
+          Effect.logWarning("Failed to reload settings:", error.cause)),
+      )),
+    Effect.catchTag("PlatformError", (error) => Effect.logWarning("Failed to watch settings file:", error)),
+    Effect.ensuring(Latch.open(watching)),
+    Effect.forkScoped,
+  )
+  yield* Latch.await(watching)
+
+  const toCurrentSnapshot = (current: AppSettingsCurrent) => toSnapshot(current.state, current.extras)
+
+  return AppSettings.of({
+    filePath,
+    snapshot: SubscriptionRef.get(ref).pipe(Effect.map(toCurrentSnapshot)),
+    state: SubscriptionRef.get(ref).pipe(Effect.map((current) => current.state)),
+    changes: SubscriptionRef.changes(ref).pipe(Stream.drop(1), Stream.map(toCurrentSnapshot)),
+    reload: reload(),
+    write: (value) => writePatch({ analyticsEnabled: value.analyticsEnabled }),
+    writePatch,
+    setInstalledEditors: (installedEditors) => publishExtras({ installedEditors }),
+    setInstalledTerminals: (installedTerminals) => publishExtras({ installedTerminals }),
+  })
+})
+

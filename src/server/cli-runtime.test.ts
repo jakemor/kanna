@@ -1,6 +1,23 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { compareVersions, classifyInstallVersionFailure, parseArgs, runCli } from "./cli-runtime"
+import { Effect, Exit, Fiber, Result, Scope } from "effect"
+import {
+  compareVersions,
+  classifyInstallVersionFailure,
+  parseArgs,
+  PackageRegistryError,
+  runCli,
+  type CliRuntimeDeps,
+  type CliServerOptions,
+  type UpdateInstallAttemptResult,
+} from "./cli-runtime"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
+import { runTest } from "./effect/testing"
+import { ShareTunnelError } from "./share"
+import type { AttachedServer } from "./instance-socket"
+import type { CloudRuntime } from "./cloud"
+import type { CloudIdentity } from "./cloud/identity"
+import { makeFakeUpdateManager } from "./update-manager.fake"
+import type { UpdateSnapshot } from "../shared/types"
 
 const originalRuntimeProfile = process.env.KANNA_RUNTIME_PROFILE
 const originalSuppressOpen = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
@@ -36,22 +53,13 @@ afterEach(() => {
   }
 })
 
-function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
+const installed = (): UpdateInstallAttemptResult => ({ ok: true, errorCode: null, userTitle: null, userMessage: null })
+
+/** Typed Effect fakes for every seam `runCli` has, recording what it asked for. */
+function createDeps(overrides: Partial<CliRuntimeDeps> = {}) {
   const calls = {
-    startServer: [] as Array<{
-      port: number
-      host: string
-      openBrowser: boolean
-      share: false | "quick" | { kind: "token"; token: string }
-      password: string | null
-      strictPort: boolean
-      trustProxy?: boolean
-      update: {
-        version: string
-        argv: string[]
-        command: string
-      }
-    }>,
+    startServer: [] as CliServerOptions[],
+    serverStops: 0,
     fetchLatestVersion: [] as string[],
     installVersion: [] as Array<{ packageName: string; version: string }>,
     openUrl: [] as string[],
@@ -60,45 +68,43 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
     shareTunnel: [] as Array<{ localUrl: string; shareMode: "quick" | { kind: "token"; token: string } }>,
     renderShareQr: [] as string[],
     shareTunnelStops: 0,
+    attached: [] as AttachedServer[],
   }
 
-  const deps: Parameters<typeof runCli>[1] = {
+  const deps: CliRuntimeDeps = {
     version: "0.3.0",
     bunVersion: "1.3.10",
-    startServer: async (options) => {
+    startServer: (options) => Effect.sync(() => {
       calls.startServer.push(options)
       return {
         port: options.port,
-        stop: async () => {},
+        stop: Effect.sync(() => {
+          calls.serverStops += 1
+        }),
       }
-    },
-    fetchLatestVersion: async (packageName) => {
+    }),
+    fetchLatestVersion: (packageName) => Effect.sync(() => {
       calls.fetchLatestVersion.push(packageName)
       return "0.3.0"
-    },
-    installVersion: (packageName, version) => {
+    }),
+    installVersion: (packageName, version) => Effect.sync(() => {
       calls.installVersion.push({ packageName, version })
-      return {
-        ok: true,
-        errorCode: null,
-        userTitle: null,
-        userMessage: null,
-      }
-    },
-    openUrl: (url) => {
+      return installed()
+    }),
+    openUrl: (url) => Effect.sync(() => {
       calls.openUrl.push(url)
-    },
+    }),
     log: (message) => {
       calls.log.push(message)
     },
     warn: (message) => {
       calls.warn.push(message)
     },
-    renderShareQr: async (url) => {
+    renderShareQr: (url) => {
       calls.renderShareQr.push(url)
       return `[qr:${url}]`
     },
-    startShareTunnel: async (localUrl, shareMode) => {
+    startShareTunnel: (localUrl, shareMode) => Effect.sync(() => {
       calls.shareTunnel.push({ localUrl, shareMode })
       return {
         publicUrl: "https://kanna.trycloudflare.com",
@@ -106,20 +112,36 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
           calls.shareTunnelStops += 1
         },
       }
-    },
+    }),
     // Hermetic defaults: never touch the real ~/.kanna/cloud.json or probe
     // real local ports in tests.
-    readCloudIdentityImpl: async () => null,
-    probeExistingInstanceImpl: async () => null,
-    claimInstanceImpl: async () => ({ kind: "ours", attach: () => {}, releasedFromParent: () => false }),
-    instanceStatusImpl: async () => null,
+    readCloudIdentityImpl: () => Effect.succeed(null),
+    probeExistingInstanceImpl: () => Effect.succeed(null),
+    claimInstanceImpl: Effect.succeed({
+      kind: "ours",
+      attach: (server) => Effect.sync(() => {
+        calls.attached.push(server)
+      }),
+      releasedFromParent: () => false,
+    }),
+    instanceStatusImpl: Effect.succeed(null),
     ...overrides,
   }
 
   return { calls, deps }
 }
 
-const CLOUD_IDENTITY = {
+/**
+ * Runs `kanna <argv>` in a scope of its own, as cli.ts does. `stop` closes
+ * the scope, which is how the CLI stops the server at shutdown.
+ */
+async function run(argv: string[], deps: CliRuntimeDeps) {
+  const scope = Effect.runSync(Scope.make())
+  const result = await runTest(runCli(argv, deps).pipe(Scope.provide(scope)))
+  return { result, stop: () => Effect.runPromise(Scope.close(scope, Exit.void)) }
+}
+
+const CLOUD_IDENTITY: CloudIdentity = {
   controlUrl: "https://kanna.sh/api/cloud",
   machineToken: "machine-token",
   proxySecret: "proxy-secret",
@@ -132,16 +154,15 @@ const CLOUD_IDENTITY = {
 
 function createFakeCloudRuntime() {
   const calls = { starts: [] as Array<{ localUrl: string }>, stops: 0 }
-  const runtime = {
+  const runtime: CloudRuntime = {
     identity: CLOUD_IDENTITY,
     connectTokens: { mint: () => ({ token: "t", expiresInMs: 60_000 }), validate: () => false },
-    getTunnelUrl: () => null,
-    start: (args: { localUrl: string }) => {
+    start: (args) => Effect.sync(() => {
       calls.starts.push({ localUrl: args.localUrl })
-    },
-    stop: async () => {
+    }),
+    stop: Effect.sync(() => {
       calls.stops += 1
-    },
+    }),
   }
   return { runtime, calls }
 }
@@ -333,7 +354,7 @@ describe("runCli", () => {
   test("skips update checks for --version", async () => {
     const { calls, deps } = createDeps()
 
-    const result = await runCli(["--version"], deps)
+    const { result } = await run(["--version"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 0 })
     expect(calls.fetchLatestVersion).toEqual([])
@@ -341,11 +362,33 @@ describe("runCli", () => {
     expect(calls.log).toEqual(["0.3.0"])
   })
 
+  test("prints the help text for --help", async () => {
+    const { calls, deps } = createDeps()
+
+    const { result } = await run(["--help"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(calls.log).toHaveLength(1)
+    expect(calls.log[0]).toStartWith("Kanna — local-only project chat UI\n\nUsage:\n  kanna [options]\n")
+    expect(calls.log[0]).toEndWith("  --help               Show this help message")
+  })
+
+  test("fails with a usage error for a malformed command line", async () => {
+    const { calls, deps } = createDeps()
+
+    const result = await runTest(Effect.result(runCli(["--port"], deps)))
+
+    if (!Result.isFailure(result)) throw new Error("expected a usage error")
+    expect(result.failure._tag).toBe("@kanna/server/cli-runtime/CliUsageError")
+    expect(result.failure.message).toBe("Missing value for --port")
+    expect(calls.startServer).toEqual([])
+  })
+
   test("starts normally when no newer version exists", async () => {
     const { calls, deps } = createDeps()
     process.env.KANNA_RUNTIME_PROFILE = "prod"
 
-    const result = await runCli(["--port", "4000", "--no-open"], deps)
+    const { result, stop } = await run(["--port", "4000", "--no-open"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.fetchLatestVersion).toEqual(["kanna-code"])
@@ -367,15 +410,22 @@ describe("runCli", () => {
     })
     expect(calls.openUrl).toEqual([])
     expect(calls.log).toContain("[kanna] data dir: ~/.kanna/data")
+    // The lock holder hears about the server once it listens.
+    expect(calls.attached).toMatchObject([{ port: 4000, version: "0.3.0" }])
+
+    expect(calls.serverStops).toBe(0)
+    await stop()
+    expect(calls.serverStops).toBe(1)
   })
 
   test("logs the dev data dir when the dev runtime profile is active", async () => {
     process.env.KANNA_RUNTIME_PROFILE = "dev"
     const { calls, deps } = createDeps()
 
-    await runCli(["--port", "4000", "--no-open"], deps)
+    const { stop } = await run(["--port", "4000", "--no-open"], deps)
 
     expect(calls.log).toContain("[kanna] data dir: ~/.kanna-dev/data")
+    await stop()
   })
 
   test("fails fast on unsupported Bun versions", async () => {
@@ -383,7 +433,7 @@ describe("runCli", () => {
       bunVersion: "1.3.1",
     })
 
-    const result = await runCli(["--no-open"], deps)
+    const { result } = await run(["--no-open"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 1 })
     expect(calls.startServer).toEqual([])
@@ -394,34 +444,37 @@ describe("runCli", () => {
     delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
     const { calls, deps } = createDeps()
 
-    await runCli(["--port", "4000"], deps)
+    const { stop } = await run(["--port", "4000"], deps)
 
     expect(calls.openUrl).toEqual(["http://localhost:4000"])
+    await stop()
   })
 
   test("opens browser at hostname when --host <host> is given", async () => {
     delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
     const { calls, deps } = createDeps()
 
-    await runCli(["--host", "dev-box", "--port", "4000"], deps)
+    const { stop } = await run(["--host", "dev-box", "--port", "4000"], deps)
 
     expect(calls.openUrl).toEqual(["http://dev-box:4000"])
+    await stop()
   })
 
   test("suppresses browser open for a ui-triggered restarted child", async () => {
     process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] = "1"
     const { calls, deps } = createDeps()
 
-    await runCli(["--port", "4000"], deps)
+    const { stop } = await run(["--port", "4000"], deps)
 
     expect(calls.openUrl).toEqual([])
+    await stop()
   })
 
   test("starts a share tunnel and prints qr/public/local urls", async () => {
     delete process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR]
     const { calls, deps } = createDeps()
 
-    const result = await runCli(["--share", "--port", "4000"], deps)
+    const { result, stop } = await run(["--share", "--port", "4000"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.openUrl).toEqual([])
@@ -435,80 +488,87 @@ describe("runCli", () => {
     expect(calls.log).toContain("Local URL:")
     expect(calls.log).toContain("http://localhost:4000")
 
-    if (result.kind !== "started") {
-      throw new Error(`expected started result, got ${result.kind}`)
-    }
-    await result.stop()
+    await stop()
     expect(calls.shareTunnelStops).toBe(1)
+    expect(calls.serverStops).toBe(1)
   })
 
   test("logs share setup progress from the default tunnel helper", async () => {
     const { calls, deps } = createDeps({
-      startShareTunnel: undefined,
-      renderShareQr: async () => "[qr]",
+      renderShareQr: () => "[qr]",
     })
 
     let installLogged = false
-    deps.startShareTunnel = async (_localUrl) => {
+    deps.startShareTunnel = () => Effect.sync(() => {
       deps.log("[kanna] installing cloudflared binary")
       installLogged = true
       return {
         publicUrl: "https://kanna.trycloudflare.com",
         stop: () => {},
       }
-    }
+    })
 
-    await runCli(["--share"], deps)
+    const { stop } = await run(["--share"], deps)
 
     expect(installLogged).toBe(true)
     expect(calls.log).toContain("[kanna] installing cloudflared binary")
+    await stop()
   })
 
   test("uses the actual bound port for --share", async () => {
     const { calls, deps } = createDeps({
-      startServer: async (options) => {
+      startServer: (options) => Effect.sync(() => {
         calls.startServer.push(options)
         return {
           port: 4001,
-          stop: async () => {},
+          stop: Effect.void,
         }
-      },
+      }),
     })
 
-    const result = await runCli(["--share", "--port", "4000"], deps)
+    const { result, stop } = await run(["--share", "--port", "4000"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.shareTunnel).toEqual([{ localUrl: "http://localhost:4001", shareMode: "quick" }])
+    await stop()
   })
 
   test("fails cleanly when share tunnel startup fails", async () => {
-    let serverStopped = false
+    const order: string[] = []
     const { calls, deps } = createDeps({
-      startServer: async (options) => {
+      startServer: (options) => Effect.sync(() => {
         calls.startServer.push(options)
         return {
           port: options.port,
-          stop: async () => {
-            serverStopped = true
-          },
+          stop: Effect.sync(() => {
+            order.push("server stopped")
+          }),
         }
-      },
-      startShareTunnel: async () => {
-        throw new Error("cloudflared unavailable")
+      }),
+      startShareTunnel: (localUrl) =>
+        Effect.fail(new ShareTunnelError({ localUrl, cause: new Error("cloudflared unavailable") })),
+      warn: (message) => {
+        order.push(message)
+        calls.warn.push(message)
       },
     })
 
-    const result = await runCli(["--share"], deps)
+    const { result, stop } = await run(["--share"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 1 })
-    expect(serverStopped).toBe(true)
-    expect(calls.warn).toContain("[kanna] failed to start Cloudflare share tunnel")
-    expect(calls.warn).toContain("[kanna] cloudflared unavailable")
+    // The server is stopped before the failure is reported, and only once.
+    expect(order).toEqual([
+      "server stopped",
+      "[kanna] failed to start Cloudflare share tunnel",
+      "[kanna] cloudflared unavailable",
+    ])
+    await stop()
+    expect(order.filter((line) => line === "server stopped")).toHaveLength(1)
   })
 
   test("keeps running when a named tunnel starts without a detected hostname", async () => {
     const { calls, deps } = createDeps({
-      startShareTunnel: async (localUrl, shareMode) => {
+      startShareTunnel: (localUrl, shareMode) => Effect.sync(() => {
         calls.shareTunnel.push({ localUrl, shareMode })
         return {
           publicUrl: null,
@@ -516,10 +576,10 @@ describe("runCli", () => {
             calls.shareTunnelStops += 1
           },
         }
-      },
+      }),
     })
 
-    const result = await runCli(["--cloudflared", "secret-token"], deps)
+    const { result, stop } = await run(["--cloudflared", "secret-token"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.startServer[0]?.trustProxy).toBe(true)
@@ -532,17 +592,18 @@ describe("runCli", () => {
     expect(calls.log).toContain("Local URL:")
     expect(calls.log).toContain("http://localhost:3210")
     expect(calls.renderShareQr).toEqual([])
+    await stop()
   })
 
   test("returns restarting when a newer version is available", async () => {
     const { calls, deps } = createDeps({
-      fetchLatestVersion: async (packageName) => {
+      fetchLatestVersion: (packageName) => Effect.sync(() => {
         calls.fetchLatestVersion.push(packageName)
         return "0.4.0"
-      },
+      }),
     })
 
-    const result = await runCli(["--port", "4000", "--no-open"], deps)
+    const { result } = await run(["--port", "4000", "--no-open"], deps)
 
     expect(result).toEqual({ kind: "restarting", reason: "startup_update" })
     expect(calls.installVersion).toEqual([{ packageName: "kanna-code", version: "0.4.0" }])
@@ -551,41 +612,100 @@ describe("runCli", () => {
 
   test("falls back to current version when install fails", async () => {
     const { calls, deps } = createDeps({
-      fetchLatestVersion: async (packageName) => {
+      fetchLatestVersion: (packageName) => Effect.sync(() => {
         calls.fetchLatestVersion.push(packageName)
         return "0.4.0"
-      },
-      installVersion: (packageName, version) => {
+      }),
+      installVersion: (packageName, version) => Effect.sync(() => {
         calls.installVersion.push({ packageName, version })
         return {
           ok: false,
-          errorCode: "install_failed",
+          errorCode: "install_failed" as const,
           userTitle: "Update failed",
           userMessage: "Kanna could not install the update. Try again later.",
         }
-      },
+      }),
     })
 
-    const result = await runCli(["--no-open"], deps)
+    const { result, stop } = await run(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.installVersion).toEqual([{ packageName: "kanna-code", version: "0.4.0" }])
     expect(calls.warn).toContain("[kanna] update failed, continuing current version")
+    await stop()
   })
 
   test("falls back to current version when the registry check fails", async () => {
     const { calls, deps } = createDeps({
-      fetchLatestVersion: async (packageName) => {
+      fetchLatestVersion: (packageName) => Effect.suspend(() => {
         calls.fetchLatestVersion.push(packageName)
-        throw new Error("network unavailable")
-      },
+        return Effect.fail(new PackageRegistryError({ packageName, message: "network unavailable", cause: null }))
+      }),
     })
 
-    const result = await runCli(["--no-open"], deps)
+    const { result, stop } = await run(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.installVersion).toEqual([])
     expect(calls.warn).toContain("[kanna] update check failed, continuing current version")
+    expect(calls.warn).toContain("[kanna] network unavailable")
+    await stop()
+  })
+
+  test("hands the server Effect-typed update hooks it can run as they are", async () => {
+    const { calls, deps } = createDeps({
+      installNightly: Effect.succeed({ ...installed(), version: "0.3.0-nightly.abc1234" }),
+    })
+
+    const { stop } = await run(["--no-open"], deps)
+
+    const update = calls.startServer[0]!.update
+    expect(await Effect.runPromise(update.fetchLatestVersion("kanna-code"))).toBe("0.3.0")
+    expect(await Effect.runPromise(update.installNightly!)).toMatchObject({ ok: true, version: "0.3.0-nightly.abc1234" })
+    await stop()
+  })
+})
+
+describe("runCli restart requests", () => {
+  const IDLE: UpdateSnapshot = {
+    currentVersion: "0.3.0",
+    latestVersion: null,
+    status: "idle",
+    updateAvailable: false,
+    lastCheckedAt: null,
+    error: null,
+    installAction: "restart",
+    reloadRequestedAt: null,
+  }
+
+  test("an update installed from the UI asks the CLI to restart", async () => {
+    const fake = makeFakeUpdateManager(IDLE)
+    const { deps } = createDeps({
+      startServer: (options) => Effect.succeed({ port: options.port, stop: Effect.void, updateManager: fake.updateManager }),
+    })
+
+    const { result, stop } = await run(["--no-open"], deps)
+    if (result.kind !== "started") throw new Error(`expected started result, got ${result.kind}`)
+
+    const waiting = Effect.runFork(result.restartRequested)
+    await Bun.sleep(0)
+    expect(waiting.pollUnsafe()).toBeUndefined()
+    await Effect.runPromise(fake.set({ ...IDLE, status: "restart_pending", reloadRequestedAt: 1 }))
+    await Effect.runPromise(Fiber.join(waiting))
+    await stop()
+  })
+
+  test("a restart already pending when the CLI starts waiting is not missed", async () => {
+    const fake = makeFakeUpdateManager({ ...IDLE, status: "restart_pending", reloadRequestedAt: 1 })
+    const { deps } = createDeps({
+      startServer: (options) => Effect.succeed({ port: options.port, stop: Effect.void, updateManager: fake.updateManager }),
+    })
+
+    const { result, stop } = await run(["--no-open"], deps)
+    if (result.kind !== "started") throw new Error(`expected started result, got ${result.kind}`)
+
+    await Effect.runPromise(result.restartRequested)
+    await stop()
   })
 })
 
@@ -651,31 +771,31 @@ describe("runCli cloud", () => {
     const pairCalls: unknown[] = []
     const fake = createFakeCloudRuntime()
     const { calls, deps } = createDeps({
-      runPairCommandImpl: async (args) => {
+      runPairCommandImpl: (args) => Effect.sync(() => {
         pairCalls.push(args)
         return 0
-      },
+      }),
       // After pairing, the identity exists — sticky cloud kicks in.
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
       createCloudRuntimeImpl: () => fake.runtime,
     })
 
-    const result = await runCli(["pair", "ABC123"], deps)
+    const { result, stop } = await run(["pair", "ABC123"], deps)
 
     expect(pairCalls).toEqual([{ action: "pair", pairingCode: "ABC123" }])
     expect(result.kind).toBe("started")
     expect(calls.startServer.length).toBe(1)
     expect(fake.calls.starts.length).toBe(1)
     expect(calls.log.some((line) => line.includes("starting kanna"))).toBe(true)
-    if (result.kind === "started") await result.stop()
+    await stop()
   })
 
   test("failed pair exits without starting a server", async () => {
     const { calls, deps } = createDeps({
-      runPairCommandImpl: async () => 1,
+      runPairCommandImpl: () => Effect.succeed(1),
     })
 
-    const result = await runCli(["pair", "BAD"], deps)
+    const { result } = await run(["pair", "BAD"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 1 })
     expect(calls.startServer).toEqual([])
@@ -683,10 +803,10 @@ describe("runCli cloud", () => {
 
   test("pair management actions exit without starting a server", async () => {
     const { calls, deps } = createDeps({
-      runPairCommandImpl: async () => 0,
+      runPairCommandImpl: () => Effect.succeed(0),
     })
 
-    const result = await runCli(["pair", "--status"], deps)
+    const { result } = await run(["pair", "--status"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 0 })
     expect(calls.startServer).toEqual([])
@@ -696,89 +816,113 @@ describe("runCli cloud", () => {
   test("paired + enabled identity auto-starts cloud", async () => {
     const fake = createFakeCloudRuntime()
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
       createCloudRuntimeImpl: () => fake.runtime,
     })
 
-    const result = await runCli(["--no-open"], deps)
+    const { result, stop } = await run(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
-    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
+    const serverOptions = calls.startServer[0]!
     expect(serverOptions.trustProxy).toBe(true)
     expect(serverOptions.cloud).toBe(fake.runtime)
     expect(fake.calls.starts).toEqual([{ localUrl: "http://localhost:3210" }])
     expect(calls.log.some((line) => line.includes("cloud: waiting for https://jakemor-mbp.kanna.sh"))).toBe(true)
 
-    if (result.kind === "started") {
-      await result.stop()
-    }
+    await stop()
     expect(fake.calls.stops).toBe(1)
+  })
+
+  test("stopping takes the cloud down first and the server last", async () => {
+    const order: string[] = []
+    const fake = createFakeCloudRuntime()
+    fake.runtime = { ...fake.runtime, stop: Effect.sync(() => order.push("cloud")) }
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
+      createCloudRuntimeImpl: () => fake.runtime,
+      startServer: (options) => Effect.sync(() => {
+        calls.startServer.push(options)
+        return { port: options.port, stop: Effect.sync(() => order.push("server")) }
+      }),
+      claimInstanceImpl: Effect.succeed({
+        kind: "ours",
+        attach: () => Effect.addFinalizer(() => Effect.sync(() => order.push("supervisor link"))),
+        releasedFromParent: () => false,
+      }),
+    })
+
+    const { stop } = await run(["--no-open"], deps)
+    await stop()
+
+    // The supervisor keeps reporting the port until the server has stopped.
+    expect(order).toEqual(["cloud", "server", "supervisor link"])
   })
 
   test("--no-cloud skips cloud for this run", async () => {
     let readCalls = 0
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => {
+      readCloudIdentityImpl: () => Effect.sync(() => {
         readCalls += 1
         return { ...CLOUD_IDENTITY }
-      },
+      }),
       createCloudRuntimeImpl: () => {
         throw new Error("should not create a cloud runtime with --no-cloud")
       },
     })
 
-    const result = await runCli(["--no-open", "--no-cloud"], deps)
+    const { result, stop } = await run(["--no-open", "--no-cloud"], deps)
 
     expect(result.kind).toBe("started")
     // The identity may be read (the single-instance guard uses it for the
     // hosted URL), but no cloud runtime is created.
     expect(readCalls).toBeLessThanOrEqual(1)
-    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
+    const serverOptions = calls.startServer[0]!
     expect(serverOptions.cloud ?? null).toBeNull()
     expect(serverOptions.trustProxy).toBe(false)
+    await stop()
   })
 
   test("--share wins over cloud auto-enable", async () => {
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
       createCloudRuntimeImpl: () => {
         throw new Error("should not create a cloud runtime with --share")
       },
     })
 
-    const result = await runCli(["--no-open", "--share"], deps)
+    const { result, stop } = await run(["--no-open", "--share"], deps)
 
     expect(result.kind).toBe("started")
     expect(calls.shareTunnel.length).toBe(1)
-    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
-    expect(serverOptions.cloud ?? null).toBeNull()
+    expect(calls.startServer[0]!.cloud ?? null).toBeNull()
+    await stop()
   })
 
   test("disabled identity stays local", async () => {
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY, enabled: false }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY, enabled: false }),
       createCloudRuntimeImpl: () => {
         throw new Error("should not create a cloud runtime when disabled")
       },
     })
 
-    const result = await runCli(["--no-open"], deps)
+    const { result, stop } = await run(["--no-open"], deps)
 
     expect(result.kind).toBe("started")
-    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
-    expect(serverOptions.cloud ?? null).toBeNull()
+    expect(calls.startServer[0]!.cloud ?? null).toBeNull()
     expect(calls.log.some((line) => line.includes("cloud:"))).toBe(false)
+    await stop()
   })
 
   test("--cloud without an identity exits 1", async () => {
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => null,
+      readCloudIdentityImpl: () => Effect.succeed(null),
       createCloudRuntimeImpl: () => {
         throw new Error("should not create a cloud runtime without an identity")
       },
     })
 
-    const result = await runCli(["--no-open", "--cloud"], deps)
+    const { result } = await run(["--no-open", "--cloud"], deps)
 
     expect(result).toEqual({ kind: "exited", code: 1 })
     expect(calls.startServer).toEqual([])
@@ -789,33 +933,33 @@ describe("runCli cloud", () => {
     const fake = createFakeCloudRuntime()
     const identitiesSeen: unknown[] = []
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY, enabled: false }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY, enabled: false }),
       createCloudRuntimeImpl: (identity) => {
         identitiesSeen.push(identity)
         return fake.runtime
       },
     })
 
-    const result = await runCli(["--no-open", "--cloud"], deps)
+    const { result, stop } = await run(["--no-open", "--cloud"], deps)
 
     expect(result.kind).toBe("started")
     expect(identitiesSeen).toEqual([{ ...CLOUD_IDENTITY, mode: "direct", enabled: true }])
-    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown; host?: string }
+    const serverOptions = calls.startServer[0]!
     expect(serverOptions.cloud).toBe(fake.runtime)
     expect(serverOptions.trustProxy).toBe(true)
     expect(serverOptions.host).toBe("0.0.0.0")
     expect(fake.calls.starts.length).toBe(1)
-    if (result.kind === "started") await result.stop()
+    await stop()
   })
 })
 
 describe("runCli single-instance guard + hosted open", () => {
   test("existing same-data-dir instance → exit 0, open local URL", async () => {
     const { calls, deps } = createDeps({
-      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210 }),
+      probeExistingInstanceImpl: () => Effect.succeed({ localUrl: "http://localhost:3210", port: 3210 }),
     })
 
-    const result = await runCli([], deps)
+    const { result } = await run([], deps)
 
     expect(result).toEqual({ kind: "exited", code: 0 })
     expect(calls.startServer).toEqual([])
@@ -825,11 +969,11 @@ describe("runCli single-instance guard + hosted open", () => {
 
   test("existing instance + paired identity → open the hosted URL instead", async () => {
     const { calls, deps } = createDeps({
-      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210 }),
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      probeExistingInstanceImpl: () => Effect.succeed({ localUrl: "http://localhost:3210", port: 3210 }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
     })
 
-    const result = await runCli([], deps)
+    const { result } = await run([], deps)
 
     expect(result).toEqual({ kind: "exited", code: 0 })
     expect(calls.openUrl).toEqual(["https://jakemor-mbp.kanna.sh"])
@@ -837,25 +981,40 @@ describe("runCli single-instance guard + hosted open", () => {
 
   test("existing instance + --no-open → no browser", async () => {
     const { calls, deps } = createDeps({
-      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210 }),
+      probeExistingInstanceImpl: () => Effect.succeed({ localUrl: "http://localhost:3210", port: 3210 }),
     })
-    await runCli(["--no-open"], deps)
+    await run(["--no-open"], deps)
     expect(calls.openUrl).toEqual([])
+  })
+
+  test("a Kanna holding the lock but still starting → exit 1", async () => {
+    const { calls, deps } = createDeps({
+      claimInstanceImpl: Effect.succeed({ kind: "running", status: null }),
+    })
+
+    const { result } = await run(["--no-open"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 1 })
+    expect(calls.startServer).toEqual([])
+    expect(calls.warn).toContain("[kanna] kanna is already starting; try again in a moment")
   })
 
   test("paired start opens the hosted URL when the tunnel connects (not localhost)", async () => {
     const fake = createFakeCloudRuntime()
     let capturedOnTunnelUp: ((kind: "started" | "recovered") => void) | undefined
-    fake.runtime.start = (args: { localUrl: string; onTunnelUp?: (kind: "started" | "recovered") => void }) => {
-      fake.calls.starts.push({ localUrl: args.localUrl })
-      capturedOnTunnelUp = args.onTunnelUp
+    fake.runtime = {
+      ...fake.runtime,
+      start: (args) => Effect.sync(() => {
+        fake.calls.starts.push({ localUrl: args.localUrl })
+        capturedOnTunnelUp = args.onTunnelUp
+      }),
     }
     const { calls, deps } = createDeps({
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
       createCloudRuntimeImpl: () => fake.runtime,
     })
 
-    const result = await runCli([], deps)
+    const { result, stop } = await run([], deps)
 
     expect(result.kind).toBe("started")
     // No local open while the tunnel is connecting…
@@ -866,15 +1025,64 @@ describe("runCli single-instance guard + hosted open", () => {
     capturedOnTunnelUp?.("recovered")
     expect(calls.openUrl).toEqual(["https://jakemor-mbp.kanna.sh"])
 
-    if (result.kind === "started") await result.stop()
+    await stop()
   })
 
   test("unpaired start still opens localhost", async () => {
     const { calls, deps } = createDeps()
-    const result = await runCli([], deps)
+    const { result, stop } = await run([], deps)
     expect(result.kind).toBe("started")
     expect(calls.openUrl).toEqual(["http://localhost:3210"])
-    if (result.kind === "started") await result.stop()
+    await stop()
+  })
+})
+
+describe("runCli stop and slim-transcripts", () => {
+  test("`kanna stop` with nothing running says so", async () => {
+    const { calls, deps } = createDeps()
+
+    const { result } = await run(["stop"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(calls.log).toEqual(["[kanna] kanna isn't running"])
+  })
+
+  test("`kanna stop` asks the running Kanna to stop and waits until it has", async () => {
+    let statusChecks = 0
+    let stopRequests = 0
+    const running = {
+      ok: true as const, pid: 4242, instance: "abc", owner: "terminal" as const, startedAt: 1,
+      port: 3210, version: "0.3.0", runningChats: 0, cloud: false,
+    }
+    const { calls, deps } = createDeps({
+      // Running for the first two checks, then gone.
+      instanceStatusImpl: Effect.sync(() => (statusChecks += 1) <= 2 ? running : null),
+      requestInstanceStopImpl: Effect.sync(() => {
+        stopRequests += 1
+        return true
+      }),
+    })
+
+    const { result } = await run(["stop"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(stopRequests).toBe(1)
+    expect(calls.log).toEqual(["[kanna] stopping kanna (pid 4242)…", "[kanna] stopped"])
+  })
+
+  test("slim-transcripts refuses while a Kanna runs, and reports what it rewrote", async () => {
+    const busy = createDeps({
+      probeExistingInstanceImpl: () => Effect.succeed({ localUrl: "http://localhost:3210", port: 3210 }),
+      slimTranscriptsImpl: () => Effect.die("should not slim while a Kanna runs"),
+    })
+    expect((await run(["slim-transcripts"], busy.deps)).result).toEqual({ kind: "exited", code: 1 })
+    expect(busy.calls.warn).toEqual(["[kanna] kanna is running at http://localhost:3210; stop it before slimming transcripts"])
+
+    const idle = createDeps({
+      slimTranscriptsImpl: () => Effect.succeed({ chats: 4, rewritten: 2, bytesBefore: 3 * 1024 * 1024, bytesAfter: 1024 * 1024 }),
+    })
+    expect((await run(["slim-transcripts"], idle.deps)).result).toEqual({ kind: "exited", code: 0 })
+    expect(idle.calls.log).toEqual(["[kanna] rewrote 2/4 transcripts: 3.0 MB → 1.0 MB"])
   })
 })
 
@@ -883,10 +1091,10 @@ describe("runCli with the Mac app", () => {
     const opened: string[] = []
     return {
       opened,
-      openInMacApp: async (localUrl: string) => {
+      openInMacApp: (localUrl: string) => Effect.sync(() => {
         opened.push(localUrl)
         return installed
-      },
+      }),
     }
   }
 
@@ -894,31 +1102,34 @@ describe("runCli with the Mac app", () => {
     const app = withMacApp(true)
     const fake = createFakeCloudRuntime()
     let capturedOnTunnelUp: ((kind: "started" | "recovered") => void) | undefined
-    fake.runtime.start = (args: { localUrl: string; onTunnelUp?: (kind: "started" | "recovered") => void }) => {
-      capturedOnTunnelUp = args.onTunnelUp
+    fake.runtime = {
+      ...fake.runtime,
+      start: (args) => Effect.sync(() => {
+        capturedOnTunnelUp = args.onTunnelUp
+      }),
     }
     const { calls, deps } = createDeps({
       openInMacApp: app.openInMacApp,
-      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      readCloudIdentityImpl: () => Effect.succeed({ ...CLOUD_IDENTITY }),
       createCloudRuntimeImpl: () => fake.runtime,
     })
 
-    const result = await runCli([], deps)
+    const { stop } = await run([], deps)
     capturedOnTunnelUp?.("started")
 
     expect(app.opened).toEqual(["http://localhost:3210"])
     expect(calls.openUrl).toEqual([])
-    if (result.kind === "started") await result.stop()
+    await stop()
   })
 
   test("already running → the app, not the browser", async () => {
     const app = withMacApp(true)
     const { calls, deps } = createDeps({
       openInMacApp: app.openInMacApp,
-      probeExistingInstanceImpl: async () => ({ localUrl: "http://localhost:3210", port: 3210 }),
+      probeExistingInstanceImpl: () => Effect.succeed({ localUrl: "http://localhost:3210", port: 3210 }),
     })
 
-    await runCli([], deps)
+    await run([], deps)
 
     expect(app.opened).toEqual(["http://localhost:3210"])
     expect(calls.openUrl).toEqual([])
@@ -927,18 +1138,17 @@ describe("runCli with the Mac app", () => {
   test("no app installed → browser as before", async () => {
     const app = withMacApp(false)
     const { calls, deps } = createDeps({ openInMacApp: app.openInMacApp })
-    const result = await runCli([], deps)
+    const { stop } = await run([], deps)
     expect(calls.openUrl).toEqual(["http://localhost:3210"])
-    if (result.kind === "started") await result.stop()
+    await stop()
   })
 
   test("--no-open (how the app starts its own server) opens nothing", async () => {
     const app = withMacApp(true)
     const { calls, deps } = createDeps({ openInMacApp: app.openInMacApp })
-    const result = await runCli(["--no-open"], deps)
+    const { stop } = await run(["--no-open"], deps)
     expect(app.opened).toEqual([])
     expect(calls.openUrl).toEqual([])
-    if (result.kind === "started") await result.stop()
+    await stop()
   })
 })
-

@@ -3,7 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { crc32, deflateSync, inflateSync } from "node:zlib"
-import { encodePng, readPngHeader, UnsupportedPngError, writePngThumbnail } from "./png-thumbnail"
+import { Effect, Result } from "effect"
+import { runTest } from "./effect/testing"
+import { encodePng, readPngHeader, writePngThumbnail } from "./png-thumbnail"
 
 const dir = await mkdtemp(path.join(tmpdir(), "kanna-png-"))
 afterAll(() => rm(dir, { recursive: true, force: true }))
@@ -106,8 +108,16 @@ async function thumbnail(name: string, png: Buffer, maxSize: number) {
   const source = path.join(dir, `${name}.png`)
   const target = path.join(dir, `${name}.out.png`)
   await writeFile(source, png)
-  await writePngThumbnail(source, target, maxSize)
+  await runTest(writePngThumbnail(source, target, maxSize))
   return decodeOwn(await readFile(target))
+}
+
+async function expectUnsupported(effect: ReturnType<typeof writePngThumbnail>) {
+  const result = await runTest(Effect.result(effect))
+  expect(Result.isFailure(result)).toBe(true)
+  if (Result.isFailure(result)) {
+    expect(result.failure._tag).toBe("@kanna/server/png-thumbnail/UnsupportedPngError")
+  }
 }
 
 /** Left half red, right half blue, top half opaque, bottom half clear. */
@@ -148,7 +158,7 @@ describe("writePngThumbnail", () => {
     const source = path.join(dir, "over.png")
     const target = path.join(dir, "over.out.png")
     await writeFile(source, buildPng({ width: 64, height: 64, colorType: 6, rows: quadrantRows(64) }))
-    await writePngThumbnail(source, target, 2, [0, 100, 0])
+    await runTest(writePngThumbnail(source, target, 2, [0, 100, 0]))
     expect(decodeOwn(await readFile(target)).pixels).toEqual([
       [200, 10, 10, 255],
       [10, 10, 200, 255],
@@ -200,25 +210,44 @@ describe("writePngThumbnail", () => {
     const source = path.join(dir, "big.png")
     const target = path.join(dir, "big.out.png")
     await writeFile(source, buildPng({ width: 1024, height: 1024, colorType: 6, rows, filter: 4, idatSize: 8192 }))
-    expect(await writePngThumbnail(source, target, 96)).toEqual({ width: 96, height: 96 })
+    expect(await runTest(writePngThumbnail(source, target, 96))).toEqual({ width: 96, height: 96 })
     const output = await readFile(target)
     expect(output.length).toBeLessThan(20_000)
-    expect(await readPngHeader(target)).toMatchObject({ width: 96, height: 96, colorType: 6 })
+    expect(await runTest(readPngHeader(target))).toMatchObject({ width: 96, height: 96, colorType: 6 })
   })
 
   test("refuses interlaced and broken files", async () => {
     const interlaced = path.join(dir, "interlaced.png")
     await writeFile(interlaced, buildPng({ width: 2, height: 1, colorType: 6, rows: [Buffer.alloc(8)], interlaced: true }))
-    expect(writePngThumbnail(interlaced, path.join(dir, "x.png"), 1)).rejects.toBeInstanceOf(UnsupportedPngError)
+    await expectUnsupported(writePngThumbnail(interlaced, path.join(dir, "x.png"), 1))
 
     const truncated = path.join(dir, "truncated.png")
     await writeFile(truncated, buildPng({ width: 64, height: 64, colorType: 6, rows: quadrantRows(64) }).subarray(0, 120))
-    expect(writePngThumbnail(truncated, path.join(dir, "y.png"), 8)).rejects.toBeInstanceOf(UnsupportedPngError)
+    await expectUnsupported(writePngThumbnail(truncated, path.join(dir, "y.png"), 8))
 
     const text = path.join(dir, "text.png")
     await writeFile(text, "not a png at all, just some text")
-    expect(writePngThumbnail(text, path.join(dir, "z.png"), 8)).rejects.toBeInstanceOf(UnsupportedPngError)
-    expect(await readPngHeader(text)).toBeNull()
+    await expectUnsupported(writePngThumbnail(text, path.join(dir, "z.png"), 8))
+    expect(await runTest(readPngHeader(text))).toBeNull()
+
+    // A missing source is a file this can't stream, like a broken one.
+    await expectUnsupported(writePngThumbnail(path.join(dir, "missing.png"), path.join(dir, "w.png"), 8))
+  })
+
+  test("reading the header of a missing file fails with its path", async () => {
+    const missing = path.join(dir, "no-such.png")
+    const result = await runTest(Effect.result(readPngHeader(missing)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/png-thumbnail/PngFileError")
+      expect(result.failure.filePath).toBe(missing)
+    }
+  })
+
+  test("an empty file has no PNG header", async () => {
+    const empty = path.join(dir, "empty.png")
+    await writeFile(empty, "")
+    expect(await runTest(readPngHeader(empty))).toBeNull()
   })
 
   test("encodePng round-trips", () => {

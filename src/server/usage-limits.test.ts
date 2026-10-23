@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Deferred, Effect, Fiber, type Scope, Stream } from "effect"
+import { runTest } from "./effect/testing"
+import { GrokUsageError } from "./grok-cli"
 import {
-  UsageLimitsManager,
+  UsageLimits,
+  type UsageLimitsDeps,
   mergeClaudeRateLimitPush,
   mergeCodexRateLimitPush,
   normalizeClaudeUsage,
@@ -278,10 +282,21 @@ describe("normalizeGrokAccountUsage", () => {
   })
 })
 
-describe("UsageLimitsManager", () => {
+/** Runs `body` with a `UsageLimits` built on `filePath`, released when it returns. */
+function withUsageLimits<A, E>(
+  filePath: string,
+  deps: UsageLimitsDeps,
+  body: (usageLimits: UsageLimits["Service"]) => Effect.Effect<A, E, Scope.Scope>,
+) {
+  return runTest(Effect.gen(function* () {
+    return yield* body(yield* UsageLimits)
+  }).pipe(Effect.provide(UsageLimits.layer(filePath, deps))))
+}
+
+describe("UsageLimits", () => {
   test("refresh applies both providers, emits, and persists", async () => {
     const filePath = await createTempFilePath()
-    const manager = new UsageLimitsManager(filePath, {
+    const deps: UsageLimitsDeps = {
       now: () => new Date(NOW),
       fetchClaudeUsage: async () => ({
         subscription_type: "max",
@@ -291,54 +306,72 @@ describe("UsageLimitsManager", () => {
       fetchCodexRateLimits: async () => ({
         rateLimits: { limitId: "codex", primary: { usedPercent: 28, windowDurationMins: 300 } },
       }),
-    })
-    await manager.initialize()
+    }
+    const { snapshot, emitted } = await withUsageLimits(filePath, deps, (usageLimits) => Effect.gen(function* () {
+      const emissions = yield* usageLimits.changes.pipe(Stream.take(2), Stream.runCount, Effect.forkScoped)
+      yield* Effect.yieldNow
+      yield* usageLimits.refresh()
+      return {
+        snapshot: yield* usageLimits.snapshot,
+        emitted: yield* Fiber.join(emissions).pipe(Effect.timeout("5 seconds")),
+      }
+    }))
 
-    let emitted = 0
-    manager.onChange(() => {
-      emitted += 1
-    })
-    await manager.refresh()
-
-    const snapshot = manager.getSnapshot()
     expect(snapshot.providers.map((p) => p.provider)).toEqual(["claude", "codex", "cursor", "grok", "pi"])
     expect(snapshot.providers[0]?.status).toBe("ok")
     expect(snapshot.providers[1]?.status).toBe("ok")
     expect(snapshot.providers[2]?.status).toBe("unavailable")
     expect(snapshot.providers[3]?.status).toBe("unknown")
     expect(snapshot.providers[4]?.status).toBe("not_applicable")
-    expect(emitted).toBeGreaterThanOrEqual(2)
+    expect(emitted).toBe(2)
 
     const persisted = JSON.parse(await readFile(filePath, "utf8"))
     expect(persisted.providers.claude.windows).toHaveLength(1)
-    manager.dispose()
   })
 
-  test("initialize restores the persisted snapshot marked as cache", async () => {
+  test("restores the persisted snapshot marked as cache", async () => {
     const filePath = await createTempFilePath()
-    const writer = new UsageLimitsManager(filePath, {
+    await withUsageLimits(filePath, {
       now: () => new Date(NOW),
       fetchClaudeUsage: async () => ({
         rate_limits_available: true,
         rate_limits: { five_hour: { utilization: 42, resets_at: "2026-07-22T14:00:00Z" } },
       }),
-    })
-    await writer.initialize()
-    await writer.refresh()
-    writer.dispose()
+    }, (usageLimits) => usageLimits.refresh())
 
-    const reader = new UsageLimitsManager(filePath)
-    await reader.initialize()
-    const claude = reader.getSnapshot().providers.find((p) => p.provider === "claude")
+    const snapshot = await withUsageLimits(filePath, {}, (usageLimits) => usageLimits.snapshot)
+    const claude = snapshot.providers.find((p) => p.provider === "claude")
     expect(claude?.windows).toHaveLength(1)
     expect(claude?.windows[0]).toMatchObject({ usedPercent: 42, recordedAt: NOW, source: "cache" })
-    reader.dispose()
+  })
+
+  test("ignores a cache file that is not JSON, and a cached entry of the wrong shape", async () => {
+    const filePath = await createTempFilePath()
+    await writeFile(filePath, "{not-json", "utf8")
+    const fromInvalid = await withUsageLimits(filePath, {}, (usageLimits) => usageLimits.snapshot)
+    expect(fromInvalid.providers[0]).toMatchObject({ provider: "claude", status: "unknown", windows: [] })
+
+    await writeFile(filePath, JSON.stringify({
+      version: 1,
+      providers: {
+        claude: { provider: "claude", status: "ok", windows: "nope" },
+        codex: {
+          provider: "codex", status: "ok", plan: "pro", detail: null, updatedAt: NOW, credits: null,
+          windows: [{ id: "codex:primary", label: "5-hour", usedPercent: 12, resetsAt: null, recordedAt: NOW, source: "turn_push" }],
+        },
+      },
+    }), "utf8")
+    const fromMixed = await withUsageLimits(filePath, {}, (usageLimits) => usageLimits.snapshot)
+    expect(fromMixed.providers[0]).toMatchObject({ provider: "claude", status: "unknown", windows: [] })
+    expect(fromMixed.providers[1]?.windows).toEqual([
+      { id: "codex:primary", label: "5-hour", usedPercent: 12, resetsAt: null, recordedAt: NOW, source: "cache" },
+    ])
   })
 
   test("a failed refresh keeps last-known windows instead of wiping them", async () => {
     const filePath = await createTempFilePath()
     let fail = false
-    const manager = new UsageLimitsManager(filePath, {
+    const claude = await withUsageLimits(filePath, {
       now: () => new Date(NOW),
       fetchClaudeUsage: async () => {
         if (fail) throw new Error("probe timed out")
@@ -347,52 +380,110 @@ describe("UsageLimitsManager", () => {
           rate_limits: { five_hour: { utilization: 42, resets_at: "2026-07-22T14:00:00Z" } },
         }
       },
-    })
-    await manager.initialize()
-    await manager.refresh()
-    fail = true
-    await manager.refresh({ force: true })
+    }, (usageLimits) => Effect.gen(function* () {
+      yield* usageLimits.refresh()
+      fail = true
+      yield* usageLimits.refresh({ force: true })
+      return (yield* usageLimits.snapshot).providers.find((p) => p.provider === "claude")
+    }))
 
-    const claude = manager.getSnapshot().providers.find((p) => p.provider === "claude")
     expect(claude?.windows).toHaveLength(1)
     expect(claude?.windows[0]?.usedPercent).toBe(42)
     expect(claude?.detail).toContain("probe timed out")
-    manager.dispose()
+  })
+
+  test("refreshes grok through its Effect read, and words a refused read as a sign-in", async () => {
+    const filePath = await createTempFilePath()
+    let refuse = false
+    const grok = await withUsageLimits(filePath, {
+      now: () => new Date(NOW),
+      fetchGrokUsage: () => refuse
+        ? Effect.fail(new GrokUsageError({ message: "Grok billing request failed (401).", url: "https://proxy.test/billing", status: 401, cause: null }))
+        : Effect.succeed({
+          billing: { config: { creditUsagePercent: 6, currentPeriod: { end: "2026-09-12T00:00:00Z" } } },
+          user: { subscriptionTier: "SuperGrok" },
+        }),
+    }, (usageLimits) => Effect.gen(function* () {
+      yield* usageLimits.refresh()
+      const fresh = (yield* usageLimits.snapshot).providers.find((p) => p.provider === "grok")
+      refuse = true
+      yield* usageLimits.refresh({ force: true })
+      return { fresh, refused: (yield* usageLimits.snapshot).providers.find((p) => p.provider === "grok") }
+    }))
+
+    expect(grok.fresh).toMatchObject({ status: "ok", plan: "SuperGrok", windows: [{ id: "credits", usedPercent: 6 }] })
+    // The failed read keeps the last-known windows and only says why.
+    expect(grok.refused?.windows).toHaveLength(1)
+    expect(grok.refused?.detail).toBe("Sign in to Grok Build to see usage limits.")
+  })
+
+  test("a grok read that fails otherwise says what failed", async () => {
+    const filePath = await createTempFilePath()
+    const grok = await withUsageLimits(filePath, {
+      fetchGrokUsage: () => Effect.fail(new GrokUsageError({ message: "Unable to connect", url: "https://proxy.test/billing", cause: null })),
+    }, (usageLimits) => usageLimits.refresh().pipe(
+      Effect.andThen(usageLimits.snapshot),
+      Effect.map((snapshot) => snapshot.providers.find((p) => p.provider === "grok")),
+    ))
+    expect(grok).toMatchObject({ status: "unavailable", detail: "Failed to read Grok usage: Unable to connect" })
   })
 
   test("non-forced refresh is throttled by TTL; force bypasses it", async () => {
     const filePath = await createTempFilePath()
     let fetches = 0
-    const manager = new UsageLimitsManager(filePath, {
+    await withUsageLimits(filePath, {
       now: () => new Date(NOW),
       fetchClaudeUsage: async () => {
         fetches += 1
         return { rate_limits_available: true, rate_limits: { five_hour: { utilization: 1 } } }
       },
-    })
-    await manager.initialize()
+    }, (usageLimits) => Effect.gen(function* () {
+      yield* usageLimits.refresh()
+      yield* usageLimits.refresh() // within TTL → skipped
+      expect(fetches).toBe(1)
+      yield* usageLimits.refresh({ force: true })
+      expect(fetches).toBe(2)
+    }))
+  })
 
-    await manager.refresh()
-    await manager.refresh() // within TTL → skipped
+  test("concurrent refreshes join the one in flight, even a forced one", async () => {
+    const filePath = await createTempFilePath()
+    let fetches = 0
+    const release = Effect.runSync(Deferred.make<void>())
+    await withUsageLimits(filePath, {
+      now: () => new Date(NOW),
+      fetchClaudeUsage: async () => {
+        fetches += 1
+        await Effect.runPromise(Deferred.await(release))
+        return { rate_limits_available: true, rate_limits: { five_hour: { utilization: 1 } } }
+      },
+    }, (usageLimits) => Effect.gen(function* () {
+      const first = yield* usageLimits.refresh().pipe(Effect.forkScoped)
+      const second = yield* usageLimits.refresh({ force: true }).pipe(Effect.forkScoped)
+      yield* Effect.sleep("20 millis")
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(first)
+      yield* Fiber.join(second)
+    }))
+
     expect(fetches).toBe(1)
-    await manager.refresh({ force: true })
-    expect(fetches).toBe(2)
-    manager.dispose()
   })
 
   test("pushed events update state without a prior full read", async () => {
     const filePath = await createTempFilePath()
-    const manager = new UsageLimitsManager(filePath, { now: () => new Date(NOW) })
-    await manager.initialize()
+    const snapshot = await withUsageLimits(filePath, { now: () => new Date(NOW) }, (usageLimits) => Effect.gen(function* () {
+      yield* usageLimits.recordClaudeRateLimitPush({ rateLimitType: "five_hour", utilization: 0.42, resetsAt: 1784736000 })
+      yield* usageLimits.recordCodexRateLimitPush({ limitId: "codex", primary: { usedPercent: 12, windowDurationMins: 300 } })
+      return yield* usageLimits.snapshot
+    }))
 
-    manager.recordClaudeRateLimitPush({ rateLimitType: "five_hour", utilization: 0.42, resetsAt: 1784736000 })
-    manager.recordCodexRateLimitPush({ limitId: "codex", primary: { usedPercent: 12, windowDurationMins: 300 } })
-
-    const snapshot = manager.getSnapshot()
     const claude = snapshot.providers.find((p) => p.provider === "claude")
     const codex = snapshot.providers.find((p) => p.provider === "codex")
     expect(claude?.windows[0]).toMatchObject({ id: "five_hour", usedPercent: 42, source: "turn_push" })
     expect(codex?.windows[0]).toMatchObject({ id: "codex:primary", usedPercent: 12, source: "turn_push" })
-    manager.dispose()
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8"))
+    expect(persisted.providers.codex.windows[0]).toMatchObject({ id: "codex:primary", usedPercent: 12 })
   })
 })
+

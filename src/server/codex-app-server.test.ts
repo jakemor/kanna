@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
-import { CodexAppServerManager } from "./codex-app-server"
+import { Deferred, Effect, Exit, Fiber, Option, Result, Scope, Stream } from "effect"
+import { makeCodexAppServer } from "./codex-app-server"
+import { CommandSpawnError } from "./platform/process-spawner"
+import { runTest } from "./effect/testing"
+import type { HarnessEvent } from "./harness-types"
 
 class FakeCodexProcess extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -46,16 +50,11 @@ class FakeCodexProcess extends EventEmitter {
   }
 }
 
-async function collectStream(stream: AsyncIterable<any>) {
-  const items: any[] = []
-  for await (const item of stream) {
-    items.push(item)
-  }
-  return items
-}
+/** Every event of a turn, as loosely typed as the frames the tests write. */
+const collectStream = (stream: Stream.Stream<HarnessEvent>): Effect.Effect<any[]> => Stream.runCollect(stream)
 
-describe("CodexAppServerManager", () => {
-  test("initializes app-server and starts a fresh thread", async () => {
+describe("CodexAppServer", () => {
+  test("initializes app-server and starts a fresh thread", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -67,11 +66,11 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
@@ -82,9 +81,9 @@ describe("CodexAppServerManager", () => {
     expect((process.messages[0] as any).method).toBe("initialize")
     expect((process.messages[1] as any).method).toBe("initialized")
     expect((process.messages[2] as any).method).toBe("thread/start")
-  })
+  })))
 
-  test("falls back to thread/start when thread/resume is recoverably missing", async () => {
+  test("falls back to thread/start when thread/resume is recoverably missing", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -101,11 +100,11 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    const started = await manager.startSession({
+    const started = yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
@@ -119,7 +118,7 @@ describe("CodexAppServerManager", () => {
       "thread/resume",
       "thread/start",
     ])
-  })
+  })))
 
   // Regression coverage for the real-world "thread/resume failed: thread X
   // already has an active writer" incidents (both observed on Codex chats).
@@ -129,7 +128,7 @@ describe("CodexAppServerManager", () => {
   // subprocess for the old thread stayed running, so a later retry spawned
   // a second process that collided with the still-alive first one over the
   // same thread's write lock.
-  test("a non-retryable error notification kills the app-server child process", async () => {
+  test("a non-retryable error notification kills the app-server child process", () => runTest(Effect.gen(function* () {
     const firstProcess = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -149,19 +148,19 @@ describe("CodexAppServerManager", () => {
     })
 
     const processes = [firstProcess]
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => (processes.shift() ?? firstProcess) as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => processes.shift() ?? firstProcess),
     })
 
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
-    const turn = await manager.startTurn({
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "do something",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     expect(events.some((event: any) => event.type === "transcript" && event.entry.kind === "result" && event.entry.isError)).toBe(true)
 
     // failContext() must kill the real process, not just clear bookkeeping —
@@ -183,13 +182,13 @@ describe("CodexAppServerManager", () => {
     })
     processes.push(secondProcess)
 
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
 
     expect(secondProcess.messages.map((message: any) => message.method)).toContain("thread/resume")
     expect(firstProcess.killed).toBe(true)
-  })
+  })))
 
-  test("forks a thread when a pending fork session token is provided", async () => {
+  test("forks a thread when a pending fork session token is provided", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -201,11 +200,11 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    const started = await manager.startSession({
+    const started = yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
@@ -222,9 +221,9 @@ describe("CodexAppServerManager", () => {
     ])
     // Cut at the turn the fork's transcript ends on, whatever the source ran since.
     expect((process.messages.find((message: any) => message.method === "thread/fork") as { params: unknown }).params).toMatchObject({ threadId: "thread-source", lastTurnId: "turn-7" })
-  })
+  })))
 
-  test("maps fast mode and reasoning into app-server params", async () => {
+  test("maps fast mode and reasoning into app-server params", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -248,11 +247,11 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
@@ -260,17 +259,17 @@ describe("CodexAppServerManager", () => {
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       effort: "xhigh",
       serviceTier: "fast",
       content: "Run pwd",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    await collectStream(turn.stream)
+    yield* collectStream(turn.events)
 
     const threadStart = process.messages.find((message: any) => message.method === "thread/start") as
       | { method: "thread/start"; params: { serviceTier?: string } }
@@ -283,9 +282,9 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.effort).toBe("xhigh")
     expect(turnStart?.params.serviceTier).toBe("fast")
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBe("xhigh")
-  })
+  })))
 
-  test("sends an explicit null service tier when fast mode is off", async () => {
+  test("sends an explicit null service tier when fast mode is off", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -306,35 +305,35 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "Run pwd",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    await collectStream(turn.stream)
+    yield* collectStream(turn.events)
 
     // The key must be present: an absent tier means "leave unchanged" to the app-server.
     const threadStart = process.messages.find((message: any) => message.method === "thread/start") as any
     const turnStart = process.messages.find((message: any) => message.method === "turn/start") as any
     expect(threadStart.params).toHaveProperty("serviceTier", null)
     expect(turnStart.params).toHaveProperty("serviceTier", null)
-  })
+  })))
 
-  test("attaches a structured skill item plus system-message failsafe when invoking a skill", async () => {
+  test("attaches a structured skill item plus system-message failsafe when invoking a skill", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -355,18 +354,18 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "/deploy-helper ship to prod",
       skills: [{ name: "deploy-helper", path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md" }],
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
-    await collectStream(turn.stream)
+    yield* collectStream(turn.events)
 
     const turnStart = process.messages.find((message: any) => message.method === "turn/start") as any
     expect(turnStart.params.input).toHaveLength(2)
@@ -380,9 +379,9 @@ describe("CodexAppServerManager", () => {
       name: "deploy-helper",
       path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md",
     })
-  })
+  })))
 
-  test("listSkills maps skills/list and filters disabled skills", async () => {
+  test("listSkills maps skills/list and filters disabled skills", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -421,17 +420,17 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const skills = await manager.listSkills({ chatId: "chat-1", cwd: "/tmp/project" })
+    const skills = yield* manager.listSkills({ chatId: "chat-1", cwd: "/tmp/project" })
     expect(skills?.map((skill) => skill.name)).toEqual(["deploy-helper"])
 
     const request = process.messages.find((message: any) => message.method === "skills/list") as any
     expect(request.params.cwds).toEqual(["/tmp/project"])
-  })
+  })))
 
-  test("listSkills degrades to null when the server lacks skills/list", async () => {
+  test("listSkills degrades to null when the server lacks skills/list", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -445,14 +444,14 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    expect(await manager.listSkills({ chatId: "chat-1", cwd: "/tmp/project" })).toBeNull()
-    expect(await manager.listSkills({ chatId: "chat-unknown", cwd: "/tmp/project" })).toBeNull()
-  })
+    expect(yield* manager.listSkills({ chatId: "chat-1", cwd: "/tmp/project" })).toBeNull()
+    expect(yield* manager.listSkills({ chatId: "chat-unknown", cwd: "/tmp/project" })).toBeNull()
+  })))
 
-  test("listModels probes a throwaway app-server, pages model/list and drops hidden rows", async () => {
+  test("listModels probes a throwaway app-server, pages model/list and drops hidden rows", () => runTest(Effect.gen(function* () {
     const row = (model: string, extra: Record<string, unknown> = {}) => ({
       id: model,
       model,
@@ -473,9 +472,9 @@ describe("CodexAppServerManager", () => {
           : { id: message.id, result: { data: [row("gpt-6-astra"), row("gpt-reserve", { hidden: true })], nextCursor: "page-2" } })
       }
     })
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
 
-    const models = await manager.listModels("/tmp/home")
+    const models = yield* manager.listModels("/tmp/home")
     expect(models?.map((model) => model.model)).toEqual(["gpt-6-astra", "gpt-5.6-sol"])
     expect(process.messages.map((message: any) => message.method)).toEqual([
       "initialize",
@@ -487,9 +486,9 @@ describe("CodexAppServerManager", () => {
     expect((process.messages[3] as any).params).toEqual({ cursor: "page-2" })
     // The probe process is torn down once the list is in.
     expect(process.killed).toBe(true)
-  })
+  })))
 
-  test("listModels reuses a live session and surfaces an old server's method-not-found", async () => {
+  test("listModels reuses a live session and surfaces an old server's method-not-found", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -502,16 +501,19 @@ describe("CodexAppServerManager", () => {
         child.writeServerMessage({ id: message.id, error: { code: -32601, message: "method not found" } })
       }
     })
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    await expect(manager.listModels("/tmp/home")).rejects.toThrow("method not found")
+    const listed = yield* Effect.result(manager.listModels("/tmp/home"))
+    if (!Result.isFailure(listed)) throw new Error("model/list should have failed")
+    expect(listed.failure._tag).toBe("@kanna/server/codex-app-server/CodexRequestError")
+    expect(listed.failure.message).toContain("method not found")
     // No second process: the chat's own app-server answered.
     expect(process.messages.filter((message: any) => message.method === "initialize")).toHaveLength(1)
     expect(process.killed).toBe(false)
-  })
+  })))
 
-  test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
+  test("forwards every supported GPT-5.6 model and reasoning combination", () => runTest(Effect.gen(function* () {
     const combinations = [
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)
         .map((effort) => ({ model: "gpt-5.6-sol", effort })),
@@ -547,24 +549,24 @@ describe("CodexAppServerManager", () => {
           })
         }
       })
-      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
       const chatId = `chat-matrix-${index}`
 
-      await manager.startSession({
+      yield* manager.startSession({
         chatId,
         cwd: "/tmp/project",
         model: combination.model,
         sessionToken: null,
       })
-      const turn = await manager.startTurn({
+      const turn = yield* manager.startTurn({
         chatId,
         model: combination.model,
         effort: combination.effort,
         content: "matrix test",
         planMode: false,
-        onToolRequest: async () => ({}),
+        onToolRequest: () => Effect.succeed({}),
       })
-      await collectStream(turn.stream)
+      yield* collectStream(turn.events)
 
       const threadStart = process.messages.find((message: any) => message.method === "thread/start") as any
       const turnStart = process.messages.find((message: any) => message.method === "turn/start") as any
@@ -576,11 +578,11 @@ describe("CodexAppServerManager", () => {
         reasoning_effort: combination.effort,
       })
 
-      manager.stopSession(chatId)
+      yield* manager.stopSession(chatId)
     }
-  })
+  })))
 
-  test("maps thread token usage updates into context window transcript entries", async () => {
+  test("maps thread token usage updates into context window transcript entries", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -628,26 +630,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "Hello",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const usageEvent = events.find((event) => event.type === "transcript" && event.entry.kind === "context_window_updated")
 
     expect(usageEvent).toBeDefined()
@@ -666,9 +668,9 @@ describe("CodexAppServerManager", () => {
       lastUsedTokens: 126,
       compactsAutomatically: true,
     })
-  })
+  })))
 
-  test("generateStructured returns the final assistant JSON and stops the transient session", async () => {
+  test("generateStructured returns the final assistant JSON and stops the transient session", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -705,11 +707,11 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    const result = await manager.generateStructured({
+    const result = yield* manager.generateStructured({
       cwd: "/tmp/project",
       prompt: "Return JSON",
     })
@@ -718,9 +720,9 @@ describe("CodexAppServerManager", () => {
     expect(process.killed).toBe(true)
     expect((process.messages.find((message: any) => message.method === "thread/start") as any)?.params.model).toBe("gpt-5.5")
     expect((process.messages.find((message: any) => message.method === "turn/start") as any)?.params.model).toBe("gpt-5.5")
-  })
+  })))
 
-  test("maps command execution and agent output into the shared transcript stream", async () => {
+  test("maps command execution and agent output into the shared transcript stream", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -785,35 +787,35 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "Run pwd",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const transcriptKinds = events
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry.kind)
 
     expect(events[0]).toEqual({ type: "session_token", sessionToken: "thread-1" })
     expect(transcriptKinds).toEqual(["system_init", "tool_call", "tool_result", "assistant_text", "result"])
-  })
+  })))
 
-  test("emits only a compact boundary when Codex reports thread compaction", async () => {
+  test("emits only a compact boundary when Codex reports thread compaction", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -844,35 +846,35 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "/compact",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const transcriptKinds = events
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry.kind)
 
     expect(transcriptKinds).toEqual(["system_init", "compact_boundary", "result"])
     expect(transcriptKinds).not.toContain("context_cleared")
-  })
+  })))
 
-  test("maps fileChange updates into edit_file tool calls", async () => {
+  test("maps fileChange updates into edit_file tool calls", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -940,26 +942,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "edit a file",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCall = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
 
     expect(toolCall?.entry.kind).toBe("tool_call")
@@ -971,9 +973,9 @@ describe("CodexAppServerManager", () => {
       oldString: "old line",
       newString: "new line",
     })
-  })
+  })))
 
-  test("maps fileChange adds into write_file tool calls", async () => {
+  test("maps fileChange adds into write_file tool calls", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1041,26 +1043,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "write a file",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCall = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
 
     expect(toolCall?.entry.kind).toBe("tool_call")
@@ -1071,9 +1073,9 @@ describe("CodexAppServerManager", () => {
       filePath: "/tmp/project/test.md",
       content: "hello\nworld",
     })
-  })
+  })))
 
-  test("maps plain-text fileChange adds into write_file tool calls", async () => {
+  test("maps plain-text fileChange adds into write_file tool calls", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1119,26 +1121,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "write a file",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCall = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
 
     expect(toolCall?.entry.kind).toBe("tool_call")
@@ -1148,9 +1150,9 @@ describe("CodexAppServerManager", () => {
       filePath: "/tmp/project/test.md",
       content: "hello\nworld\n",
     })
-  })
+  })))
 
-  test("maps plain-text fileChange deletes into delete_file tool calls", async () => {
+  test("maps plain-text fileChange deletes into delete_file tool calls", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1196,26 +1198,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "delete a file",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCall = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
 
     expect(toolCall?.entry.kind).toBe("tool_call")
@@ -1226,9 +1228,9 @@ describe("CodexAppServerManager", () => {
       filePath: "/tmp/project/test.md",
       content: "hello\nworld\n",
     })
-  })
+  })))
 
-  test("splits multi-change fileChange items into multiple tool calls and results", async () => {
+  test("splits multi-change fileChange items into multiple tool calls and results", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1282,26 +1284,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "change multiple files",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCalls = events.filter((event) => event.type === "transcript" && event.entry.kind === "tool_call")
     const toolResults = events.filter((event) => event.type === "transcript" && event.entry.kind === "tool_result")
 
@@ -1337,9 +1339,9 @@ describe("CodexAppServerManager", () => {
 
     expect(toolResults[0].entry.toolId).toBe("call-1:change:0")
     expect(toolResults[1].entry.toolId).toBe("call-1:change:1")
-  })
+  })))
 
-  test("maps plan updates into TodoWrite and synthesizes ExitPlanMode on successful plan turns", async () => {
+  test("maps plan updates into TodoWrite and synthesizes ExitPlanMode on successful plan turns", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1396,26 +1398,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "make a plan",
       planMode: true,
-      onToolRequest: async () => ({ confirmed: true }),
+      onToolRequest: () => Effect.succeed({ confirmed: true }),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCalls = events
       .filter((event) => event.type === "transcript" && event.entry.kind === "tool_call")
       .map((event) => event.entry.tool)
@@ -1427,9 +1429,9 @@ describe("CodexAppServerManager", () => {
     }
     expect(toolCalls[1].input.summary).toBe("Plan the work")
     expect(toolCalls[1].input.plan).toContain("## Plan")
-  })
+  })))
 
-  test("a plan turn another agent's message started ends with the plan as its reply, and asks nobody to approve it", async () => {
+  test("a plan turn another agent's message started ends with the plan as its reply, and asks nobody to approve it", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1457,22 +1459,22 @@ describe("CodexAppServerManager", () => {
         })
       }
     })
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
     let asked = 0
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "make a plan",
       planMode: true,
       skipPlanApproval: true,
-      onToolRequest: async () => {
+      onToolRequest: () => Effect.sync(() => {
         asked += 1
         return { confirmed: true }
-      },
+      }),
     })
-    const entries = (await collectStream(turn.stream)).flatMap((event) => event.type === "transcript" ? [event.entry] : [])
+    const entries = (yield* collectStream(turn.events)).flatMap((event) => event.type === "transcript" ? [event.entry] : [])
 
     expect(asked).toBe(0)
     expect(entries.some((entry) => entry.kind === "tool_call" && entry.tool.toolKind === "exit_plan_mode")).toBe(false)
@@ -1480,9 +1482,9 @@ describe("CodexAppServerManager", () => {
     const last = entries.slice(-2)
     expect(last[0]).toMatchObject({ kind: "assistant_text", text: "## Plan\n\n- [ ] Implement changes" })
     expect(last[1]).toMatchObject({ kind: "result", subtype: "success", isError: false })
-  })
+  })))
 
-  test("maps collab agent tool calls into subagent_task", async () => {
+  test("maps collab agent tool calls into subagent_task", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1525,35 +1527,35 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "spawn an agent",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCall = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
 
     expect(toolCall?.entry.kind).toBe("tool_call")
     if (!toolCall || toolCall.entry.kind !== "tool_call") throw new Error("missing tool call")
     expect(toolCall.entry.tool.toolKind).toBe("subagent_task")
     expect(toolCall.entry.tool.input).toEqual({ subagentType: "spawnAgent", prompt: "Inspect tests" })
-  })
+  })))
 
-  test("uses the completed webSearch query when the started item is empty", async () => {
+  test("uses the completed webSearch query when the started item is empty", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1606,26 +1608,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "search",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCalls = events.filter((event) => event.type === "transcript" && event.entry.kind === "tool_call")
 
     expect(toolCalls).toHaveLength(1)
@@ -1633,9 +1635,9 @@ describe("CodexAppServerManager", () => {
     if (toolCall.entry.kind !== "tool_call") throw new Error("missing tool call")
     expect(toolCall.entry.tool.toolKind).toBe("web_search")
     expect(toolCall.entry.tool.input).toEqual({ query: "jake mor" })
-  })
+  })))
 
-  test("responds to unsupported dynamic tool requests with a generic tool error", async () => {
+  test("responds to unsupported dynamic tool requests with a generic tool error", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1670,26 +1672,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "call tool",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const toolCall = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
     const toolResult = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_result")
     const response = process.messages.find((message: any) => message.id === "dyn-1")
@@ -1706,9 +1708,9 @@ describe("CodexAppServerManager", () => {
         success: false,
       },
     })
-  })
+  })))
 
-  test("answers requestUserInput requests with the official JSON-RPC result payload", async () => {
+  test("answers requestUserInput requests with the official JSON-RPC result payload", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1751,23 +1753,23 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "ask me",
       planMode: false,
-      onToolRequest: async () => ({
+      onToolRequest: () => Effect.succeed({
         questions: [{
           id: "runtime",
           question: "Which runtime?",
@@ -1778,7 +1780,7 @@ describe("CodexAppServerManager", () => {
       }),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const askEntry = events.find((event) => event.type === "transcript" && event.entry.kind === "tool_call")
     expect(askEntry?.entry.tool.toolKind).toBe("ask_user_question")
 
@@ -1793,9 +1795,9 @@ describe("CodexAppServerManager", () => {
         },
       },
     })
-  })
+  })))
 
-  test("falls back to question text when requestUserInput answers are keyed by prompt text", async () => {
+  test("falls back to question text when requestUserInput answers are keyed by prompt text", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1841,23 +1843,23 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "ask me",
       planMode: false,
-      onToolRequest: async () => ({
+      onToolRequest: () => Effect.succeed({
         questions: [{
           id: "favorite_color",
           question: "What is your favorite color right now?",
@@ -1868,7 +1870,7 @@ describe("CodexAppServerManager", () => {
       }),
     })
 
-    await collectStream(turn.stream)
+    yield* collectStream(turn.events)
 
     const response = process.messages.find((message: any) => message.id === "req-1")
     expect(response).toEqual({
@@ -1881,9 +1883,9 @@ describe("CodexAppServerManager", () => {
         },
       },
     })
-  })
+  })))
 
-  test("infers multi-select Codex questions from prompt text and returns multiple answers", async () => {
+  test("infers multi-select Codex questions from prompt text and returns multiple answers", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -1929,23 +1931,23 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "ask me",
       planMode: false,
-      onToolRequest: async ({ tool }) => {
+      onToolRequest: ({ tool }) => Effect.sync(() => {
         expect(tool.toolKind).toBe("ask_user_question")
         if (tool.toolKind !== "ask_user_question") {
           return {}
@@ -1963,10 +1965,10 @@ describe("CodexAppServerManager", () => {
             runtimes: ["bun", "node"],
           },
         }
-      },
+      }),
     })
 
-    await collectStream(turn.stream)
+    yield* collectStream(turn.events)
 
     const response = process.messages.find((message: any) => message.id === "req-1")
     expect(response).toEqual({
@@ -1979,9 +1981,9 @@ describe("CodexAppServerManager", () => {
         },
       },
     })
-  })
+  })))
 
-  test("sends approval decisions back to the app-server", async () => {
+  test("sends approval decisions back to the app-server", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2016,27 +2018,27 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "approve something",
       planMode: false,
-      onToolRequest: async () => ({}),
-      onApprovalRequest: async () => "accept",
+      onToolRequest: () => Effect.succeed({}),
+      onApprovalRequest: () => Effect.succeed("accept" as const),
     })
 
-    await collectStream(turn.stream)
+    yield* collectStream(turn.events)
 
     const response = process.messages.find((message: any) => message.id === "approval-1")
     expect(response).toEqual({
@@ -2045,9 +2047,9 @@ describe("CodexAppServerManager", () => {
         decision: "accept",
       },
     })
-  })
+  })))
 
-  test("interrupt sends turn/interrupt for the active turn", async () => {
+  test("interrupt sends turn/interrupt for the active turn", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2066,26 +2068,26 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "wait",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    await turn.interrupt()
+    yield* turn.interrupt
 
     const interruptRequest = process.messages.find((message: any) => message.method === "turn/interrupt") as
       | { id: string; method: "turn/interrupt"; params: { threadId: string; turnId: string } }
@@ -2100,10 +2102,10 @@ describe("CodexAppServerManager", () => {
         turnId: "turn-1",
       },
     })
-  })
+  })))
 
-  test("interrupt clears a pending exit-plan wait so a new turn can start immediately", async () => {
-    let resolveToolRequest!: (value: unknown) => void
+  test("interrupt clears a pending exit-plan wait so a new turn can start immediately", () => runTest(Effect.gen(function* () {
+    const toolAnswer = yield* Deferred.make<unknown>()
 
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
@@ -2151,46 +2153,42 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "make a plan",
       planMode: true,
-      onToolRequest: async () => await new Promise((resolve) => {
-        resolveToolRequest = resolve
-      }),
+      onToolRequest: () => Deferred.await(toolAnswer),
     })
 
-    const iterator = turn.stream[Symbol.asyncIterator]()
-    await iterator.next()
-    await iterator.next()
-    await iterator.next()
-    await turn.interrupt()
+    // The session token, system_init, and the ExitPlanMode call it now waits on.
+    yield* Stream.runCollect(Stream.take(turn.events, 3))
+    yield* turn.interrupt
 
-    const nextTurn = await manager.startTurn({
+    const nextTurn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "continue",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    await collectStream(nextTurn.stream)
-    resolveToolRequest({})
-  })
+    yield* collectStream(nextTurn.events)
+    yield* Deferred.succeed(toolAnswer, {})
+  })))
 
-  test("emits an error result when the app-server exits mid-turn", async () => {
+  test("emits an error result when the app-server exits mid-turn", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2209,32 +2207,32 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.sync(() => process),
     })
 
-    await manager.startSession({
+    yield* manager.startSession({
       chatId: "chat-1",
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
     })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "crash",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const resultEvent = events.find((event) => event.type === "transcript" && event.entry.kind === "result")
     expect(resultEvent?.entry.subtype).toBe("error")
     expect(resultEvent?.entry.result).toContain("fatal: app-server crashed")
-  })
+  })))
 
-  test("keeps the turn running through a retryable error and reports it as status", async () => {
+  test("keeps the turn running through a retryable error and reports it as status", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2272,27 +2270,27 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "keep going",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const entries = events.filter((event) => event.type === "transcript").map((event) => event.entry)
     expect(entries.find((entry) => entry.kind === "status")?.status).toBe("Reconnecting... 2/5")
     expect(entries.find((entry) => entry.kind === "assistant_text")?.text).toBe("recovered")
     const resultEntry = entries.find((entry) => entry.kind === "result")
     expect(resultEntry?.subtype).toBe("success")
     expect(resultEntry?.isError).toBe(false)
-  })
+  })))
 
-  test("reports the underlying failure, not the retry notice, when a retried turn fails", async () => {
+  test("reports the underlying failure, not the retry notice, when a retried turn fails", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2322,27 +2320,27 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "keep going",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const resultEntry = events
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry)
       .find((entry) => entry.kind === "result")
     expect(resultEntry?.subtype).toBe("error")
     expect(resultEntry?.result).toBe("stream disconnected: unexpected EOF")
-  })
+  })))
 
-  test("keeps the cause through later progress notices when a retried turn fails", async () => {
+  test("keeps the cause through later progress notices when a retried turn fails", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2373,18 +2371,18 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "keep going",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const entries = (await collectStream(turn.stream))
+    const entries = (yield* collectStream(turn.events))
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry)
 
@@ -2398,9 +2396,9 @@ describe("CodexAppServerManager", () => {
     expect(entries.find((entry) => entry.kind === "result")?.result).toBe(
       "stream disconnected: unexpected EOF"
     )
-  })
+  })))
 
-  test("reads an object-variant cause so a stream drop is not mistaken for a bare counter", async () => {
+  test("reads an object-variant cause so a stream drop is not mistaken for a bare counter", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2433,18 +2431,18 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "keep going",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const entries = (await collectStream(turn.stream))
+    const entries = (yield* collectStream(turn.events))
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry)
 
@@ -2456,9 +2454,9 @@ describe("CodexAppServerManager", () => {
     expect(entries.find((entry) => entry.kind === "result")?.result).toBe(
       "stream disconnected: responseStreamDisconnected (HTTP 502)"
     )
-  })
+  })))
 
-  test("upgrades to the cause when the retry sequence opens with a bare counter", async () => {
+  test("upgrades to the cause when the retry sequence opens with a bare counter", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2488,25 +2486,25 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "keep going",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const resultEntry = (await collectStream(turn.stream))
+    const resultEntry = (yield* collectStream(turn.events))
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry)
       .find((entry) => entry.kind === "result")
     expect(resultEntry?.result).toBe("stream disconnected: unexpected EOF")
-  })
+  })))
 
-  test("fails the turn with the real error when codex will not retry", async () => {
+  test("fails the turn with the real error when codex will not retry", () => runTest(Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2532,30 +2530,163 @@ describe("CodexAppServerManager", () => {
       }
     })
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "go",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
 
-    const events = await collectStream(turn.stream)
+    const events = yield* collectStream(turn.events)
     const resultEntry = events
       .filter((event) => event.type === "transcript")
       .map((event) => event.entry)
       .find((entry) => entry.kind === "result")
     expect(resultEntry?.subtype).toBe("error")
     expect(resultEntry?.result).toBe("usage limit reached: resets at 5pm")
-  })
+  })))
+})
+
+describe("CodexAppServer service", () => {
+  /** Answers the handshake and a fresh thread; `onTurn` writes the turn's frames. */
+  const threadProcess = (onTurn?: (message: any, child: FakeCodexProcess) => void) =>
+    new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1" } } })
+        onTurn?.(message, child)
+      }
+    })
+  const startChat = { chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null }
+  const turnArgs = { chatId: "chat-1", model: "gpt-5.4", content: "go", planMode: false, onToolRequest: () => Effect.succeed({}) }
+
+  test("ignores methods, item types and fields a newer codex adds", () => runTest(Effect.gen(function* () {
+    const process = threadProcess((_message, child) => {
+      child.writeServerMessage({ method: "item/agentMessage/delta", params: { threadId: "thread-1", delta: "par" } })
+      child.writeServerMessage({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "hologram", id: "h-1" } } })
+      child.writeServerMessage({ id: "ask-1", method: "item/tool/somethingNew", params: {} })
+      child.writeServerMessage({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: { type: "commandExecution", id: "cmd-1", command: "ls", status: "completed", exitCode: 0, sandboxPolicy: { kind: "new" } },
+          newField: true,
+        },
+      })
+      child.writeServerMessage({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null, startedAt: 1 } } })
+    })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession(startChat)
+    const turn = yield* manager.startTurn(turnArgs)
+    const entries = (yield* collectStream(turn.events)).flatMap((event) => event.type === "transcript" ? [event.entry] : [])
+
+    const call = entries.find((entry) => entry.kind === "tool_call")
+    // Stored as codex sent it, the field Kanna does not know included.
+    expect(call?.tool.rawInput).toMatchObject({ id: "cmd-1", sandboxPolicy: { kind: "new" } })
+    expect(entries.filter((entry) => entry.kind === "tool_call")).toHaveLength(1)
+    expect(entries.at(-1)).toMatchObject({ kind: "result", subtype: "success" })
+    // An unknown request is left unanswered, as it always was.
+    expect(process.messages.some((message: any) => message.id === "ask-1")).toBe(false)
+  })))
+
+  test("drops a known notification whose payload does not fit, and keeps the turn going", () => runTest(Effect.gen(function* () {
+    const process = threadProcess((_message, child) => {
+      child.writeServerMessage({ method: "turn/plan/updated", params: { threadId: "thread-1", turnId: "turn-1", plan: "not a list" } })
+      child.writeServerMessage({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } } })
+    })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    yield* manager.startSession(startChat)
+    const turn = yield* manager.startTurn(turnArgs)
+    const entries = (yield* collectStream(turn.events)).flatMap((event) => event.type === "transcript" ? [event.entry] : [])
+    expect(entries.map((entry) => entry.kind)).toEqual(["system_init", "result"])
+  })))
+
+  test("fails a turn on a chat with no session, and a second turn while one runs", () => runTest(Effect.gen(function* () {
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => threadProcess()) })
+    const noSession = yield* Effect.result(manager.startTurn(turnArgs))
+    if (!Result.isFailure(noSession)) throw new Error("expected no session")
+    expect(noSession.failure._tag).toBe("@kanna/server/codex-app-server/CodexSessionNotStartedError")
+    expect(noSession.failure.message).toBe("Codex session not started")
+
+    yield* manager.startSession(startChat)
+    yield* manager.startTurn(turnArgs)
+    const busy = yield* Effect.result(manager.startTurn(turnArgs))
+    if (!Result.isFailure(busy)) throw new Error("expected a busy session")
+    expect(busy.failure._tag).toBe("@kanna/server/codex-app-server/CodexTurnBusyError")
+    expect(busy.failure.message).toBe("Codex turn is already running")
+  })))
+
+  test("a resume that fails for another reason fails the session and stops it", () => runTest(Effect.gen(function* () {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/resume") child.writeServerMessage({ id: message.id, error: { message: "permission denied" } })
+    })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    const started = yield* Effect.result(manager.startSession({ ...startChat, sessionToken: "thread-old" }))
+    if (!Result.isFailure(started)) throw new Error("expected the resume to fail")
+    expect(started.failure.message).toBe("thread/resume failed: permission denied")
+    expect(process.killed).toBe(true)
+    expect(process.messages.map((message: any) => message.method)).not.toContain("thread/start")
+    expect((yield* manager.resourceCounts).codexSessions).toBe(0)
+  })))
+
+  test("a codex that cannot be spawned fails the session, and makes account reads null", () => runTest(Effect.gen(function* () {
+    const manager = yield* makeCodexAppServer({
+      spawnProcess: () => Effect.fail(new CommandSpawnError({ command: "codex", message: "spawn codex ENOENT", cause: null })),
+    })
+    const started = yield* Effect.result(manager.startSession(startChat))
+    if (!Result.isFailure(started)) throw new Error("expected the spawn to fail")
+    expect(started.failure._tag).toBe("@kanna/server/codex-app-server/CodexSpawnError")
+    expect(started.failure.message).toBe("spawn codex ENOENT")
+    expect(yield* manager.listModels("/tmp/home")).toBeNull()
+    expect(yield* manager.readAccountRateLimits("/tmp/home")).toBeNull()
+  })))
+
+  test("a session setup failure closes its child scope and kills the process", () => runTest(Effect.gen(function* () {
+    const process = new FakeCodexProcess()
+    Object.defineProperty(process.stdout, Symbol.asyncIterator, {
+      value: () => { throw new Error("stdout cannot be read") },
+    })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    const started = yield* Effect.exit(manager.startSession(startChat))
+    expect(Exit.isFailure(started)).toBe(true)
+    expect(process.killed).toBe(true)
+    expect((yield* manager.resourceCounts).codexSessions).toBe(0)
+  })))
+
+  test("closing the layer kills every session and ends its turn", () => runTest(Effect.gen(function* () {
+    const process = threadProcess()
+    const scope = yield* Scope.make()
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) }).pipe(Scope.provide(scope))
+    yield* manager.startSession(startChat)
+    const turn = yield* manager.startTurn(turnArgs)
+    const events = yield* collectStream(turn.events).pipe(Effect.forkChild({ startImmediately: true }))
+    yield* Scope.close(scope, Exit.void)
+    expect(process.killed).toBe(true)
+    expect((yield* Fiber.join(events)).at(-1)?.entry).toMatchObject({ kind: "result", isError: true, result: "Codex session closed" })
+  })))
+
+  test("streams pushed rate limits to subscribers", () => runTest(Effect.gen(function* () {
+    const process = threadProcess()
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+    const pushed = yield* Stream.runHead(manager.rateLimitPushes).pipe(Effect.forkChild({ startImmediately: true }))
+    yield* manager.startSession(startChat)
+    process.writeServerMessage({ method: "account/rateLimits/updated", params: { rateLimits: { primary: { usedPercent: 42 } } } })
+    expect(Option.getOrNull(yield* Fiber.join(pushed))).toEqual({ primary: { usedPercent: 42 } })
+  })))
 })
 
 describe("Codex shared tools", () => {
   for (const method of ["thread/start", "thread/resume", "thread/fork"] as const) {
-    test(`registers the chat MCP server on ${method}`, async () => {
+    test(`registers the chat MCP server on ${method}`, () => runTest(Effect.gen(function* () {
       let config: any
       const process = new FakeCodexProcess((message, child) => {
         if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
@@ -2564,23 +2695,21 @@ describe("Codex shared tools", () => {
           child.writeServerMessage({ id: message.id, result: { thread: { id: "thread-tools" } } })
         }
       })
-      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-      try {
-        await manager.startSession({
-          chatId: "tools", cwd: "/repo", model: "gpt-5.4",
-          sessionToken: method === "thread/resume" ? "existing" : null,
-          pendingForkSessionToken: method === "thread/fork" ? "parent" : null,
-          customTools: { execute: async () => ({ content: [{ type: "text", text: "ok" }] }) },
-        })
-        expect(config.url).toStartWith("http://127.0.0.1:")
-        expect(config.tool_timeout_sec).toBeGreaterThan(3600)
-        expect((await fetch(config.url)).status).toBe(401)
-        manager.stopSession("tools")
-        await expect(fetch(config.url)).rejects.toThrow()
-      } finally {
-        manager.stopAll()
-      }
-    })
+      const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
+      yield* manager.startSession({
+        chatId: "tools", cwd: "/repo", model: "gpt-5.4",
+        sessionToken: method === "thread/resume" ? "existing" : null,
+        pendingForkSessionToken: method === "thread/fork" ? "parent" : null,
+        customTools: { execute: async () => ({ content: [{ type: "text", text: "ok" }] }) },
+      })
+      expect(config.url).toStartWith("http://127.0.0.1:")
+      expect(config.tool_timeout_sec).toBeGreaterThan(3600)
+      expect((yield* Effect.promise(() => fetch(config.url))).status).toBe(401)
+      yield* manager.stopSession("tools")
+      // The session's MCP server stopped with it.
+      const refused = yield* Effect.promise(() => fetch(config.url).then(() => false, () => true))
+      expect(refused).toBe(true)
+    })))
   }
 })
 
@@ -2594,7 +2723,7 @@ describe("Codex spawned agents", () => {
   const AGENT = "thread-agent"
 
   /** A session whose turn the test writes frames into by hand. */
-  async function startSpawningTurn() {
+  const startSpawningTurn = Effect.gen(function* () {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2606,23 +2735,23 @@ describe("Codex spawned agents", () => {
         child.writeServerMessage({ id: message.id, result: {} })
       }
     })
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    const manager = yield* makeCodexAppServer({ spawnProcess: () => Effect.sync(() => process) })
     const updates: any[] = []
     manager.setTaskActivityListener((chatId, update) => updates.push({ chatId, ...update }))
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
-    const turn = await manager.startTurn({
+    yield* manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+    const turn = yield* manager.startTurn({
       chatId: "chat-1",
       model: "gpt-5.4",
       content: "spawn an agent",
       planMode: false,
-      onToolRequest: async () => ({}),
+      onToolRequest: () => Effect.succeed({}),
     })
-    const events = collectStream(turn.stream)
+    const events = yield* collectStream(turn.events).pipe(Effect.forkChild({ startImmediately: true }))
     const send = (method: string, params: unknown) => process.writeServerMessage({ method, params })
     /** Lets the frames written so far be read. */
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+    const settle = Effect.sleep("20 millis")
     return { process, manager, updates, events, send, settle }
-  }
+  })
 
   const spawned = (threadId = AGENT, agentPath = "/root/audit_parser") => ({
     threadId: ROOT,
@@ -2632,18 +2761,18 @@ describe("Codex spawned agents", () => {
   const turnOf = (threadId: string, id: string, status: string) => ({ threadId, turn: { id, status, error: null } })
   const rootCompleted = () => turnOf(ROOT, "turn-root", "completed")
 
-  test("an agent's row runs for as long as its own turn, past the end of the turn that spawned it", async () => {
-    const { updates, events, send, settle, manager } = await startSpawningTurn()
+  test("an agent's row runs for as long as its own turn, past the end of the turn that spawned it", () => runTest(Effect.gen(function* () {
+    const { updates, events, send, settle, manager } = yield* startSpawningTurn
     send("item/started", spawned())
     send("thread/status/changed", { threadId: AGENT, status: { type: "idle" } })
     send("item/completed", spawned())
-    await settle()
+    yield* settle
     // Named, but no turn of its own yet, so no row: a row must have an end coming.
     expect(updates).toEqual([])
 
     send("thread/status/changed", { threadId: AGENT, status: { type: "active", activeFlags: [] } })
     send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
-    await settle()
+    yield* settle
     expect(updates).toEqual([
       { chatId: "chat-1", kind: "started", id: AGENT, type: "subagent", label: "audit parser", stoppable: true },
     ])
@@ -2651,7 +2780,7 @@ describe("Codex spawned agents", () => {
     // The chat's turn ends first, as it does when the model does not wait.
     send("item/completed", { threadId: ROOT, turnId: "turn-root", item: { type: "agentMessage", id: "m1", text: "spawned." } })
     send("turn/completed", rootCompleted())
-    const transcript = (await events).filter((event) => event.type === "transcript").map((event) => event.entry)
+    const transcript = (yield* Fiber.join(events)).filter((event) => event.type === "transcript").map((event) => event.entry)
     expect(transcript.at(-1)).toMatchObject({ kind: "result", subtype: "success" })
     expect(updates).toHaveLength(1)
 
@@ -2663,13 +2792,32 @@ describe("Codex spawned agents", () => {
       turnId: "turn-root",
       item: { type: "subAgentActivity", id: "subagent-completed-turn-agent", kind: "completed", agentThreadId: AGENT, agentPath: "/root/audit_parser" },
     })
-    await settle()
+    yield* settle
     expect(updates.slice(1)).toEqual([{ chatId: "chat-1", kind: "stopped", id: AGENT, failed: false }])
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("what an agent says and runs stays out of the chat's turn, and its end does not end the chat's", async () => {
-    const { updates, events, send, manager } = await startSpawningTurn()
+  test("a throw while handling one message does not stop the reader", () => runTest(Effect.gen(function* () {
+    const { events, send, settle, manager } = yield* startSpawningTurn
+    let thrown = false
+    manager.setTaskActivityListener(() => {
+      if (thrown) return
+      thrown = true
+      throw new Error("listener bug")
+    })
+    send("item/completed", spawned())
+    send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
+    yield* settle
+    // The line after the throw is still read, so the chat's turn still ends.
+    send("turn/completed", rootCompleted())
+    const transcript = (yield* Fiber.join(events)).filter((event) => event.type === "transcript").map((event) => event.entry)
+    expect(transcript.at(-1)).toMatchObject({ kind: "result", subtype: "success" })
+    expect(thrown).toBe(true)
+    yield* manager.stopAll
+  })))
+
+  test("what an agent says and runs stays out of the chat's turn, and its end does not end the chat's", () => runTest(Effect.gen(function* () {
+    const { updates, events, send, manager } = yield* startSpawningTurn
     send("item/completed", spawned())
     send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
     // The chat is waiting on the agent while the agent works.
@@ -2681,17 +2829,17 @@ describe("Codex spawned agents", () => {
     send("item/completed", { threadId: ROOT, turnId: "turn-root", item: { type: "agentMessage", id: "m-root", text: "The agent said DONE." } })
     send("turn/completed", rootCompleted())
 
-    const transcript = (await events).filter((event) => event.type === "transcript").map((event) => event.entry)
+    const transcript = (yield* Fiber.join(events)).filter((event) => event.type === "transcript").map((event) => event.entry)
     expect(transcript.filter((entry) => entry.kind === "assistant_text").map((entry) => entry.text)).toEqual(["The agent said DONE."])
     expect(transcript.some((entry) => entry.kind === "tool_call")).toBe(false)
     expect(transcript.some((entry) => entry.kind === "context_window_updated")).toBe(false)
     expect(transcript.filter((entry) => entry.kind === "result")).toHaveLength(1)
     expect(updates.map((update) => update.kind)).toEqual(["started", "stopped"])
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("a failed or interrupted agent closes its row, and so does one whose thread goes away", async () => {
-    const { updates, send, settle, manager } = await startSpawningTurn()
+  test("a failed or interrupted agent closes its row, and so does one whose thread goes away", () => runTest(Effect.gen(function* () {
+    const { updates, send, settle, manager } = yield* startSpawningTurn
     const outcomes: Array<[string, () => void, object]> = [
       ["failed", () => send("turn/completed", turnOf("a-failed", "t", "failed")), { failed: true }],
       ["interrupted", () => send("turn/completed", turnOf("a-interrupted", "t", "interrupted")), { failed: false, stopped: true }],
@@ -2704,41 +2852,41 @@ describe("Codex spawned agents", () => {
       send("item/completed", spawned(threadId))
       send("turn/started", turnOf(threadId, "t", "inProgress"))
       end()
-      await settle()
+      yield* settle
       expect(updates.at(-1)).toEqual({ chatId: "chat-1", kind: "stopped", id: threadId, ...expected })
     }
     // None of it touched the chat's own session: a retrying error on an agent
     // is its own business, and the chat's turn is still open.
     send("error", { threadId: "a-error", turnId: "t", willRetry: true, error: { message: "Reconnecting... 1/5" } })
     send("turn/completed", rootCompleted())
-    await settle()
+    yield* settle
     expect(updates).toHaveLength(outcomes.length * 2)
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("a connection that drops closes every agent still running", async () => {
+  test("a connection that drops closes every agent still running", () => runTest(Effect.gen(function* () {
     for (const drop of ["exit", "stop"] as const) {
-      const { process, updates, send, settle, manager } = await startSpawningTurn()
+      const { process, updates, send, settle, manager } = yield* startSpawningTurn
       send("item/completed", spawned("a-1"))
       send("turn/started", turnOf("a-1", "t-1", "inProgress"))
       send("item/completed", spawned("a-2"))
       send("turn/started", turnOf("a-2", "t-2", "inProgress"))
       send("turn/completed", turnOf("a-2", "t-2", "completed"))
       send("turn/completed", rootCompleted())
-      await settle()
+      yield* settle
 
       if (drop === "exit") process.closeWithCode(1)
-      else manager.stopSession("chat-1")
-      await settle()
+      else yield* manager.stopSession("chat-1")
+      yield* settle
       // Only the one still going, and as cut off rather than finished.
       expect(updates.at(-1)).toEqual({ chatId: "chat-1", kind: "stopped", id: "a-1", failed: true })
       expect(updates.filter((update) => update.kind === "stopped")).toHaveLength(2)
-      manager.stopAll()
+      yield* manager.stopAll
     }
-  })
+  })))
 
-  test("an agent that is sent more work runs again, and a late report of its last turn does not end the new one", async () => {
-    const { updates, send, settle, manager } = await startSpawningTurn()
+  test("an agent that is sent more work runs again, and a late report of its last turn does not end the new one", () => runTest(Effect.gen(function* () {
+    const { updates, send, settle, manager } = yield* startSpawningTurn
     send("item/completed", spawned())
     send("turn/started", turnOf(AGENT, "turn-1", "inProgress"))
     send("turn/completed", turnOf(AGENT, "turn-1", "completed"))
@@ -2748,25 +2896,25 @@ describe("Codex spawned agents", () => {
       turnId: "turn-root",
       item: { type: "subAgentActivity", id: "subagent-completed-turn-1", kind: "completed", agentThreadId: AGENT, agentPath: "/root/audit_parser" },
     })
-    await settle()
+    yield* settle
     expect(updates.map((update) => update.kind)).toEqual(["started", "stopped", "started"])
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("the spawn and the agent's first turn can arrive in either order", async () => {
-    const { updates, send, settle, manager } = await startSpawningTurn()
+  test("the spawn and the agent's first turn can arrive in either order", () => runTest(Effect.gen(function* () {
+    const { updates, send, settle, manager } = yield* startSpawningTurn
     send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
-    await settle()
+    yield* settle
     // A thread nothing has named is not known to be an agent of this chat's.
     expect(updates).toEqual([])
     send("item/started", spawned())
-    await settle()
+    yield* settle
     expect(updates.map((update) => [update.kind, update.id])).toEqual([["started", AGENT]])
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("the older spawnAgent call names its agents the same way", async () => {
-    const { updates, events, send, manager } = await startSpawningTurn()
+  test("the older spawnAgent call names its agents the same way", () => runTest(Effect.gen(function* () {
+    const { updates, events, send, manager } = yield* startSpawningTurn
     send("item/completed", {
       threadId: ROOT,
       turnId: "turn-root",
@@ -2784,7 +2932,7 @@ describe("Codex spawned agents", () => {
     send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
     send("turn/completed", turnOf(AGENT, "turn-agent", "completed"))
     send("turn/completed", rootCompleted())
-    await events
+    yield* Fiber.join(events)
     expect(updates).toEqual([
       {
         chatId: "chat-1",
@@ -2798,11 +2946,11 @@ describe("Codex spawned agents", () => {
       },
       { chatId: "chat-1", kind: "stopped", id: AGENT, failed: false },
     ])
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("an agent's agent is the chat's too", async () => {
-    const { updates, send, settle, manager } = await startSpawningTurn()
+  test("an agent's agent is the chat's too", () => runTest(Effect.gen(function* () {
+    const { updates, send, settle, manager } = yield* startSpawningTurn
     send("item/completed", spawned())
     send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
     send("item/started", {
@@ -2811,37 +2959,37 @@ describe("Codex spawned agents", () => {
       item: { type: "subAgentActivity", id: "call-nested", kind: "started", agentThreadId: "thread-nested", agentPath: "/root/audit_parser/check_tests" },
     })
     send("turn/started", turnOf("thread-nested", "turn-nested", "inProgress"))
-    await settle()
+    yield* settle
     expect(updates.map((update) => [update.kind, update.id, update.label])).toEqual([
       ["started", AGENT, "audit parser"],
       ["started", "thread-nested", "check tests"],
     ])
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 
-  test("stopping an agent interrupts its own turn on its own thread", async () => {
-    const { process, send, settle, manager } = await startSpawningTurn()
+  test("stopping an agent interrupts its own turn on its own thread", () => runTest(Effect.gen(function* () {
+    const { process, send, settle, manager } = yield* startSpawningTurn
     send("item/completed", spawned())
     send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
-    await settle()
+    yield* settle
 
-    expect(await manager.stopAgent("chat-1", AGENT)).toBe(true)
+    expect(yield* manager.stopAgent("chat-1", AGENT)).toBe(true)
     expect(process.messages.at(-1)).toMatchObject({ method: "turn/interrupt", params: { threadId: AGENT, turnId: "turn-agent" } })
     // Nothing to stop: not an agent, or one between turns.
-    expect(await manager.stopAgent("chat-1", "thread-unknown")).toBe(false)
+    expect(yield* manager.stopAgent("chat-1", "thread-unknown")).toBe(false)
     send("turn/completed", turnOf(AGENT, "turn-agent", "interrupted"))
-    await settle()
-    expect(await manager.stopAgent("chat-1", AGENT)).toBe(false)
-    manager.stopAll()
-  })
+    yield* settle
+    expect(yield* manager.stopAgent("chat-1", AGENT)).toBe(false)
+    yield* manager.stopAll
+  })))
 
-  test("an agent's thread starting does not become the chat's thread", async () => {
-    const { process, send, manager, events } = await startSpawningTurn()
+  test("an agent's thread starting does not become the chat's thread", () => runTest(Effect.gen(function* () {
+    const { process, send, manager, events } = yield* startSpawningTurn
     send("thread/started", { thread: { id: AGENT, parentThreadId: ROOT } })
     send("turn/completed", rootCompleted())
-    await events
-    await manager.startTurn({ chatId: "chat-1", model: "gpt-5.4", content: "next", planMode: false, onToolRequest: async () => ({}) })
+    yield* Fiber.join(events)
+    yield* manager.startTurn({ chatId: "chat-1", model: "gpt-5.4", content: "next", planMode: false, onToolRequest: () => Effect.succeed({}) })
     expect(process.messages.at(-1)).toMatchObject({ method: "turn/start", params: { threadId: ROOT } })
-    manager.stopAll()
-  })
+    yield* manager.stopAll
+  })))
 })

@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto"
-import { createReadStream, createWriteStream, mkdirSync, readFileSync, readdirSync } from "node:fs"
-import { copyFile, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { pipeline } from "node:stream/promises"
+import { Clock, Context, Effect, FileSystem, Layer, Match, Option, PubSub, Ref, Schedule, Schema, Semaphore, Stream } from "effect"
+import { FileSystemExtras } from "./platform/file-system-extras"
+import { Machine } from "./platform/machine"
+import { ProcessSpawner, type ProcessSpawnOptions } from "./platform/process-spawner"
 import { readPngHeader, writePngThumbnail, type Background } from "./png-thumbnail"
+import { capturePlatform } from "./platform"
 
 /**
  * A project's icon, found in its own files.
@@ -239,30 +241,72 @@ export function rankIconCandidates(relativePaths: readonly string[]): IconCandid
   ))
 }
 
+export class ProjectIconFileError extends Schema.TaggedError<ProjectIconFileError>()(
+  "@kanna/server/project-icons/ProjectIconFileError",
+  {
+    operation: Schema.String,
+    filePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+const FILE_ERROR = "@kanna/server/project-icons/ProjectIconFileError"
+const fileError = (operation: string, filePath: string) => (cause: unknown) =>
+  new ProjectIconFileError({ operation, filePath, cause })
+
+/**
+ * `FileSystemExtras.stat` rather than `FileSystem`'s: the platform's stat
+ * rounds mtime to whole milliseconds, and `mtimeMs` is stored in
+ * `index.json` and hashed into file names, so a rounded value would redo
+ * every icon.
+ */
+const statFile = (filePath: string) =>
+  FileSystemExtras.use((files) => files.stat(filePath)).pipe(
+    Effect.catchTag("PlatformError", (cause) => Effect.fail(fileError("stat", filePath)(cause))),
+  )
+
+/**
+ * Runs a short-lived child to its end, with its stdout as text when piped.
+ * Killed (SIGTERM) after `GIT_TIMEOUT_MS`, and if the caller is interrupted
+ * first. Succeeds with the exit code (null when a signal ended it).
+ */
+const runChild = (operation: string, cwd: string, argv: ReadonlyArray<string>, options: ProcessSpawnOptions) =>
+  Effect.gen(function* () {
+    const spawner = yield* ProcessSpawner
+    const child = yield* spawner.spawn(argv, options)
+    yield* child.kill().pipe(Effect.delay(GIT_TIMEOUT_MS), Effect.forkScoped)
+    const [output, exit] = yield* Effect.all([
+      Stream.mkString(Stream.decodeText(child.stdout)),
+      child.exited,
+    ], { concurrency: "unbounded" })
+    return { output, exitCode: exit.exitCode }
+  }).pipe(
+    Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", (cause) => Effect.fail(fileError(operation, cwd)(cause))),
+    Effect.scoped,
+  )
+
 /** Candidate paths git tracks under `root`, or null when `root` is not in a repo. */
-async function listTrackedPaths(root: string): Promise<string[] | null> {
-  try {
-    const child = Bun.spawn(["git", "ls-files", "-z", "--", ...GIT_PATHSPECS], {
-      cwd: root,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "ignore",
-      timeout: GIT_TIMEOUT_MS,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    })
-    const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited])
-    if (exitCode !== 0) return null
-    return output.split("\0").filter(Boolean)
-  } catch {
-    return null
-  }
-}
+const listTrackedPaths = Effect.fn("ProjectIcons.listTrackedPaths")(function* (root: string) {
+  const machine = yield* Machine
+  return yield* runChild("git ls-files", root, ["git", "ls-files", "-z", "--", ...GIT_PATHSPECS], {
+    cwd: root,
+    stdout: "pipe",
+    env: { ...machine.env.snapshot(), GIT_OPTIONAL_LOCKS: "0" },
+  }).pipe(
+    Effect.map(({ output, exitCode }) => (exitCode === 0 ? output.split("\0").filter(Boolean) : null)),
+    Effect.catchTag(FILE_ERROR, () => Effect.succeed(null)),
+  )
+})
 
 /**
  * Candidate paths by reading folders, breadth first and bounded. For a
  * project outside git, and for one whose icon git doesn't track yet.
+ *
+ * `FileSystemExtras.readDirectoryEntries`: the walk needs each entry's type,
+ * which `FileSystem.readDirectory` doesn't give without a stat per entry.
  */
-async function walkForPaths(root: string): Promise<string[]> {
+const walkForPaths = Effect.fn("ProjectIcons.walkForPaths")(function* (root: string) {
+  const files = yield* FileSystemExtras
   const found: string[] = []
   let queue: Array<{ dir: string; depth: number }> = [{ dir: "", depth: 0 }]
   let visited = 0
@@ -271,19 +315,16 @@ async function walkForPaths(root: string): Promise<string[]> {
     for (const { dir, depth } of queue) {
       if (visited >= WALK_MAX_DIRS) break
       visited += 1
-      let entries
-      try {
-        entries = await readdir(path.join(root, dir), { withFileTypes: true })
-      } catch {
-        continue
-      }
+      const directory = path.join(root, dir)
+      const entries = yield* files.readDirectoryEntries(directory).pipe(Effect.catchTag("PlatformError", () => Effect.succeed(null)))
+      if (!entries) continue
       for (const entry of entries) {
         const relativePath = dir ? `${dir}/${entry.name}` : entry.name
-        if (entry.isFile()) {
+        if (entry.kind === "File") {
           if (classifyIconPath(relativePath)) found.push(relativePath)
           continue
         }
-        if (!entry.isDirectory() || depth >= WALK_MAX_DEPTH || WALK_SKIP_DIRS.has(entry.name)) continue
+        if (entry.kind !== "Directory" || depth >= WALK_MAX_DEPTH || WALK_SKIP_DIRS.has(entry.name)) continue
         if (entry.name.startsWith(".") && entry.name !== ".idea" && entry.name !== ".github") continue
         // `build` is where electron-builder keeps its icon, and also where
         // every other tool writes its output: look at it, go no deeper than
@@ -295,7 +336,7 @@ async function walkForPaths(root: string): Promise<string[]> {
     queue = next
   }
   return found
-}
+})
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|webp|svg|gif|icns|ico)$/i
 
@@ -304,32 +345,45 @@ function resolveInside(root: string, baseDir: string, target: string) {
   return resolved === root || resolved.startsWith(`${root}${path.sep}`) ? resolved : null
 }
 
+/** Reads a small JSON file and decodes it, or None when it is missing or not that shape. */
+const readJsonFile = <A>(filePath: string, decode: (text: string) => Option.Option<A>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const text = yield* fs.readFileString(filePath).pipe(Effect.option)
+    return Option.flatMap(text, decode)
+  })
+
+const AppIconSetContents = Schema.Struct({
+  images: Schema.optionalKey(Schema.Array(Schema.Struct({
+    filename: Schema.optionalKey(Schema.Unknown),
+    size: Schema.optionalKey(Schema.Unknown),
+    scale: Schema.optionalKey(Schema.Unknown),
+    appearances: Schema.optionalKey(Schema.Unknown),
+  }))),
+})
+const decodeAppIconSetContents = Schema.decodeUnknownOption(Schema.fromJsonString(AppIconSetContents))
+
 /**
  * The image an asset catalog's icon set draws from: its largest, which is the
  * 1024px source. Since Xcode 14 that is the only one a set has to hold, and
  * in older sets it is the one the rest were cut from.
  */
-async function resolveAppIconSet(setDir: string): Promise<string | null> {
+const resolveAppIconSet = Effect.fn("ProjectIcons.resolveAppIconSet")(function* (setDir: string) {
+  const contents = yield* readJsonFile(path.join(setDir, "Contents.json"), decodeAppIconSetContents)
+  if (Option.isNone(contents)) return null
   let best: { filename: string; pixels: number } | null = null
-  try {
-    const contents = JSON.parse(await readFile(path.join(setDir, "Contents.json"), "utf8")) as {
-      images?: Array<{ filename?: unknown; size?: unknown; scale?: unknown; appearances?: unknown }>
-    }
-    for (const image of contents.images ?? []) {
-      if (typeof image.filename !== "string" || !/\.(png|jpe?g)$/i.test(image.filename)) continue
-      if (image.filename.includes("/") || image.filename.includes("\\")) continue
-      const points = typeof image.size === "string" ? Number.parseFloat(image.size) : Number.NaN
-      const scale = typeof image.scale === "string" ? Number.parseFloat(image.scale) : 1
-      let pixels = Number.isFinite(points) ? points * (Number.isFinite(scale) ? scale : 1) : 1
-      // Dark and tinted variants are the same size; the plain one is the icon.
-      if (image.appearances) pixels -= 0.5
-      if (!best || pixels > best.pixels) best = { filename: image.filename, pixels }
-    }
-  } catch {
-    return null
+  for (const image of contents.value.images ?? []) {
+    if (typeof image.filename !== "string" || !/\.(png|jpe?g)$/i.test(image.filename)) continue
+    if (image.filename.includes("/") || image.filename.includes("\\")) continue
+    const points = typeof image.size === "string" ? Number.parseFloat(image.size) : Number.NaN
+    const scale = typeof image.scale === "string" ? Number.parseFloat(image.scale) : 1
+    let pixels = Number.isFinite(points) ? points * (Number.isFinite(scale) ? scale : 1) : 1
+    // Dark and tinted variants are the same size; the plain one is the icon.
+    if (image.appearances) pixels -= 0.5
+    if (!best || pixels > best.pixels) best = { filename: image.filename, pixels }
   }
   return best ? path.join(setDir, best.filename) : null
-}
+})
 
 /** A colour in Icon Composer's form, `srgb:0.07843,0.08235,0.10196,1.00000`. */
 function parseIconComposerColor(value: unknown): Background | null {
@@ -343,6 +397,16 @@ function parseIconComposerColor(value: unknown): Background | null {
     : null
 }
 
+const IconComposerFile = Schema.Struct({
+  fill: Schema.optionalKey(Schema.Unknown),
+  groups: Schema.optionalKey(Schema.Array(Schema.Struct({
+    layers: Schema.optionalKey(Schema.Array(Schema.Struct({
+      "image-name": Schema.optionalKey(Schema.Unknown),
+    }))),
+  }))),
+})
+const decodeIconComposerFile = Schema.decodeUnknownOption(Schema.fromJsonString(IconComposerFile))
+
 /**
  * An Icon Composer icon is layers over a fill, composed by the system at
  * build time, so there is no finished image to read. This takes the layer
@@ -350,13 +414,10 @@ function parseIconComposerColor(value: unknown): Background | null {
  * top) and the fill as the colour to draw it over. A single-layer icon, the
  * common case, comes out as it looks.
  */
-async function resolveIconComposer(bundleDir: string): Promise<{ path: string; background: Background | null } | null> {
-  let icon: { fill?: unknown; groups?: Array<{ layers?: Array<{ "image-name"?: unknown }> }> }
-  try {
-    icon = JSON.parse(await readFile(path.join(bundleDir, "icon.json"), "utf8"))
-  } catch {
-    return null
-  }
+const resolveIconComposer = Effect.fn("ProjectIcons.resolveIconComposer")(function* (bundleDir: string) {
+  const file = yield* readJsonFile(path.join(bundleDir, "icon.json"), decodeIconComposerFile)
+  if (Option.isNone(file)) return null
+  const icon = file.value
   let best: { path: string; size: number } | null = null
   for (const group of icon.groups ?? []) {
     for (const layer of group.layers ?? []) {
@@ -364,45 +425,52 @@ async function resolveIconComposer(bundleDir: string): Promise<{ path: string; b
       if (typeof imageName !== "string" || !IMAGE_EXTENSIONS.test(imageName)) continue
       if (imageName.includes("/") || imageName.includes("\\")) continue
       const layerPath = path.join(bundleDir, "Assets", imageName)
-      const info = await stat(layerPath).catch(() => null)
-      if (info?.isFile() && (!best || info.size > best.size)) best = { path: layerPath, size: info.size }
+      const info = yield* statFile(layerPath).pipe(Effect.catchTag(FILE_ERROR, () => Effect.succeed(null)))
+      if (info?.kind === "File" && (!best || info.size > best.size)) best = { path: layerPath, size: info.size }
     }
   }
   if (!best) return null
   // `{ "solid": colour }`, `{ "automatic-gradient": colour }`, or a gradient's
   // list of colours, of which the first will do at this size.
-  const fill = icon.fill && typeof icon.fill === "object" ? Object.values(icon.fill as Record<string, unknown>)[0] : null
+  const fill = icon.fill && typeof icon.fill === "object" ? Object.values(icon.fill)[0] : null
   return { path: best.path, background: parseIconComposerColor(Array.isArray(fill) ? fill[0] : fill) }
+})
+
+/** `value[key]` when `value` is an object, as JSON property access reads it. */
+function field(value: unknown, key: string): unknown {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined
 }
 
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
 /** The icon an Expo config names, relative to the config. */
-async function resolveExpoIcon(configPath: string): Promise<string | null> {
-  let text: string
-  try {
-    const handle = await open(configPath, "r")
-    try {
-      const buffer = Buffer.alloc(64 * 1024)
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
-      text = buffer.toString("utf8", 0, bytesRead)
-    } finally {
-      await handle.close()
-    }
-  } catch {
-    return null
-  }
+const resolveExpoIcon = Effect.fn("ProjectIcons.resolveExpoIcon")(function* (configPath: string) {
+  const fs = yield* FileSystem.FileSystem
+  const bytes = yield* Effect.scoped(
+    fs.open(configPath, { flag: "r" }).pipe(Effect.flatMap((file) => file.readAlloc(64 * 1024))),
+  ).pipe(Effect.option)
+  if (Option.isNone(bytes)) return null
+  const text = Option.match(bytes.value, {
+    onNone: () => "",
+    onSome: (read) => Buffer.from(read.buffer, read.byteOffset, read.byteLength).toString("utf8"),
+  })
   if (configPath.endsWith(".json")) {
-    try {
-      const json = JSON.parse(text) as Record<string, any>
-      const expo = (json.expo ?? json) as Record<string, any>
-      const named = [expo.icon, expo.ios?.icon, expo.android?.icon, expo.android?.adaptiveIcon?.foregroundImage]
-        .find((value) => typeof value === "string" && IMAGE_EXTENSIONS.test(value))
-      return typeof named === "string" ? named : null
-    } catch {
-      return null
-    }
+    return Option.match(decodeJson(text), {
+      onNone: () => null,
+      onSome: (json) => {
+        const expo = field(json, "expo") ?? json
+        const named = [
+          field(expo, "icon"),
+          field(field(expo, "ios"), "icon"),
+          field(field(expo, "android"), "icon"),
+          field(field(field(expo, "android"), "adaptiveIcon"), "foregroundImage"),
+        ].find((value) => typeof value === "string" && IMAGE_EXTENSIONS.test(value))
+        return typeof named === "string" ? named : null
+      },
+    })
   }
   return /\bicon\s*:\s*["'`]([^"'`\n]+\.(?:png|jpe?g|webp|svg))["'`]/i.exec(text)?.[1] ?? null
-}
+})
 
 interface IconSource {
   path: string
@@ -410,155 +478,171 @@ interface IconSource {
   background: Background | null
 }
 
-async function resolveCandidateSource(root: string, candidate: IconCandidate): Promise<IconSource | null> {
-  const bare = (sourcePath: string | null) => sourcePath ? { path: sourcePath, background: null } : null
-  if (candidate.kind === "appiconset") {
-    return bare(await resolveAppIconSet(path.join(root, path.dirname(candidate.path))))
-  }
-  if (candidate.kind === "icon-composer") {
-    return resolveIconComposer(path.join(root, path.dirname(candidate.path)))
-  }
-  if (candidate.kind === "expo-config") {
-    const named = await resolveExpoIcon(path.join(root, candidate.path))
-    return bare(named ? resolveInside(root, path.dirname(candidate.path), named) : null)
-  }
-  return bare(path.join(root, candidate.path))
-}
+const resolveCandidateSource = Effect.fn("ProjectIcons.resolveCandidateSource")(function* (
+  root: string,
+  candidate: IconCandidate,
+) {
+  const bare = (sourcePath: string | null): IconSource | null => (sourcePath ? { path: sourcePath, background: null } : null)
+  return yield* Match.value(candidate.kind).pipe(
+    Match.when("appiconset", () => resolveAppIconSet(path.join(root, path.dirname(candidate.path))).pipe(Effect.map(bare))),
+    Match.when("icon-composer", () => resolveIconComposer(path.join(root, path.dirname(candidate.path)))),
+    Match.when("expo-config", () =>
+      resolveExpoIcon(path.join(root, candidate.path)).pipe(
+        Effect.map((named) => bare(named ? resolveInside(root, path.dirname(candidate.path), named) : null)),
+      )),
+    Match.when("image", () => Effect.succeed(bare(path.join(root, candidate.path)))),
+    Match.exhaustive,
+  )
+})
 
 /**
  * `.icns` is a list of the icon at each size, most of them whole PNG files.
  * Reads the list's 8-byte headers and copies out the smallest PNG that covers
  * the thumbnail, so a 1 MB file costs a few seeks and one small read.
  */
-async function extractIcnsPng(sourcePath: string, targetPath: string): Promise<boolean> {
+const extractIcnsPng = Effect.fn("ProjectIcons.extractIcnsPng")(function* (sourcePath: string, targetPath: string) {
+  const fs = yield* FileSystem.FileSystem
   // Smallest first that is big enough, then the one below as a last resort.
   const preferred = ["ic07", "ic13", "ic08", "ic14", "ic09", "ic10", "ic12"]
-  const handle = await open(sourcePath, "r")
-  let chosen: { start: number; length: number; order: number } | null = null
-  try {
+  const chosen = yield* Effect.scoped(Effect.gen(function* () {
+    const file = yield* fs.open(sourcePath, { flag: "r" })
     const header = Buffer.alloc(16)
-    const { size } = await handle.stat()
-    if ((await handle.read(header, 0, 8, 0)).bytesRead < 8 || header.toString("latin1", 0, 4) !== "icns") return false
+    const size = Number((yield* file.stat).size)
+    const readAt = (length: number, offset: number) => file.read(header.subarray(0, length), { position: BigInt(offset) })
+    if ((yield* readAt(8, 0)) < 8 || header.toString("latin1", 0, 4) !== "icns") return null
+    let found: { start: number; length: number; order: number } | null = null
     let offset = 8
     while (offset + 8 <= size) {
-      if ((await handle.read(header, 0, 16, offset)).bytesRead < 8) break
+      if ((yield* readAt(16, offset)) < 8) break
       const length = header.readUInt32BE(4)
       if (length < 8) break
       const order = preferred.indexOf(header.toString("latin1", 0, 4))
       // Some writers store JPEG 2000 under the same names; only PNG is any use here.
       const isPng = header.readUInt32BE(8) === 0x89504e47
-      if (order >= 0 && isPng && (!chosen || order < chosen.order)) {
-        chosen = { start: offset + 8, length: length - 8, order }
+      if (order >= 0 && isPng && (!found || order < found.order)) {
+        found = { start: offset + 8, length: length - 8, order }
       }
       offset += length
     }
-  } finally {
-    await handle.close()
-  }
+    return found
+  }))
   if (!chosen) return false
-  await pipeline(
-    createReadStream(sourcePath, { start: chosen.start, end: chosen.start + chosen.length - 1 }),
-    createWriteStream(targetPath)
-  )
+  yield* fs.stream(sourcePath, { offset: chosen.start, bytesToRead: chosen.length }).pipe(Stream.run(fs.sink(targetPath)))
   return true
-}
+}, (effect, sourcePath) => effect.pipe(
+  Effect.catchTag("PlatformError", (cause) =>
+    Effect.fail(new ProjectIconFileError({ operation: "extract icns", filePath: sourcePath, cause }))),
+))
 
 /** macOS's own image tool, for what the PNG reader can't take. Decodes in its process, not this one. */
-async function resizeWithSips(sourcePath: string, targetPath: string): Promise<boolean> {
-  if (process.platform !== "darwin") return false
-  try {
-    const child = Bun.spawn(
-      ["/usr/bin/sips", "-s", "format", "png", "-Z", String(THUMBNAIL_SIZE), sourcePath, "--out", targetPath],
-      { stdin: "ignore", stdout: "ignore", stderr: "ignore", timeout: GIT_TIMEOUT_MS }
-    )
-    return (await child.exited) === 0
-  } catch {
-    return false
-  }
-}
+const resizeWithSips = Effect.fn("ProjectIcons.resizeWithSips")(function* (sourcePath: string, targetPath: string) {
+  const machine = yield* Machine
+  if (machine.platform !== "darwin") return false
+  return yield* runChild(
+    "sips",
+    sourcePath,
+    ["/usr/bin/sips", "-s", "format", "png", "-Z", String(THUMBNAIL_SIZE), sourcePath, "--out", targetPath],
+    {},
+  ).pipe(
+    Effect.map(({ exitCode }) => exitCode === 0),
+    Effect.catchTag(FILE_ERROR, () => Effect.succeed(false)),
+  )
+})
 
 /**
  * Writes the stored form of `sourcePath` to `<targetBase>.<ext>` and returns
  * the extension, or null when the source can't be made small.
  */
-async function writeIconFile(
+const writeIconFile = Effect.fn("ProjectIcons.writeIconFile")(function* (
   sourcePath: string,
   sourceSize: number,
   targetBase: string,
-  background: Background | null
-): Promise<string | null> {
+  background: Background | null,
+) {
+  const fs = yield* FileSystem.FileSystem
   const extension = path.extname(sourcePath).slice(1).toLowerCase()
-  const copyAs = async (as: string) => {
-    await copyFile(sourcePath, `${targetBase}.${as}`)
-    return as
-  }
+  const copyAs = (as: string) =>
+    fs.copyFile(sourcePath, `${targetBase}.${as}`).pipe(
+      Effect.as(as),
+      Effect.catchTag("PlatformError", (cause) => Effect.fail(new ProjectIconFileError({ operation: "copy", filePath: sourcePath, cause }))),
+    )
 
   if (extension === "svg" || extension === "ico") {
-    return sourceSize <= COPY_MAX_BYTES ? copyAs(extension) : null
+    return sourceSize <= COPY_MAX_BYTES ? yield* copyAs(extension) : null
   }
 
   if (extension === "icns") {
     const extracted = `${targetBase}.icns.tmp`
-    try {
-      if (!(await extractIcnsPng(sourcePath, extracted))) return null
-      const header = await readPngHeader(extracted)
+    return yield* Effect.gen(function* () {
+      if (!(yield* extractIcnsPng(sourcePath, extracted))) return null
+      const header = yield* readPngHeader(extracted)
       if (header && Math.max(header.width, header.height) <= THUMBNAIL_SIZE * 2) {
-        await rename(extracted, `${targetBase}.png`)
+        yield* fs.rename(extracted, `${targetBase}.png`).pipe(
+          Effect.catchTag("PlatformError", (cause) => Effect.fail(new ProjectIconFileError({ operation: "rename", filePath: extracted, cause }))),
+        )
       } else {
-        await writePngThumbnail(extracted, `${targetBase}.png`, THUMBNAIL_SIZE)
+        yield* writePngThumbnail(extracted, `${targetBase}.png`, THUMBNAIL_SIZE)
       }
       return "png"
-    } catch {
-      return null
-    } finally {
-      await rm(extracted, { force: true })
-    }
+    }).pipe(
+      Effect.catchTags({
+        [FILE_ERROR]: () => Effect.succeed(null),
+        "@kanna/server/png-thumbnail/PngFileError": () => Effect.succeed(null),
+        "@kanna/server/png-thumbnail/UnsupportedPngError": () => Effect.succeed(null),
+      }),
+      Effect.ensuring(fs.remove(extracted, { force: true }).pipe(Effect.ignore)),
+    )
   }
 
   if (extension === "png") {
-    const header = await readPngHeader(sourcePath)
+    const header = yield* readPngHeader(sourcePath)
     if (!header) return null
     // A background has to be drawn in, so the image goes through even when small.
     if (!background && Math.max(header.width, header.height) <= THUMBNAIL_SIZE * 2 && sourceSize <= PASS_THROUGH_MAX_BYTES) {
-      return copyAs("png")
+      return yield* copyAs("png")
     }
-    try {
-      await writePngThumbnail(sourcePath, `${targetBase}.png`, THUMBNAIL_SIZE, background ?? undefined)
-      return "png"
-    } catch {
+    const written = yield* writePngThumbnail(sourcePath, `${targetBase}.png`, THUMBNAIL_SIZE, background ?? undefined).pipe(
+      Effect.as(true),
       // Interlaced, or not what its header says. Falls through to sips.
-    }
+      Effect.catchTags({
+        "@kanna/server/png-thumbnail/PngFileError": () => Effect.succeed(false),
+        "@kanna/server/png-thumbnail/UnsupportedPngError": () => Effect.succeed(false),
+      }),
+    )
+    if (written) return "png"
   } else if (!/^(webp|jpe?g|gif)$/.test(extension)) {
     return null
   } else if (sourceSize <= PASS_THROUGH_MAX_BYTES) {
-    return copyAs(extension === "jpeg" ? "jpg" : extension)
+    return yield* copyAs(extension === "jpeg" ? "jpg" : extension)
   }
 
-  if (await resizeWithSips(sourcePath, `${targetBase}.png`)) return "png"
-  return sourceSize <= COPY_MAX_BYTES ? copyAs(extension === "jpeg" ? "jpg" : extension) : null
-}
+  if (yield* resizeWithSips(sourcePath, `${targetBase}.png`)) return "png"
+  return sourceSize <= COPY_MAX_BYTES ? yield* copyAs(extension === "jpeg" ? "jpg" : extension) : null
+})
 
 function shortHash(value: string, length: number) {
   return createHash("sha1").update(value).digest("hex").slice(0, length)
 }
 
-interface IconRecord {
+const IconRecordSchema = Schema.Struct({
   /** Name under the icons dir, or null when the project has no icon. */
-  file: string | null
+  file: Schema.NullOr(Schema.String),
   /** The image `file` was made from, with what it looked like then. */
-  source?: string
-  mtimeMs?: number
-  size?: number
+  source: Schema.optionalKey(Schema.String),
+  mtimeMs: Schema.optionalKey(Schema.Number),
+  size: Schema.optionalKey(Schema.Number),
   /** The colour it was drawn over, `r,g,b`, when there was one. */
-  background?: string
-  scannedAt: number
-}
+  background: Schema.optionalKey(Schema.String),
+  scannedAt: Schema.Number,
+})
+type IconRecord = typeof IconRecordSchema.Type
 
-interface IconIndex {
-  version: number
-  finder?: number
-  projects: Record<string, IconRecord>
-}
+const IconIndexSchema = Schema.Struct({
+  version: Schema.Number,
+  finder: Schema.optionalKey(Schema.Number),
+  projects: Schema.Record(Schema.String, IconRecordSchema),
+})
+type IconIndex = typeof IconIndexSchema.Type
 
 export interface FoundProjectIcon {
   file: string
@@ -572,22 +656,22 @@ export interface FoundProjectIcon {
  * Finds `root`'s icon and stores it under `iconsDir`. `previous` is the last
  * answer: when the same source is unchanged its stored file is reused.
  */
-export async function findProjectIcon(root: string, iconsDir: string, previous?: IconRecord): Promise<FoundProjectIcon | null> {
-  const tracked = await listTrackedPaths(root)
+export const findProjectIcon = Effect.fn("ProjectIcons.findProjectIcon")(function* (
+  root: string,
+  iconsDir: string,
+  previous?: IconRecord,
+) {
+  yield* Effect.annotateCurrentSpan("projectPath", root)
+  const tracked = yield* listTrackedPaths(root)
   let candidates = tracked ? rankIconCandidates(tracked) : []
-  if (candidates.length === 0) candidates = rankIconCandidates(await walkForPaths(root))
+  if (candidates.length === 0) candidates = rankIconCandidates(yield* walkForPaths(root))
   // A dozen is every plausible icon; past that they are logos in odd corners.
   for (const candidate of candidates.slice(0, 12)) {
-    const resolved = await resolveCandidateSource(root, candidate)
+    const resolved = yield* resolveCandidateSource(root, candidate)
     if (!resolved) continue
     const source = resolved.path
-    let info
-    try {
-      info = await stat(source)
-    } catch {
-      continue
-    }
-    if (!info.isFile() || info.size === 0) continue
+    const info = yield* statFile(source).pipe(Effect.catchTag(FILE_ERROR, () => Effect.succeed(null)))
+    if (!info || info.kind !== "File" || info.size === 0) continue
     const found = {
       source,
       mtimeMs: info.mtimeMs,
@@ -598,14 +682,19 @@ export async function findProjectIcon(root: string, iconsDir: string, previous?:
       previous?.file && previous.source === source && previous.mtimeMs === info.mtimeMs
       && previous.size === info.size && previous.background === found.background
     ) {
-      return { file: previous.file, ...found }
+      return { file: previous.file, ...found } satisfies FoundProjectIcon
     }
     const base = `${shortHash(root, 16)}-${shortHash(`${THUMBNAIL_VERSION}\0${source}\0${info.mtimeMs}\0${info.size}\0${found.background ?? ""}`, 12)}`
-    const extension = await writeIconFile(source, info.size, path.join(iconsDir, base), resolved.background).catch(() => null)
-    if (extension) return { file: `${base}.${extension}`, ...found }
+    const extension = yield* writeIconFile(source, info.size, path.join(iconsDir, base), resolved.background).pipe(
+      Effect.catchTags({
+        [FILE_ERROR]: () => Effect.succeed(null),
+        "@kanna/server/png-thumbnail/PngFileError": () => Effect.succeed(null),
+      }),
+    )
+    if (extension) return { file: `${base}.${extension}`, ...found } satisfies FoundProjectIcon
   }
   return null
-}
+})
 
 /** The stored file a project icon URL names, or null for anything else. */
 export function resolveProjectIconPath(dataDir: string, pathname: string): string | null {
@@ -614,157 +703,177 @@ export function resolveProjectIconPath(dataDir: string, pathname: string): strin
   return ICON_FILE_PATTERN.test(name) ? path.join(dataDir, "project-icons", name) : null
 }
 
-export class ProjectIcons {
-  private readonly iconsDir: string
-  private readonly indexPath: string
-  /** By project path. */
-  private readonly records = new Map<string, IconRecord>()
-  /** When each found icon's source was last stat'ed. Not kept across restarts. */
-  private readonly sourceCheckedAt = new Map<string, number>()
-  private urls = new Map<string, string>()
-  private timer: ReturnType<typeof setInterval> | null = null
-  private ticking = false
-  private indexDirty = false
+export interface ProjectIconsOptions {
+  dataDir: string
+  /** The paths of the live projects, read at each pass. */
+  projectPaths: Effect.Effect<ReadonlyArray<string>>
+}
 
-  constructor(
-    dataDir: string,
-    private readonly getProjectPaths: () => string[],
-    private readonly onChange: () => void
-  ) {
-    this.iconsDir = path.join(dataDir, "project-icons")
-    this.indexPath = path.join(this.iconsDir, "index.json")
-    this.load()
-  }
-
-  /**
-   * Synchronous, and before the first sidebar is built: a few kilobytes read
-   * once so the first paint after a restart already has its icons.
-   */
-  private load() {
-    try {
-      mkdirSync(this.iconsDir, { recursive: true })
-      const index = JSON.parse(readFileSync(this.indexPath, "utf8")) as IconIndex
-      const present = new Set(readdirSync(this.iconsDir))
-      // Icons drawn some other way are all redone; the files go below.
-      const projects = index.version === THUMBNAIL_VERSION ? index.projects : {}
-      // Kept, so their icons show meanwhile, and due at once.
-      const stale = index.finder !== FINDER_VERSION
-      for (const [projectPath, record] of Object.entries(projects)) {
-        // A stored file that has gone missing is a project to search again.
-        if (record.file && !present.has(record.file)) continue
-        this.records.set(projectPath, stale ? { ...record, scannedAt: 0 } : record)
-        if (record.file) present.delete(record.file)
-      }
-      // What is left belongs to no project: a crash between writing an icon
-      // and writing the index, or an index from another thumbnail version.
-      for (const name of present) {
-        if (ICON_FILE_PATTERN.test(name)) void rm(path.join(this.iconsDir, name), { force: true })
-      }
-      this.rebuildUrls()
-    } catch {
-      // No index yet, or an unreadable one: everything is searched afresh.
-    }
-  }
-
+/**
+ * Every project's icon, kept under `<dataDir>/project-icons/` and re-checked
+ * in the background once `start` has run.
+ *
+ * `changes` emits after a pass changes an icon (batched, at most one per
+ * 500 ms within a pass), never on subscribe; read `urls` for the current map.
+ */
+export class ProjectIcons extends Context.Service<ProjectIcons, {
   /** Project path to icon URL, for the sidebar builder. Projects without an icon are absent. */
-  getUrls(): ReadonlyMap<string, string> {
-    return this.urls
-  }
+  readonly urls: Effect.Effect<ReadonlyMap<string, string>>
+  readonly changes: Stream.Stream<void>
+  /** Runs a pass now and then every 15 s, until the layer closes. Idempotent. */
+  readonly start: Effect.Effect<void>
+  /** One pass over the projects; skipped when one is already running. */
+  readonly tick: (nowMs?: number) => Effect.Effect<void>
+}>()("@kanna/server/ProjectIcons") {
+  static readonly layer = (options: ProjectIconsOptions) => Layer.effect(this, makeProjectIcons(options))
+}
 
-  start() {
-    if (this.timer) return
-    void this.tick()
-    this.timer = setInterval(() => {
-      void this.tick()
-    }, TICK_INTERVAL_MS)
-    this.timer.unref?.()
-  }
+const makeProjectIcons = Effect.fn("ProjectIcons.make")(function* (options: ProjectIconsOptions) {
+  const fs = yield* FileSystem.FileSystem
+  const platform = yield* capturePlatform<FileSystem.FileSystem | FileSystemExtras | Machine | ProcessSpawner>()
+  const iconsDir = path.join(options.dataDir, "project-icons")
+  const indexPath = path.join(iconsDir, "index.json")
+  // Touched only inside `tick`, which the semaphore keeps to one at a time.
+  /** By project path. */
+  const records = new Map<string, IconRecord>()
+  /** When each found icon's source was last stat'ed. Not kept across restarts. */
+  const sourceCheckedAt = new Map<string, number>()
+  let indexDirty = false
+  const urls = yield* Ref.make<ReadonlyMap<string, string>>(new Map())
+  const changes = yield* PubSub.unbounded<void>()
+  yield* Effect.addFinalizer(() => PubSub.shutdown(changes))
+  const ticking = yield* Semaphore.make(1)
+  const started = yield* Ref.make(false)
 
-  stop() {
-    if (!this.timer) return
-    clearInterval(this.timer)
-    this.timer = null
-  }
+  const rebuildUrls = Effect.suspend(() => Ref.set(urls, new Map(
+    [...records].flatMap(([projectPath, record]) =>
+      record.file ? [[projectPath, `${PROJECT_ICON_URL_PREFIX}${record.file}`] as const] : []),
+  )))
 
-  /**
-   * One pass over the projects, one at a time. With nothing due it is a map
-   * lookup and two comparisons per project.
-   */
-  async tick(nowMs = Date.now()) {
-    if (this.ticking) return
-    this.ticking = true
-    // The first pass after an install finds an icon for every project in
-    // turn. Each push re-derives the whole sidebar, so they go out in batches.
-    let unannounced = false
-    let announcedAt = Date.now()
-    try {
-      for (const projectPath of this.getProjectPaths()) {
-        if (!(await this.refresh(projectPath, nowMs))) continue
-        this.rebuildUrls()
-        unannounced = true
-        if (Date.now() - announcedAt < CHANGE_NOTIFY_INTERVAL_MS) continue
-        unannounced = false
-        announcedAt = Date.now()
-        this.onChange()
-      }
-      if (unannounced) this.onChange()
-      if (this.indexDirty) await this.persist()
-    } finally {
-      this.ticking = false
+  const removeIcon = (name: string) =>
+    fs.remove(path.join(iconsDir, name), { force: true }).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(new ProjectIconFileError({ operation: "remove", filePath: path.join(iconsDir, name), cause }))),
+    )
+
+  // Before the first sidebar is built: a few kilobytes read once so the first
+  // paint after a restart already has its icons. No index yet, or an
+  // unreadable one, and everything is searched afresh.
+  const loaded = yield* Effect.gen(function* () {
+    yield* fs.makeDirectory(iconsDir, { recursive: true })
+    const index = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(IconIndexSchema))(yield* fs.readFileString(indexPath))
+    return { index, present: new Set(yield* fs.readDirectory(iconsDir)) }
+  }).pipe(Effect.option)
+  if (Option.isSome(loaded)) {
+    const { index, present } = loaded.value
+    // Icons drawn some other way are all redone; the files go below.
+    const projects = index.version === THUMBNAIL_VERSION ? index.projects : {}
+    // Kept, so their icons show meanwhile, and due at once.
+    const stale = index.finder !== FINDER_VERSION
+    for (const [projectPath, record] of Object.entries(projects)) {
+      // A stored file that has gone missing is a project to search again.
+      if (record.file && !present.has(record.file)) continue
+      records.set(projectPath, stale ? { ...record, scannedAt: 0 } : record)
+      if (record.file) present.delete(record.file)
     }
+    // What is left belongs to no project: a crash between writing an icon
+    // and writing the index, or an index from another thumbnail version.
+    yield* Effect.forEach(
+      [...present].filter((name) => ICON_FILE_PATTERN.test(name)),
+      (name) => removeIcon(name).pipe(Effect.ignore),
+    ).pipe(Effect.forkScoped)
+    yield* rebuildUrls
   }
 
   /** Returns whether the project's icon changed. */
-  private async refresh(projectPath: string, nowMs: number): Promise<boolean> {
-    const record = this.records.get(projectPath)
+  const refresh = Effect.fn("ProjectIcons.refresh")(function* (projectPath: string, nowMs: number) {
+    const record = records.get(projectPath)
     if (record) {
       const scanAge = nowMs - record.scannedAt
       if (!record.file) {
         if (scanAge < MISS_RESCAN_INTERVAL_MS) return false
       } else if (scanAge < HIT_RESCAN_INTERVAL_MS) {
-        if (nowMs - (this.sourceCheckedAt.get(projectPath) ?? 0) < SOURCE_CHECK_INTERVAL_MS) return false
-        this.sourceCheckedAt.set(projectPath, nowMs)
-        const info = await stat(record.source!).catch(() => null)
+        if (nowMs - (sourceCheckedAt.get(projectPath) ?? 0) < SOURCE_CHECK_INTERVAL_MS) return false
+        sourceCheckedAt.set(projectPath, nowMs)
+        const info = yield* statFile(record.source!).pipe(Effect.catchTag(FILE_ERROR, () => Effect.succeed(null)))
         if (info && info.mtimeMs === record.mtimeMs && info.size === record.size) return false
       }
     }
 
-    const found = await findProjectIcon(projectPath, this.iconsDir, record).catch(() => null)
-    this.sourceCheckedAt.set(projectPath, nowMs)
-    this.records.set(projectPath, found ? { ...found, scannedAt: nowMs } : { file: null, scannedAt: nowMs })
-    this.indexDirty = true
+    const found = yield* findProjectIcon(projectPath, iconsDir, record)
+    sourceCheckedAt.set(projectPath, nowMs)
+    records.set(projectPath, found ? { ...found, scannedAt: nowMs } : { file: null, scannedAt: nowMs })
+    indexDirty = true
     const previousFile = record?.file ?? null
     const file = found?.file ?? null
     if (previousFile === file) return false
-    if (previousFile) await rm(path.join(this.iconsDir, previousFile), { force: true })
+    if (previousFile) yield* removeIcon(previousFile)
     return true
-  }
-
-  private rebuildUrls() {
-    const urls = new Map<string, string>()
-    for (const [projectPath, record] of this.records) {
-      if (record.file) urls.set(projectPath, `${PROJECT_ICON_URL_PREFIX}${record.file}`)
-    }
-    this.urls = urls
-  }
+  })
 
   /** Writes the index, and drops projects that are gone along with their files. */
-  private async persist() {
-    this.indexDirty = false
-    const live = new Set(this.getProjectPaths())
-    for (const [projectPath, record] of this.records) {
+  const persist = Effect.fn("ProjectIcons.persist")(function* () {
+    indexDirty = false
+    const live = new Set(yield* options.projectPaths)
+    for (const [projectPath, record] of records) {
       if (live.has(projectPath)) continue
-      this.records.delete(projectPath)
-      this.sourceCheckedAt.delete(projectPath)
-      if (record.file) await rm(path.join(this.iconsDir, record.file), { force: true })
+      records.delete(projectPath)
+      sourceCheckedAt.delete(projectPath)
+      if (record.file) yield* removeIcon(record.file)
     }
-    const index: IconIndex = { version: THUMBNAIL_VERSION, finder: FINDER_VERSION, projects: Object.fromEntries(this.records) }
-    const temporaryPath = `${this.indexPath}.tmp`
-    try {
-      await writeFile(temporaryPath, JSON.stringify(index))
-      await rename(temporaryPath, this.indexPath)
-    } catch {
-      // The index is a cache: without it the next boot searches again.
+    const index: IconIndex = { version: THUMBNAIL_VERSION, finder: FINDER_VERSION, projects: Object.fromEntries(records) }
+    const temporaryPath = `${indexPath}.tmp`
+    // The index is a cache: without it the next boot searches again.
+    yield* fs.writeFileString(temporaryPath, JSON.stringify(index)).pipe(
+      Effect.andThen(fs.rename(temporaryPath, indexPath)),
+      Effect.ignore,
+    )
+  })
+
+  /**
+   * One pass over the projects, one at a time. With nothing due it is a map
+   * lookup and two comparisons per project.
+   */
+  const pass = Effect.fn("ProjectIcons.tick")(function* (nowMs?: number) {
+    const now = nowMs ?? (yield* Clock.currentTimeMillis)
+    // The first pass after an install finds an icon for every project in
+    // turn. Each push re-derives the whole sidebar, so they go out in batches.
+    let unannounced = false
+    let announcedAt = yield* Clock.currentTimeMillis
+    for (const projectPath of yield* options.projectPaths) {
+      if (!(yield* refresh(projectPath, now))) continue
+      yield* rebuildUrls
+      unannounced = true
+      if ((yield* Clock.currentTimeMillis) - announcedAt < CHANGE_NOTIFY_INTERVAL_MS) continue
+      unannounced = false
+      announcedAt = yield* Clock.currentTimeMillis
+      yield* PubSub.publish(changes, undefined)
     }
+    if (unannounced) yield* PubSub.publish(changes, undefined)
+    if (indexDirty) yield* persist()
+  })
+  const tick = (nowMs?: number) =>
+    pass(nowMs).pipe(
+      ticking.withPermitsIfAvailable(1),
+      Effect.asVoid,
+      Effect.catchTag(FILE_ERROR, (error) => Effect.logWarning("Project icon pass failed:", error.cause)),
+      // The finder's functions take the platform from context; the layer
+      // already resolved it.
+      Effect.provide(platform),
+    )
+
+  // `start` is called from outside the layer; the passes belong to the layer,
+  // so they stop when it closes, not when the caller's scope does.
+  const layerScope = yield* Effect.scope
+  const start = Effect.gen(function* () {
+    if (yield* Ref.getAndSet(started, true)) return
+    yield* tick().pipe(Effect.repeat(Schedule.fixed(TICK_INTERVAL_MS)), Effect.forkIn(layerScope))
+  })
+
+  return {
+    urls: Ref.get(urls),
+    changes: Stream.fromPubSub(changes),
+    start,
+    tick,
   }
-}
+})

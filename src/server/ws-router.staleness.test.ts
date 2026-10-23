@@ -1,4 +1,10 @@
 import { describe, expect, test } from "bun:test"
+import { Effect } from "effect"
+import { makeFakeDiffStore } from "./diff-store.fake"
+import { makeFakeKeybindings } from "./keybindings.fake"
+import { makeFakeAppSettings } from "./app-settings.fake"
+import { makeFakeTerminals } from "./terminal-manager.fake"
+import { makeFakeWorktreeProbe } from "./worktree-probe.fake"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -6,7 +12,9 @@ import type { SubscriptionTopic } from "../shared/protocol"
 import type { ChatSnapshot, TranscriptEntry } from "../shared/types"
 import { applyIncrementalChatSnapshot } from "../client/app/snapshotEquality"
 import { createEmptyState } from "./events"
+import { fakeRouterStore } from "./chat-commands.fake"
 import { createWsRouter } from "./ws-router"
+import { testPlatformContext } from "./platform/testing"
 
 /**
  * Broadcast-staleness invariant suite.
@@ -249,37 +257,23 @@ function createWorld(options?: { projectPath?: string }) {
   const bumpDiffVersion = () => {
     diffVersion += 1
   }
-  const diffStore = {
-    getProjectSnapshot: () => ({ status: "ready", branchName: "main", diffVersion, files: [] }),
+  // The version rides in `aheadCount`, so each bump changes the snapshot's content too.
+  const diffStore = makeFakeDiffStore({
+    getProjectSnapshot: () => ({ status: "ready", branchName: "main", aheadCount: diffVersion, files: [], branchHistory: { entries: [] } }),
     getSnapshotVersion: () => diffVersion,
-    refreshSnapshot: async () => {
+    refreshSnapshot: () => Effect.sync(() => {
       bumpDiffVersion()
       return true
-    },
-    initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "repo" }),
-    checkGitHubRepoAvailability: async () => ({ available: false, message: "n/a" }),
-    publishToGitHub: async () => ({ ok: false, title: "n/a", message: "n/a", snapshotChanged: false }),
-    listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" }),
-    previewMergeBranch: async () => ({ currentBranchName: undefined, targetBranchName: "", targetDisplayName: "", status: "error", commitCount: 0, hasConflicts: false, message: "n/a" }),
-    mergeBranch: async () => ({ ok: false, title: "n/a", message: "n/a", snapshotChanged: false }),
-    syncBranch: async () => ({ ok: true, action: "fetch", branchName: undefined, snapshotChanged: false }),
-    checkoutBranch: async () => {
+    }),
+    checkoutBranch: () => Effect.sync(() => {
       bumpDiffVersion()
       return { ok: true, branchName: "feature/x", snapshotChanged: true }
-    },
-    createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-    generateCommitMessage: async () => ({ subject: "Update", body: "", usedFallback: true, failureMessage: null }),
-    commitFiles: async () => {
+    }),
+    commitFiles: () => Effect.sync(() => {
       bumpDiffVersion()
       return { ok: true, mode: "commit_only", branchName: "main", pushed: false, snapshotChanged: true }
-    },
-    discardFile: async () => ({ snapshotChanged: false }),
-    ignoreFile: async () => ({ snapshotChanged: false }),
-    readPatch: async () => ({ patch: "" }),
-    readCommit: async () => ({ sha: "", parentCount: 1, files: [], totalFileCount: 0, additions: 0, deletions: 0 }),
-    readBranch: async () => ({}),
-  }
+    }),
+  })
 
   const agent = {
     getActiveStatuses: () => new Map(),
@@ -327,67 +321,36 @@ function createWorld(options?: { projectPath?: string }) {
     },
   }
 
-  const appSettingsListeners = new Set<(snapshot: unknown) => void>()
-  let appSettingsSnapshot: Record<string, unknown> = {
+  const appSettings = makeFakeAppSettings({
     analyticsEnabled: true,
     theme: "system",
     newSidebarEnabled: false,
     // The router sizes every chat window from this on subscribe.
     transcript: { windowAssistantMessages: 50 },
-  }
-  const appSettings = {
-    getSnapshot: () => appSettingsSnapshot,
-    write: async (value: { analyticsEnabled: boolean }) => {
-      appSettingsSnapshot = { ...appSettingsSnapshot, analyticsEnabled: value.analyticsEnabled }
-      for (const listener of appSettingsListeners) listener(appSettingsSnapshot)
-      return appSettingsSnapshot
-    },
-    writePatch: async (patch: Record<string, unknown>) => {
-      appSettingsSnapshot = { ...appSettingsSnapshot, ...patch }
-      for (const listener of appSettingsListeners) listener(appSettingsSnapshot)
-      return appSettingsSnapshot
-    },
-    onChange: (listener: (snapshot: unknown) => void) => {
-      appSettingsListeners.add(listener)
-      return () => appSettingsListeners.delete(listener)
-    },
-  }
+  })
 
-  const keybindingsListeners = new Set<() => void>()
-  let keybindingsSnapshot: Record<string, unknown> = {
+  const keybindingsSnapshot = {
     bindings: { toggleEmbeddedTerminal: ["cmd+j"] },
     warning: null,
     filePathDisplay: "~/.kanna/keybindings.json",
   }
-  const keybindings = {
-    getSnapshot: () => keybindingsSnapshot,
-    write: async (bindings: Record<string, string[]>) => {
-      keybindingsSnapshot = { ...keybindingsSnapshot, bindings }
-      for (const listener of keybindingsListeners) listener()
-      return keybindingsSnapshot
-    },
-    onChange: (listener: () => void) => {
-      keybindingsListeners.add(listener)
-      return () => keybindingsListeners.delete(listener)
-    },
-  }
+  const keybindings = makeFakeKeybindings(keybindingsSnapshot as never)
 
   const router = createWsRouter({
-    store: store as never,
-    diffStore: diffStore as never,
-    worktreeProbe: { getStates: () => new Map(), getRepoLabels: () => new Map(), getProjectsWithoutRepo: () => new Set() },
+    platform: testPlatformContext,
+    store: fakeRouterStore(store) as never,
+    diffStore,
+    worktreeProbe: makeFakeWorktreeProbe(),
     agent: agent as never,
-    terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+    terminals: makeFakeTerminals(),
     keybindings: keybindings as never,
-    appSettings: appSettings as never,
+    appSettings,
     llmProvider: {
-      read: async () => ({ provider: "openai", apiKey: "", model: "", baseUrl: "", resolvedBaseUrl: "", faveModels: [], enabled: false, warning: null, filePathDisplay: "" }),
-      write: async () => {
-        throw new Error("not used")
-      },
-      validate: async () => ({ ok: true, error: null }),
+      read: () => Effect.succeed({ provider: "openai", apiKey: "", model: "", baseUrl: "", resolvedBaseUrl: "", faveModels: [], enabled: false, warning: null, filePathDisplay: "" }),
+      write: () => Effect.die(new Error("not used")),
+      validate: () => Effect.succeed({ ok: true, error: null }),
     } as never,
-    refreshDiscovery: async () => [],
+    refreshDiscovery: () => Effect.succeed([]),
     getDiscoveredProjects: () => [],
     machineDisplayName: "Staleness Machine",
     updateManager: null,

@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { TranscriptEntry } from "../shared/types"
+import { Effect, Result } from "effect"
+import { runTest } from "./effect/testing"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 
 const tempDirs: string[] = []
@@ -64,7 +66,7 @@ describe("writeStandaloneTranscriptExport", () => {
     await writeFile(attachmentPath, "mock", "utf8")
     const uploadedRequests = new Map<string, string>()
 
-    const result = await writeStandaloneTranscriptExport({
+    const result = await runTest(writeStandaloneTranscriptExport({
       chatId: "chat-1",
       title: "Release Review",
       sourceOrigin: "http://user:password@kanna.example:5174/chat/one?token=secret",
@@ -95,7 +97,7 @@ describe("writeStandaloneTranscriptExport", () => {
       shareUploadBaseUrl: "https://upload.example.com/api/share",
       viewerDistDir,
       now: new Date("2026-04-23T12:34:56.000Z"),
-    })
+    }))
 
     expect(result.ok).toBe(true)
     if (!result.ok) {
@@ -134,7 +136,7 @@ describe("writeStandaloneTranscriptExport", () => {
     await writeFile(attachmentPath, "mock", "utf8")
     const uploadedPaths: string[] = []
 
-    const result = await writeStandaloneTranscriptExport({
+    const result = await runTest(writeStandaloneTranscriptExport({
       chatId: "chat-1",
       title: "Release Review",
       localPath: projectDir,
@@ -157,7 +159,7 @@ describe("writeStandaloneTranscriptExport", () => {
       shareUploadBaseUrl: "https://upload.example.com/api/share",
       viewerDistDir,
       now: new Date("2026-04-23T12:34:56.000Z"),
-    })
+    }))
 
     expect(result.ok).toBe(true)
     if (!result.ok) {
@@ -189,7 +191,7 @@ describe("writeStandaloneTranscriptExport", () => {
     const attachmentPath = path.join(uploadsDir, "mock.png")
     await writeFile(attachmentPath, "mock", "utf8")
 
-    const result = await writeStandaloneTranscriptExport({
+    const result = await runTest(writeStandaloneTranscriptExport({
       chatId: "chat-1",
       title: "Release Review",
       localPath: projectDir,
@@ -208,7 +210,7 @@ describe("writeStandaloneTranscriptExport", () => {
       shareUploadBaseUrl: "https://upload.example.com/api/share",
       viewerDistDir,
       now: new Date("2026-04-23T12:34:56.000Z"),
-    })
+    }))
 
     expect(result.ok).toBe(false)
     if (result.ok) {
@@ -225,6 +227,59 @@ describe("writeStandaloneTranscriptExport", () => {
   })
 })
 
+describe("writeStandaloneTranscriptExport failures", () => {
+  test("fails with the viewer path when the viewer bundle was never built", async () => {
+    const projectDir = await createTempDir("kanna-project-")
+    const viewerDistDir = path.join(projectDir, "no-viewer")
+
+    const result = await runTest(Effect.result(writeStandaloneTranscriptExport({
+      chatId: "chat-1", title: "Report", localPath: projectDir, theme: "light", attachmentMode: "metadata", messages: [],
+    }, { viewerDistDir, fetch: async () => new Response("{}") })))
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/standalone-export/StandaloneExportError")
+      expect(result.failure.operation).toBe("viewer")
+      expect(result.failure.filePath).toBe(viewerDistDir)
+      expect(result.failure.message).toBe("Standalone viewer bundle not found. Run `bun run build`.")
+    }
+  })
+
+  test("a fetch that rejects is an upload failure with its message, not a failed export", async () => {
+    const viewerDistDir = await createViewerDist()
+    const projectDir = await createTempDir("kanna-project-")
+
+    const result = await runTest(writeStandaloneTranscriptExport({
+      chatId: "chat-1", title: "Report", localPath: projectDir, theme: "light", attachmentMode: "metadata", messages: [],
+    }, {
+      viewerDistDir,
+      fetch: async () => { throw new TypeError("Unable to connect. Is the computer able to access the url?") },
+      shareSlugSuffix: "offline1",
+    }))
+
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("Expected the upload to fail")
+    expect(result.error).toBe("Unable to connect. Is the computer able to access the url?")
+    expect(await Bun.file(result.transcriptJsonPath).exists()).toBe(true)
+  })
+
+  test("a failed upload with no body reports the status, and a second export gets its own directory", async () => {
+    const viewerDistDir = await createViewerDist()
+    const projectDir = await createTempDir("kanna-project-")
+    const now = new Date("2026-04-23T12:34:56.000Z")
+    const deps = { viewerDistDir, now, fetch: async () => new Response("", { status: 503 }) }
+    const args = { chatId: "chat-1", title: "Report", localPath: projectDir, theme: "light" as const, attachmentMode: "metadata" as const, messages: [] }
+
+    const first = await runTest(writeStandaloneTranscriptExport(args, deps))
+    const second = await runTest(writeStandaloneTranscriptExport(args, deps))
+
+    if (first.ok || second.ok) throw new Error("Expected the uploads to fail")
+    expect(first.error).toBe("Failed to upload shared transcript file transcript.json (status 503)")
+    expect(path.basename(first.outputDir)).toBe("Report-2026-04-23T12-34-56Z")
+    expect(path.basename(second.outputDir)).toBe("Report-2026-04-23T12-34-56Z-2")
+  })
+})
+
 test("bundles sent files and preserves external attachment URLs", async () => {
   const viewerDistDir = await createViewerDist()
   const projectDir = await createTempDir("kanna-display-export-")
@@ -232,7 +287,7 @@ test("bundles sent files and preserves external attachment URLs", async () => {
   await writeFile(source, "Report contents")
   const visualization = path.join(projectDir, "visualization-abc.html")
   await writeFile(visualization, "<p>Visualization</p>")
-  const result = await writeStandaloneTranscriptExport({
+  const result = await runTest(writeStandaloneTranscriptExport({
     chatId: "chat-1", title: "Report", localPath: projectDir, theme: "light", attachmentMode: "bundle",
     resolveMediaPath: url => url === "/api/chats/chat-1/media/report.txt" ? source : url === "/api/chats/chat-1/media/visualization-abc.html" ? visualization : null,
     messages: [{ _id: "result", createdAt: 1, kind: "tool_result", toolId: "files", content: [
@@ -244,7 +299,7 @@ test("bundles sent files and preserves external attachment URLs", async () => {
     viewerDistDir,
     fetch: async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } }),
     sharePublicBaseUrl: "https://share.example.com", shareUploadBaseUrl: "https://upload.example.com/api/share", shareSlugSuffix: "display1",
-  })
+  }))
   expect(result.ok).toBe(true)
   if (!result.ok) throw new Error(result.error)
   const bundle = await Bun.file(result.transcriptJsonPath).json()

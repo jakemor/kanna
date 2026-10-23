@@ -4,12 +4,14 @@
  * Contains secrets (machineToken, proxySecret) → written with mode 600.
  */
 
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import path from "node:path"
+import { Effect, FileSystem, Option, Schema } from "effect"
+import type { PlatformError } from "effect/PlatformError"
 import { getCloudFilePath } from "../../shared/branding"
 import { DEFAULT_CLOUD_CONTROL_URL } from "../../shared/cloud-api"
 import { PROD_SERVER_PORT } from "../../shared/ports"
+import { HostProcess } from "../platform/host-process"
+import { Machine } from "../platform/machine"
 
 /**
  * How this machine is reachable from the proxy:
@@ -54,8 +56,9 @@ function normalizeString(value: unknown) {
  */
 export function normalizeCloudIdentity(
   value: unknown,
-  warn: (message: string) => void = () => {},
-  env: Record<string, string | undefined> = process.env,
+  warn: (message: string) => void,
+  /** The machine's environment (`Machine.env`): a dev-box's host can come from it. */
+  env: Record<string, string | undefined>,
 ): CloudIdentity | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     warn("cloud.json is not an object — ignoring it")
@@ -105,57 +108,76 @@ export function normalizeCloudIdentity(
   }
 }
 
-export function getDefaultCloudIdentityPath() {
-  return getCloudFilePath(homedir())
+/** cloud.json under `homeDir`, the machine's home (`Machine.homeDirectory`). */
+export function getDefaultCloudIdentityPath(homeDir: string) {
+  return getCloudFilePath(homeDir)
 }
 
-export async function readCloudIdentity(
-  filePath = getDefaultCloudIdentityPath(),
+/** cloud.json could not be read, written or deleted (never its contents: they are secrets). */
+export class CloudIdentityFileError extends Schema.TaggedError<CloudIdentityFileError>()(
+  "@kanna/server/cloud/identity/CloudIdentityFileError",
+  {
+    operation: Schema.Literals(["read", "write", "delete"]),
+    filePath: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+const fileError = (operation: CloudIdentityFileError["operation"], filePath: string) => (cause: PlatformError) =>
+  Effect.fail(new CloudIdentityFileError({ operation, filePath, message: cause.message, cause }))
+
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+
+/** null when there is no cloud.json, or when it is unusable (with a warning). */
+export const readCloudIdentity = Effect.fn("CloudIdentity.read")(function* (
+  filePathOverride?: string,
   warn: (message: string) => void = () => {},
-): Promise<CloudIdentity | null> {
-  let raw: string
-  try {
-    raw = await readFile(filePath, "utf8")
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+) {
+  const fs = yield* FileSystem.FileSystem
+  const machine = yield* Machine
+  const filePath = filePathOverride ?? getDefaultCloudIdentityPath(machine.homeDirectory)
+  const raw = yield* fs.readFileString(filePath).pipe(
+    Effect.map(Option.some),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedNone),
+    Effect.catchTag("PlatformError", fileError("read", filePath)),
+  )
+  if (Option.isNone(raw)) return null
+
+  return yield* decodeJson(raw.value).pipe(
+    Effect.map((parsed) => normalizeCloudIdentity(parsed, warn, machine.env.snapshot())),
+    Effect.catchTag("SchemaError", () => Effect.sync(() => {
+      warn(`cloud.json at ${filePath} is not valid JSON — ignoring it`)
       return null
-    }
-    throw error
-  }
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    warn(`cloud.json at ${filePath} is not valid JSON — ignoring it`)
-    return null
-  }
-
-  return normalizeCloudIdentity(parsed, warn)
-}
+    })),
+  )
+})
 
 /** Atomic write (tmp + rename) with mode 600 — the file holds secrets. */
-export async function writeCloudIdentity(
+export const writeCloudIdentity = Effect.fn("CloudIdentity.write")(function* (
   identity: CloudIdentity,
-  filePath = getDefaultCloudIdentityPath(),
-): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true })
-  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`
-  await writeFile(tempPath, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 })
-  await chmod(tempPath, 0o600)
-  await rename(tempPath, filePath)
-}
+  filePathOverride?: string,
+) {
+  const fs = yield* FileSystem.FileSystem
+  const filePath = filePathOverride ?? getDefaultCloudIdentityPath((yield* Machine).homeDirectory)
+  const tempPath = `${filePath}.tmp-${(yield* HostProcess).pid}-${Date.now()}`
+  yield* fs.makeDirectory(path.dirname(filePath), { recursive: true }).pipe(
+    Effect.andThen(fs.writeFileString(tempPath, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 })),
+    Effect.andThen(fs.chmod(tempPath, 0o600)),
+    Effect.andThen(fs.rename(tempPath, filePath)),
+    Effect.catchTag("PlatformError", fileError("write", filePath)),
+  )
+})
 
-export async function deleteCloudIdentity(
-  filePath = getDefaultCloudIdentityPath(),
-): Promise<boolean> {
-  try {
-    await unlink(filePath)
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return false
-    }
-    throw error
-  }
-}
+/** true when a cloud.json was there to delete. */
+export const deleteCloudIdentity = Effect.fn("CloudIdentity.delete")(function* (
+  filePathOverride?: string,
+) {
+  const fs = yield* FileSystem.FileSystem
+  const filePath = filePathOverride ?? getDefaultCloudIdentityPath((yield* Machine).homeDirectory)
+  return yield* fs.remove(filePath).pipe(
+    Effect.as(true),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(false)),
+    Effect.catchTag("PlatformError", fileError("delete", filePath)),
+  )
+})

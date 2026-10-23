@@ -1,4 +1,5 @@
 import path from "node:path"
+import { Result, Schema } from "effect"
 
 export const CLI_CHILD_MODE_ENV_VAR = "KANNA_CLI_MODE"
 export const CLI_CHILD_MODE = "child"
@@ -84,17 +85,17 @@ export function withBunRuntimeFlags(
   return { command: runtime.execPath, args: [...bunArgs, runtime.script] }
 }
 
-export function parseChildArgsEnv(value: string | undefined) {
-  if (!value) return []
+const decodeChildArgs = Schema.decodeUnknownResult(Schema.fromJsonString(Schema.Array(Schema.String)))
 
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
-      throw new Error("child args must be an array of strings")
-    }
-    return parsed
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`Invalid ${CLI_CHILD_ARGS_ENV_VAR}: ${message}`)
+/**
+ * The child's argv from the environment. Throws on a malformed value: the
+ * supervisor reads it once at start, and a bad override should stop it there.
+ */
+export function parseChildArgsEnv(value: string | undefined): string[] {
+  if (!value) return []
+  const parsed = decodeChildArgs(value)
+  if (Result.isFailure(parsed)) {
+    throw new Error(`Invalid ${CLI_CHILD_ARGS_ENV_VAR}: child args must be a JSON array of strings (${parsed.failure.message})`)
   }
+  return [...parsed.success]
 }

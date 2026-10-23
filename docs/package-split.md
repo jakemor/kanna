@@ -145,7 +145,7 @@ Moves here: `agent.ts`'s Claude half (~900 lines: `normalizeClaudeStreamMessage`
 the `query()` loop, `claudeToolset`), `codex-app-server.ts`,
 `codex-app-server-protocol.ts`, `cursor-cli.ts`, `pi-agent.ts`,
 `harness-skills.ts`, `provider-auth.ts`, `usage-limits.ts`, `attribution.ts`,
-`handoff.ts`, `session-artifacts.ts`, `provider-catalog.ts`, `async-queue.ts`,
+`handoff.ts`, `session-artifacts.ts`, `provider-catalog.ts`,
 `llm-provider.ts`, `quick-response.ts`, `generate-title.ts`,
 `generate-commit-message.ts`.
 

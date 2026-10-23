@@ -76,6 +76,8 @@ describe("shouldRestartCliProcess", () => {
     expect(parseChildArgsEnv(undefined)).toEqual([])
     expect(parseChildArgsEnv("[\"run\",\"./scripts/dev-server.ts\"]")).toEqual(["run", "./scripts/dev-server.ts"])
     expect(() => parseChildArgsEnv("{\"bad\":true}")).toThrow(`Invalid ${CLI_CHILD_ARGS_ENV_VAR}`)
+    expect(() => parseChildArgsEnv("[\"run\", 1]")).toThrow(`Invalid ${CLI_CHILD_ARGS_ENV_VAR}`)
+    expect(() => parseChildArgsEnv("not json")).toThrow(`Invalid ${CLI_CHILD_ARGS_ENV_VAR}`)
   })
 })
 

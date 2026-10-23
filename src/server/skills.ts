@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises"
-import os from "node:os"
 import path from "node:path"
+import { Effect, FileSystem, Option, Schema, Stream } from "effect"
 import type {
   GlobalSkillsSnapshot,
   InstalledSkillsSnapshot,
@@ -9,8 +8,41 @@ import type {
   SkillUninstallResult,
 } from "../shared/types"
 import { listGlobalSkills } from "./harness-skills"
+import { Machine } from "./platform/machine"
+import { type CommandSpawnError, ProcessSpawner } from "./platform/process-spawner"
 
 const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
+
+/** A skill source or id from the client that could not be put on a command line. */
+export class SkillInputError extends Schema.TaggedError<SkillInputError>()(
+  "@kanna/server/skills/SkillInputError",
+  {
+    message: Schema.String,
+  },
+) {}
+
+/** skills.sh could not be reached, answered with an error, or sent something other than JSON. */
+export class SkillSearchError extends Schema.TaggedError<SkillSearchError>()(
+  "@kanna/server/skills/SkillSearchError",
+  {
+    message: Schema.String,
+    status: Schema.optionalKey(Schema.Number),
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {}
+
+/** The skills CLI could not be started, or exited with an error. */
+export class SkillCommandError extends Schema.TaggedError<SkillCommandError>()(
+  "@kanna/server/skills/SkillCommandError",
+  {
+    message: Schema.String,
+    command: Schema.Array(Schema.String),
+    exitCode: Schema.optionalKey(Schema.Number),
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {}
+
+const messageOf = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
 
 export function assertSafeSkillSource(source: string) {
   const normalized = source.trim()
@@ -28,43 +60,60 @@ export function assertSafeSkillId(skillId: string) {
   return normalized
 }
 
-export function getGlobalSkillLockPath() {
-  const xdgStateHome = process.env.XDG_STATE_HOME?.trim()
-  if (xdgStateHome) {
-    return path.join(xdgStateHome, "skills", ".skill-lock.json")
+export function getGlobalSkillLockPath(homeDir: string, xdgStateHome: string | undefined) {
+  const stateHome = xdgStateHome?.trim()
+  if (stateHome) {
+    return path.join(stateHome, "skills", ".skill-lock.json")
   }
-  return path.join(os.homedir(), ".agents", ".skill-lock.json")
+  return path.join(homeDir, ".agents", ".skill-lock.json")
 }
 
-function asString(value: unknown) {
-  return typeof value === "string" ? value : ""
-}
+// The lock file and the search API belong to other tools, so a field of the
+// wrong type reads as absent instead of failing the whole file or response.
+
+/** A field kept when it is a string and dropped otherwise. */
+const LenientString = Schema.optionalKey(Schema.String.pipe(Schema.catchDecoding(() => Effect.succeedNone)))
+/** A field kept when it is a number and dropped otherwise. */
+const LenientNumber = Schema.optionalKey(Schema.Number.pipe(Schema.catchDecoding(() => Effect.succeedNone)))
+
+const UnknownRecord = Schema.Record(Schema.String, Schema.Unknown)
+const decodeRecord = Schema.decodeUnknownOption(UnknownRecord)
+
+/** `{ skills: { [name]: entry } }`, as the skills CLI writes it. */
+const SkillLockFile = Schema.Struct({ skills: UnknownRecord })
+const SkillLockEntry = Schema.Struct({
+  source: LenientString,
+  sourceType: LenientString,
+  sourceUrl: LenientString,
+  skillPath: LenientString,
+  installedAt: LenientString,
+  updatedAt: LenientString,
+  pluginName: LenientString,
+})
+const decodeSkillLockFile = Schema.decodeUnknownOption(SkillLockFile)
+const decodeSkillLockEntry = Schema.decodeUnknownOption(SkillLockEntry)
 
 export function parseInstalledSkillsLock(parsed: unknown, lockFilePath: string): InstalledSkillsSnapshot {
-  const skillsRecord = parsed
-    && typeof parsed === "object"
-    && "skills" in parsed
-    && parsed.skills
-    && typeof parsed.skills === "object"
-    && !Array.isArray(parsed.skills)
-      ? parsed.skills as Record<string, unknown>
-      : {}
+  const skillsRecord = decodeSkillLockFile(parsed).pipe(
+    Option.map((file) => file.skills),
+    Option.getOrElse((): Record<string, unknown> => ({})),
+  )
 
   const skills = Object.entries(skillsRecord)
-    .filter(([, entry]) => entry && typeof entry === "object" && !Array.isArray(entry))
-    .map(([name, entry]) => {
-      const record = entry as Record<string, unknown>
-      return {
-        name,
-        source: asString(record.source),
-        sourceType: asString(record.sourceType),
-        sourceUrl: asString(record.sourceUrl),
-        skillPath: asString(record.skillPath) || undefined,
-        installedAt: asString(record.installedAt),
-        updatedAt: asString(record.updatedAt),
-        pluginName: asString(record.pluginName) || undefined,
-      }
-    })
+    .flatMap(([name, value]) => Option.toArray(
+      // A record first: an array would pass as an entry with no fields.
+      decodeRecord(value).pipe(Option.flatMap(decodeSkillLockEntry), Option.map((entry) => ({ name, entry }))),
+    ))
+    .map(({ name, entry }) => ({
+      name,
+      source: entry.source ?? "",
+      sourceType: entry.sourceType ?? "",
+      sourceUrl: entry.sourceUrl ?? "",
+      skillPath: entry.skillPath || undefined,
+      installedAt: entry.installedAt ?? "",
+      updatedAt: entry.updatedAt ?? "",
+      pluginName: entry.pluginName || undefined,
+    }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return {
@@ -73,18 +122,39 @@ export function parseInstalledSkillsLock(parsed: unknown, lockFilePath: string):
   }
 }
 
-export async function listInstalledSkills(lockFilePath = getGlobalSkillLockPath()): Promise<InstalledSkillsSnapshot> {
-  try {
-    return parseInstalledSkillsLock(JSON.parse(await readFile(lockFilePath, "utf8")), lockFilePath)
-  } catch {
-    return {
-      lockFilePath,
-      skills: [],
-    }
-  }
-}
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
 
-export async function searchSkills(query: string, limit = 100): Promise<SkillSearchSnapshot> {
+/** The skills the skills CLI installed globally. A missing or unreadable lock file lists none. */
+export const listInstalledSkills = Effect.fn("Skills.listInstalled")(function* (lockFilePathOverride?: string) {
+  const fs = yield* FileSystem.FileSystem
+  const machine = yield* Machine
+  const lockFilePath = lockFilePathOverride ?? getGlobalSkillLockPath(machine.homeDirectory, machine.env.get("XDG_STATE_HOME"))
+  const empty = Effect.succeed<InstalledSkillsSnapshot>({ lockFilePath, skills: [] })
+  return yield* fs.readFileString(lockFilePath).pipe(
+    Effect.flatMap(decodeJson),
+    Effect.map((parsed) => parseInstalledSkillsLock(parsed, lockFilePath)),
+    Effect.catchTags({ PlatformError: () => empty, SchemaError: () => empty }),
+  )
+})
+
+const SearchResultSkill = Schema.Struct({
+  id: Schema.String,
+  skillId: Schema.String,
+  name: Schema.String,
+  installs: LenientNumber,
+  source: Schema.String,
+})
+const SearchResponse = Schema.Struct({
+  query: LenientString,
+  searchType: LenientString,
+  skills: Schema.optionalKey(Schema.Array(Schema.Unknown).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
+  count: LenientNumber,
+  duration_ms: LenientNumber,
+})
+const decodeSearchResultSkill = Schema.decodeUnknownOption(SearchResultSkill)
+const decodeSearchResponse = Schema.decodeUnknownOption(SearchResponse)
+
+export const searchSkills = Effect.fn("Skills.search")(function* (query: string, limit = 100) {
   const normalizedQuery = query.trim()
   if (normalizedQuery.length < 2) {
     return {
@@ -93,7 +163,7 @@ export async function searchSkills(query: string, limit = 100): Promise<SkillSea
       skills: [],
       count: 0,
       duration_ms: 0,
-    }
+    } satisfies SkillSearchSnapshot
   }
 
   const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
@@ -101,43 +171,43 @@ export async function searchSkills(query: string, limit = 100): Promise<SkillSea
   url.searchParams.set("q", normalizedQuery)
   url.searchParams.set("limit", String(normalizedLimit))
 
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(10_000),
+  const response = yield* Effect.tryPromise({
+    try: (signal) => fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) }),
+    catch: (cause) => new SkillSearchError({ message: messageOf(cause), cause }),
   })
   if (!response.ok) {
-    throw new Error(`Skills search failed with status ${response.status}.`)
+    return yield* new SkillSearchError({
+      message: `Skills search failed with status ${response.status}.`,
+      status: response.status,
+    })
   }
+  yield* Effect.annotateCurrentSpan("status", response.status)
 
-  const payload = await response.json() as Partial<SkillSearchSnapshot>
+  const body: unknown = yield* Effect.tryPromise({
+    try: () => response.json(),
+    catch: (cause) => new SkillSearchError({ message: messageOf(cause), status: response.status, cause }),
+  })
+  const payload = Option.getOrElse(decodeSearchResponse(body), (): typeof SearchResponse.Type => ({}))
   return {
-    query: typeof payload.query === "string" ? payload.query : normalizedQuery,
-    searchType: typeof payload.searchType === "string" ? payload.searchType : "fuzzy",
-    skills: Array.isArray(payload.skills)
-      ? payload.skills
-        .filter((skill) => (
-          skill
-          && typeof skill === "object"
-          && typeof skill.id === "string"
-          && typeof skill.skillId === "string"
-          && typeof skill.name === "string"
-          && typeof skill.source === "string"
-        ))
-        .map((skill) => ({
-          id: skill.id,
-          skillId: skill.skillId,
-          name: skill.name,
-          installs: typeof skill.installs === "number" ? skill.installs : 0,
-          source: skill.source,
-        }))
-      : [],
-    count: typeof payload.count === "number" ? payload.count : 0,
-    duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : 0,
-  }
-}
+    query: payload.query ?? normalizedQuery,
+    searchType: payload.searchType ?? "fuzzy",
+    skills: (payload.skills ?? [])
+      .flatMap((skill) => Option.toArray(decodeSearchResultSkill(skill)))
+      .map((skill) => ({
+        id: skill.id,
+        skillId: skill.skillId,
+        name: skill.name,
+        installs: skill.installs ?? 0,
+        source: skill.source,
+      })),
+    count: payload.count ?? 0,
+    duration_ms: payload.duration_ms ?? 0,
+  } satisfies SkillSearchSnapshot
+})
 
-export function buildInstallSkillCommand(source: string, skillId: string) {
+export function buildInstallSkillCommand(source: string, skillId: string, platform: NodeJS.Platform) {
   return [
-    process.platform === "win32" ? "npx.cmd" : "npx",
+    platform === "win32" ? "npx.cmd" : "npx",
     "skills",
     "add",
     assertSafeSkillSource(source),
@@ -150,9 +220,9 @@ export function buildInstallSkillCommand(source: string, skillId: string) {
   ]
 }
 
-export function buildUninstallSkillCommand(skillId: string) {
+export function buildUninstallSkillCommand(skillId: string, platform: NodeJS.Platform) {
   return [
-    process.platform === "win32" ? "npx.cmd" : "npx",
+    platform === "win32" ? "npx.cmd" : "npx",
     "skills",
     "remove",
     assertSafeSkillId(skillId),
@@ -163,34 +233,52 @@ export function buildUninstallSkillCommand(skillId: string) {
   ]
 }
 
-async function runSkillCommand(command: string[]) {
-  const cwd = os.homedir()
-  const subprocess = Bun.spawn(command, {
+/** `build` with the input it rejects as a typed failure, not a thrown error. */
+const buildCommand = (build: () => string[]) =>
+  Effect.try({ try: build, catch: (cause) => new SkillInputError({ message: messageOf(cause) }) })
+
+/** Runs the skills CLI to the end. Interrupting it kills the process. */
+const runSkillCommand = Effect.fn("Skills.runCommand")(function* (command: string[]) {
+  yield* Effect.annotateCurrentSpan("command", command.slice(0, 3).join(" "))
+  const machine = yield* Machine
+  const spawner = yield* ProcessSpawner
+  const cwd = machine.homeDirectory
+  const commandError = (error: CommandSpawnError) =>
+    new SkillCommandError({ message: messageOf(error.cause), command, cause: error.cause })
+  const subprocess = yield* spawner.spawn(command, {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
     env: {
-      ...process.env,
-      DISABLE_TELEMETRY: process.env.DISABLE_TELEMETRY ?? "1",
+      ...machine.env.snapshot(),
+      DISABLE_TELEMETRY: machine.env.get("DISABLE_TELEMETRY") ?? "1",
     },
-  })
+  }).pipe(Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", (error) => Effect.fail(commandError(error))))
 
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(subprocess.stdout).text(),
-    new Response(subprocess.stderr).text(),
+  const [stdout, stderr, exit] = yield* Effect.all([
+    Stream.mkString(Stream.decodeText(subprocess.stdout)),
+    Stream.mkString(Stream.decodeText(subprocess.stderr)),
     subprocess.exited,
-  ])
+  ], { concurrency: "unbounded" }).pipe(
+    Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", (error) => Effect.fail(commandError(error))),
+  )
+  const exitCode = exit.code
 
   if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || `skills CLI exited with code ${exitCode}.`)
+    return yield* new SkillCommandError({
+      message: stderr.trim() || stdout.trim() || `skills CLI exited with code ${exitCode}.`,
+      command,
+      exitCode,
+    })
   }
 
   return { cwd, stdout, stderr }
-}
+}, Effect.scoped)
 
-export async function installSkill(source: string, skillId: string): Promise<SkillInstallResult> {
-  const command = buildInstallSkillCommand(source, skillId)
-  const { cwd, stdout, stderr } = await runSkillCommand(command)
+export const installSkill = Effect.fn("Skills.install")(function* (source: string, skillId: string) {
+  const { platform } = yield* Machine
+  const command = yield* buildCommand(() => buildInstallSkillCommand(source, skillId, platform))
+  const { cwd, stdout, stderr } = yield* runSkillCommand(command)
   return {
     source: command[3],
     skillId: command[5],
@@ -198,20 +286,21 @@ export async function installSkill(source: string, skillId: string): Promise<Ski
     cwd,
     stdout,
     stderr,
-  }
-}
+  } satisfies SkillInstallResult
+})
 
-export async function uninstallSkill(skillId: string): Promise<SkillUninstallResult> {
-  const command = buildUninstallSkillCommand(skillId)
-  const { cwd, stdout, stderr } = await runSkillCommand(command)
+export const uninstallSkill = Effect.fn("Skills.uninstall")(function* (skillId: string) {
+  const { platform } = yield* Machine
+  const command = yield* buildCommand(() => buildUninstallSkillCommand(skillId, platform))
+  const { cwd, stdout, stderr } = yield* runSkillCommand(command)
   return {
     skillId: command[3],
     command,
     cwd,
     stdout,
     stderr,
-  }
-}
+  } satisfies SkillUninstallResult
+})
 
 /**
  * The settings "Installed" view: scan the global skill roots the harnesses
@@ -220,12 +309,12 @@ export async function uninstallSkill(skillId: string): Promise<SkillUninstallRes
  * their marketplace source — those get skills.sh links and an uninstall
  * affordance; hand-dropped skills are listed without them.
  */
-export async function listGlobalSkillsWithSources(args: {
+export const listGlobalSkillsWithSources = Effect.fn("Skills.listGlobalWithSources")(function* (args: {
   home?: string
   lockFilePath?: string
-} = {}): Promise<GlobalSkillsSnapshot> {
-  const scanned = listGlobalSkills({ home: args.home })
-  const lock = await listInstalledSkills(args.lockFilePath ?? getGlobalSkillLockPath())
+} = {}) {
+  const scanned = yield* listGlobalSkills({ home: args.home })
+  const lock = yield* listInstalledSkills(args.lockFilePath)
   const sourceByName = new Map(
     lock.skills
       .filter((skill) => skill.source)
@@ -236,5 +325,5 @@ export async function listGlobalSkillsWithSources(args: {
       const source = sourceByName.get(skill.name)
       return source ? { ...skill, source } : skill
     }),
-  }
-}
+  } satisfies GlobalSkillsSnapshot
+})

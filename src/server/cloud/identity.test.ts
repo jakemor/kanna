@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Effect, Result } from "effect"
 import { DEFAULT_CLOUD_CONTROL_URL } from "../../shared/cloud-api"
+import { runTest } from "../effect/testing"
 import {
   deleteCloudIdentity,
   normalizeCloudIdentity,
@@ -30,40 +32,51 @@ async function tempFilePath() {
 describe("cloud identity file", () => {
   test("round-trips and creates parent dirs", async () => {
     const filePath = await tempFilePath()
-    await writeCloudIdentity(IDENTITY, filePath)
-    expect(await readCloudIdentity(filePath)).toEqual(IDENTITY)
+    await runTest(writeCloudIdentity(IDENTITY, filePath))
+    expect(await runTest(readCloudIdentity(filePath))).toEqual(IDENTITY)
   })
 
   test("written with mode 600", async () => {
     const filePath = await tempFilePath()
-    await writeCloudIdentity(IDENTITY, filePath)
+    await runTest(writeCloudIdentity(IDENTITY, filePath))
     const info = await stat(filePath)
     expect(info.mode & 0o777).toBe(0o600)
   })
 
   test("missing file → null", async () => {
-    expect(await readCloudIdentity(await tempFilePath())).toBeNull()
+    expect(await runTest(readCloudIdentity(await tempFilePath()))).toBeNull()
   })
 
   test("invalid JSON → null with warning", async () => {
     const filePath = await tempFilePath()
-    await writeCloudIdentity(IDENTITY, filePath)
+    await runTest(writeCloudIdentity(IDENTITY, filePath))
     await writeFile(filePath, "{nope", "utf8")
     const warnings: string[] = []
-    expect(await readCloudIdentity(filePath, (message) => warnings.push(message))).toBeNull()
+    expect(await runTest(readCloudIdentity(filePath, (message) => warnings.push(message)))).toBeNull()
     expect(warnings.length).toBe(1)
   })
 
   test("delete removes the file, tolerates missing", async () => {
     const filePath = await tempFilePath()
-    await writeCloudIdentity(IDENTITY, filePath)
-    expect(await deleteCloudIdentity(filePath)).toBe(true)
-    expect(await deleteCloudIdentity(filePath)).toBe(false)
+    await runTest(writeCloudIdentity(IDENTITY, filePath))
+    expect(await runTest(deleteCloudIdentity(filePath))).toBe(true)
+    expect(await runTest(deleteCloudIdentity(filePath))).toBe(false)
+  })
+
+  test("an unreadable cloud.json fails with the path, not a null identity", async () => {
+    const filePath = await tempFilePath()
+    // A directory where the file should be: present, but not readable as one.
+    await runTest(writeCloudIdentity(IDENTITY, path.join(filePath, "inner.json")))
+    const result = await runTest(Effect.result(readCloudIdentity(filePath)))
+    if (!Result.isFailure(result)) throw new Error("expected the read to fail")
+    expect(result.failure._tag).toBe("@kanna/server/cloud/identity/CloudIdentityFileError")
+    expect(result.failure.operation).toBe("read")
+    expect(result.failure.filePath).toBe(filePath)
   })
 
   test("write does not leave temp files behind", async () => {
     const filePath = await tempFilePath()
-    await writeCloudIdentity(IDENTITY, filePath)
+    await runTest(writeCloudIdentity(IDENTITY, filePath))
     const raw = await readFile(filePath, "utf8")
     expect(JSON.parse(raw)).toEqual(IDENTITY)
   })
@@ -78,7 +91,7 @@ describe("normalizeCloudIdentity", () => {
       appOrigin: "https://s-x.kanna.sh/",
       tunnelToken: "tt",
       tunnelHost: "https://tun-m1.kanna.sh/",
-    })
+    }, () => {}, {})
     expect(normalized).toEqual({
       controlUrl: DEFAULT_CLOUD_CONTROL_URL,
       machineToken: "t",
@@ -103,6 +116,7 @@ describe("normalizeCloudIdentity", () => {
           // v1 file: no tunnel credentials
         },
         (message) => warnings.push(message),
+        {},
       ),
     ).toBeNull()
     expect(warnings[0]).toContain("tunnelToken")
@@ -110,7 +124,7 @@ describe("normalizeCloudIdentity", () => {
   })
 
   test("enabled: false is preserved", () => {
-    const normalized = normalizeCloudIdentity({ ...IDENTITY, enabled: false })
+    const normalized = normalizeCloudIdentity({ ...IDENTITY, enabled: false }, () => {}, {})
     expect(normalized?.enabled).toBe(false)
   })
 })
@@ -175,7 +189,7 @@ describe("direct mode (dev-boxes)", () => {
     const filePath = await tempFilePath()
     const identity = normalizeCloudIdentity(DIRECT_SOURCE, () => {}, {})
     if (!identity) throw new Error("expected identity")
-    await writeCloudIdentity(identity, filePath)
-    expect(await readCloudIdentity(filePath)).toEqual(identity)
+    await runTest(writeCloudIdentity(identity, filePath))
+    expect(await runTest(readCloudIdentity(filePath))).toEqual(identity)
   })
 })

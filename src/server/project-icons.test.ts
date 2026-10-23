@@ -2,6 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Effect, Schedule, Stream } from "effect"
+import { runTest } from "./effect/testing"
 import { encodePng, readPngHeader } from "./png-thumbnail"
 import {
   classifyIconPath,
@@ -41,6 +43,8 @@ function png(size: number, color: [number, number, number] = [200, 40, 40]) {
 }
 
 const best = (paths: string[]) => rankIconCandidates(paths)[0]?.path
+const find = (...args: Parameters<typeof findProjectIcon>) => runTest(findProjectIcon(...args))
+const pngHeader = (filePath: string) => runTest(readPngHeader(filePath))
 
 describe("rankIconCandidates", () => {
   test("ignores files that only look like icons", () => {
@@ -137,13 +141,13 @@ describe("findProjectIcon", () => {
       "ios/Demo/Assets.xcassets/AppIcon.appiconset/icon-180.png": png(180),
     })
     const iconsDir = await makeIconsDir()
-    const found = await findProjectIcon(root, iconsDir)
+    const found = await find(root, iconsDir)
     expect(found?.source).toBe(path.join(root, "ios/Demo/Assets.xcassets/AppIcon.appiconset/icon.png"))
     expect(found?.file).toMatch(/^[a-f0-9]{16}-[a-f0-9]{12}\.png$/)
-    expect(await readPngHeader(path.join(iconsDir, found!.file))).toMatchObject({ width: 96, height: 96 })
+    expect(await pngHeader(path.join(iconsDir, found!.file))).toMatchObject({ width: 96, height: 96 })
 
     // Unchanged source: the stored file is reused, not rewritten.
-    const again = await findProjectIcon(root, iconsDir, { ...found!, scannedAt: 0 })
+    const again = await find(root, iconsDir, { ...found!, scannedAt: 0 })
     expect(again).toEqual(found)
     expect(await readdir(iconsDir)).toEqual([found!.file])
   })
@@ -163,12 +167,12 @@ describe("findProjectIcon", () => {
       "App/Icon.icon/Assets/glyph.png": encodePng(200, 200, glyph),
     })
     const iconsDir = await makeIconsDir()
-    const found = await findProjectIcon(root, iconsDir)
+    const found = await find(root, iconsDir)
     expect(found?.source).toBe(path.join(root, "App/Icon.icon/Assets/glyph.png"))
     expect(found?.background).toBe("0,128,255")
     const stored = await readFile(path.join(iconsDir, found!.file))
     // Opaque throughout, the fill showing where the layer is clear.
-    expect(await readPngHeader(path.join(iconsDir, found!.file))).toMatchObject({ width: 96, height: 96 })
+    expect(await pngHeader(path.join(iconsDir, found!.file))).toMatchObject({ width: 96, height: 96 })
     const { inflateSync } = await import("node:zlib")
     const raw = inflateSync(stored.subarray(41, 41 + stored.readUInt32BE(33)))
     expect(raw.length).toBe(96 * (96 * 4 + 1))
@@ -180,30 +184,30 @@ describe("findProjectIcon", () => {
       "apps/mobile/art/app-icon.png": png(300),
       "apps/api/app.json": JSON.stringify({ name: "api" }),
     })
-    const found = await findProjectIcon(root, await makeIconsDir())
+    const found = await find(root, await makeIconsDir())
     expect(found?.source).toBe(path.join(root, "apps/mobile/art/app-icon.png"))
 
     const scripted = await makeProject({
       "app.config.ts": "export default { name: 'Demo', icon: './icon-source.png', ios: {} }",
       "icon-source.png": png(64),
     })
-    expect((await findProjectIcon(scripted, await makeIconsDir()))?.source).toBe(path.join(scripted, "icon-source.png"))
+    expect((await find(scripted, await makeIconsDir()))?.source).toBe(path.join(scripted, "icon-source.png"))
 
     const escaping = await makeProject({ "app.json": JSON.stringify({ expo: { icon: "../../outside.png" } }) })
-    expect(await findProjectIcon(escaping, await makeIconsDir())).toBeNull()
+    expect(await find(escaping, await makeIconsDir())).toBeNull()
   })
 
   test("copies small images and vectors as they are", async () => {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>`
     const web = await makeProject({ "public/favicon.svg": svg, "public/favicon.ico": "ico" })
     const iconsDir = await makeIconsDir()
-    const found = await findProjectIcon(web, iconsDir)
+    const found = await find(web, iconsDir)
     expect(found?.file.endsWith(".svg")).toBe(true)
     expect(await readFile(path.join(iconsDir, found!.file), "utf8")).toBe(svg)
 
     const android = await makeProject({ "app/src/main/res/mipmap-xhdpi/ic_launcher.png": png(96) })
     const androidIcons = await makeIconsDir()
-    const launcher = await findProjectIcon(android, androidIcons)
+    const launcher = await find(android, androidIcons)
     expect(await readFile(path.join(androidIcons, launcher!.file))).toEqual(png(96))
   })
 
@@ -225,7 +229,7 @@ describe("findProjectIcon", () => {
     header.writeUInt32BE(entries.length + 8, 4)
     const root = await makeProject({ "build/icon.icns": Buffer.concat([header, entries]) })
     const iconsDir = await makeIconsDir()
-    const found = await findProjectIcon(root, iconsDir)
+    const found = await find(root, iconsDir)
     expect(await readFile(path.join(iconsDir, found!.file))).toEqual(png(128, [9, 8, 7]))
     expect(await readdir(iconsDir)).toEqual([found!.file])
   })
@@ -236,7 +240,7 @@ describe("findProjectIcon", () => {
       "app/build/intermediates/res/mipmap-xhdpi/ic_launcher.png": png(96),
       ".cache/favicon.png": png(16),
     })
-    expect(await findProjectIcon(root, await makeIconsDir())).toBeNull()
+    expect(await find(root, await makeIconsDir())).toBeNull()
   })
 
   test("lists through git when the project is a repo", async () => {
@@ -252,7 +256,7 @@ describe("findProjectIcon", () => {
     for (const args of [["init", "-q"], ["add", "-A"]]) {
       expect(await Bun.spawn(["git", ...args], { cwd: root, env, stdout: "ignore", stderr: "ignore" }).exited).toBe(0)
     }
-    const found = await findProjectIcon(root, await makeIconsDir())
+    const found = await find(root, await makeIconsDir())
     expect(found?.source).toBe(path.join(root, "clients/ios/Acme/Assets.xcassets/AppIcon.appiconset/a.png"))
   })
 })
@@ -262,31 +266,80 @@ describe("ProjectIcons", () => {
     const root = await makeProject({ "public/favicon.png": png(32, [1, 1, 1]) })
     const bare = await makeProject({ "main.py": "" })
     const dataDir = await makeProject({})
-    let changes = 0
-    const icons = new ProjectIcons(dataDir, () => [root, bare], () => { changes += 1 })
+    const layer = ProjectIcons.layer({ dataDir, projectPaths: Effect.succeed([root, bare]) })
 
-    await icons.tick(1_000_000)
-    const url = icons.getUrls().get(root)!
-    expect(url).toStartWith("/api/project-icons/")
-    expect(icons.getUrls().has(bare)).toBe(false)
-    expect(changes).toBe(1)
-    expect(await readFile(resolveProjectIconPath(dataDir, url)!)).toEqual(png(32, [1, 1, 1]))
+    const nextUrl = await runTest(Effect.gen(function* () {
+      const icons = yield* ProjectIcons
+      let changes = 0
+      yield* icons.changes.pipe(
+        Stream.runForEach(() => Effect.sync(() => { changes += 1 })),
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      // Lets the subscriber see what a pass published.
+      const settle = Effect.sleep("20 millis")
 
-    // Nothing is due a few seconds later.
-    await icons.tick(1_005_000)
-    expect(changes).toBe(1)
+      yield* icons.tick(1_000_000)
+      yield* settle
+      const url = (yield* icons.urls).get(root)!
+      expect(url).toStartWith("/api/project-icons/")
+      expect((yield* icons.urls).has(bare)).toBe(false)
+      expect(changes).toBe(1)
+      expect(yield* Effect.promise(() => readFile(resolveProjectIconPath(dataDir, url)!))).toEqual(png(32, [1, 1, 1]))
 
-    // The source changes: picked up at the next source check, old file removed.
-    await writeFile(path.join(root, "public/favicon.png"), png(48, [2, 2, 2]))
-    await utimes(path.join(root, "public/favicon.png"), new Date(), new Date(Date.now() + 5_000))
-    await icons.tick(1_000_000 + 3 * 60_000)
-    const nextUrl = icons.getUrls().get(root)!
-    expect(nextUrl).not.toBe(url)
-    expect(changes).toBe(2)
+      // Nothing is due a few seconds later.
+      yield* icons.tick(1_005_000)
+      yield* settle
+      expect(changes).toBe(1)
+
+      // The source changes: picked up at the next source check, old file removed.
+      yield* Effect.promise(async () => {
+        await writeFile(path.join(root, "public/favicon.png"), png(48, [2, 2, 2]))
+        await utimes(path.join(root, "public/favicon.png"), new Date(), new Date(Date.now() + 5_000))
+      })
+      yield* icons.tick(1_000_000 + 3 * 60_000)
+      yield* settle
+      const next = (yield* icons.urls).get(root)!
+      expect(next).not.toBe(url)
+      expect(changes).toBe(2)
+      return next
+    }).pipe(Effect.provide(layer)))
     expect((await readdir(path.join(dataDir, "project-icons"))).sort()).toEqual(["index.json", nextUrl.split("/").pop()!].sort())
 
-    const restarted = new ProjectIcons(dataDir, () => [root, bare], () => {})
-    expect(restarted.getUrls().get(root)).toBe(nextUrl)
+    const restarted = await runTest(Effect.flatMap(Effect.service(ProjectIcons), (icons) => icons.urls).pipe(Effect.provide(layer)))
+    expect(restarted.get(root)).toBe(nextUrl)
+  })
+
+  test("start runs a pass at once and stops when the layer closes", async () => {
+    const root = await makeProject({ "public/favicon.png": png(32, [3, 3, 3]) })
+    const dataDir = await makeProject({})
+    const urls = await runTest(Effect.gen(function* () {
+      const icons = yield* ProjectIcons
+      yield* icons.start
+      // A second start is a no-op, not a second loop.
+      yield* icons.start
+      return yield* Effect.gen(function* () {
+        const current = yield* icons.urls
+        if (!current.has(root)) return yield* Effect.fail("pending" as const)
+        return current
+      }).pipe(Effect.retry({ times: 100, schedule: Schedule.spaced("20 millis") }))
+    }).pipe(Effect.provide(ProjectIcons.layer({ dataDir, projectPaths: Effect.succeed([root]) }))))
+    expect(urls.get(root)).toStartWith("/api/project-icons/")
+  })
+
+  test("drops a project that is gone, with its file", async () => {
+    const root = await makeProject({ "public/favicon.png": png(32, [4, 4, 4]) })
+    const added = await makeProject({ "main.py": "" })
+    const dataDir = await makeProject({})
+    let live = [root]
+    await runTest(Effect.gen(function* () {
+      const icons = yield* ProjectIcons
+      yield* icons.tick(1_000_000)
+      expect((yield* icons.urls).has(root)).toBe(true)
+      // The index is rewritten, and the gone dropped, by a pass that found something.
+      live = [added]
+      yield* icons.tick(1_000_000 + 60 * 60_000)
+    }).pipe(Effect.provide(ProjectIcons.layer({ dataDir, projectPaths: Effect.sync(() => live) }))))
+    expect(await readdir(path.join(dataDir, "project-icons"))).toEqual(["index.json"])
   })
 
   test("resolves only its own file names", () => {

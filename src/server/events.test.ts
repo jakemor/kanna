@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { TranscriptEntry } from "../shared/types"
-import { cloneTranscriptEntriesForClient } from "./events"
+import { cloneTranscriptEntriesForClient, readStructuredResult } from "./events"
 
 function toolCall(toolKind: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): TranscriptEntry {
   return {
@@ -193,5 +193,32 @@ describe("cloneTranscriptEntriesForClient", () => {
     call(source)
 
     expect(source).toEqual(snapshot)
+  })
+})
+
+describe("readStructuredResult", () => {
+  test("reads tool_use_result from a raw Claude message as older builds stored it", () => {
+    const raw = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+      parent_tool_use_id: null,
+      session_id: "s1",
+      tool_use_result: { answers: { "Which?": "A" }, questions: [{ question: "Which?" }] },
+    })
+    expect(readStructuredResult(raw)).toEqual({ answers: { "Which?": "A" }, questions: [{ question: "Which?" }] })
+  })
+
+  test("keeps a non-object tool_use_result as it is", () => {
+    expect(readStructuredResult(JSON.stringify({ tool_use_result: "Error: denied" }))).toBe("Error: denied")
+    expect(readStructuredResult(JSON.stringify({ tool_use_result: null }))).toBeNull()
+  })
+
+  test("reads nothing from a message without one, from corrupt JSON, or from JSON that is not an object", () => {
+    expect(readStructuredResult(undefined)).toBeUndefined()
+    expect(readStructuredResult(JSON.stringify({ type: "user" }))).toBeUndefined()
+    expect(readStructuredResult("{not json")).toBeUndefined()
+    expect(readStructuredResult("null")).toBeUndefined()
+    expect(readStructuredResult("[1,2]")).toBeUndefined()
+    expect(readStructuredResult("\"text\"")).toBeUndefined()
   })
 })

@@ -2,7 +2,19 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { applyUtf8Locale, TerminalManager, TerminalOutputLog } from "./terminal-manager"
+import { StringDecoder } from "node:string_decoder"
+import { Duration, Effect, Fiber, Schedule, type Scope, Stream } from "effect"
+import type { TerminalEvent } from "../shared/protocol"
+import { runTest } from "./effect/testing"
+import {
+  applyUtf8Locale,
+  createHeadlessTerminal,
+  handlePtyOutput,
+  resizeSession,
+  TerminalOutputLog,
+  Terminals,
+  writeToSession,
+} from "./terminal-manager"
 
 const SHELL_START_TIMEOUT_MS = 5_000
 const COMMAND_TIMEOUT_MS = 5_000
@@ -58,334 +70,340 @@ afterAll(async () => {
   }
 })
 
-async function waitFor(check: () => boolean, timeoutMs: number, intervalMs = 25) {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < timeoutMs) {
-    if (check()) return
-    await Bun.sleep(intervalMs)
-  }
-  throw new Error(`Timed out after ${timeoutMs}ms`)
+/** Polls `check` until it holds, failing with a timeout after `timeout`. */
+function waitFor(check: () => boolean, timeout: Duration.Input) {
+  return Effect.suspend(() => (check() ? Effect.void : Effect.fail("pending" as const))).pipe(
+    Effect.retry(Schedule.spaced("25 millis")),
+    Effect.timeout(timeout),
+  )
 }
 
-async function createSession(terminalId: string) {
-  const manager = new TerminalManager()
-  let output = ""
-  manager.onEvent((event) => {
-    if (event.type === "terminal.output" && event.terminalId === terminalId) {
-      output += event.data
-    }
-  })
+/** Collects every output event, by terminal id, from now until the test ends. */
+const collectOutput = Effect.fn(function* () {
+  const terminals = yield* Terminals
+  const outputByTerminalId = new Map<string, string>()
+  yield* terminals.events.pipe(
+    Stream.runForEach((event) => Effect.sync(() => {
+      if (event.type !== "terminal.output") return
+      outputByTerminalId.set(event.terminalId, `${outputByTerminalId.get(event.terminalId) ?? ""}${event.data}`)
+    })),
+    Effect.forkScoped({ startImmediately: true }),
+  )
+  return (terminalId: string) => outputByTerminalId.get(terminalId) ?? ""
+})
 
-  manager.createTerminal({
+/** Starts a shell and waits until it answers. */
+const startShell = Effect.fn(function* (terminalId: string, output: (terminalId: string) => string) {
+  const terminals = yield* Terminals
+  yield* terminals.create({
     projectPath: tempProjectPath,
     terminalId,
     cols: 80,
     rows: 24,
     scrollback: 1_000,
   })
+  yield* terminals.write(terminalId, "printf '__KANNA_READY__\\n'\r")
+  yield* waitFor(() => output(terminalId).includes("__KANNA_READY__"), SHELL_START_TIMEOUT_MS)
+})
 
-  manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
-  await waitFor(() => output.includes("__KANNA_READY__"), SHELL_START_TIMEOUT_MS)
+const createSession = Effect.fn(function* (terminalId: string) {
+  const terminals = yield* Terminals
+  const output = yield* collectOutput()
+  yield* startShell(terminalId, output)
+  return { terminals, getOutput: () => output(terminalId) }
+})
 
-  return {
-    manager,
-    getOutput: () => output,
-  }
-}
+/** Runs a test body against a live `Terminals`; every shell dies when it ends. */
+const runWithTerminals = <A, E>(body: Effect.Effect<A, E, Terminals | Scope.Scope>) =>
+  runTest(body.pipe(Effect.provide(Terminals.layer)))
 
-async function waitForOutputToContain(getOutput: () => string, value: string, timeoutMs = COMMAND_TIMEOUT_MS) {
-  await waitFor(() => getOutput().includes(value), timeoutMs)
-}
-
-describeIfSupported("TerminalManager", () => {
+describeIfSupported("Terminals", () => {
   test("ctrl+c interrupts the foreground job and keeps the shell alive", async () => {
     const terminalId = "terminal-ctrl-c-foreground"
-    const { manager, getOutput } = await createSession(terminalId)
+    await runWithTerminals(Effect.gen(function* () {
+      const { terminals, getOutput } = yield* createSession(terminalId)
 
-    try {
-      manager.write(terminalId, `python3 -c "import time; print('__KANNA_SLEEP__', flush=True); time.sleep(30)"\r`)
-      await waitFor(() => getOutput().includes("__KANNA_SLEEP__"), COMMAND_TIMEOUT_MS)
+      yield* terminals.write(terminalId, `python3 -c "import time; print('__KANNA_SLEEP__', flush=True); time.sleep(30)"\r`)
+      yield* waitFor(() => getOutput().includes("__KANNA_SLEEP__"), COMMAND_TIMEOUT_MS)
 
-      manager.write(terminalId, "\x03")
-      manager.write(terminalId, "printf '__KANNA_AFTER_INT__\\n'\r")
+      yield* terminals.write(terminalId, "\x03")
+      yield* terminals.write(terminalId, "printf '__KANNA_AFTER_INT__\\n'\r")
 
-      await waitFor(() => getOutput().includes("__KANNA_AFTER_INT__"), COMMAND_TIMEOUT_MS)
+      yield* waitFor(() => getOutput().includes("__KANNA_AFTER_INT__"), COMMAND_TIMEOUT_MS)
 
-      const snapshot = manager.getSnapshot(terminalId)
+      const snapshot = yield* terminals.snapshot(terminalId)
       expect(snapshot?.status).toBe("running")
       expect(getOutput()).toContain("__KANNA_AFTER_INT__")
-    } finally {
-      manager.close(terminalId)
-    }
+    }))
   })
 
   test("ctrl+c at an idle prompt does not exit the shell", async () => {
     const terminalId = "terminal-ctrl-c-prompt"
-    const { manager, getOutput } = await createSession(terminalId)
+    await runWithTerminals(Effect.gen(function* () {
+      const { terminals, getOutput } = yield* createSession(terminalId)
 
-    try {
       const before = getOutput()
-      manager.write(terminalId, "\x03")
+      yield* terminals.write(terminalId, "\x03")
 
-      await waitFor(() => getOutput().length > before.length, COMMAND_TIMEOUT_MS)
+      yield* waitFor(() => getOutput().length > before.length, COMMAND_TIMEOUT_MS)
 
-      const snapshot = manager.getSnapshot(terminalId)
+      const snapshot = yield* terminals.snapshot(terminalId)
       expect(snapshot?.status).toBe("running")
       expect(getOutput().length).toBeGreaterThan(before.length)
-    } finally {
-      manager.close(terminalId)
-    }
+    }))
   })
 
   test("ctrl+d preserves eof behavior", async () => {
     const terminalId = "terminal-ctrl-d"
-    const { manager } = await createSession(terminalId)
+    await runWithTerminals(Effect.gen(function* () {
+      const { terminals } = yield* createSession(terminalId)
+      const exits: TerminalEvent[] = []
+      yield* terminals.events.pipe(
+        Stream.runForEach((event) => Effect.sync(() => {
+          if (event.type === "terminal.exit") exits.push(event)
+        })),
+        Effect.forkScoped({ startImmediately: true }),
+      )
 
-    try {
-      manager.write(terminalId, "\x04")
+      yield* terminals.write(terminalId, "\x04")
 
-      await waitFor(() => manager.getSnapshot(terminalId)?.status === "exited", COMMAND_TIMEOUT_MS)
+      yield* Effect.gen(function* () {
+        if ((yield* terminals.snapshot(terminalId))?.status !== "exited") return yield* Effect.fail("pending" as const)
+      }).pipe(Effect.retry(Schedule.spaced("25 millis")), Effect.timeout(COMMAND_TIMEOUT_MS))
 
-      expect(manager.getSnapshot(terminalId)?.exitCode).toBe(0)
-    } finally {
-      manager.close(terminalId)
-    }
+      expect((yield* terminals.snapshot(terminalId))?.exitCode).toBe(0)
+      yield* waitFor(() => exits.length > 0, COMMAND_TIMEOUT_MS)
+      expect(exits).toEqual([{ type: "terminal.exit", terminalId, exitCode: 0 }])
+    }))
   })
 
   test("filters leaked focus reports while focus mode is disabled", async () => {
     const terminalId = "terminal-focus-filtered"
-    const { manager, getOutput } = await createSession(terminalId)
+    await runWithTerminals(Effect.gen(function* () {
+      const { terminals, getOutput } = yield* createSession(terminalId)
 
-    try {
       const beforeLength = getOutput().length
-      manager.write(terminalId, RAW_READ_HEX_COMMAND)
-      await waitForOutputToContain(getOutput, "__RAW_READY__")
+      yield* terminals.write(terminalId, RAW_READ_HEX_COMMAND)
+      yield* waitFor(() => getOutput().includes("__RAW_READY__"), COMMAND_TIMEOUT_MS)
 
-      manager.write(terminalId, FOCUS_IN_SEQUENCE)
-      await waitForOutputToContain(getOutput, "__EMPTY__")
+      yield* terminals.write(terminalId, FOCUS_IN_SEQUENCE)
+      yield* waitFor(() => getOutput().includes("__EMPTY__"), COMMAND_TIMEOUT_MS)
 
       const interactionOutput = getOutput().slice(beforeLength)
       expect(interactionOutput).toContain("__EMPTY__")
       expect(interactionOutput).not.toContain("1b5b49")
-    } finally {
-      manager.close(terminalId)
-    }
+    }))
   })
 
-  test("forwards focus reports when the session mode is enabled", () => {
-    const manager = new TerminalManager() as unknown as {
-      sessions: Map<
-        string,
-        {
-          status: "running" | "exited"
-          focusReportingEnabled: boolean
-          terminal: { write: (data: string) => void }
-          process: Bun.Subprocess | null
-        }
-      >
-      write: (terminalId: string, data: string) => void
-    }
+  test("forwards focus reports when the session mode is enabled", async () => {
     const writes: string[] = []
 
-    manager.sessions.set("terminal-focus-forwarded", {
+    await runTest(writeToSession({
       status: "running",
       focusReportingEnabled: true,
-      terminal: {
-        write(data: string) {
+      pty: {
+        write: (data: string) => Effect.sync(() => {
           writes.push(data)
-        },
+        }),
+        signalGroup: () => Effect.succeed(false),
       },
-      process: null,
-    })
-
-    manager.write("terminal-focus-forwarded", FOCUS_IN_SEQUENCE)
+    }, FOCUS_IN_SEQUENCE))
 
     expect(writes).toEqual([FOCUS_IN_SEQUENCE])
   })
 
-  test("resize signals the shell process group with SIGWINCH", () => {
-    const manager = new TerminalManager() as unknown as {
-      sessions: Map<
-        string,
-        {
-          cols: number
-          rows: number
-          headless: { resize: (cols: number, rows: number) => void }
-          terminal: { resize: (cols: number, rows: number) => void }
-          process: { pid: number } | null
-        }
-      >
-      resize: (terminalId: string, cols: number, rows: number) => void
-    }
+  test("resize signals the shell process group with SIGWINCH", async () => {
     const resizeCalls: Array<{ cols: number; rows: number }> = []
-    const killCalls: Array<{ pid: number; signal: NodeJS.Signals }> = []
-    const originalKill = process.kill
+    const groupSignals: NodeJS.Signals[] = []
 
-    ;(process as typeof process & {
-      kill: (pid: number, signal?: NodeJS.Signals | number) => boolean
-    }).kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-      if (typeof signal === "string") {
-        killCalls.push({ pid, signal })
-      }
-      return true
-    }) as typeof process.kill
-
-    manager.sessions.set("terminal-resize-sigwinch", {
+    const session = {
       cols: 80,
       rows: 24,
       headless: {
-        resize(cols, rows) {
+        resize(cols: number, rows: number) {
           resizeCalls.push({ cols, rows })
         },
       },
-      terminal: {
-        resize(cols, rows) {
+      pty: {
+        resize: (cols: number, rows: number) => Effect.sync(() => {
           resizeCalls.push({ cols, rows })
-        },
+        }),
+        signalGroup: (signal: NodeJS.Signals) => Effect.sync(() => {
+          groupSignals.push(signal)
+          return true
+        }),
       },
-      process: { pid: 4321 },
-    })
-
-    try {
-      manager.resize("terminal-resize-sigwinch", 120, 40)
-    } finally {
-      process.kill = originalKill
     }
+
+    await runTest(resizeSession(session, 120, 40))
 
     expect(resizeCalls).toEqual([
       { cols: 120, rows: 40 },
       { cols: 120, rows: 40 },
     ])
-    expect(killCalls).toContainEqual({ pid: -4321, signal: "SIGWINCH" })
+    expect(groupSignals).toEqual(["SIGWINCH"])
   })
 
   test("new sessions reset focus mode back to filtered", async () => {
-    const manager = new TerminalManager()
     const firstTerminalId = "terminal-focus-first"
     const secondTerminalId = "terminal-focus-second"
-    let outputByTerminalId = new Map<string, string>()
 
-    manager.onEvent((event) => {
-      if (event.type !== "terminal.output") return
-      outputByTerminalId.set(event.terminalId, `${outputByTerminalId.get(event.terminalId) ?? ""}${event.data}`)
-    })
+    await runWithTerminals(Effect.gen(function* () {
+      const terminals = yield* Terminals
+      const getOutput = yield* collectOutput()
 
-    const getOutput = (terminalId: string) => outputByTerminalId.get(terminalId) ?? ""
-
-    const createManagedSession = async (terminalId: string) => {
-      manager.createTerminal({
-        projectPath: tempProjectPath,
-        terminalId,
-        cols: 80,
-        rows: 24,
-        scrollback: 1_000,
-      })
-      manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
-      await waitForOutputToContain(() => getOutput(terminalId), "__KANNA_READY__", SHELL_START_TIMEOUT_MS)
-    }
-
-    try {
-      await createManagedSession(firstTerminalId)
+      yield* startShell(firstTerminalId, getOutput)
       const firstBeforeLength = getOutput(firstTerminalId).length
-      manager.write(firstTerminalId, "printf '\\033[?1004h'\r")
-      await waitFor(() => getOutput(firstTerminalId).length > firstBeforeLength, COMMAND_TIMEOUT_MS)
-      manager.close(firstTerminalId)
+      yield* terminals.write(firstTerminalId, "printf '\\033[?1004h'\r")
+      yield* waitFor(() => getOutput(firstTerminalId).length > firstBeforeLength, COMMAND_TIMEOUT_MS)
+      yield* terminals.close(firstTerminalId)
 
-      await createManagedSession(secondTerminalId)
+      yield* startShell(secondTerminalId, getOutput)
       const before = getOutput(secondTerminalId).length
-      manager.write(secondTerminalId, "cat -v\r")
-      await waitFor(() => getOutput(secondTerminalId).length > before, COMMAND_TIMEOUT_MS)
-      manager.write(secondTerminalId, FOCUS_IN_SEQUENCE)
-      manager.write(secondTerminalId, "\x03")
-      manager.write(secondTerminalId, "printf '__KANNA_FRESH_SESSION__\\n'\r")
-      await waitForOutputToContain(() => getOutput(secondTerminalId), "__KANNA_FRESH_SESSION__")
+      yield* terminals.write(secondTerminalId, "cat -v\r")
+      yield* waitFor(() => getOutput(secondTerminalId).length > before, COMMAND_TIMEOUT_MS)
+      yield* terminals.write(secondTerminalId, FOCUS_IN_SEQUENCE)
+      yield* terminals.write(secondTerminalId, "\x03")
+      yield* terminals.write(secondTerminalId, "printf '__KANNA_FRESH_SESSION__\\n'\r")
+      yield* waitFor(() => getOutput(secondTerminalId).includes("__KANNA_FRESH_SESSION__"), COMMAND_TIMEOUT_MS)
 
       const interactionOutput = getOutput(secondTerminalId).slice(before)
       expect(interactionOutput).not.toContain("^[[I")
-    } finally {
-      manager.close(firstTerminalId)
-      manager.close(secondTerminalId)
-    }
+    }))
   })
 
   // PTY reads split at arbitrary byte offsets. Decoding each chunk in
   // isolation turns any character straddling a boundary into U+FFFD. A real
   // PTY gives no control over where reads land, so drive the output handler
   // directly and split at every byte position of a multi-byte sequence.
-  test("does not corrupt multi-byte characters split across PTY read boundaries", async () => {
-    const terminalId = "terminal-utf8-boundaries"
-    const { manager, getOutput } = await createSession(terminalId)
-
-    try {
-      const internals = manager as unknown as {
-        sessions: Map<string, object>
-        handlePtyOutput: (session: object, data: Uint8Array) => void
-      }
-      const session = internals.sessions.get(terminalId)
-      expect(session).toBeDefined()
-
-      // 2-, 3- and 4-byte sequences: accented Latin, box drawing, CJK, emoji.
-      const payload = "é─日🎉"
-      const bytes = Buffer.from(payload, "utf8")
-
-      for (let cut = 1; cut < bytes.length; cut++) {
-        const before = getOutput().length
-        internals.handlePtyOutput(session!, bytes.subarray(0, cut))
-        internals.handlePtyOutput(session!, bytes.subarray(cut))
-        expect(getOutput().slice(before)).toBe(payload)
-      }
-    } finally {
-      manager.close(terminalId)
+  test("does not corrupt multi-byte characters split across PTY read boundaries", () => {
+    let output = ""
+    const written: string[] = []
+    const session = {
+      terminalId: "terminal-utf8-boundaries",
+      decoder: new StringDecoder("utf8"),
+      output: new TerminalOutputLog(),
+      focusReportingEnabled: false,
+      modeSequenceTail: "",
+      headless: {
+        write(data: string) {
+          written.push(data)
+        },
+      },
     }
+    const emit = (event: TerminalEvent) => {
+      if (event.type === "terminal.output") output += event.data
+    }
+
+    // 2-, 3- and 4-byte sequences: accented Latin, box drawing, CJK, emoji.
+    const payload = "é─日🎉"
+    const bytes = Buffer.from(payload, "utf8")
+
+    for (let cut = 1; cut < bytes.length; cut++) {
+      const before = output.length
+      handlePtyOutput(session, bytes.subarray(0, cut), emit)
+      handlePtyOutput(session, bytes.subarray(cut), emit)
+      expect(output.slice(before)).toBe(payload)
+    }
+    // The shadow terminal and the log saw exactly what was emitted.
+    expect(written.join("")).toBe(output)
+    expect(session.output.version).toBe(output.length)
   })
 
   test("round-trips a large UTF-8 stream through a real PTY", async () => {
     const terminalId = "terminal-utf8-stream"
-    const { manager, getOutput } = await createSession(terminalId)
+    await runWithTerminals(Effect.gen(function* () {
+      const { terminals, getOutput } = yield* createSession(terminalId)
 
-    try {
       const line = "🎉👻🐣─│┌┐└┘áéíóú日本語"
       const repeats = 4_000
       const fixturePath = path.join(tempProjectPath, "utf8-fixture.txt")
-      await Bun.write(fixturePath, `${`${line}\n`.repeat(repeats)}__KANNA_UTF8_DONE__\n`)
+      yield* Effect.promise(() => Bun.write(fixturePath, `${`${line}\n`.repeat(repeats)}__KANNA_UTF8_DONE__\n`))
 
       const before = getOutput().length
-      manager.write(terminalId, `cat ${fixturePath}\r`)
-      await waitForOutputToContain(getOutput, "__KANNA_UTF8_DONE__", 20_000)
+      yield* terminals.write(terminalId, `cat ${fixturePath}\r`)
+      yield* waitFor(() => getOutput().includes("__KANNA_UTF8_DONE__"), 20_000)
 
       const streamed = getOutput().slice(before)
       expect(Buffer.byteLength(streamed, "utf8")).toBeGreaterThan(200_000)
       expect(streamed).not.toInclude("�")
       expect(streamed.split("🎉").length - 1).toBe(repeats)
       expect(streamed.split("日本語").length - 1).toBe(repeats)
-    } finally {
-      manager.close(terminalId)
-    }
+    }))
   }, 30_000)
 
-  test("runs the shadow terminal on Unicode 11 width tables", async () => {
-    const terminalId = "terminal-unicode-version"
-    const { manager } = await createSession(terminalId)
-
+  test("runs the shadow terminal on Unicode 11 width tables", () => {
+    const { headless, serializeAddon } = createHeadlessTerminal(80, 24, 1_000)
     try {
-      const sessions = (manager as unknown as {
-        sessions: Map<string, { headless: { unicode: { activeVersion: string } } }>
-      }).sessions
-      expect(sessions.get(terminalId)?.headless.unicode.activeVersion).toBe("11")
+      expect(headless.unicode.activeVersion).toBe("11")
     } finally {
-      manager.close(terminalId)
+      serializeAddon.dispose()
+      headless.dispose()
     }
+  })
+
+  test("serves a tail from a version and a snapshot without one", async () => {
+    const terminalId = "terminal-tail"
+    await runWithTerminals(Effect.gen(function* () {
+      const { terminals, getOutput } = yield* createSession(terminalId)
+      const version = (yield* terminals.snapshot(terminalId))!.outputVersion ?? null
+      yield* terminals.write(terminalId, "printf '__KANNA_TAIL__\\n'\r")
+      yield* waitFor(() => getOutput().includes("__KANNA_TAIL__\r\n"), COMMAND_TIMEOUT_MS)
+
+      const tail = yield* terminals.tail(terminalId, version)
+      expect(tail?.snapshot).toBeNull()
+      expect(tail?.tail?.data).toContain("__KANNA_TAIL__")
+      const full = yield* terminals.tail(terminalId, null)
+      expect(full?.tail).toBeNull()
+      expect(full?.snapshot?.terminalId).toBe(terminalId)
+      expect(yield* terminals.tail("no-such-terminal", 0)).toBeNull()
+    }))
+  })
+
+  test("closing the layer kills every shell", async () => {
+    const terminalId = "terminal-layer-close"
+    const pids = await runWithTerminals(Effect.gen(function* () {
+      const { terminals } = yield* createSession(terminalId)
+      const running = yield* terminals.rootPidsByCwd(tempProjectPath)
+      expect(running.length).toBe(1)
+      expect((yield* terminals.resourceCounts).runningTerminals).toBe(1)
+      return running
+    }))
+
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    const deadline = Date.now() + COMMAND_TIMEOUT_MS
+    while (alive(pids[0]!) && Date.now() < deadline) await Bun.sleep(25)
+    expect(alive(pids[0]!)).toBe(false)
+  })
+
+  test("ends the event stream when the layer closes", async () => {
+    const ended = await runTest(Effect.gen(function* () {
+      const fiber = yield* Effect.gen(function* () {
+        const terminals = yield* Terminals
+        return yield* terminals.events.pipe(Stream.runDrain, Effect.forkDetach)
+      }).pipe(Effect.scoped, Effect.provide(Terminals.layer))
+      return yield* Fiber.join(fiber).pipe(Effect.timeout("2 seconds"), Effect.as(true))
+    }))
+    expect(ended).toBe(true)
   })
 })
 
+
 describe("applyUtf8Locale", () => {
   test("sets a UTF-8 LANG when the environment specifies none", () => {
-    const env = applyUtf8Locale({ PATH: "/usr/bin" })
+    const env = applyUtf8Locale({ PATH: "/usr/bin" }, "linux")
     expect(env.LANG).toMatch(/\.UTF-8$/i)
   })
 
   test("leaves an existing UTF-8 locale untouched", () => {
-    const env = applyUtf8Locale({ LANG: "en_GB.UTF-8" })
+    const env = applyUtf8Locale({ LANG: "en_GB.UTF-8" }, "linux")
     expect(env.LANG).toBe("en_GB.UTF-8")
     expect(env.LC_ALL).toBeUndefined()
   })
@@ -393,20 +411,20 @@ describe("applyUtf8Locale", () => {
   test("overrides LC_ALL and LC_CTYPE when they force ASCII", () => {
     // Both outrank LANG in POSIX precedence, so setting LANG alone would not
     // actually give the shell a UTF-8 locale.
-    const env = applyUtf8Locale({ LC_ALL: "C", LC_CTYPE: "POSIX", LANG: "en_US.UTF-8" })
+    const env = applyUtf8Locale({ LC_ALL: "C", LC_CTYPE: "POSIX", LANG: "en_US.UTF-8" }, "linux")
     expect(env.LC_ALL).toMatch(/\.UTF-8$/i)
     expect(env.LC_CTYPE).toMatch(/\.UTF-8$/i)
   })
 
   test("treats a non-UTF-8 LC_CTYPE as authoritative over a UTF-8 LANG", () => {
-    const env = applyUtf8Locale({ LC_CTYPE: "POSIX", LANG: "en_US.UTF-8" })
+    const env = applyUtf8Locale({ LC_CTYPE: "POSIX", LANG: "en_US.UTF-8" }, "linux")
     expect(env.LC_CTYPE).toMatch(/\.UTF-8$/i)
     // The already-valid LANG is a deliberate regional choice — keep it.
     expect(env.LANG).toBe("en_US.UTF-8")
   })
 
   test("keeps a deliberate UTF-8 LC_ALL", () => {
-    const env = applyUtf8Locale({ LC_ALL: "ja_JP.UTF-8", LANG: "C" })
+    const env = applyUtf8Locale({ LC_ALL: "ja_JP.UTF-8", LANG: "C" }, "linux")
     expect(env.LC_ALL).toBe("ja_JP.UTF-8")
     expect(env.LANG).toBe("C")
   })

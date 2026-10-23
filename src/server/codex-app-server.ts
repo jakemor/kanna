@@ -1,7 +1,5 @@
-import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { createInterface } from "node:readline"
-import type { Readable, Writable } from "node:stream"
+import { Cause, Context, Deferred, Effect, Exit, Layer, Match, PubSub, Queue, Result, Schema, Scope, Stream } from "effect"
 import type {
   AskUserQuestionItem,
   CodexReasoningEffort,
@@ -10,74 +8,78 @@ import type {
   TodoItem,
   TranscriptEntry,
 } from "../shared/types"
-import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
+import type { HarnessEvent, HarnessToolRequest, HarnessTurnEffect } from "./harness-types"
 import { appendSystemMessageBlock, buildSkillSystemMessage } from "./harness-skills"
 import { buildKannaAgentId } from "./attribution"
 import { buildKannaSystemInstructions } from "./harness-instructions"
-import { AsyncQueue } from "./async-queue"
 import type { SubagentActivityUpdate } from "./background-tasks"
 import type { KannaToolHost } from "./kanna-tools"
-import { createKannaMcpServer } from "./kanna-mcp"
+import { type KannaMcpEndpoint, serveKannaMcp } from "./kanna-mcp"
+import { HttpHost } from "./platform/http-host"
+import { runKannaSync } from "./effect/bridge"
+import type { PlatformServices } from "./platform"
+import { type CommandSpawnError, ProcessSpawner, type ProcessSignal, type SpawnedProcess } from "./platform/process-spawner"
 import { asNumber, asRecord } from "../shared/json"
 import { timestamped } from "./transcript"
 import {
-  type AccountRateLimitsUpdatedNotification,
-  type CollabAgentToolCallItem,
-  type ContextCompactedNotification,
+  AnyResult,
   type CodexError,
   type CodexModelSummary,
   type CodexRateLimitSnapshot,
   type CodexRequestId,
-  type GetAccountRateLimitsResponse,
   type CodexSkillMetadata,
   type CodexUserInput,
+  type CollabAgentToolCallItem,
   type CommandExecutionApprovalDecision,
   type CommandExecutionRequestApprovalParams,
   type CommandExecutionRequestApprovalResponse,
-  type DynamicToolCallOutputContentItem,
+  type DynamicToolCallContentItem,
   type DynamicToolCallResponse,
   type ErrorNotification,
   type FileChangeApprovalDecision,
   type FileChangeRequestApprovalParams,
   type FileChangeRequestApprovalResponse,
+  GetAccountRateLimitsResponse,
   type InitializeParams,
-  type ItemCompletedNotification,
-  type ItemStartedNotification,
   type JsonRpcResponse,
   type McpToolCallItem,
+  type ModelListParams,
+  ModelListResponse,
   type PlanDeltaNotification,
   type ServerNotification,
   type ServerRequest,
-  type ModelListParams,
-  type ModelListResponse,
   type SkillsListParams,
-  type SkillsListResponse,
+  SkillsListResponse,
+  type ThreadForkParams,
   type ThreadItem,
   type ThreadResumeParams,
-  type ThreadResumeResponse,
-  type ThreadForkParams,
-  type ThreadForkResponse,
   type ThreadStartParams,
-  type ThreadStartResponse,
+  ThreadStartResponse,
   type ThreadTokenUsageUpdatedNotification,
   type ToolRequestUserInputParams,
   type ToolRequestUserInputQuestion,
   type ToolRequestUserInputResponse,
-  type TurnPlanStep,
-  type TurnPlanUpdatedNotification,
   type TurnCompletedNotification,
   type TurnInterruptParams,
+  type TurnPlanStep,
+  type TurnPlanUpdatedNotification,
   type TurnStartParams,
-  type TurnStartResponse,
-  isJsonRpcResponse,
-  isServerNotification,
-  isServerRequest,
+  TurnStartResponse,
+  decodeCodexLine,
+  isThreadItem,
+  notificationThreadId,
 } from "./codex-app-server-protocol"
 
-interface CodexAppServerProcess {
-  stdin: Writable
-  stdout: Readable
-  stderr: Readable
+/**
+ * The slice of a child process the manager drives, shaped like node's
+ * `ChildProcess` (tests hand in node streams and an EventEmitter). `close`
+ * comes once the process has exited and both output pipes have been read
+ * to the end.
+ */
+export interface CodexAppServerProcess {
+  stdin: { write(chunk: string): unknown }
+  stdout: AsyncIterable<Uint8Array>
+  stderr: AsyncIterable<Uint8Array>
   killed?: boolean
   kill(signal?: NodeJS.Signals | number): void
   on(event: "close", listener: (code: number | null) => void): this
@@ -86,12 +88,77 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
+/** Starts `codex app-server` in `cwd`; the process belongs to the scope. */
+export type SpawnCodexAppServer = (
+  cwd: string,
+) => Effect.Effect<CodexAppServerProcess, CommandSpawnError, Scope.Scope | ProcessSpawner>
 
-interface PendingRequest<TResult> {
+export interface CodexAppServerOptions {
+  spawnProcess?: SpawnCodexAppServer
+}
+
+/** Spawning `codex app-server` threw. A missing binary does not throw: it fails the session's first request. */
+export class CodexSpawnError extends Schema.TaggedError<CodexSpawnError>()(
+  "@kanna/server/codex-app-server/CodexSpawnError",
+  {
+    chatId: Schema.String,
+    cwd: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+/**
+ * A JSON-RPC request did not get the answer it needed: codex answered with an
+ * error (`"<method> failed: <message>"`), the session ended while it waited
+ * (the session's last words: stderr, the exit code, or "Codex session
+ * closed"), or the result was not the shape the method answers with.
+ */
+export class CodexRequestError extends Schema.TaggedError<CodexRequestError>()(
+  "@kanna/server/codex-app-server/CodexRequestError",
+  {
+    chatId: Schema.String,
+    method: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export class CodexSessionNotStartedError extends Schema.TaggedError<CodexSessionNotStartedError>()(
+  "@kanna/server/codex-app-server/CodexSessionNotStartedError",
+  {
+    chatId: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export class CodexTurnBusyError extends Schema.TaggedError<CodexTurnBusyError>()(
+  "@kanna/server/codex-app-server/CodexTurnBusyError",
+  {
+    chatId: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export type CodexStartTurnError = CodexSessionNotStartedError | CodexTurnBusyError | CodexRequestError
+
+/** How the agent's Promise callbacks reach the adapter: `Effect.tryPromise(() => callback(request))`. */
+type CodexCallback<A> = Effect.Effect<A, Cause.UnknownError>
+
+export type CodexApprovalRequest =
+  | {
+      requestId: CodexRequestId
+      kind: "command_execution"
+      params: CommandExecutionRequestApprovalParams
+    }
+  | {
+      requestId: CodexRequestId
+      kind: "file_change"
+      params: FileChangeRequestApprovalParams
+    }
+
+interface PendingRequest {
   method: string
-  resolve: (value: TResult) => void
-  reject: (error: Error) => void
+  deferred: Deferred.Deferred<unknown, CodexRequestError>
 }
 
 interface PendingTurn {
@@ -99,11 +166,11 @@ interface PendingTurn {
   model: string
   planMode: boolean
   skipPlanApproval: boolean
-  queue: AsyncQueue<HarnessEvent>
+  queue: Queue.Queue<HarnessEvent, Cause.Done>
   startedToolIds: Set<string>
   handledDynamicToolIds: Set<string>
   latestPlanExplanation: string | null
-  latestPlanSteps: TurnPlanStep[]
+  latestPlanSteps: ReadonlyArray<TurnPlanStep>
   latestPlanText: string | null
   planTextByItemId: Map<string, string>
   todoSequence: number
@@ -116,20 +183,8 @@ interface PendingTurn {
    */
   retryCause: CodexError | null
   resolved: boolean
-  onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
-  onApprovalRequest?: (
-    request:
-      | {
-          requestId: CodexRequestId
-          kind: "command_execution"
-          params: CommandExecutionRequestApprovalParams
-        }
-      | {
-          requestId: CodexRequestId
-          kind: "file_change"
-          params: FileChangeRequestApprovalParams
-        }
-  ) => Promise<CommandExecutionApprovalDecision | FileChangeApprovalDecision>
+  onToolRequest: (request: HarnessToolRequest) => CodexCallback<unknown>
+  onApprovalRequest?: (request: CodexApprovalRequest) => CodexCallback<CommandExecutionApprovalDecision | FileChangeApprovalDecision>
 }
 
 /**
@@ -154,12 +209,20 @@ interface SpawnedAgent {
   turnId: string | null
 }
 
+/**
+ * One `codex app-server` process and what is in flight on it. Mutated from
+ * the session's reader fiber and from callers' fibers, all on the one JS
+ * thread, so it is a plain record rather than Refs (as `Terminals` keeps its
+ * PTY sessions).
+ */
 interface SessionContext {
-  customTools?: ReturnType<typeof createKannaMcpServer>
+  customTools?: KannaMcpEndpoint
   chatId: string
   cwd: string
   child: CodexAppServerProcess
-  pendingRequests: Map<CodexRequestId, PendingRequest<unknown>>
+  /** Owns the process, the MCP server and the reader fibers. Closing it stops them all. */
+  scope: Scope.Closeable
+  pendingRequests: Map<CodexRequestId, PendingRequest>
   pendingTurn: PendingTurn | null
   sessionToken: string | null
   /** By thread id. */
@@ -186,6 +249,16 @@ export interface StartCodexSessionArgs {
   pendingForkAt?: string | null
 }
 
+export interface StartedCodexSession {
+  sessionToken: string
+  /**
+   * A requested resume failed recoverably and a fresh thread was started
+   * instead. The caller surfaces this as a "Conversation Restored" boundary
+   * so the silent context loss becomes visible.
+   */
+  resumeFellBack: boolean
+}
+
 export interface StartCodexTurnArgs {
   chatId: string
   model: string
@@ -209,7 +282,7 @@ export interface StartCodexTurnArgs {
    */
   skills?: { name: string; path: string }[]
   planMode: boolean
-  onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  onToolRequest: (request: HarnessToolRequest) => CodexCallback<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
 }
 
@@ -220,6 +293,14 @@ export interface GenerateStructuredArgs {
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
 }
+
+export interface CodexResourceCounts {
+  codexSessions: number
+  codexPendingRequests: number
+  codexStderrChars: number
+}
+
+export type CodexTaskActivityListener = (chatId: string, update: SubagentActivityUpdate) => void
 
 function codexSystemInitEntry(model: string): TranscriptEntry {
   return timestamped({
@@ -233,16 +314,6 @@ function codexSystemInitEntry(model: string): TranscriptEntry {
   })
 }
 
-function errorMessage(value: unknown): string {
-  if (value instanceof Error) return value.message
-  return String(value)
-}
-
-/** The thread a notification is about, for the ones that are about one. */
-function notificationThreadId(notification: ServerNotification): string | undefined {
-  const threadId = (notification.params as { threadId?: unknown }).threadId
-  return typeof threadId === "string" ? threadId : undefined
-}
 
 const AGENT_LABEL_LIMIT = 80
 
@@ -270,7 +341,7 @@ function errorDetail(error: CodexError): string {
   if (!info || typeof info !== "object") return ""
   const [kind, data] = Object.entries(info)[0] ?? []
   if (!kind) return ""
-  const status = data?.httpStatusCode
+  const status = asRecord(data)?.httpStatusCode
   return typeof status === "number" ? `${kind} (HTTP ${status})` : kind
 }
 
@@ -302,16 +373,8 @@ function preferredRetryCause(current: CodexError | null, next: CodexError): Code
   return current
 }
 
-function parseJsonLine(line: string): unknown | null {
-  try {
-    return JSON.parse(line)
-  } catch {
-    return null
-  }
-}
-
-function isRecoverableResumeError(error: unknown): boolean {
-  const message = errorMessage(error).toLowerCase()
+function isRecoverableResumeError(errorMessage: string): boolean {
+  const message = errorMessage.toLowerCase()
   if (!message.includes("thread/resume")) return false
   return ["not found", "missing thread", "no such thread", "unknown thread", "does not exist"].some((snippet) =>
     message.includes(snippet)
@@ -406,13 +469,13 @@ function normalizeCodexTokenUsage(
   }
 }
 
-function todoStatus(status: TurnPlanStep["status"]): TodoItem["status"] {
+function todoStatus(status: string): TodoItem["status"] {
   if (status === "completed") return "completed"
   if (status === "inProgress") return "in_progress"
   return "pending"
 }
 
-function planStepsToTodos(steps: TurnPlanStep[]): TodoItem[] {
+function planStepsToTodos(steps: ReadonlyArray<TurnPlanStep>): TodoItem[] {
   return steps.map((step) => ({
     content: step.step,
     status: todoStatus(step.status),
@@ -420,14 +483,14 @@ function planStepsToTodos(steps: TurnPlanStep[]): TodoItem[] {
   }))
 }
 
-function renderPlanMarkdownFromSteps(steps: TurnPlanStep[]): string {
+function renderPlanMarkdownFromSteps(steps: ReadonlyArray<TurnPlanStep>): string {
   return steps.map((step) => {
     const checkbox = step.status === "completed" ? "[x]" : "[ ]"
     return `- ${checkbox} ${step.step}`
   }).join("\n")
 }
 
-function dynamicContentToText(contentItems: DynamicToolCallOutputContentItem[] | null | undefined): string {
+function dynamicContentToText(contentItems: ReadonlyArray<DynamicToolCallContentItem> | null | undefined): string {
   if (!contentItems?.length) return ""
   return contentItems
     .map((item) => item.type === "inputText" ? item.text ?? "" : item.imageUrl ?? "")
@@ -435,14 +498,14 @@ function dynamicContentToText(contentItems: DynamicToolCallOutputContentItem[] |
     .join("\n")
 }
 
-function dynamicToolPayload(value: Record<string, unknown> | unknown[] | string | number | boolean | null | undefined): Record<string, unknown> {
+function dynamicToolPayload(value: unknown): Record<string, unknown> {
   const record = asRecord(value)
   if (record) return record
   return { value }
 }
 
 function webSearchQuery(item: Extract<ThreadItem, { type: "webSearch" }>): string {
-  return item.query || item.action?.query || item.action?.queries?.find((query) => typeof query === "string") || ""
+  return item.query || item.action?.query || item.action?.queries?.find((query): query is string => typeof query === "string") || ""
 }
 
 function genericDynamicToolCall(toolId: string, toolName: string, input: Record<string, unknown>): TranscriptEntry {
@@ -473,12 +536,12 @@ function collabToolCall(item: CollabAgentToolCallItem): TranscriptEntry {
         subagentType: item.tool,
         ...(typeof item.prompt === "string" ? { prompt: item.prompt } : {}),
       },
-      rawInput: item as unknown as Record<string, unknown>,
+      rawInput: item,
     },
   })
 }
 
-function todoToolCall(toolId: string, steps: TurnPlanStep[]): TranscriptEntry {
+function todoToolCall(toolId: string, steps: ReadonlyArray<TurnPlanStep>): TranscriptEntry {
   return timestamped({
     kind: "tool_call",
     tool: {
@@ -497,8 +560,8 @@ function todoToolCall(toolId: string, steps: TurnPlanStep[]): TranscriptEntry {
 }
 
 function fileChangeKind(
-  kind: "add" | "delete" | "update" | { type: "add" | "delete" | "update"; move_path?: string | null }
-): { type: "add" | "delete" | "update"; movePath?: string | null } {
+  kind: string | { readonly type: string; readonly move_path?: string | null | undefined }
+): { type: string; movePath?: string | null } {
   if (typeof kind === "string") {
     return { type: kind }
   }
@@ -522,7 +585,7 @@ function fileChangePayload(
   return {
     ...item,
     changes: [change],
-  } as unknown as Record<string, unknown>
+  }
 }
 
 function parseUnifiedDiff(diff: string): { oldString: string; newString: string } {
@@ -754,9 +817,9 @@ function itemToToolCalls(item: ThreadItem): TranscriptEntry[] {
           toolName: "Error",
           toolId: item.id,
           input: {
-            payload: item as unknown as Record<string, unknown>,
+            payload: item,
           },
-          rawInput: item as unknown as Record<string, unknown>,
+          rawInput: item,
         },
       })]
     default:
@@ -816,264 +879,655 @@ function itemToToolResults(item: ThreadItem): TranscriptEntry[] {
   }
 }
 
-export class CodexAppServerManager {
-  private readonly sessions = new Map<string, SessionContext>()
-  private readonly spawnProcess: SpawnCodexAppServer
-  private onRateLimits: ((snapshot: CodexRateLimitSnapshot) => void) | null = null
-  private onTaskActivity: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
 
-  constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.spawnProcess = args.spawnProcess ?? ((cwd) =>
-      spawn("codex", ["app-server"], {
-        cwd,
-        stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
-      }) as unknown as CodexAppServerProcess)
+const isThreadStartResponse = Schema.is(ThreadStartResponse)
+const isTurnStartResponse = Schema.is(TurnStartResponse)
+const isModelListResponse = Schema.is(ModelListResponse)
+const isSkillsListResponse = Schema.is(SkillsListResponse)
+const isRateLimitsResponse = Schema.is(GetAccountRateLimitsResponse)
+const isAnyResult = Schema.is(AnyResult)
+
+const INITIALIZE_PARAMS = {
+  clientInfo: {
+    name: "kanna_desktop",
+    title: "Kanna",
+    version: "0.1.0",
+  },
+  capabilities: {
+    experimentalApi: true,
+  },
+} satisfies InitializeParams
+
+/** The node-style events of a `CodexAppServerProcess`, without node's EventEmitter. */
+class ProcessEvents {
+  private readonly listeners = {
+    close: [] as Array<{ fn: (code: number | null) => void; once: boolean }>,
+    error: [] as Array<{ fn: (error: Error) => void; once: boolean }>,
   }
 
-  /** Register a sink for pushed `account/rateLimits/updated` notifications. */
-  setRateLimitsListener(listener: ((snapshot: CodexRateLimitSnapshot) => void) | null) {
-    this.onRateLimits = listener
+  add(event: "close" | "error", fn: ((code: number | null) => void) | ((error: Error) => void), once: boolean) {
+    if (event === "close") this.listeners.close.push({ fn: fn as (code: number | null) => void, once })
+    else this.listeners.error.push({ fn: fn as (error: Error) => void, once })
   }
 
+  emitClose(code: number | null) {
+    const current = this.listeners.close
+    this.listeners.close = current.filter((listener) => !listener.once)
+    for (const listener of current) listener.fn(code)
+  }
+
+  emitError(error: Error) {
+    const current = this.listeners.error
+    this.listeners.error = current.filter((listener) => !listener.once)
+    for (const listener of current) listener.fn(error)
+  }
+}
+
+function eventSurface(events: ProcessEvents) {
+  return {
+    on(event: "close" | "error", listener: ((code: number | null) => void) | ((error: Error) => void)) {
+      events.add(event, listener, false)
+      return this
+    },
+    once(event: "close" | "error", listener: ((code: number | null) => void) | ((error: Error) => void)) {
+      events.add(event, listener, true)
+      return this
+    },
+  }
+}
+
+/**
+ * `codex app-server` on the machine's `ProcessSpawner`, presented as the
+ * node-shaped process the manager drives. stdin writes go out in order
+ * through one fiber; `close` comes after the exit and both pipes drained, as
+ * node's did. A binary that can't start doesn't fail the spawn: it reports
+ * an `error`, which fails the session's first request, as node's spawn did.
+ */
+const spawnCodexAppServer: SpawnCodexAppServer = Effect.fn("CodexAppServer.spawnProcess")(function* (cwd: string) {
+  const spawner = yield* ProcessSpawner
+  const events = new ProcessEvents()
+  const spawned = yield* Effect.result(spawner.spawn(["codex", "app-server"], {
+    cwd,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  }))
+  if (Result.isFailure(spawned)) return failedProcess(events, spawned.failure)
+  const proc: SpawnedProcess = spawned.success
+
+  let drained = 0
+  let exitCode: number | null | undefined
+  const maybeClose = () => {
+    if (drained === 2 && exitCode !== undefined) events.emitClose(exitCode)
+  }
+  const pipe = (stream: Stream.Stream<Uint8Array, CommandSpawnError>) =>
+    Stream.toAsyncIterable(stream.pipe(
+      // A pipe that errors as the process dies just ends, as node's did.
+      Stream.catchTag("@kanna/server/process-utils/CommandSpawnError", () => Stream.empty),
+      Stream.ensuring(Effect.sync(() => {
+        drained++
+        maybeClose()
+      })),
+    ))
+  yield* proc.exited.pipe(
+    Effect.flatMap((exit) => Effect.sync(() => {
+      exitCode = exit.exitCode
+      maybeClose()
+    })),
+    Effect.forkScoped,
+  )
+
+  const writes = yield* Queue.unbounded<string>()
+  yield* Queue.take(writes).pipe(
+    Effect.flatMap((chunk) => proc.writeStdin(chunk)),
+    Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", (error) =>
+      Effect.logWarning("Failed to write to Codex app-server:", error.message)),
+    Effect.forever,
+    Effect.forkScoped,
+  )
+
+  const child = {
+    stdin: { write: (chunk: string) => Queue.offerUnsafe(writes, chunk) },
+    stdout: pipe(proc.stdout),
+    stderr: pipe(proc.stderr),
+    killed: false,
+    kill(signal?: NodeJS.Signals | number) {
+      child.killed = true
+      Effect.runFork(proc.kill(typeof signal === "string" ? signal as ProcessSignal : undefined))
+    },
+    ...eventSurface(events),
+  }
+  return child as CodexAppServerProcess
+})
+
+function failedProcess(events: ProcessEvents, failure: CommandSpawnError): CodexAppServerProcess {
+  const error = new Error(failure.message)
+  const empty: AsyncIterable<Uint8Array> = { async *[Symbol.asyncIterator]() {} }
+  const surface = eventSurface(events)
+  const child = {
+    stdin: { write: () => false },
+    stdout: empty,
+    stderr: empty,
+    killed: false,
+    kill() {
+      child.killed = true
+    },
+    on(event: "close" | "error", listener: ((code: number | null) => void) | ((error: Error) => void)) {
+      surface.on(event, listener)
+      // Reported after the listener is on, a tick later, like node's `error`.
+      if (event === "error") queueMicrotask(() => events.emitError(error))
+      return child
+    },
+    once(event: "close" | "error", listener: ((code: number | null) => void) | ((error: Error) => void)) {
+      surface.once(event, listener)
+      if (event === "error") queueMicrotask(() => events.emitError(error))
+      return child
+    },
+  }
+  return child as unknown as CodexAppServerProcess
+}
+
+/**
+ * The lines of a child's output, split as readline split them (on \n, \r\n
+ * or \r). Read a chunk at a time rather than a line at a time: codex sends
+ * thousands of lines a turn. The stream is taken now, so nothing written
+ * before the reader runs is lost.
+ */
+function readLines(readable: AsyncIterable<Uint8Array>): Stream.Stream<string, unknown> {
+  const chunks: AsyncIterator<Uint8Array> = readable[Symbol.asyncIterator]()
+  return Stream.fromAsyncIterable({ [Symbol.asyncIterator]: () => chunks }, (cause) => cause).pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+  )
+}
+
+function killQuietly(child: CodexAppServerProcess) {
+  try {
+    child.kill("SIGKILL")
+  } catch {
+    // ignore kill failures
+  }
+}
+
+function emit(turn: PendingTurn, event: HarnessEvent) {
+  Queue.offerUnsafe(turn.queue, event)
+}
+
+function finish(turn: PendingTurn) {
+  Queue.endUnsafe(turn.queue)
+}
+
+/** Logs a callback the agent handed in that failed, where the old Promise rejection went unhandled. */
+const logCallbackFailure = (what: string) => <A>(effect: CodexCallback<A>) =>
+  effect.pipe(
+    Effect.tapError((error) => Effect.logWarning(`Codex ${what} failed:`, error.cause)),
+    Effect.ignore,
+  )
+
+/**
+ * The chats' `codex app-server` processes: one per chat, kept warm between
+ * turns, speaking JSON-RPC over stdio. Turns, the user's answers to codex's
+ * questions, approvals, and the agents a thread spawns are all multiplexed
+ * over that one connection.
+ *
+ * Each process lives in a scope of its own under the layer's: stopping the
+ * session (or the layer) kills the process, closes its Kanna MCP server, and
+ * ends the fibers reading its output.
+ *
+ * `rateLimitPushes` carries `account/rateLimits/updated` from any session, from
+ * the moment of subscribing; it never replays.
+ */
+export class CodexAppServer extends Context.Service<CodexAppServer, {
   /**
-   * Register a sink for the agents a chat's thread spawns: a `started` each
-   * time one begins a turn, a `stopped` when that turn ends. They come this
-   * way and not on a turn's stream because an agent outlives the turn that
-   * spawned it, and that turn's stream closes with the turn.
+   * Starts the chat's process and thread, or keeps the live one when it is
+   * for the same cwd and no fork is asked for (then `undefined`). A resume of
+   * a thread codex no longer has falls back to a fresh thread.
    */
-  setTaskActivityListener(listener: ((chatId: string, update: SubagentActivityUpdate) => void) | null) {
-    this.onTaskActivity = listener
-  }
-
+  readonly startSession: (
+    args: StartCodexSessionArgs,
+  ) => Effect.Effect<StartedCodexSession | undefined, CodexSpawnError | CodexRequestError>
   /**
-   * Read account rate limits on demand. Reuses a live session's app-server
-   * process when one exists; otherwise spawns a short-lived probe process and
-   * tears it down. Returns null only when Codex is unusable (binary missing).
-   * Throws on protocol errors (e.g. API-key auth → "chatgpt auth required").
+   * Starts a turn on the chat's session. The turn's scope is the old
+   * `close()`, which was a no-op for Codex: the session outlives its turns,
+   * so closing the scope leaves both as they are. `stopSession` ends them.
    */
-  async readAccountRateLimits(probeCwd: string): Promise<GetAccountRateLimitsResponse | null> {
-    for (const context of this.sessions.values()) {
-      if (context.closed) continue
-      return await this.sendRequest<GetAccountRateLimitsResponse>(
-        context,
-        "account/rateLimits/read",
-        {},
-      )
-    }
-    return await this.probeAccountRateLimits(probeCwd)
-  }
-
-  private async probeAccountRateLimits(cwd: string): Promise<GetAccountRateLimitsResponse | null> {
-    return await this.withProbe(cwd, (context) =>
-      this.sendRequest<GetAccountRateLimitsResponse>(context, "account/rateLimits/read", {}))
-  }
-
+  readonly startTurn: (args: StartCodexTurnArgs) => Effect.Effect<HarnessTurnEffect, CodexStartTurnError, Scope.Scope>
+  /**
+   * Agent skills via `skills/list` on the chat's live process. Null when the
+   * chat has no running process or codex predates skills/list (< 0.73);
+   * callers fall back to Kanna's filesystem scan of the same roots.
+   */
+  readonly listSkills: (args: { chatId: string; cwd: string }) => Effect.Effect<ReadonlyArray<CodexSkillMetadata> | null>
   /**
    * The models the signed-in account can run, from `model/list`. Reuses a
-   * live session's app-server process when one exists; otherwise spawns a
-   * short-lived probe. Hidden rows (internal models the picker should not
-   * show) are left out. Returns null only when Codex is unusable (binary
-   * missing). Throws on protocol errors, including "method not found" from a
-   * codex older than model/list — callers keep the static catalog then.
+   * live session's process when one exists; otherwise spawns a short-lived
+   * probe. Hidden rows are left out. Null only when the probe cannot be
+   * spawned; fails on protocol errors, including "method not found" from a
+   * codex older than model/list (callers keep the static catalog then).
    */
-  async listModels(probeCwd: string): Promise<CodexModelSummary[] | null> {
-    for (const context of this.sessions.values()) {
-      if (context.closed) continue
-      return await this.requestModelList(context)
-    }
-    return await this.withProbe(probeCwd, (context) => this.requestModelList(context))
-  }
+  readonly listModels: (probeCwd: string) => Effect.Effect<ReadonlyArray<CodexModelSummary> | null, CodexRequestError>
+  /**
+   * Account rate limits on demand, from a live session's process or a
+   * short-lived probe. Null only when the probe cannot be spawned; fails on
+   * protocol errors (e.g. API-key auth → "chatgpt auth required").
+   */
+  readonly readAccountRateLimits: (probeCwd: string) => Effect.Effect<GetAccountRateLimitsResponse | null, CodexRequestError>
+  /** One prompt on a throwaway session; the assistant's text (or the result's), or null. */
+  readonly generateStructured: (args: GenerateStructuredArgs) => Effect.Effect<string | null, CodexSpawnError | CodexRequestError>
+  /**
+   * Stops one spawned agent's turn, as a turn of the chat's own is stopped.
+   * Its end comes back as a `turn/completed`, which is what closes its row.
+   * False when the chat has no such agent running.
+   */
+  readonly stopAgent: (chatId: string, agentThreadId: string) => Effect.Effect<boolean, CodexRequestError>
+  /**
+   * Stops every agent a chat has running. Codex leaves them going when the
+   * turn that spawned them is interrupted, so stopping the chat has to ask.
+   */
+  readonly stopAgents: (chatId: string) => Effect.Effect<void>
+  /**
+   * Kills the chat's process. Everything that happens synchronously — the
+   * turn's error result, waiting requests failing, the kill — is done by the
+   * time this is first run; the rest (its fibers ending) follows.
+   */
+  readonly stopSession: (chatId: string) => Effect.Effect<void>
+  readonly stopAll: Effect.Effect<void>
+  readonly resourceCounts: Effect.Effect<CodexResourceCounts>
+  readonly rateLimitPushes: Stream.Stream<CodexRateLimitSnapshot>
+  /**
+   * The sink for the agents a chat's thread spawns: a `started` each time one
+   * begins a turn, a `stopped` when that turn ends. They come this way and
+   * not on a turn's stream because an agent outlives the turn that spawned
+   * it, and that turn's stream closes with the turn.
+   *
+   * A synchronous listener rather than a Stream: the agent applies each
+   * update in step with the turn events around it, and a Stream would hand
+   * them over a fiber hop later. It becomes a Stream when agent.ts moves to
+   * Effect (wave 4).
+   */
+  readonly setTaskActivityListener: (listener: CodexTaskActivityListener | null) => void
+}>()("@kanna/server/CodexAppServer") {
+  static readonly layer = (options: CodexAppServerOptions = {}) => Layer.effect(this, makeCodexAppServer(options))
+}
 
-  private async requestModelList(context: SessionContext): Promise<CodexModelSummary[]> {
-    const models: CodexModelSummary[] = []
-    let cursor: string | null | undefined
-    do {
-      const response = await this.sendRequest<ModelListResponse>(
-        context,
-        "model/list",
-        (cursor ? { cursor } : {}) satisfies ModelListParams,
-      )
-      models.push(...(response.data ?? []).filter((model) => !model.hidden))
-      cursor = response.nextCursor
-    } while (cursor)
-    return models
+/**
+ * For Promise code that still builds its own (agent.ts's default, the shared
+ * quick response): a service whose scope is never closed, as the class it
+ * replaces was never disposed. Its sessions still end with `stopSession` /
+ * `stopAll`. Goes when those callers get it from the server's runtime.
+ */
+export function createCodexAppServer(
+  platform: Context.Context<PlatformServices>,
+  options: CodexAppServerOptions = {},
+): CodexAppServer["Service"] {
+  return runKannaSync(makeCodexAppServer(options).pipe(Scope.provide(Scope.makeUnsafe()), Effect.provide(platform)))
+}
+
+export const makeCodexAppServer = Effect.fn("CodexAppServer.make")(function* (options: CodexAppServerOptions = {}) {
+  const spawnProcess = options.spawnProcess ?? spawnCodexAppServer
+  const spawner = yield* ProcessSpawner
+  const http = yield* HttpHost
+  const layerScope = yield* Effect.scope
+  const sessions = new Map<string, SessionContext>()
+  const rateLimits = yield* PubSub.unbounded<CodexRateLimitSnapshot>()
+  let onTaskActivity: CodexTaskActivityListener | null = null
+
+  // ---------------------------------------------------------------------------
+  // The connection
+  // ---------------------------------------------------------------------------
+
+  const writeMessage = (context: SessionContext, message: Record<string, unknown>) => {
+    context.child.stdin.write(`${JSON.stringify(message)}\n`)
   }
 
   /**
-   * Run one request against a throwaway app-server process: spawn,
-   * handshake, `run`, then kill. Account-level reads (rate limits, the model
-   * list) use this when no chat has a live process to piggyback on.
+   * One JSON-RPC request, answered when its response line arrives. `is`
+   * checks the result's shape; the result is passed on as codex sent it.
    */
-  private async withProbe<T>(cwd: string, run: (context: SessionContext) => Promise<T>): Promise<T | null> {
-    let child: CodexAppServerProcess
-    try {
-      child = this.spawnProcess(cwd)
-    } catch {
-      return null
+  const sendRequest = <A>(
+    context: SessionContext,
+    method: string,
+    params: unknown,
+    is: (value: unknown) => value is A,
+  ): Effect.Effect<A, CodexRequestError> => Effect.suspend(() => {
+    const fail = (message: string) => new CodexRequestError({ chatId: context.chatId, method, message })
+    if (context.closed) return Effect.fail(fail("Codex session closed"))
+    const id = randomUUID()
+    const deferred = Deferred.makeUnsafe<unknown, CodexRequestError>()
+    context.pendingRequests.set(id, { method, deferred })
+    writeMessage(context, { id, method, params })
+    return Deferred.await(deferred).pipe(
+      Effect.onInterrupt(() => Effect.sync(() => context.pendingRequests.delete(id))),
+      Effect.flatMap((result) => is(result) ? Effect.succeed(result) : Effect.fail(fail(`${method} returned an unexpected result`))),
+    )
+  })
+
+  const initialize = (context: SessionContext) =>
+    sendRequest(context, "initialize", INITIALIZE_PARAMS, isAnyResult).pipe(
+      Effect.andThen(Effect.sync(() => writeMessage(context, { method: "initialized" }))),
+    )
+
+  const handleResponse = (context: SessionContext, response: JsonRpcResponse) => {
+    const pending = context.pendingRequests.get(response.id)
+    if (!pending) return
+    context.pendingRequests.delete(response.id)
+    if (response.error) {
+      Deferred.doneUnsafe(pending.deferred, Exit.fail(new CodexRequestError({
+        chatId: context.chatId,
+        method: pending.method,
+        message: `${pending.method} failed: ${response.error.message ?? "Unknown error"}`,
+      })))
+      return
     }
-    const context: SessionContext = {
-      chatId: `probe-${randomUUID()}`,
-      cwd,
-      child,
-      pendingRequests: new Map(),
-      pendingTurn: null,
-      sessionToken: null,
-      agents: new Map(),
-      unclaimedTurns: new Map(),
-      stderrLines: [],
-      closed: false,
-    }
-    this.attachListeners(context)
-    try {
-      await this.sendRequest(context, "initialize", {
-        clientInfo: { name: "kanna_desktop", title: "Kanna", version: "0.1.0" },
-        capabilities: { experimentalApi: true },
-      } satisfies InitializeParams)
-      this.writeMessage(context, { method: "initialized" })
-      return await run(context)
-    } finally {
-      context.closed = true
-      try {
-        child.kill("SIGKILL")
-      } catch {
-        // ignore
+    Deferred.doneUnsafe(pending.deferred, Exit.succeed(response.result))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sessions
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Spawns a process in a scope of its own and starts reading it. `register`
+   * puts it in `sessions` straight away, before its first await, so a second
+   * `startSession` for the chat sees it (as it always has).
+   */
+  const openSession = Effect.fn("CodexAppServer.openSession")(function* (args: {
+    chatId: string
+    cwd: string
+    customTools?: KannaToolHost
+    register: boolean
+  }) {
+    yield* Effect.annotateCurrentSpan("chatId", args.chatId)
+    const scope = yield* Scope.fork(layerScope)
+    return yield* Effect.gen(function* () {
+      const child = yield* spawnProcess(args.cwd).pipe(
+        Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", (error) =>
+          Effect.fail(new CodexSpawnError({ chatId: args.chatId, cwd: args.cwd, message: error.message, cause: error.cause }))),
+        Effect.tap((child) => Effect.addFinalizer(() => Effect.sync(() => killQuietly(child)))),
+        Effect.provideService(ProcessSpawner, spawner),
+        Scope.provide(scope),
+      )
+      const customTools = args.customTools
+        ? yield* serveKannaMcp(args.customTools).pipe(Scope.provide(scope), Effect.provideService(HttpHost, http))
+        : undefined
+      const context: SessionContext = {
+        ...(customTools ? { customTools } : {}),
+        chatId: args.chatId,
+        cwd: args.cwd,
+        child,
+        scope,
+        pendingRequests: new Map(),
+        pendingTurn: null,
+        sessionToken: null,
+        agents: new Map(),
+        unclaimedTurns: new Map(),
+        stderrLines: [],
+        closed: false,
       }
+      yield* Scope.addFinalizer(scope, Effect.sync(() => failContext(context, "Codex session closed")))
+      if (args.register) sessions.set(args.chatId, context)
+      yield* attachListeners(context)
+      return context
+    }).pipe(Effect.onExit((exit) => Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, Exit.void)))
+  })
+
+  /**
+   * Reads the process's output and watches for it ending. Listeners go on
+   * synchronously: an `error` event with no listener would throw, and lines
+   * that arrive before the readers start must not be lost.
+   */
+  const attachListeners = (context: SessionContext) => Effect.gen(function* () {
+    const exited = Deferred.makeUnsafe<number | null>()
+    const errored = Deferred.makeUnsafe<Error>()
+    context.child.on("close", (code) => {
+      Deferred.doneUnsafe(exited, Exit.succeed(code))
+    })
+    context.child.on("error", (error) => {
+      Deferred.doneUnsafe(errored, Exit.succeed(error))
+    })
+    const stdout = readLines(context.child.stdout)
+    const stderr = readLines(context.child.stderr)
+
+    yield* stdout.pipe(
+      // A bug while handling one line costs that line, not the reader: the old
+      // async handlers rejected on their own and the next line still arrived.
+      Stream.runForEach((line) => handleLine(context, line).pipe(
+        Effect.catchCause((cause) => Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logError("Failed to handle a Codex app-server message:", Cause.squash(cause))),
+      )),
+      Effect.tapError((cause) => Effect.logWarning("Failed to read Codex app-server output:", cause)),
+      Effect.ignore,
+      Effect.forkIn(context.scope),
+    )
+    yield* stderr.pipe(
+      Stream.runForEach((line) => Effect.sync(() => {
+        if (line.trim()) {
+          context.stderrLines = [line.trim().slice(-8192)]
+        }
+      })),
+      Effect.ignore,
+      Effect.forkIn(context.scope),
+    )
+    yield* Deferred.await(errored).pipe(
+      Effect.flatMap((error) => failSession(context, error.message)),
+      Effect.forkIn(context.scope),
+    )
+    // A turn after the exit: the output already read is handled first, and
+    // a stop that is under way has the last word.
+    yield* Deferred.await(exited).pipe(
+      Effect.flatMap((code) => context.closed ? Effect.void : Effect.yieldNow.pipe(
+        Effect.andThen(Effect.suspend(() => context.closed
+          ? Effect.void
+          : failSession(context, context.stderrLines.at(-1) || `Codex app-server exited with code ${code ?? 1}`))),
+      )),
+      Effect.forkIn(context.scope),
+    )
+  })
+
+  /**
+   * The session is over: its turn ends with `message` as an error result,
+   * waiting requests fail with it, its agents are closed as cut off, and the
+   * process is killed. Synchronous, so a stop has finished all of this before
+   * it returns; the scope (fibers) is closed by the caller.
+   */
+  const failContext = (context: SessionContext, message: string) => {
+    closeAgents(context)
+    const pendingTurn = context.pendingTurn
+    if (pendingTurn && !pendingTurn.resolved) {
+      emit(pendingTurn, {
+        type: "transcript",
+        entry: timestamped({
+          kind: "result",
+          subtype: "error",
+          isError: true,
+          durationMs: 0,
+          result: message,
+        }),
+      })
+      finish(pendingTurn)
+      context.pendingTurn = null
+    }
+
+    // Book-keeping first: a waiter resumes synchronously, and may come
+    // straight back to stop this same session.
+    const pending = [...context.pendingRequests.values()]
+    context.pendingRequests.clear()
+    context.closed = true
+    if (sessions.get(context.chatId) === context) sessions.delete(context.chatId)
+    // A non-retryable protocol error (e.g. a usage-limit hit) leaves the
+    // subprocess itself running — only the child's "close" path had
+    // actually exited already. Without this, the process survives orphaned,
+    // still holding its thread's write lock, until the whole Kanna process
+    // is killed. A later resume then spawns a second process for the same
+    // thread and collides with the still-alive first one.
+    killQuietly(context.child)
+    for (const request of pending) {
+      Deferred.doneUnsafe(request.deferred, Exit.fail(new CodexRequestError({
+        chatId: context.chatId,
+        method: request.method,
+        message,
+      })))
     }
   }
 
-  async startSession(args: StartCodexSessionArgs) {
-    const existing = this.sessions.get(args.chatId)
+  /**
+   * `failContext` from inside the session (its reader, its exit watcher).
+   * The scope closes on a fiber of its own, since the one calling this is
+   * among those the close ends.
+   */
+  const failSession = (context: SessionContext, message: string) => Effect.suspend(() => {
+    failContext(context, message)
+    return Scope.close(context.scope, Exit.void).pipe(Effect.forkDetach, Effect.asVoid)
+  })
+
+  const stopSession = Effect.fn("CodexAppServer.stopSession")(function* (chatId: string) {
+    yield* Effect.annotateCurrentSpan("chatId", chatId)
+    const context = sessions.get(chatId)
+    if (!context) return
+    failContext(context, "Codex session closed")
+    if (context.pendingTurn) finish(context.pendingTurn)
+    sessions.delete(chatId)
+    yield* Scope.close(context.scope, Exit.void)
+  })
+
+  const stopAll = Effect.suspend(() => {
+    const all = [...sessions.values()]
+    for (const context of all) {
+      failContext(context, "Codex session closed")
+      if (context.pendingTurn) finish(context.pendingTurn)
+    }
+    sessions.clear()
+    return Effect.forEach(all, (context) => Scope.close(context.scope, Exit.void), { concurrency: "unbounded", discard: true })
+  }).pipe(Effect.withSpan("CodexAppServer.stopAll"))
+
+  yield* Effect.addFinalizer(() => stopAll.pipe(Effect.andThen(PubSub.shutdown(rateLimits))))
+
+  const requireSession = (chatId: string) => Effect.suspend(() => {
+    const context = sessions.get(chatId)
+    if (!context || context.closed) {
+      return Effect.fail(new CodexSessionNotStartedError({ chatId, message: "Codex session not started" }))
+    }
+    return Effect.succeed(context)
+  })
+
+  /**
+   * Runs `run` against a throwaway process: spawn, handshake, `run`, then
+   * kill. Account-level reads (rate limits, the model list) use this when no
+   * chat has a live process to piggyback on. Null when it cannot be spawned.
+   */
+  const withProbe = <A, E>(cwd: string, run: (context: SessionContext) => Effect.Effect<A, E>) =>
+    openSession({ chatId: `probe-${randomUUID()}`, cwd, register: false }).pipe(
+      Effect.flatMap((context) => initialize(context).pipe(
+        Effect.andThen(run(context)),
+        Effect.ensuring(Scope.close(context.scope, Exit.void)),
+      )),
+      Effect.catchTag("@kanna/server/codex-app-server/CodexSpawnError", () => Effect.succeed(null)),
+    )
+
+  /** The first live session, for account-level reads that any process can answer. */
+  const liveSession = () => [...sessions.values()].find((context) => !context.closed)
+
+  const startSession = Effect.fn("CodexAppServer.startSession")(function* (args: StartCodexSessionArgs) {
+    yield* Effect.annotateCurrentSpan("chatId", args.chatId)
+    const existing = sessions.get(args.chatId)
     if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken) {
-      return
+      return undefined
     }
-
     if (existing) {
-      this.stopSession(args.chatId)
+      yield* stopSession(args.chatId)
     }
 
-    const child = this.spawnProcess(args.cwd)
-    const customTools = args.customTools ? createKannaMcpServer(args.customTools) : undefined
-    const context: SessionContext = {
-      customTools,
-      chatId: args.chatId,
+    const context = yield* openSession({ chatId: args.chatId, cwd: args.cwd, customTools: args.customTools, register: true })
+    return yield* startThread(context, args).pipe(
+      Effect.onError(() => stopSession(args.chatId)),
+    )
+  })
+
+  const startThread = (context: SessionContext, args: StartCodexSessionArgs) => Effect.gen(function* () {
+    yield* initialize(context)
+
+    // Resume and fork accept MCP config, but this CLI only accepts dynamic tools on thread/start.
+    const customTools = context.customTools
+    const toolConfig = customTools ? {
+      config: {
+        "mcp_servers.kanna": {
+          url: customTools.url,
+          http_headers: customTools.headers,
+          tool_timeout_sec: 86400,
+        },
+      },
+    } : {}
+    // Standard speed is an explicit null. An omitted tier inherits the
+    // user's config.toml (`service_tier = "priority"` runs fast while the
+    // UI shows "Standard"), and on turn/start it keeps the thread's tier, so
+    // turning fast mode off mid-chat would never take effect.
+    const serviceTier = args.serviceTier ?? null
+    const threadParams = {
+      model: args.model,
       cwd: args.cwd,
-      child,
-      pendingRequests: new Map(),
-      pendingTurn: null,
-      sessionToken: null,
-      agents: new Map(),
-      unclaimedTurns: new Map(),
-      stderrLines: [],
-      closed: false,
-    }
-    this.sessions.set(args.chatId, context)
-    this.attachListeners(context)
+      serviceTier,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      experimentalRawEvents: false,
+      persistExtendedHistory: false,
+      ...toolConfig,
+    } satisfies ThreadStartParams
+    const startFresh = sendRequest(context, "thread/start", threadParams, isThreadStartResponse)
 
-    try {
-      await this.sendRequest(context, "initialize", {
-        clientInfo: {
-          name: "kanna_desktop",
-          title: "Kanna",
-          version: "0.1.0",
-        },
-        capabilities: {
-          experimentalApi: true,
-        },
-      } satisfies InitializeParams)
-      this.writeMessage(context, {
-        method: "initialized",
-      })
-
-      // Resume and fork accept MCP config, but this CLI only accepts dynamic tools on thread/start.
-      const toolConfig = customTools ? {
-        config: {
-          "mcp_servers.kanna": {
-            url: customTools.url,
-            http_headers: customTools.headers,
-            tool_timeout_sec: 86400,
-          },
-        },
-      } : {}
-      // Standard speed is an explicit null. An omitted tier inherits the
-      // user's config.toml (`service_tier = "priority"` runs fast while the
-      // UI shows "Standard"), and on turn/start it keeps the thread's tier, so
-      // turning fast mode off mid-chat would never take effect.
-      const serviceTier = args.serviceTier ?? null
-      const threadParams = {
+    let resumeFellBack = false
+    let response: ThreadStartResponse
+    if (args.pendingForkSessionToken) {
+      response = yield* sendRequest(context, "thread/fork", {
+        threadId: args.pendingForkSessionToken,
         model: args.model,
         cwd: args.cwd,
         serviceTier,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
-        experimentalRawEvents: false,
+        persistExtendedHistory: false,
+        // Cut at the turn the fork's transcript ends on: the source may
+        // have run more turns since the fork was made.
+        ...(args.pendingForkAt ? { lastTurnId: args.pendingForkAt } : {}),
+        ...toolConfig,
+      } satisfies ThreadForkParams, isThreadStartResponse)
+    } else if (args.sessionToken) {
+      response = yield* sendRequest(context, "thread/resume", {
+        threadId: args.sessionToken,
+        model: args.model,
+        cwd: args.cwd,
+        serviceTier,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
         persistExtendedHistory: false,
         ...toolConfig,
-      } satisfies ThreadStartParams
-
-      let response: ThreadStartResponse | ThreadResumeResponse | ThreadForkResponse
-      // Set when a requested resume failed recoverably and we started a fresh
-      // thread instead — the caller surfaces this as a "Conversation Restored"
-      // boundary so the silent context loss becomes visible.
-      let resumeFellBack = false
-      if (args.pendingForkSessionToken) {
-        response = await this.sendRequest<ThreadForkResponse>(context, "thread/fork", {
-          threadId: args.pendingForkSessionToken,
-          model: args.model,
-          cwd: args.cwd,
-          serviceTier,
-          approvalPolicy: "never",
-          sandbox: "danger-full-access",
-          persistExtendedHistory: false,
-          // Cut at the turn the fork's transcript ends on: the source may
-          // have run more turns since the fork was made.
-          ...(args.pendingForkAt ? { lastTurnId: args.pendingForkAt } : {}),
-          ...toolConfig,
-        } satisfies ThreadForkParams)
-      } else if (args.sessionToken) {
-        try {
-          response = await this.sendRequest<ThreadResumeResponse>(context, "thread/resume", {
-            threadId: args.sessionToken,
-            model: args.model,
-            cwd: args.cwd,
-            serviceTier,
-            approvalPolicy: "never",
-            sandbox: "danger-full-access",
-            persistExtendedHistory: false,
-            ...toolConfig,
-          } satisfies ThreadResumeParams)
-        } catch (error) {
-          if (!isRecoverableResumeError(error)) {
-            this.stopSession(args.chatId)
-            throw error
-          }
-          response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
+      } satisfies ThreadResumeParams, isThreadStartResponse).pipe(
+        Effect.catchTag("@kanna/server/codex-app-server/CodexRequestError", (error) => {
+          if (!isRecoverableResumeError(error.message)) return Effect.fail(error)
           resumeFellBack = true
-        }
-      } else {
-        response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
-      }
-
-      context.sessionToken = response.thread.id
-      return { sessionToken: context.sessionToken, resumeFellBack }
-    } catch (error) {
-      this.stopSession(args.chatId)
-      throw error
+          return startFresh
+        }),
+      )
+    } else {
+      response = yield* startFresh
     }
-  }
 
-  async startTurn(args: StartCodexTurnArgs): Promise<HarnessTurn> {
-    const context = this.requireSession(args.chatId)
+    context.sessionToken = response.thread.id
+    return { sessionToken: context.sessionToken, resumeFellBack } satisfies StartedCodexSession
+  })
+
+  // ---------------------------------------------------------------------------
+  // Turns
+  // ---------------------------------------------------------------------------
+
+  const startTurn = Effect.fn("CodexAppServer.startTurn")(function* (args: StartCodexTurnArgs) {
+    yield* Effect.annotateCurrentSpan("chatId", args.chatId)
+    const context = yield* requireSession(args.chatId)
     if (context.pendingTurn) {
-      throw new Error("Codex turn is already running")
+      return yield* new CodexTurnBusyError({ chatId: args.chatId, message: "Codex turn is already running" })
     }
 
-    const queue = new AsyncQueue<HarnessEvent>()
-    if (context.sessionToken) {
-      queue.push({ type: "session_token", sessionToken: context.sessionToken })
-    }
-    queue.push({ type: "transcript", entry: codexSystemInitEntry(args.model) })
-
+    const queue = yield* Queue.unbounded<HarnessEvent, Cause.Done>()
     const pendingTurn: PendingTurn = {
       turnId: null,
       model: args.model,
@@ -1091,416 +1545,387 @@ export class CodexAppServerManager {
       retryCause: null,
       resolved: false,
       onToolRequest: args.onToolRequest,
-      onApprovalRequest: args.onApprovalRequest,
+      ...(args.onApprovalRequest ? { onApprovalRequest: args.onApprovalRequest } : {}),
     }
+    if (context.sessionToken) {
+      emit(pendingTurn, { type: "session_token", sessionToken: context.sessionToken })
+    }
+    emit(pendingTurn, { type: "transcript", entry: codexSystemInitEntry(args.model) })
     context.pendingTurn = pendingTurn
 
-    try {
-      const input: CodexUserInput[] = [
-        {
-          type: "text",
-          text: args.skills?.length
-            ? appendSystemMessageBlock(args.content, buildSkillSystemMessage(args.skills))
-            : args.content,
-          text_elements: [],
+    const input: CodexUserInput[] = [
+      {
+        type: "text",
+        text: args.skills?.length
+          ? appendSystemMessageBlock(args.content, buildSkillSystemMessage(args.skills))
+          : args.content,
+        text_elements: [],
+      },
+    ]
+    for (const skill of args.skills ?? []) {
+      input.push({ type: "skill", name: skill.name, path: skill.path })
+    }
+    const response = yield* sendRequest(context, "turn/start", {
+      threadId: context.sessionToken ?? "",
+      input,
+      approvalPolicy: "never",
+      model: args.model,
+      effort: args.effort,
+      // null, not omitted: see startThread.
+      serviceTier: args.serviceTier ?? null,
+      collaborationMode: {
+        mode: args.planMode ? "plan" : "default",
+        settings: {
+          model: args.model,
+          reasoning_effort: args.effort ?? null,
+          // Codex's instruction channel is per-turn, not per-session: this is
+          // re-sent every turn by design. It appends to the built-in
+          // developer message rather than replacing it.
+          developer_instructions: buildKannaSystemInstructions(buildKannaAgentId("codex", args.model), { delegator: args.delegator }),
         },
-      ]
-      for (const skill of args.skills ?? []) {
-        input.push({ type: "skill", name: skill.name, path: skill.path })
-      }
-      const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
-        threadId: context.sessionToken ?? "",
-        input,
-        approvalPolicy: "never",
-        model: args.model,
-        effort: args.effort,
-        // null, not omitted: see startSession.
-        serviceTier: args.serviceTier ?? null,
-        collaborationMode: {
-          mode: args.planMode ? "plan" : "default",
-          settings: {
-            model: args.model,
-            reasoning_effort: args.effort ?? null,
-            // Codex's instruction channel is per-turn, not per-session: this is
-            // re-sent every turn by design. It appends to the built-in
-            // developer message rather than replacing it.
-            developer_instructions: buildKannaSystemInstructions(buildKannaAgentId("codex", args.model), { delegator: args.delegator }),
-          },
-        },
-      } satisfies TurnStartParams)
-      if (context.pendingTurn) {
-        context.pendingTurn.turnId = response.turn.id
-      } else {
-        pendingTurn.turnId = response.turn.id
-      }
-    } catch (error) {
-      context.pendingTurn = null
-      queue.finish()
-      throw error
+      },
+    } satisfies TurnStartParams, isTurnStartResponse).pipe(
+      Effect.onError(() => Effect.sync(() => {
+        context.pendingTurn = null
+        finish(pendingTurn)
+      })),
+    )
+    if (context.pendingTurn) {
+      context.pendingTurn.turnId = response.turn.id
+    } else {
+      pendingTurn.turnId = response.turn.id
     }
 
     return {
       provider: "codex",
-      stream: queue,
-      interrupt: async () => {
-        const pendingTurn = context.pendingTurn
-        if (!pendingTurn) return
-
-        context.pendingTurn = null
-        pendingTurn.resolved = true
-        pendingTurn.queue.finish()
-
-        if (!pendingTurn.turnId || !context.sessionToken) return
-
-        await this.sendRequest(context, "turn/interrupt", {
-          threadId: context.sessionToken,
-          turnId: pendingTurn.turnId,
-        } satisfies TurnInterruptParams)
-      },
-      close: () => {},
-    }
-  }
+      events: Stream.fromQueue(queue),
+      interrupt: interruptTurn(context),
+    } satisfies HarnessTurnEffect
+  })
 
   /**
-   * Enumerate agent skills via `skills/list` on the chat's live app-server
-   * process. Returns null when there is no running process for the chat or the
-   * codex binary predates skills/list (< 0.73, "method not found") — callers
-   * fall back to Kanna's filesystem scan of the same discovery roots.
+   * Ends the turn now (its stream finishes) and asks codex to stop it. The
+   * agent races this against a timeout and ignores a failure, so a failed
+   * `turn/interrupt` is dropped here.
    */
-  async listSkills(args: { chatId: string; cwd: string }): Promise<CodexSkillMetadata[] | null> {
-    const context = this.sessions.get(args.chatId)
+  const interruptTurn = (context: SessionContext) => Effect.suspend(() => {
+    const pendingTurn = context.pendingTurn
+    if (!pendingTurn) return Effect.void
+
+    context.pendingTurn = null
+    pendingTurn.resolved = true
+    finish(pendingTurn)
+
+    if (!pendingTurn.turnId || !context.sessionToken) return Effect.void
+
+    return sendRequest(context, "turn/interrupt", {
+      threadId: context.sessionToken,
+      turnId: pendingTurn.turnId,
+    } satisfies TurnInterruptParams, isAnyResult).pipe(Effect.ignore)
+  }).pipe(Effect.withSpan("CodexAppServer.interruptTurn"))
+
+  const listSkills = Effect.fn("CodexAppServer.listSkills")(function* (args: { chatId: string; cwd: string }) {
+    yield* Effect.annotateCurrentSpan("chatId", args.chatId)
+    const context = sessions.get(args.chatId)
     if (!context || context.closed) return null
-    try {
-      const response = await this.sendRequest<SkillsListResponse>(context, "skills/list", {
-        cwds: [args.cwd],
-      } satisfies SkillsListParams)
-      const skills = (response.data ?? []).flatMap((entry) => entry.skills ?? [])
-      // Disabled skills fail structured resolution server-side (silently), so
-      // they never belong in the invocation menu.
-      return skills.filter((skill) => skill.enabled)
-    } catch {
-      return null
-    }
-  }
+    return yield* sendRequest(context, "skills/list", {
+      cwds: [args.cwd],
+    } satisfies SkillsListParams, isSkillsListResponse).pipe(
+      Effect.map((response) => {
+        const skills = (response.data ?? []).flatMap((entry) => entry.skills ?? [])
+        // Disabled skills fail structured resolution server-side (silently), so
+        // they never belong in the invocation menu.
+        return skills.filter((skill) => skill.enabled)
+      }),
+      Effect.catchTag("@kanna/server/codex-app-server/CodexRequestError", () => Effect.succeed(null)),
+    )
+  })
 
-  async generateStructured(args: GenerateStructuredArgs): Promise<string | null> {
+  const requestModelList = (context: SessionContext) => Effect.gen(function* () {
+    const models: CodexModelSummary[] = []
+    let cursor: string | null | undefined
+    do {
+      const response = yield* sendRequest(
+        context,
+        "model/list",
+        (cursor ? { cursor } : {}) satisfies ModelListParams,
+        isModelListResponse,
+      )
+      models.push(...(response.data ?? []).filter((model) => !model.hidden))
+      cursor = response.nextCursor
+    } while (cursor)
+    return models
+  })
+
+  const listModels = Effect.fn("CodexAppServer.listModels")(function* (probeCwd: string) {
+    const live = liveSession()
+    if (live) return yield* requestModelList(live)
+    return yield* withProbe(probeCwd, requestModelList)
+  })
+
+  const readAccountRateLimits = Effect.fn("CodexAppServer.readAccountRateLimits")(function* (probeCwd: string) {
+    const read = (context: SessionContext) => sendRequest(context, "account/rateLimits/read", {}, isRateLimitsResponse)
+    const live = liveSession()
+    if (live) return yield* read(live)
+    return yield* withProbe(probeCwd, read)
+  })
+
+  const generateStructured = Effect.fn("CodexAppServer.generateStructured")(function* (args: GenerateStructuredArgs) {
     const chatId = `quick-${randomUUID()}`
-    let turn: HarnessTurn | null = null
-    let assistantText = ""
-    let resultText = ""
-
-    try {
-      await this.startSession({
+    yield* Effect.annotateCurrentSpan("chatId", chatId)
+    return yield* Effect.gen(function* () {
+      yield* startSession({
         chatId,
         cwd: args.cwd,
         model: args.model ?? "gpt-5.5",
         serviceTier: args.serviceTier ?? "fast",
         sessionToken: null,
       })
-
-      turn = await this.startTurn({
+      const turn = yield* startTurn({
         chatId,
         model: args.model ?? "gpt-5.5",
         effort: args.effort,
         serviceTier: args.serviceTier ?? "fast",
         content: args.prompt,
         planMode: false,
-        onToolRequest: async () => ({}),
-      })
+        onToolRequest: () => Effect.succeed({}),
+      }).pipe(
+        // The session was started just above under a chat id of its own.
+        Effect.catchTags({
+          "@kanna/server/codex-app-server/CodexSessionNotStartedError": Effect.die,
+          "@kanna/server/codex-app-server/CodexTurnBusyError": Effect.die,
+        }),
+      )
 
-      for await (const event of turn.stream) {
-        if (event.type !== "transcript" || !event.entry) continue
+      let assistantText = ""
+      let resultText = ""
+      yield* Stream.runForEach(turn.events, (event) => Effect.sync(() => {
+        if (event.type !== "transcript" || !event.entry) return
         if (event.entry.kind === "assistant_text") {
           assistantText += assistantText ? `\n${event.entry.text}` : event.entry.text
         }
         if (event.entry.kind === "result" && !event.entry.isError && event.entry.result.trim()) {
           resultText = event.entry.result
         }
-      }
+      }))
 
       const candidate = assistantText.trim() || resultText.trim()
       return candidate || null
-    } finally {
-      turn?.close()
-      this.stopSession(chatId)
-    }
-  }
+    }).pipe(
+      Effect.scoped,
+      Effect.ensuring(stopSession(chatId)),
+    )
+  })
 
-  /**
-   * Stops one spawned agent's turn, as a turn of the chat's own is stopped.
-   * Its end comes back as a `turn/completed`, which is what closes its row.
-   * False when the chat has no such agent running.
-   */
-  async stopAgent(chatId: string, agentThreadId: string) {
-    const context = this.sessions.get(chatId)
+  const stopAgent = Effect.fn("CodexAppServer.stopAgent")(function* (chatId: string, agentThreadId: string) {
+    yield* Effect.annotateCurrentSpan("chatId", chatId)
+    const context = sessions.get(chatId)
     const agent = context?.agents.get(agentThreadId)
     if (!context || context.closed || !agent?.turnId) return false
-    await this.sendRequest(context, "turn/interrupt", {
+    yield* sendRequest(context, "turn/interrupt", {
       threadId: agent.threadId,
       turnId: agent.turnId,
-    } satisfies TurnInterruptParams)
+    } satisfies TurnInterruptParams, isAnyResult)
     return true
+  })
+
+  const stopAgents = Effect.fn("CodexAppServer.stopAgents")(function* (chatId: string) {
+    yield* Effect.annotateCurrentSpan("chatId", chatId)
+    const running = [...(sessions.get(chatId)?.agents.values() ?? [])].filter((agent) => agent.turnId !== null)
+    yield* Effect.forEach(running, (agent) => stopAgent(chatId, agent.threadId).pipe(Effect.ignore), {
+      concurrency: "unbounded",
+      discard: true,
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // What codex sends
+  // ---------------------------------------------------------------------------
+
+  const handleLine = (context: SessionContext, line: string): Effect.Effect<void> => {
+    const inbound = decodeCodexLine(line)
+    return Match.valueTags(inbound, {
+      Response: ({ response }) => Effect.sync(() => handleResponse(context, response)),
+      Request: ({ request }) => handleServerRequest(context, request),
+      Notification: ({ notification }) => handleNotification(context, notification),
+      // A request codex now waits on for good (the old cast failed the same
+      // way) is worth a warning; a notification is only dropped.
+      Malformed: ({ method, request }) => request
+        ? Effect.logWarning(`Ignoring a malformed Codex ${method} request`)
+        : Effect.logDebug(`Ignoring a malformed Codex ${method} notification`),
+      Ignored: () => Effect.void,
+    })
   }
 
   /**
-   * Stops every agent a chat has running. Codex leaves them going when the
-   * turn that spawned them is interrupted, so stopping the chat has to ask.
+   * Codex's questions to the user, its tool calls, and approvals. The
+   * transcript entries go out at once; the wait for the user's answer runs
+   * on a fiber of its own (started at once, as the old async handler was),
+   * so the reader goes on with the next line.
    */
-  async stopAgents(chatId: string) {
-    const running = [...(this.sessions.get(chatId)?.agents.values() ?? [])].filter((agent) => agent.turnId !== null)
-    await Promise.allSettled(running.map((agent) => this.stopAgent(chatId, agent.threadId)))
-  }
-
-  stopSession(chatId: string) {
-    const context = this.sessions.get(chatId)
-    if (!context) return
-    this.failContext(context, "Codex session closed")
-    context.pendingTurn?.queue.finish()
-    this.sessions.delete(chatId)
-    try {
-      context.child.kill("SIGKILL")
-    } catch {
-      // ignore kill failures
-    }
-  }
-
-  stopAll() {
-    for (const chatId of this.sessions.keys()) {
-      this.stopSession(chatId)
-    }
-  }
-
-  private requireSession(chatId: string) {
-    const context = this.sessions.get(chatId)
-    if (!context || context.closed) {
-      throw new Error("Codex session not started")
-    }
-    return context
-  }
-
-  private attachListeners(context: SessionContext) {
-    const lines = createInterface({ input: context.child.stdout })
-    void (async () => {
-      for await (const line of lines) {
-        const parsed = parseJsonLine(line)
-        if (!parsed) continue
-
-        if (isJsonRpcResponse(parsed)) {
-          this.handleResponse(context, parsed)
-          continue
-        }
-
-        if (isServerRequest(parsed)) {
-          void this.handleServerRequest(context, parsed)
-          continue
-        }
-
-        if (isServerNotification(parsed)) {
-          void this.handleNotification(context, parsed)
-        }
-      }
-    })()
-
-    const stderr = createInterface({ input: context.child.stderr })
-    void (async () => {
-      for await (const line of stderr) {
-        if (line.trim()) {
-          context.stderrLines = [line.trim().slice(-8192)]
-        }
-      }
-    })()
-
-    context.child.on("error", (error) => {
-      this.failContext(context, error.message)
-    })
-
-    context.child.on("close", (code) => {
-      if (context.closed) return
-      queueMicrotask(() => {
-        if (context.closed) return
-        const message = context.stderrLines.at(-1) || `Codex app-server exited with code ${code ?? 1}`
-        this.failContext(context, message)
-      })
-    })
-  }
-
-  private handleResponse(context: SessionContext, response: JsonRpcResponse) {
-    const pending = context.pendingRequests.get(response.id)
-    if (!pending) return
-    context.pendingRequests.delete(response.id)
-    if (response.error) {
-      pending.reject(new Error(`${pending.method} failed: ${response.error.message ?? "Unknown error"}`))
-      return
-    }
-    pending.resolve(response.result)
-  }
-
-  private async handleServerRequest(context: SessionContext, request: ServerRequest) {
+  const handleServerRequest = (context: SessionContext, request: ServerRequest): Effect.Effect<void> => Effect.suspend(() => {
     const pendingTurn = context.pendingTurn
     if (!pendingTurn) {
-      this.writeMessage(context, {
+      writeMessage(context, {
         id: request.id,
         error: {
           message: "No active turn",
         },
       })
-      return
+      return Effect.void
     }
 
-    if (request.method === "item/tool/requestUserInput") {
-      const questions = toAskUserQuestionItems(request.params)
-      const toolId = request.params.itemId
-      const toolRequest: HarnessToolRequest = {
-        tool: {
-          kind: "tool",
-          toolKind: "ask_user_question",
-          toolName: "AskUserQuestion",
-          toolId,
-          input: { questions },
-          rawInput: {
-            questions: request.params.questions,
-          },
-        },
-      }
-      pendingTurn.queue.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "tool_call",
-          tool: toolRequest.tool,
-        }),
-      })
+    const answerLater = <A>(wait: CodexCallback<A>, what: string, answer: (value: A) => unknown) =>
+      wait.pipe(
+        Effect.flatMap((value) => Effect.sync(() => writeMessage(context, { id: request.id, result: answer(value) }))),
+        logCallbackFailure(what),
+        Effect.forkIn(context.scope, { startImmediately: true }),
+        Effect.asVoid,
+      )
 
-      const result = await pendingTurn.onToolRequest(toolRequest)
-      this.writeMessage(context, {
-        id: request.id,
-        result: toToolRequestUserInputResponse(result, request.params.questions),
-      })
-      return
-    }
-
-    if (request.method === "item/tool/call") {
-      pendingTurn.handledDynamicToolIds.add(request.params.callId)
-      if (request.params.tool === "update_plan") {
-        const args = asRecord(request.params.arguments)
-        const plan = Array.isArray(args?.plan) ? args.plan : []
-        const steps: TurnPlanStep[] = plan
-          .map((entry) => asRecord(entry))
-          .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-          .map((entry) => {
-            const status: TurnPlanStep["status"] =
-              entry.status === "completed"
-                ? "completed"
-                : entry.status === "inProgress" || entry.status === "in_progress"
-                  ? "inProgress"
-                  : "pending"
-            return {
-              step: typeof entry.step === "string" ? entry.step : "",
-              status,
-            }
-          })
-          .filter((step) => step.step.length > 0)
-
-        if (steps.length > 0) {
-          pendingTurn.latestPlanSteps = steps
-          pendingTurn.latestPlanExplanation = typeof args?.explanation === "string" ? args.explanation : pendingTurn.latestPlanExplanation
-          pendingTurn.queue.push({
-            type: "transcript",
-            entry: todoToolCall(request.params.callId, steps),
-          })
-          pendingTurn.queue.push({
+    return Match.value(request).pipe(
+      Match.discriminatorsExhaustive("method")({
+        "item/tool/requestUserInput": (request) => {
+          const questions = toAskUserQuestionItems(request.params)
+          const toolRequest: HarnessToolRequest = {
+            tool: {
+              kind: "tool",
+              toolKind: "ask_user_question",
+              toolName: "AskUserQuestion",
+              toolId: request.params.itemId,
+              input: { questions },
+              rawInput: {
+                questions: request.params.questions,
+              },
+            },
+          }
+          emit(pendingTurn, {
             type: "transcript",
             entry: timestamped({
-              kind: "tool_result",
-              toolId: request.params.callId,
-              content: "",
+              kind: "tool_call",
+              tool: toolRequest.tool,
             }),
           })
-        }
+          return answerLater(
+            pendingTurn.onToolRequest(toolRequest),
+            "question",
+            (result) => toToolRequestUserInputResponse(result, request.params.questions) satisfies ToolRequestUserInputResponse,
+          )
+        },
+        "item/tool/call": (request) => Effect.sync(() => handleDynamicToolCall(context, pendingTurn, request)),
+        "item/commandExecution/requestApproval": (request) => answerLater(
+          pendingTurn.onApprovalRequest?.({ requestId: request.id, kind: "command_execution", params: request.params })
+            ?? Effect.succeed<CommandExecutionApprovalDecision | FileChangeApprovalDecision>("decline"),
+          "approval",
+          (decision) => ({ decision } satisfies CommandExecutionRequestApprovalResponse),
+        ),
+        "item/fileChange/requestApproval": (request) => answerLater(
+          pendingTurn.onApprovalRequest?.({ requestId: request.id, kind: "file_change", params: request.params })
+            ?? Effect.succeed<CommandExecutionApprovalDecision | FileChangeApprovalDecision>("decline"),
+          "approval",
+          (decision) => ({ decision } satisfies FileChangeRequestApprovalResponse),
+        ),
+      }),
+    )
+  })
 
-        this.writeMessage(context, {
-          id: request.id,
-          result: {
-            contentItems: [],
-            success: true,
-          } satisfies DynamicToolCallResponse,
+  const handleDynamicToolCall = (
+    context: SessionContext,
+    pendingTurn: PendingTurn,
+    request: Extract<ServerRequest, { method: "item/tool/call" }>,
+  ) => {
+    pendingTurn.handledDynamicToolIds.add(request.params.callId)
+    if (request.params.tool === "update_plan") {
+      const args = asRecord(request.params.arguments)
+      const plan = Array.isArray(args?.plan) ? args.plan : []
+      const steps: TurnPlanStep[] = plan
+        .map((entry) => asRecord(entry))
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
+        .map((entry) => {
+          const status =
+            entry.status === "completed"
+              ? "completed"
+              : entry.status === "inProgress" || entry.status === "in_progress"
+                ? "inProgress"
+                : "pending"
+          return {
+            step: typeof entry.step === "string" ? entry.step : "",
+            status,
+          }
         })
-        return
+        .filter((step) => step.step.length > 0)
+
+      if (steps.length > 0) {
+        pendingTurn.latestPlanSteps = steps
+        pendingTurn.latestPlanExplanation = typeof args?.explanation === "string" ? args.explanation : pendingTurn.latestPlanExplanation
+        emit(pendingTurn, {
+          type: "transcript",
+          entry: todoToolCall(request.params.callId, steps),
+        })
+        emit(pendingTurn, {
+          type: "transcript",
+          entry: timestamped({
+            kind: "tool_result",
+            toolId: request.params.callId,
+            content: "",
+          }),
+        })
       }
 
-      const payload = dynamicToolPayload(request.params.arguments)
-      pendingTurn.queue.push({
-        type: "transcript",
-        entry: genericDynamicToolCall(request.params.callId, request.params.tool, payload),
-      })
-      const errorMessage = `Unsupported dynamic tool call: ${request.params.tool}`
-      pendingTurn.queue.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "tool_result",
-          toolId: request.params.callId,
-          content: errorMessage,
-          isError: true,
-        }),
-      })
-      this.writeMessage(context, {
+      writeMessage(context, {
         id: request.id,
         result: {
-          contentItems: [{ type: "inputText", text: errorMessage }],
-          success: false,
+          contentItems: [],
+          success: true,
         } satisfies DynamicToolCallResponse,
       })
       return
     }
 
-    if (request.method === "item/commandExecution/requestApproval") {
-      const decision = await pendingTurn.onApprovalRequest?.({
-        requestId: request.id,
-        kind: "command_execution",
-        params: request.params,
-      }) ?? "decline"
-      this.writeMessage(context, {
-        id: request.id,
-        result: {
-          decision,
-        } satisfies CommandExecutionRequestApprovalResponse,
-      })
-      return
-    }
-
-    const decision = await pendingTurn.onApprovalRequest?.({
-      requestId: request.id,
-      kind: "file_change",
-      params: request.params,
-    }) ?? "decline"
-    this.writeMessage(context, {
+    const payload = dynamicToolPayload(request.params.arguments)
+    emit(pendingTurn, {
+      type: "transcript",
+      entry: genericDynamicToolCall(request.params.callId, request.params.tool, payload),
+    })
+    const errorMessage = `Unsupported dynamic tool call: ${request.params.tool}`
+    emit(pendingTurn, {
+      type: "transcript",
+      entry: timestamped({
+        kind: "tool_result",
+        toolId: request.params.callId,
+        content: errorMessage,
+        isError: true,
+      }),
+    })
+    writeMessage(context, {
       id: request.id,
       result: {
-        decision,
-      } satisfies FileChangeRequestApprovalResponse,
+        contentItems: [{ type: "inputText", text: errorMessage }],
+        success: false,
+      } satisfies DynamicToolCallResponse,
     })
   }
 
-  private async handleNotification(context: SessionContext, notification: ServerNotification) {
+  const handleNotification = (context: SessionContext, notification: ServerNotification): Effect.Effect<void> => Effect.suspend(() => {
     if (notification.method === "thread/started") {
       // A spawned agent's thread is not a new thread for the chat. Taking its
       // id would send the chat's next turn to the agent.
       const thread = notification.params.thread
-      if (thread.parentThreadId || context.agents.has(thread.id)) return
-      context.sessionToken = notification.params.thread.id
+      if (thread.parentThreadId || context.agents.has(thread.id)) return Effect.void
+      context.sessionToken = thread.id
       if (context.pendingTurn) {
-        context.pendingTurn.queue.push({
+        emit(context.pendingTurn, {
           type: "session_token",
-          sessionToken: notification.params.thread.id,
+          sessionToken: thread.id,
         })
       }
-      return
+      return Effect.void
     }
 
     // Account rate limits arrive independent of any active turn.
     if (notification.method === "account/rateLimits/updated") {
-      const params = notification.params as AccountRateLimitsUpdatedNotification
-      if (params?.rateLimits) this.onRateLimits?.(params.rateLimits)
-      return
+      const snapshot = notification.params.rateLimits
+      return snapshot ? PubSub.publish(rateLimits, snapshot).pipe(Effect.asVoid) : Effect.void
     }
 
     // Everything past here is about one thread, and the threads of the agents
@@ -1510,48 +1935,52 @@ export class CodexAppServerManager {
     // the chat's transcript.
     const threadId = notificationThreadId(notification)
     if (threadId && context.sessionToken && threadId !== context.sessionToken) {
-      this.handleAgentNotification(context, threadId, notification)
-      return
+      handleAgentNotification(context, threadId, notification)
+      return Effect.void
     }
+
+    // Items the adapter does not know (reasoning, user messages, whatever a
+    // newer codex adds) show nothing, as before.
+    const item = (notification.method === "item/started" || notification.method === "item/completed")
+      && isThreadItem(notification.params.item)
+      ? notification.params.item
+      : null
 
     // Before the check for a turn: an agent's end is reported on the chat's
     // thread, and can come after the turn that spawned it is over.
-    if (notification.method === "item/started" || notification.method === "item/completed") {
-      this.trackSpawnedAgents(context, notification.params.item)
-    }
+    if (item) trackSpawnedAgents(context, item)
 
     const pendingTurn = context.pendingTurn
-    if (!pendingTurn) return
+    if (!pendingTurn) return Effect.void
 
+    // A switch rather than Match: this runs for every line codex sends.
     switch (notification.method) {
       case "thread/tokenUsage/updated":
-        this.handleTokenUsageUpdated(pendingTurn, notification.params)
-        return
+        handleTokenUsageUpdated(pendingTurn, notification.params)
+        return Effect.void
       case "turn/plan/updated":
-        this.handlePlanUpdated(pendingTurn, notification.params)
-        return
+        handlePlanUpdated(pendingTurn, notification.params)
+        return Effect.void
       case "item/started":
-        this.handleItemStarted(pendingTurn, notification.params)
-        return
+        if (item) handleItemStarted(pendingTurn, item)
+        return Effect.void
       case "item/completed":
-        this.handleItemCompleted(pendingTurn, notification.params)
-        return
+        if (item) handleItemCompleted(pendingTurn, item)
+        return Effect.void
       case "item/plan/delta":
-        this.handlePlanDelta(pendingTurn, notification.params)
-        return
+        handlePlanDelta(pendingTurn, notification.params)
+        return Effect.void
       case "turn/completed":
-        await this.handleTurnCompleted(context, notification.params)
-        return
+        return handleTurnCompleted(context, notification.params)
       case "thread/compacted":
-        this.handleContextCompacted(pendingTurn, notification.params)
-        return
+        handleContextCompacted(pendingTurn)
+        return Effect.void
       case "error":
-        this.handleErrorNotification(context, notification.params)
-        return
+        return handleErrorNotification(context, notification.params)
       default:
-        return
+        return Effect.void
     }
-  }
+  })
 
   /**
    * A notification about a thread that is not the chat's. Only the threads of
@@ -1562,35 +1991,37 @@ export class CodexAppServerManager {
    * `turn/started` and `turn/completed` arrive here with its thread id, and an
    * agent whose turn is interrupted reports `turn/completed` as `interrupted`.
    */
-  private handleAgentNotification(context: SessionContext, threadId: string, notification: ServerNotification) {
+  const handleAgentNotification = (context: SessionContext, threadId: string, notification: ServerNotification) => {
     switch (notification.method) {
       case "turn/started":
-        this.agentTurnStarted(context, threadId, notification.params.turn.id)
+        agentTurnStarted(context, threadId, notification.params.turn.id)
         return
       case "turn/completed": {
         const { id, status } = notification.params.turn
-        this.agentTurnEnded(context, threadId, id, status === "failed" ? "failed" : status === "interrupted" ? "stopped" : "completed")
+        agentTurnEnded(context, threadId, id, status === "failed" ? "failed" : status === "interrupted" ? "stopped" : "completed")
         return
       }
       case "item/started":
       case "item/completed":
         // An agent can spawn agents of its own.
-        if (context.agents.has(threadId)) this.trackSpawnedAgents(context, notification.params.item)
+        if (context.agents.has(threadId) && isThreadItem(notification.params.item)) {
+          trackSpawnedAgents(context, notification.params.item)
+        }
         return
       case "error":
         // The end of the agent's turn, not of the chat's session.
-        if (!notification.params.willRetry) this.agentTurnEnded(context, threadId, notification.params.turnId ?? null, "failed")
+        if (!notification.params.willRetry) agentTurnEnded(context, threadId, notification.params.turnId ?? null, "failed")
         return
       case "thread/closed":
-        this.agentTurnEnded(context, threadId, null, "stopped")
+        agentTurnEnded(context, threadId, null, "stopped")
         return
       case "thread/status/changed": {
         // Only the states a thread does not come back from. `idle` is left to
         // `turn/completed`: a new thread is idle for a moment before its
         // first turn, and reading that as an end would close the row early.
         const status = notification.params.status.type
-        if (status === "systemError") this.agentTurnEnded(context, threadId, null, "failed")
-        else if (status === "notLoaded") this.agentTurnEnded(context, threadId, null, "stopped")
+        if (status === "systemError") agentTurnEnded(context, threadId, null, "failed")
+        else if (status === "notLoaded") agentTurnEnded(context, threadId, null, "stopped")
         return
       }
       default:
@@ -1605,11 +2036,11 @@ export class CodexAppServerManager {
    * `subAgentActivity` item. Neither starts a row. The agent's own
    * `turn/started` does, so a row always has a turn that must end.
    */
-  private trackSpawnedAgents(context: SessionContext, item: ThreadItem) {
+  const trackSpawnedAgents = (context: SessionContext, item: ThreadItem) => {
     if (item.type === "collabAgentToolCall") {
       if (item.tool !== "spawnAgent") return
       for (const threadId of item.receiverThreadIds ?? []) {
-        this.nameAgent(context, {
+        nameAgent(context, {
           threadId,
           label: agentLabelFromPrompt(item.prompt),
           ...(item.prompt?.trim() ? { description: item.prompt.trim() } : {}),
@@ -1620,32 +2051,32 @@ export class CodexAppServerManager {
     }
     if (item.type !== "subAgentActivity") return
     if (item.kind === "started" || item.kind === "interacted") {
-      this.nameAgent(context, { threadId: item.agentThreadId, label: agentLabelFromPath(item.agentPath) })
+      nameAgent(context, { threadId: item.agentThreadId, label: agentLabelFromPath(item.agentPath) })
       return
     }
     // The item's id names the turn that ended ("subagent-completed-<turn id>"),
     // which keeps a late report of one turn from ending the agent's next.
     const turnId = /^subagent-(?:completed|interrupted)-(.+)$/.exec(item.id)?.[1] ?? null
-    this.agentTurnEnded(context, item.agentThreadId, turnId, item.kind === "interrupted" ? "stopped" : "completed")
+    agentTurnEnded(context, item.agentThreadId, turnId, item.kind === "interrupted" ? "stopped" : "completed")
   }
 
-  private nameAgent(context: SessionContext, named: Omit<SpawnedAgent, "turnId">) {
+  const nameAgent = (context: SessionContext, named: Omit<SpawnedAgent, "turnId">) => {
     if (named.threadId === context.sessionToken || context.agents.has(named.threadId)) return
     context.agents.set(named.threadId, { ...named, turnId: null })
     const turnId = context.unclaimedTurns.get(named.threadId)
     if (turnId === undefined) return
     context.unclaimedTurns.delete(named.threadId)
-    this.agentTurnStarted(context, named.threadId, turnId)
+    agentTurnStarted(context, named.threadId, turnId)
   }
 
-  private agentTurnStarted(context: SessionContext, threadId: string, turnId: string) {
+  const agentTurnStarted = (context: SessionContext, threadId: string, turnId: string) => {
     const agent = context.agents.get(threadId)
     if (!agent) {
       context.unclaimedTurns.set(threadId, turnId)
       return
     }
     agent.turnId = turnId
-    this.onTaskActivity?.(context.chatId, {
+    onTaskActivity?.(context.chatId, {
       kind: "started",
       id: threadId,
       type: "subagent",
@@ -1657,18 +2088,18 @@ export class CodexAppServerManager {
   }
 
   /** `turnId` is null when the report is of the thread, not of one turn. */
-  private agentTurnEnded(
+  const agentTurnEnded = (
     context: SessionContext,
     threadId: string,
     turnId: string | null,
     outcome: "completed" | "failed" | "stopped",
-  ) {
+  ) => {
     if (turnId === null || context.unclaimedTurns.get(threadId) === turnId) context.unclaimedTurns.delete(threadId)
     const agent = context.agents.get(threadId)
     if (!agent || agent.turnId === null) return
     if (turnId !== null && turnId !== agent.turnId) return
     agent.turnId = null
-    this.onTaskActivity?.(context.chatId, {
+    onTaskActivity?.(context.chatId, {
       kind: "stopped",
       id: threadId,
       failed: outcome === "failed",
@@ -1682,154 +2113,19 @@ export class CodexAppServerManager {
    * off rather than finished. Without this a dropped connection would leave
    * the chat waiting on a subagent for good.
    */
-  private closeAgents(context: SessionContext) {
+  const closeAgents = (context: SessionContext) => {
     for (const agent of context.agents.values()) {
       if (agent.turnId === null) continue
       agent.turnId = null
-      this.onTaskActivity?.(context.chatId, { kind: "stopped", id: agent.threadId, failed: true })
+      onTaskActivity?.(context.chatId, { kind: "stopped", id: agent.threadId, failed: true })
     }
     context.agents.clear()
     context.unclaimedTurns.clear()
   }
 
-  private handleItemStarted(pendingTurn: PendingTurn, notification: ItemStartedNotification) {
-    if (notification.item.type === "plan") {
-      pendingTurn.planTextByItemId.set(notification.item.id, notification.item.text)
-      pendingTurn.latestPlanText = notification.item.text
-      return
-    }
-
-    if (
-      notification.item.type === "commandExecution"
-      || notification.item.type === "webSearch"
-      || notification.item.type === "mcpToolCall"
-      || notification.item.type === "dynamicToolCall"
-      || notification.item.type === "collabAgentToolCall"
-      || notification.item.type === "fileChange"
-      || notification.item.type === "error"
-    ) {
-      if (pendingTurn.handledDynamicToolIds.has(notification.item.id)) {
-        return
-      }
-      if (notification.item.type === "webSearch" && !webSearchQuery(notification.item)) {
-        return
-      }
-    }
-
-    const entries = itemToToolCalls(notification.item)
-    for (const entry of entries) {
-      if (entry.kind === "tool_call") {
-        pendingTurn.startedToolIds.add(entry.tool.toolId)
-      }
-      pendingTurn.queue.push({ type: "transcript", entry })
-    }
-  }
-
-  private handleItemCompleted(pendingTurn: PendingTurn, notification: ItemCompletedNotification) {
-    if (notification.item.type === "agentMessage") {
-      pendingTurn.queue.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "assistant_text",
-          text: notification.item.text,
-        }),
-      })
-      if (pendingTurn.pendingWebSearchResultToolId && notification.item.text.trim()) {
-        pendingTurn.queue.push({
-          type: "transcript",
-          entry: timestamped({
-            kind: "tool_result",
-            toolId: pendingTurn.pendingWebSearchResultToolId,
-            content: notification.item.text,
-          }),
-        })
-        pendingTurn.pendingWebSearchResultToolId = null
-      }
-      return
-    }
-
-    if (notification.item.type === "plan") {
-      pendingTurn.planTextByItemId.set(notification.item.id, notification.item.text)
-      pendingTurn.latestPlanText = notification.item.text
-      return
-    }
-
-    if (pendingTurn.handledDynamicToolIds.has(notification.item.id)) {
-      return
-    }
-
-    const startedEntries = itemToToolCalls(notification.item)
-    for (const entry of startedEntries) {
-      if (entry.kind !== "tool_call") {
-        continue
-      }
-      if (pendingTurn.startedToolIds.has(entry.tool.toolId)) {
-        continue
-      }
-      pendingTurn.startedToolIds.add(entry.tool.toolId)
-      pendingTurn.queue.push({ type: "transcript", entry })
-    }
-
-    const resultEntries = itemToToolResults(notification.item)
-    for (const entry of resultEntries) {
-      pendingTurn.queue.push({ type: "transcript", entry })
-      if (notification.item.type === "webSearch" && entry.kind === "tool_result" && !entry.isError) {
-        pendingTurn.pendingWebSearchResultToolId = notification.item.id
-      }
-    }
-  }
-
-  private handlePlanUpdated(pendingTurn: PendingTurn, notification: TurnPlanUpdatedNotification) {
-    pendingTurn.latestPlanExplanation = notification.explanation ?? null
-    pendingTurn.latestPlanSteps = notification.plan
-    if (notification.plan.length === 0) {
-      return
-    }
-    pendingTurn.todoSequence += 1
-    pendingTurn.queue.push({
-      type: "transcript",
-      entry: todoToolCall(
-        `${notification.turnId}:todo-${pendingTurn.todoSequence}`,
-        notification.plan
-      ),
-    })
-  }
-
-  private handlePlanDelta(pendingTurn: PendingTurn, notification: PlanDeltaNotification) {
-    const current = pendingTurn.planTextByItemId.get(notification.itemId) ?? ""
-    const next = `${current}${notification.delta}`
-    pendingTurn.planTextByItemId.set(notification.itemId, next)
-    pendingTurn.latestPlanText = next
-  }
-
-  private handleContextCompacted(pendingTurn: PendingTurn, _notification: ContextCompactedNotification) {
-    pendingTurn.queue.push({
-      type: "transcript",
-      entry: timestamped({ kind: "compact_boundary" }),
-    })
-  }
-
-  private handleTokenUsageUpdated(
-    pendingTurn: PendingTurn,
-    notification: ThreadTokenUsageUpdatedNotification,
-  ) {
-    const usage = normalizeCodexTokenUsage(notification)
-    if (!usage) {
-      return
-    }
-
-    pendingTurn.queue.push({
-      type: "transcript",
-      entry: timestamped({
-        kind: "context_window_updated",
-        usage,
-      }),
-    })
-  }
-
-  private async handleTurnCompleted(context: SessionContext, notification: TurnCompletedNotification) {
+  const handleTurnCompleted = (context: SessionContext, notification: TurnCompletedNotification): Effect.Effect<void> => Effect.suspend(() => {
     const pendingTurn = context.pendingTurn
-    if (!pendingTurn) return
+    if (!pendingTurn) return Effect.void
     const status = notification.turn.status
     const isCancelled = status === "interrupted"
     const isError = status === "failed"
@@ -1843,7 +2139,7 @@ export class CodexAppServerManager {
         // The plan item is in no transcript entry of its own: the approval
         // card is what shows it. Without the card it goes in as the reply,
         // which is what the sender's report carries.
-        pendingTurn.queue.push({
+        emit(pendingTurn, {
           type: "transcript",
           entry: timestamped({ kind: "assistant_text", text: planText }),
         })
@@ -1863,23 +2159,30 @@ export class CodexAppServerManager {
             summary: pendingTurn.latestPlanExplanation ?? undefined,
           },
         }
-        pendingTurn.queue.push({
+        emit(pendingTurn, {
           type: "transcript",
           entry: timestamped({
             kind: "tool_call",
             tool,
           }),
         })
-        await pendingTurn.onToolRequest({ tool })
-        pendingTurn.resolved = true
-        pendingTurn.queue.finish()
-        context.pendingTurn = null
-        return
+        // The turn ends once the user has answered the plan. Only this turn:
+        // an interrupt may have let the chat's next one start meanwhile.
+        return pendingTurn.onToolRequest({ tool }).pipe(
+          Effect.andThen(Effect.sync(() => {
+            pendingTurn.resolved = true
+            finish(pendingTurn)
+            if (context.pendingTurn === pendingTurn) context.pendingTurn = null
+          })),
+          logCallbackFailure("plan approval"),
+          Effect.forkIn(context.scope, { startImmediately: true }),
+          Effect.asVoid,
+        )
       }
     }
 
     pendingTurn.resolved = true
-    pendingTurn.queue.push({
+    emit(pendingTurn, {
       type: "transcript",
       entry: timestamped({
         kind: "result",
@@ -1895,9 +2198,10 @@ export class CodexAppServerManager {
           : formatCodexError(notification.turn.error),
       }),
     })
-    pendingTurn.queue.finish()
+    finish(pendingTurn)
     context.pendingTurn = null
-  }
+    return Effect.void
+  })
 
   /**
    * codex reports two different things through `error`. A dropped model stream
@@ -1909,86 +2213,171 @@ export class CodexAppServerManager {
    * only the last one, so it clears itself when the stream comes back) and let
    * the turn run. Only `willRetry: false` is terminal.
    */
-  private handleErrorNotification(context: SessionContext, notification: ErrorNotification) {
+  const handleErrorNotification = (context: SessionContext, notification: ErrorNotification): Effect.Effect<void> => {
     const message = formatCodexError(notification.error) || "Codex reported an error"
-    if (!notification.willRetry) {
-      this.failContext(context, message)
-      return
-    }
+    if (!notification.willRetry) return failSession(context, message)
 
     const pendingTurn = context.pendingTurn
-    if (!pendingTurn || pendingTurn.resolved) return
+    if (!pendingTurn || pendingTurn.resolved) return Effect.void
     pendingTurn.retryCause = preferredRetryCause(pendingTurn.retryCause, notification.error)
-    pendingTurn.queue.push({
+    emit(pendingTurn, {
       type: "transcript",
       entry: timestamped({ kind: "status", status: message }),
     })
+    return Effect.void
   }
 
-  private failContext(context: SessionContext, message: string) {
-    context.customTools?.close()
-    this.closeAgents(context)
-    const pendingTurn = context.pendingTurn
-    if (pendingTurn && !pendingTurn.resolved) {
-      pendingTurn.queue.push({
+  return CodexAppServer.of({
+    startSession,
+    startTurn,
+    listSkills,
+    listModels,
+    readAccountRateLimits,
+    generateStructured,
+    stopAgent,
+    stopAgents,
+    stopSession,
+    stopAll,
+    resourceCounts: Effect.sync(() => ({
+      codexSessions: sessions.size,
+      codexPendingRequests: [...sessions.values()].reduce((sum, session) => sum + session.pendingRequests.size, 0),
+      codexStderrChars: [...sessions.values()].reduce((sum, session) => sum + session.stderrLines.reduce((total, line) => total + line.length, 0), 0),
+    })),
+    rateLimitPushes: Stream.fromPubSub(rateLimits),
+    setTaskActivityListener: (listener) => {
+      onTaskActivity = listener
+    },
+  })
+})
+
+function handleItemStarted(pendingTurn: PendingTurn, item: ThreadItem) {
+  if (item.type === "plan") {
+    pendingTurn.planTextByItemId.set(item.id, item.text)
+    pendingTurn.latestPlanText = item.text
+    return
+  }
+
+  if (
+    item.type === "commandExecution"
+    || item.type === "webSearch"
+    || item.type === "mcpToolCall"
+    || item.type === "dynamicToolCall"
+    || item.type === "collabAgentToolCall"
+    || item.type === "fileChange"
+    || item.type === "error"
+  ) {
+    if (pendingTurn.handledDynamicToolIds.has(item.id)) {
+      return
+    }
+    if (item.type === "webSearch" && !webSearchQuery(item)) {
+      return
+    }
+  }
+
+  const entries = itemToToolCalls(item)
+  for (const entry of entries) {
+    if (entry.kind === "tool_call") {
+      pendingTurn.startedToolIds.add(entry.tool.toolId)
+    }
+    emit(pendingTurn, { type: "transcript", entry })
+  }
+}
+
+function handleItemCompleted(pendingTurn: PendingTurn, item: ThreadItem) {
+  if (item.type === "agentMessage") {
+    emit(pendingTurn, {
+      type: "transcript",
+      entry: timestamped({
+        kind: "assistant_text",
+        text: item.text,
+      }),
+    })
+    if (pendingTurn.pendingWebSearchResultToolId && item.text.trim()) {
+      emit(pendingTurn, {
         type: "transcript",
         entry: timestamped({
-          kind: "result",
-          subtype: "error",
-          isError: true,
-          durationMs: 0,
-          result: message,
+          kind: "tool_result",
+          toolId: pendingTurn.pendingWebSearchResultToolId,
+          content: item.text,
         }),
       })
-      pendingTurn.queue.finish()
-      context.pendingTurn = null
+      pendingTurn.pendingWebSearchResultToolId = null
     }
-
-    for (const pending of context.pendingRequests.values()) {
-      pending.reject(new Error(message))
-    }
-    context.pendingRequests.clear()
-    context.closed = true
-    if (this.sessions.get(context.chatId) === context) this.sessions.delete(context.chatId)
-    // A non-retryable protocol error (e.g. a usage-limit hit) leaves the
-    // subprocess itself running — only the child.on("close") path had
-    // actually exited already. Without this, the process survives orphaned,
-    // still holding its thread's write lock, until the whole Kanna process
-    // is killed. A later resume then spawns a second process for the same
-    // thread and collides with the still-alive first one.
-    try {
-      context.child.kill("SIGKILL")
-    } catch {
-      // ignore kill failures
-    }
+    return
   }
 
-  getResourceCounts() {
-    return {
-      codexSessions: this.sessions.size,
-      codexPendingRequests: [...this.sessions.values()].reduce((sum, session) => sum + session.pendingRequests.size, 0),
-      codexStderrChars: [...this.sessions.values()].reduce((sum, session) => sum + session.stderrLines.reduce((total, line) => total + line.length, 0), 0),
+  if (item.type === "plan") {
+    pendingTurn.planTextByItemId.set(item.id, item.text)
+    pendingTurn.latestPlanText = item.text
+    return
+  }
+
+  if (pendingTurn.handledDynamicToolIds.has(item.id)) {
+    return
+  }
+
+  const startedEntries = itemToToolCalls(item)
+  for (const entry of startedEntries) {
+    if (entry.kind !== "tool_call") {
+      continue
+    }
+    if (pendingTurn.startedToolIds.has(entry.tool.toolId)) {
+      continue
+    }
+    pendingTurn.startedToolIds.add(entry.tool.toolId)
+    emit(pendingTurn, { type: "transcript", entry })
+  }
+
+  const resultEntries = itemToToolResults(item)
+  for (const entry of resultEntries) {
+    emit(pendingTurn, { type: "transcript", entry })
+    if (item.type === "webSearch" && entry.kind === "tool_result" && !entry.isError) {
+      pendingTurn.pendingWebSearchResultToolId = item.id
     }
   }
+}
 
-  private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {
-    const id = randomUUID()
-    const promise = new Promise<TResult>((resolve, reject) => {
-      context.pendingRequests.set(id, {
-        method,
-        resolve: resolve as (value: unknown) => void,
-        reject,
-      })
-    })
-    this.writeMessage(context, {
-      id,
-      method,
-      params,
-    })
-    return await promise
+function handlePlanUpdated(pendingTurn: PendingTurn, notification: TurnPlanUpdatedNotification) {
+  pendingTurn.latestPlanExplanation = notification.explanation ?? null
+  pendingTurn.latestPlanSteps = notification.plan
+  if (notification.plan.length === 0) {
+    return
+  }
+  pendingTurn.todoSequence += 1
+  emit(pendingTurn, {
+    type: "transcript",
+    entry: todoToolCall(
+      `${notification.turnId}:todo-${pendingTurn.todoSequence}`,
+      notification.plan
+    ),
+  })
+}
+
+function handlePlanDelta(pendingTurn: PendingTurn, notification: PlanDeltaNotification) {
+  const current = pendingTurn.planTextByItemId.get(notification.itemId) ?? ""
+  const next = `${current}${notification.delta}`
+  pendingTurn.planTextByItemId.set(notification.itemId, next)
+  pendingTurn.latestPlanText = next
+}
+
+function handleContextCompacted(pendingTurn: PendingTurn) {
+  emit(pendingTurn, {
+    type: "transcript",
+    entry: timestamped({ kind: "compact_boundary" }),
+  })
+}
+
+function handleTokenUsageUpdated(pendingTurn: PendingTurn, notification: ThreadTokenUsageUpdatedNotification) {
+  const usage = normalizeCodexTokenUsage(notification)
+  if (!usage) {
+    return
   }
 
-  private writeMessage(context: SessionContext, message: Record<string, unknown>) {
-    context.child.stdin.write(`${JSON.stringify(message)}\n`)
-  }
+  emit(pendingTurn, {
+    type: "transcript",
+    entry: timestamped({
+      kind: "context_window_updated",
+      usage,
+    }),
+  })
 }

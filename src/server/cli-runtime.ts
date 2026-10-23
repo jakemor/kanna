@@ -1,6 +1,7 @@
 import process from "node:process"
-import { spawnSync } from "node:child_process"
-import { hasCommand, spawnDetached } from "./process-utils"
+import { createInterface } from "node:readline/promises"
+import { Clock, Effect, Exit, Layer, Option, Result, Schema, Scope, Stream } from "effect"
+import { hasCommand, runCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, getDataRootDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import type { ShareMode } from "../shared/share"
 import { assertNoHostOverride, getShareCliFlag, isShareEnabled, isTokenShareMode } from "../shared/share"
@@ -18,10 +19,16 @@ import {
   type InstanceClaim,
   type InstanceStatus,
 } from "./instance-socket"
-import type { AnalyticsReporter } from "./analytics"
+import type { Analytics } from "./analytics"
+import type { UpdateManager } from "./update-manager"
 import { createCloudRuntime, type CloudRuntime } from "./cloud"
+import { describeError } from "./cloud/api-client"
 import { readCloudIdentity, type CloudIdentity } from "./cloud/identity"
-import { runPairCommand, type PairCommandArgs, type PairAction } from "./cloud/pair-command"
+import { PairPromptError, runPairCommand, type PairCommandArgs, type PairAction } from "./cloud/pair-command"
+import type { ServerPlatform } from "./effect/runtime"
+
+/** The platform services the CLI runs on (effect/runtime.ts). */
+export type CliPlatform = Layer.Success<typeof ServerPlatform>
 
 export interface CliOptions {
   port: number
@@ -43,17 +50,41 @@ export interface CliOptions {
 
 export interface CliUpdateOptions {
   version: string
-  fetchLatestVersion: (packageName: string) => Promise<string>
-  installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+  fetchLatestVersion: (packageName: string) => Effect.Effect<string, PackageRegistryError>
+  installVersion: (packageName: string, version: string) => Effect.Effect<UpdateInstallAttemptResult>
   /** Build main from source and install it globally (see server/nightly.ts). */
-  installNightly?: () => Promise<NightlyInstallResult>
+  installNightly?: Effect.Effect<NightlyInstallResult>
   argv: string[]
   command: string
 }
 
+export interface CliServerOptions extends CliOptions {
+  update: CliUpdateOptions
+  onMigrationProgress?: (message: string) => void
+  trustProxy?: boolean
+  cloud?: CloudRuntime | null
+  allowCloudPairing?: boolean
+}
+
+/** What `startServer` hands back once the server listens. */
+export interface StartedServer {
+  port: number
+  /** Stops the server. Run once, when the CLI's scope closes. */
+  stop: Effect.Effect<void>
+  analytics?: Analytics["Service"]
+  state?: AttachedServer["state"]
+  /** Present when the server can update itself; its `restart_pending` restarts the CLI. */
+  updateManager?: UpdateManager["Service"] | null
+}
+
+/**
+ * A server is running. It, its share tunnel and its cloud connection stop
+ * when the scope `runCli` ran in closes.
+ */
 export interface StartedCli {
   kind: "started"
-  stop: () => Promise<void>
+  /** Completes when an update installed from the UI wants this process restarted. */
+  restartRequested: Effect.Effect<void>
   /** Kept running when the Mac app that started it quit (instance-socket.ts). */
   releasedFromParent?: () => boolean
 }
@@ -70,35 +101,38 @@ export interface ExitedCli {
 
 export type CliRunResult = StartedCli | RestartingCli | ExitedCli
 
+type PairCommandError = Effect.Error<ReturnType<typeof runPairCommand>>
+type CloudIdentityError = Effect.Error<ReturnType<typeof readCloudIdentity>>
+type ShareTunnelStartError = Effect.Error<ReturnType<typeof startShareTunnel>>
+
 export interface CliRuntimeDeps {
   version: string
   bunVersion: string
-  startServer: (options: CliOptions & {
-    update: CliUpdateOptions
-    onMigrationProgress?: (message: string) => void
-    trustProxy?: boolean
-    cloud?: CloudRuntime | null
-    allowCloudPairing?: boolean
-  }) => Promise<{ port: number; stop: () => Promise<void>; analytics?: AnalyticsReporter; state?: AttachedServer["state"] }>
-  fetchLatestVersion: (packageName: string, options?: { timeoutMs?: number }) => Promise<string>
-  installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
-  installNightly?: () => Promise<NightlyInstallResult>
-  openUrl: (url: string) => void
+  startServer: (options: CliServerOptions) => Effect.Effect<StartedServer, ServerStartError>
+  fetchLatestVersion: (packageName: string, options?: { timeoutMs?: number }) => Effect.Effect<string, PackageRegistryError>
+  installVersion: (packageName: string, version: string) => Effect.Effect<UpdateInstallAttemptResult>
+  installNightly?: Effect.Effect<NightlyInstallResult>
+  openUrl: (url: string) => Effect.Effect<void>
   /** Show the local URL in the Mac app; false when it isn't installed (see mac-app.ts). */
-  openInMacApp?: (localUrl: string) => Promise<boolean>
+  openInMacApp?: (localUrl: string) => Effect.Effect<boolean>
+  /** The CLI's terminal output (stdout). Not logging: lines are written as they are. */
   log: (message: string) => void
+  /** The CLI's terminal warnings (stderr). */
   warn: (message: string) => void
-  renderShareQr?: (url: string) => Promise<string>
-  startShareTunnel?: (localUrl: string, shareMode: Exclude<ShareMode, false>) => Promise<StartedShareTunnel>
-  runPairCommandImpl?: typeof runPairCommand
-  readCloudIdentityImpl?: (warn: (message: string) => void) => Promise<CloudIdentity | null>
+  renderShareQr?: (url: string) => string
+  startShareTunnel?: (localUrl: string, shareMode: Exclude<ShareMode, false>) => Effect.Effect<StartedShareTunnel, ShareTunnelStartError>
+  runPairCommandImpl?: (
+    args: PairCommandArgs,
+    deps: { log: (message: string) => void; warn: (message: string) => void },
+  ) => Effect.Effect<number, PairCommandError, CliPlatform>
+  readCloudIdentityImpl?: (warn: (message: string) => void) => Effect.Effect<CloudIdentity | null, CloudIdentityError, CliPlatform>
   createCloudRuntimeImpl?: (identity: CloudIdentity) => CloudRuntime
-  probeExistingInstanceImpl?: (port: number) => Promise<ExistingInstance | null>
+  probeExistingInstanceImpl?: (port: number) => Effect.Effect<ExistingInstance | null>
   /** The single-instance lock (instance-socket.ts). */
-  claimInstanceImpl?: () => Promise<InstanceClaim>
-  instanceStatusImpl?: () => Promise<InstanceStatus | null>
-  requestInstanceStopImpl?: () => Promise<boolean>
-  slimTranscriptsImpl?: (log: (message: string) => void) => Promise<SlimTranscriptsStats>
+  claimInstanceImpl?: Effect.Effect<InstanceClaim>
+  instanceStatusImpl?: Effect.Effect<InstanceStatus | null>
+  requestInstanceStopImpl?: Effect.Effect<boolean>
+  slimTranscriptsImpl?: (log: (message: string) => void) => Effect.Effect<SlimTranscriptsStats, SlimTranscriptsError>
 }
 
 export interface UpdateInstallAttemptResult {
@@ -123,29 +157,82 @@ export interface SlimTranscriptsStats {
   bytesAfter: number
 }
 
+/** The command line could not be parsed. The message says which argument. */
+export class CliUsageError extends Schema.TaggedError<CliUsageError>()(
+  "@kanna/server/cli-runtime/CliUsageError",
+  {
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+/** The server did not start (a port in use with --strict-port, an unreadable data dir…). */
+export class ServerStartError extends Schema.TaggedError<ServerStartError>()(
+  "@kanna/server/cli-runtime/ServerStartError",
+  {
+    port: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return errorMessage(this.cause)
+  }
+}
+
+/** `kanna slim-transcripts` failed partway. */
+export class SlimTranscriptsError extends Schema.TaggedError<SlimTranscriptsError>()(
+  "@kanna/server/cli-runtime/SlimTranscriptsError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return errorMessage(this.cause)
+  }
+}
+
+/** The npm registry did not say which version is latest. The message is shown to the user. */
+export class PackageRegistryError extends Schema.TaggedError<PackageRegistryError>()(
+  "@kanna/server/cli-runtime/PackageRegistryError",
+  {
+    packageName: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
 /**
  * `kanna slim-transcripts`: rewrite every transcript on disk without the raw
  * provider payload on tool results. The server does this once on its own at
  * boot; the command exists to run it again by hand, for example on a data
  * dir copied in from another machine.
  */
-async function slimTranscripts(log: (message: string) => void): Promise<SlimTranscriptsStats> {
-  const { EventStore } = await import("./event-store")
-  const store = new EventStore()
-  await store.initialize()
-  return await store.slimTranscripts({ force: true, onProgress: log })
-}
+const slimTranscripts = Effect.fn("Cli.slimTranscripts")(function* (log: (message: string) => void) {
+  // Loaded on demand: the other commands never open the store.
+  const { EventStore } = yield* Effect.tryPromise({
+    try: () => import("./event-store"),
+    catch: (cause) => new SlimTranscriptsError({ cause }),
+  })
+  const store = yield* EventStore.make()
+  return yield* store.slimTranscripts({ force: true, onProgress: log })
+}, Effect.scoped)
 
 const MINIMUM_BUN_VERSION = "1.3.5"
 /** Bound on the pre-listen update check; see `fetchLatestPackageVersion`. */
 const STARTUP_UPDATE_CHECK_TIMEOUT_MS = 5_000
+/** How long `kanna stop` waits for the running Kanna to go. */
+const STOP_WAIT_MS = 30_000
+
+function errorMessage(cause: unknown) {
+  return cause instanceof Error ? cause.message : String(cause)
+}
 
 function throwShareConflict(share: Exclude<ShareMode, false>, hostFlag: "--host" | "--remote"): never {
   throw new Error(`${getShareCliFlag(share)} cannot be used with ${hostFlag}`)
 }
 
-function printHelp() {
-  console.log(`${APP_NAME} — local-only project chat UI
+function helpText() {
+  return `${APP_NAME} — local-only project chat UI
 
 Usage:
   ${CLI_COMMAND} [options]
@@ -173,7 +260,7 @@ Options:
   --profile            Write a CPU profile and heap snapshot to ${getDataRootDirDisplay()}/profiles
                        when the server stops
   --version          Print version and exit
-  --help               Show this help message`)
+  --help               Show this help message`
 }
 
 function parsePairArgs(argv: string[]): ParsedArgs {
@@ -202,6 +289,7 @@ function parsePairArgs(argv: string[]): ParsedArgs {
   return { kind: "pair", args: { action, pairingCode } }
 }
 
+/** Parses the `kanna` argv. Throws on a malformed one; `runCli` reports that as a `CliUsageError`. */
 export function parseArgs(argv: string[]): ParsedArgs {
   if (argv[0] === "pair") {
     return parsePairArgs(argv.slice(1))
@@ -322,6 +410,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
 }
 
+const parseArgsEffect = (argv: string[]) =>
+  Effect.try({
+    try: () => parseArgs(argv),
+    catch: (cause) => new CliUsageError({ message: errorMessage(cause), cause }),
+  })
+
 export function compareVersions(currentVersion: string, latestVersion: string) {
   const currentParts = normalizeVersion(currentVersion)
   const latestParts = normalizeVersion(latestVersion)
@@ -347,120 +441,126 @@ function normalizeVersion(version: string) {
     .filter((part) => Number.isFinite(part))
 }
 
-async function maybeSelfUpdate(_argv: string[], deps: CliRuntimeDeps) {
+/** Installs a newer release before the server starts. "startup_update" when the CLI should restart into it. */
+const maybeSelfUpdate = Effect.fn("Cli.maybeSelfUpdate")(function* (deps: CliRuntimeDeps) {
   if (process.env.KANNA_DISABLE_SELF_UPDATE === "1") {
-    return null
+    return Option.none<"startup_update">()
   }
 
   deps.log(`${LOG_PREFIX} checking for updates`)
 
-  let latestVersion: string
-  try {
-    latestVersion = await deps.fetchLatestVersion(PACKAGE_NAME, { timeoutMs: STARTUP_UPDATE_CHECK_TIMEOUT_MS })
-  }
-  catch (error) {
+  const latest = yield* Effect.result(deps.fetchLatestVersion(PACKAGE_NAME, { timeoutMs: STARTUP_UPDATE_CHECK_TIMEOUT_MS }))
+  if (Result.isFailure(latest)) {
     deps.warn(`${LOG_PREFIX} update check failed, continuing current version`)
-    if (error instanceof Error && error.message) {
-      deps.warn(`${LOG_PREFIX} ${error.message}`)
+    if (latest.failure.message) {
+      deps.warn(`${LOG_PREFIX} ${latest.failure.message}`)
     }
-    return null
+    return Option.none<"startup_update">()
   }
+  const latestVersion = latest.success
 
   if (!latestVersion || compareVersions(deps.version, latestVersion) >= 0) {
-    return null
+    return Option.none<"startup_update">()
   }
 
   deps.log(`${LOG_PREFIX} installing ${PACKAGE_NAME}@${latestVersion}`)
-  const installResult = deps.installVersion(PACKAGE_NAME, latestVersion)
+  const installResult = yield* deps.installVersion(PACKAGE_NAME, latestVersion)
   if (!installResult.ok) {
     deps.warn(`${LOG_PREFIX} update failed, continuing current version`)
     if (installResult.userMessage) {
       deps.warn(`${LOG_PREFIX} ${installResult.userMessage}`)
     }
-    return null
+    return Option.none<"startup_update">()
   }
 
   deps.log(`${LOG_PREFIX} restarting into updated version`)
-  return "startup_update"
-}
+  return Option.some("startup_update" as const)
+})
 
-export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliRunResult> {
-  let parsedArgs = parseArgs(argv)
+/**
+ * Runs `kanna <argv>`. A command (`--version`, `pair --status`, `stop`…)
+ * runs to completion and reports its exit code. A run starts the server and
+ * returns once it listens, with the server, its share tunnel and its cloud
+ * connection held by the caller's scope: closing the scope stops them,
+ * cloud first and the server last.
+ */
+export const runCli = Effect.fn("Cli.run")(function* (argv: string[], deps: CliRuntimeDeps) {
+  let parsedArgs = yield* parseArgsEffect(argv)
   if (parsedArgs.kind === "version") {
     deps.log(deps.version)
-    return { kind: "exited", code: 0 }
+    return { kind: "exited", code: 0 } satisfies CliRunResult
   }
   if (parsedArgs.kind === "help") {
-    printHelp()
-    return { kind: "exited", code: 0 }
+    deps.log(helpText())
+    return { kind: "exited", code: 0 } satisfies CliRunResult
   }
 
   if (parsedArgs.kind === "pair") {
-    const code = await (deps.runPairCommandImpl ?? runPairCommand)(parsedArgs.args, {
-      log: deps.log,
-      warn: deps.warn,
-    })
+    const pairDeps = { log: deps.log, warn: deps.warn, confirm: promptConfirm }
+    const code = yield* (deps.runPairCommandImpl ?? runPairCommand)(parsedArgs.args, pairDeps)
     if (code !== 0 || parsedArgs.args.action !== "pair") {
-      return { kind: "exited", code }
+      return { kind: "exited", code } satisfies CliRunResult
     }
     // Successful pairing flows straight into a normal run — the machine
     // comes online immediately and the hosted URL opens once the tunnel
     // connects. From then on any plain `kanna` does the same (sticky).
     deps.log(`${LOG_PREFIX} starting ${CLI_COMMAND}…`)
-    parsedArgs = parseArgs([])
+    parsedArgs = yield* parseArgsEffect([])
   }
+
+  const probeExisting = deps.probeExistingInstanceImpl ?? ((port: number) => probeExistingInstance(port))
 
   if (parsedArgs.kind === "slim-transcripts") {
     // A running server appends to the same files and caches them parsed.
     // Its own boot sweep already covered this data dir, so refusing costs
     // nothing; the check only sees the default port, so a dev instance on
     // another port is on the user.
-    const status = await (deps.instanceStatusImpl ?? instanceStatus)()
+    const status = yield* (deps.instanceStatusImpl ?? instanceStatus())
     const running = status
       ? { localUrl: status.port ? `http://localhost:${status.port}` : `pid ${status.pid}` }
-      : await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(PROD_SERVER_PORT)
+      : yield* probeExisting(PROD_SERVER_PORT)
     if (running) {
       deps.warn(`${LOG_PREFIX} ${CLI_COMMAND} is running at ${running.localUrl}; stop it before slimming transcripts`)
-      return { kind: "exited", code: 1 }
+      return { kind: "exited", code: 1 } satisfies CliRunResult
     }
-    const stats = await (deps.slimTranscriptsImpl ?? slimTranscripts)(deps.log)
+    const stats = yield* (deps.slimTranscriptsImpl ?? slimTranscripts)(deps.log)
     const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
     deps.log(
       stats.rewritten > 0
         ? `${LOG_PREFIX} rewrote ${stats.rewritten}/${stats.chats} transcripts: ${megabytes(stats.bytesBefore)} → ${megabytes(stats.bytesAfter)}`
         : `${LOG_PREFIX} ${stats.chats} transcripts checked, nothing to slim`
     )
-    return { kind: "exited", code: 0 }
+    return { kind: "exited", code: 0 } satisfies CliRunResult
   }
 
   if (parsedArgs.kind === "stop") {
-    return { kind: "exited", code: await stopRunningInstance(deps) }
+    return { kind: "exited", code: yield* stopRunningInstance(deps) } satisfies CliRunResult
   }
 
   if (parsedArgs.kind !== "run") {
     // Unreachable: every non-run kind returned above.
-    return { kind: "exited", code: 0 }
+    return { kind: "exited", code: 0 } satisfies CliRunResult
   }
   const runOptions = parsedArgs.options
-  const openInMacApp = deps.openInMacApp ?? (async () => false)
+  const openInMacApp = deps.openInMacApp ?? (() => Effect.succeed(false))
 
   if (compareVersions(deps.bunVersion, MINIMUM_BUN_VERSION) < 0) {
     deps.warn(`${LOG_PREFIX} Bun ${MINIMUM_BUN_VERSION}+ is required for the embedded terminal. Current Bun: ${deps.bunVersion}`)
-    return { kind: "exited", code: 1 }
+    return { kind: "exited", code: 1 } satisfies CliRunResult
   }
 
-  const shouldRestart = await maybeSelfUpdate(argv, deps)
-  if (shouldRestart !== null) {
-    return { kind: "restarting", reason: shouldRestart }
+  const shouldRestart = yield* maybeSelfUpdate(deps)
+  if (Option.isSome(shouldRestart)) {
+    return { kind: "restarting", reason: shouldRestart.value } satisfies CliRunResult
   }
 
   const readIdentity = deps.readCloudIdentityImpl
     ?? ((warn: (message: string) => void) => readCloudIdentity(undefined, warn))
-  let identity = await readIdentity((message) => deps.warn(`${LOG_PREFIX} ${message}`))
+  let identity = yield* readIdentity((message) => deps.warn(`${LOG_PREFIX} ${message}`))
   if (runOptions.directCloud) {
     if (!identity) {
       deps.warn(`${LOG_PREFIX} --cloud needs a provisioned cloud identity (~/.kanna/cloud.json) — dev-boxes get one from kanna.sh`)
-      return { kind: "exited", code: 1 }
+      return { kind: "exited", code: 1 } satisfies CliRunResult
     }
     // The flag is explicit intent: force direct mode and ignore a sticky disable.
     identity = { ...identity, mode: "direct", enabled: true }
@@ -475,24 +575,24 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   // port. Either way, point the user (and browser) at it. A different
   // fingerprint (e.g. dev profile) has its own lock and keeps the
   // try-next-port behavior.
-  const claim = await (deps.claimInstanceImpl ?? claimInstance)()
+  const claim = yield* (deps.claimInstanceImpl ?? claimInstance())
   if (claim.kind === "running" && !claim.status?.port) {
     deps.warn(`${LOG_PREFIX} ${CLI_COMMAND} is already starting${claim.status ? ` (pid ${claim.status.pid})` : ""}; try again in a moment`)
-    return { kind: "exited", code: 1 }
+    return { kind: "exited", code: 1 } satisfies CliRunResult
   }
   const existing = claim.kind === "running"
     ? { localUrl: `http://localhost:${claim.status!.port}`, port: claim.status!.port! }
-    : await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(runOptions.port)
+    : yield* probeExisting(runOptions.port)
   if (existing) {
     const hostedUrl = identity?.enabled ? identity.appOrigin : null
     deps.log(`${LOG_PREFIX} kanna is already running at ${existing.localUrl}${hostedUrl ? ` (and ${hostedUrl})` : ""}`)
     if (hostedUrl) {
       deps.log(`${LOG_PREFIX} if the hosted URL shows offline, restart the running ${CLI_COMMAND} to pick up the pairing`)
     }
-    if (runOptions.openBrowser && !suppressOpenBrowser && !(await openInMacApp(existing.localUrl))) {
-      deps.openUrl(hostedUrl ?? existing.localUrl)
+    if (runOptions.openBrowser && !suppressOpenBrowser && !(yield* openInMacApp(existing.localUrl))) {
+      yield* deps.openUrl(hostedUrl ?? existing.localUrl)
     }
-    return { kind: "exited", code: 0 }
+    return { kind: "exited", code: 0 } satisfies CliRunResult
   }
 
   // Sticky cloud auto-enable: a paired machine (cloud.json with
@@ -507,30 +607,40 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     cloudRuntime = (deps.createCloudRuntimeImpl ?? createCloudRuntime)(identity)
   }
 
-  const started = await deps.startServer({
-    ...runOptions,
-    trustProxy: isShareEnabled(runOptions.share) || cloudRuntime !== null,
-    cloud: cloudRuntime,
-    // Unpaired but cloud-capable: the sidebar can claim this machine in one
-    // click and the server attaches the runtime without a restart.
-    allowCloudPairing: cloudEligible && !identity,
-    onMigrationProgress: deps.log,
-    update: {
-      version: deps.version,
-      fetchLatestVersion: deps.fetchLatestVersion,
-      installVersion: deps.installVersion,
-      installNightly: deps.installNightly,
-      argv,
-      command: CLI_COMMAND,
-    },
-  })
-  const { port, stop } = started
+  // Two scopes inside the caller's, so the server can be stopped on its own
+  // when the share tunnel fails, and so the supervisor keeps seeing the
+  // port until the server has stopped (the attach scope closes last).
+  const runScope = yield* Effect.scope
+  const attachScope = yield* Scope.fork(runScope)
+  const serverScope = yield* Scope.fork(runScope)
+  const started = yield* Effect.acquireRelease(
+    deps.startServer({
+      ...runOptions,
+      trustProxy: isShareEnabled(runOptions.share) || cloudRuntime !== null,
+      cloud: cloudRuntime,
+      // Unpaired but cloud-capable: the sidebar can claim this machine in one
+      // click and the server attaches the runtime without a restart.
+      allowCloudPairing: cloudEligible && !identity,
+      onMigrationProgress: deps.log,
+      update: {
+        version: deps.version,
+        fetchLatestVersion: deps.fetchLatestVersion,
+        installVersion: deps.installVersion,
+        installNightly: deps.installNightly,
+        argv,
+        command: CLI_COMMAND,
+      },
+    }),
+    (server) => server.stop,
+  ).pipe(Scope.provide(serverScope))
+  const { port } = started
   // Always "ours" by now: a running Kanna returned above.
-  if (claim.kind === "ours") claim.attach({ port, version: deps.version, state: started.state })
+  if (claim.kind === "ours") {
+    yield* claim.attach({ port, version: deps.version, state: started.state }).pipe(Scope.provide(attachScope))
+  }
   const bindHost = runOptions.host
   const displayHost = isShareEnabled(runOptions.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const launchUrl = `http://${displayHost}:${port}`
-  let shareTunnelStop: (() => void) | null = null
 
   deps.log(`${LOG_PREFIX} listening on http://${bindHost}:${port}`)
   deps.log(`${LOG_PREFIX} data dir: ${getDataDirDisplay()}`)
@@ -539,31 +649,33 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   // than a browser tab. The app loads the local URL, so a paired machine does
   // not wait for its tunnel either.
   const wantsOpen = runOptions.openBrowser && !isShareEnabled(runOptions.share) && !suppressOpenBrowser
-  const openedInMacApp = wantsOpen && await openInMacApp(launchUrl)
+  const openedInMacApp = wantsOpen && (yield* openInMacApp(launchUrl))
 
   if (isShareEnabled(runOptions.share)) {
-    try {
-      const shareTunnel = await (deps.startShareTunnel ?? ((localUrl, shareMode) => startShareTunnel(localUrl, shareMode, {
-        log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
-      })))(launchUrl, runOptions.share)
-      shareTunnelStop = shareTunnel.stop
-      if (shareTunnel.publicUrl) {
-        await logShareDetails(deps.log, shareTunnel.publicUrl, launchUrl, deps.renderShareQr ?? renderTerminalQr)
-      } else {
-        deps.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
-        if (isTokenShareMode(runOptions.share)) {
-          deps.warn(`${LOG_PREFIX} use the hostname configured for the provided Cloudflare tunnel token`)
-        }
-        deps.log("Local URL:")
-        deps.log(launchUrl)
-      }
-    } catch (error) {
-      await stop()
+    const startTunnel = deps.startShareTunnel ?? ((localUrl, shareMode) => startShareTunnel(localUrl, shareMode, {
+      log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
+    }))
+    const shareTunnel = yield* Effect.result(Effect.acquireRelease(
+      startTunnel(launchUrl, runOptions.share),
+      (tunnel) => Effect.sync(() => tunnel.stop()),
+    ))
+    if (Result.isFailure(shareTunnel)) {
+      yield* Scope.close(serverScope, Exit.void)
       deps.warn(`${LOG_PREFIX} failed to start Cloudflare share tunnel`)
-      if (error instanceof Error && error.message) {
-        deps.warn(`${LOG_PREFIX} ${error.message}`)
+      if (shareTunnel.failure.message) {
+        deps.warn(`${LOG_PREFIX} ${shareTunnel.failure.message}`)
       }
-      return { kind: "exited", code: 1 }
+      return { kind: "exited", code: 1 } satisfies CliRunResult
+    }
+    if (shareTunnel.success.publicUrl) {
+      logShareDetails(deps.log, shareTunnel.success.publicUrl, launchUrl, deps.renderShareQr ?? renderTerminalQr)
+    } else {
+      deps.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
+      if (isTokenShareMode(runOptions.share)) {
+        deps.warn(`${LOG_PREFIX} use the hostname configured for the provided Cloudflare tunnel token`)
+      }
+      deps.log("Local URL:")
+      deps.log(launchUrl)
     }
   }
 
@@ -574,79 +686,89 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     // land on the offline page).
     const openHostedOnConnect = runOptions.openBrowser && !suppressOpenBrowser && !openedInMacApp
     let openedHosted = false
-    runtime.start({
-      localUrl: launchUrl,
-      log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
-      warn: (message) => deps.warn(`${LOG_PREFIX} ${message}`),
-      onTunnelUp: (kind) => {
-        started.analytics?.track(kind === "started" ? "cloud_tunnel_started" : "cloud_tunnel_recovered")
-        if (openHostedOnConnect && !openedHosted) {
-          openedHosted = true
-          deps.openUrl(runtime.identity.appOrigin)
-        }
-      },
-    })
+    // The tunnel calls back from its own loop, outside this fiber.
+    const runInBackground = Effect.runForkWith(yield* Effect.context<CliPlatform>())
+    yield* Effect.acquireRelease(
+      runtime.start({
+        localUrl: launchUrl,
+        onTunnelUp: (kind) => {
+          const opens = openHostedOnConnect && !openedHosted
+          if (opens) openedHosted = true
+          runInBackground(Effect.all([
+            started.analytics ? started.analytics.track(kind === "started" ? "cloud_tunnel_started" : "cloud_tunnel_recovered") : Effect.void,
+            opens ? deps.openUrl(runtime.identity.appOrigin) : Effect.void,
+          ], { discard: true }))
+        },
+      }),
+      () => runtime.stop,
+    )
     // The supervisor logs `cloud: connected (…)` when the tunnel is live —
     // that's also when the browser opens.
     deps.log(`${LOG_PREFIX} cloud: waiting for ${runtime.identity.appOrigin} to come online… (disable with \`${CLI_COMMAND} pair --disable\`)`)
   }
 
   if (wantsOpen && !openedInMacApp && !cloudRuntime) {
-    deps.openUrl(launchUrl)
+    yield* deps.openUrl(launchUrl)
   }
 
   return {
     kind: "started",
+    restartRequested: started.updateManager ? restartRequested(started.updateManager) : Effect.never,
     releasedFromParent: claim.kind === "ours" ? claim.releasedFromParent : undefined,
-    stop: async () => {
-      await cloudRuntime?.stop()
-      shareTunnelStop?.()
-      await stop()
-    },
-  }
+  } satisfies CliRunResult
+})
+
+/** Completes once the update manager reports `restart_pending`, now or later. */
+function restartRequested(updateManager: UpdateManager["Service"]) {
+  return Stream.concat(Stream.fromEffect(updateManager.snapshot), updateManager.changes).pipe(
+    Stream.filter((snapshot) => snapshot.status === "restart_pending"),
+    Stream.runHead,
+    Effect.flatMap(Option.match({ onNone: () => Effect.never, onSome: () => Effect.void })),
+  )
 }
 
 /** `kanna stop`: ask the running Kanna to stop, and wait until it has. */
-async function stopRunningInstance(deps: CliRuntimeDeps) {
-  const status = deps.instanceStatusImpl ?? instanceStatus
-  const running = await status()
+const stopRunningInstance = Effect.fn("Cli.stopRunningInstance")(function* (deps: CliRuntimeDeps) {
+  const status = deps.instanceStatusImpl ?? instanceStatus()
+  const running = yield* status
   if (!running) {
-    const old = await (deps.probeExistingInstanceImpl ?? probeExistingInstance)(PROD_SERVER_PORT)
+    const old = yield* (deps.probeExistingInstanceImpl ?? ((port: number) => probeExistingInstance(port)))(PROD_SERVER_PORT)
     deps.log(old
       ? `${LOG_PREFIX} the ${CLI_COMMAND} at ${old.localUrl} is from before \`${CLI_COMMAND} stop\`; stop it where it runs (Ctrl-C)`
       : `${LOG_PREFIX} ${CLI_COMMAND} isn't running`)
     return old ? 1 : 0
   }
-  if (!(await (deps.requestInstanceStopImpl ?? requestInstanceStop)())) {
+  if (!(yield* (deps.requestInstanceStopImpl ?? requestInstanceStop()))) {
     deps.warn(`${LOG_PREFIX} ${CLI_COMMAND} (pid ${running.pid}) didn't take the request to stop`)
     return 1
   }
   deps.log(`${LOG_PREFIX} stopping ${CLI_COMMAND} (pid ${running.pid})…`)
   // Shutting down cancels running turns and compacts the logs, which can
   // take a few seconds.
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    if (!(await status())) {
+  const deadline = (yield* Clock.currentTimeMillis) + STOP_WAIT_MS
+  while ((yield* Clock.currentTimeMillis) < deadline) {
+    if (!(yield* status)) {
       deps.log(`${LOG_PREFIX} stopped`)
       return 0
     }
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    yield* Effect.sleep("250 millis")
   }
   deps.warn(`${LOG_PREFIX} ${CLI_COMMAND} (pid ${running.pid}) is still stopping`)
   return 1
-}
+})
 
-export function openUrl(url: string) {
-  const platform = process.platform
-  if (platform === "darwin") {
-    void spawnDetached("open", [url]).catch(() => {})
-  } else if (platform === "win32") {
-    void spawnDetached("cmd", ["/c", "start", "", url]).catch(() => {})
-  } else {
-    void spawnDetached("xdg-open", [url]).catch(() => {})
-  }
-  console.log(`${LOG_PREFIX} opened in default browser`)
-}
+/** Opens `url` in the default browser. A browser that fails to start is not an error. */
+export const openUrl = Effect.fn("Cli.openUrl")(function* (url: string) {
+  const [command, ...args] = process.platform === "darwin"
+    ? ["open", url]
+    : process.platform === "win32"
+      ? ["cmd", "/c", "start", "", url]
+      : ["xdg-open", url]
+  yield* spawnDetached(command, args).pipe(Effect.ignore)
+  yield* Effect.logInfo("opened in default browser")
+})
+
+const decodeLatestVersion = Schema.decodeUnknownOption(Schema.Struct({ version: Schema.String }))
 
 /**
  * `timeoutMs` is opt-in. The startup check passes one because it is awaited
@@ -655,21 +777,33 @@ export function openUrl(url: string) {
  * button call this without one: a slow registry there should not turn an
  * explicit "Update" click into "Update failed".
  */
-export async function fetchLatestPackageVersion(packageName: string, options?: { timeoutMs?: number }) {
-  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
-    signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+export const fetchLatestPackageVersion = Effect.fn("Cli.fetchLatestPackageVersion")(function* (
+  packageName: string,
+  options?: { timeoutMs?: number },
+) {
+  yield* Effect.annotateCurrentSpan("packageName", packageName)
+  const registryError = (message: string, cause: unknown) => new PackageRegistryError({ packageName, message, cause })
+  const response = yield* Effect.tryPromise({
+    try: (signal) => fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
+      signal: options?.timeoutMs ? AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs)]) : signal,
+    }),
+    catch: (cause) => registryError(errorMessage(cause), cause),
   })
   if (!response.ok) {
-    throw new Error(`registry returned ${response.status}`)
+    return yield* registryError(`registry returned ${response.status}`, response.status)
   }
 
-  const payload = await response.json() as { version?: unknown }
-  if (typeof payload.version !== "string" || !payload.version.trim()) {
-    throw new Error("registry response did not include a version")
+  const payload = yield* Effect.tryPromise({
+    try: () => response.json(),
+    catch: (cause) => registryError(errorMessage(cause), cause),
+  })
+  const latest = decodeLatestVersion(payload)
+  if (Option.isNone(latest) || !latest.value.version.trim()) {
+    return yield* registryError("registry response did not include a version", payload)
   }
 
-  return payload.version
-}
+  return latest.value.version
+})
 
 export function classifyInstallVersionFailure(output: string): UpdateInstallAttemptResult {
   const normalizedOutput = output.trim()
@@ -690,8 +824,14 @@ export function classifyInstallVersionFailure(output: string): UpdateInstallAtte
   }
 }
 
-export function installPackageVersion(packageName: string, version: string) {
-  if (!hasCommand("bun")) {
+/**
+ * `bun install -g <package>@<version>`. The installer's own output goes to
+ * this terminal once it finishes. Never fails: a failed install is a result
+ * the update UI shows.
+ */
+export const installPackageVersion = Effect.fn("Cli.installPackageVersion")(function* (packageName: string, version: string) {
+  yield* Effect.annotateCurrentSpan("version", version)
+  if (!(yield* hasCommand("bun"))) {
     return {
       ok: false,
       errorCode: "command_missing",
@@ -703,17 +843,18 @@ export function installPackageVersion(packageName: string, version: string) {
   // A corrupt global manifest (see repairBunGlobalManifest) makes every
   // global install fail with a DependencyLoop error — heal it first so
   // machines that hit 0.57.0's nightly bug can still auto-update.
-  repairBunGlobalManifest()
+  yield* repairBunGlobalManifest()
 
-  const result = spawnSync("bun", ["install", "-g", `${packageName}@${version}`], {
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
+  const installed = yield* Effect.result(runCommand(["bun", "install", "-g", `${packageName}@${version}`], { stdout: true, stderr: true }))
+  if (Result.isFailure(installed)) {
+    return classifyInstallVersionFailure("")
+  }
+  const { stdout, stderr, exitCode } = installed.success
+  yield* Effect.sync(() => {
+    if (stdout) process.stdout.write(stdout)
+    if (stderr) process.stderr.write(stderr)
   })
-  const stdout = result.stdout ?? ""
-  const stderr = result.stderr ?? ""
-  if (stdout) process.stdout.write(stdout)
-  if (stderr) process.stderr.write(stderr)
-  if (result.status === 0) {
+  if (exitCode === 0) {
     return {
       ok: true,
       errorCode: null,
@@ -723,4 +864,20 @@ export function installPackageVersion(packageName: string, version: string) {
   }
 
   return classifyInstallVersionFailure(`${stdout}\n${stderr}`)
-}
+})
+
+/** A yes/no question on the terminal, for `kanna pair`. Without a TTY nobody can answer, so it's a yes. */
+const promptConfirm = Effect.fn("Cli.confirm")(function* (question: string) {
+  if (!process.stdin.isTTY) {
+    return true
+  }
+  const answer = yield* Effect.acquireUseRelease(
+    Effect.sync(() => createInterface({ input: process.stdin, output: process.stdout })),
+    (rl) => Effect.tryPromise({
+      try: (signal) => rl.question(`${question} [y/N] `, { signal }),
+      catch: (cause) => new PairPromptError({ message: describeError(cause), cause }),
+    }),
+    (rl) => Effect.sync(() => rl.close()),
+  )
+  return /^y(es)?$/i.test(answer.trim())
+})

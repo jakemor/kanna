@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { PassThrough } from "node:stream"
-import { clarifyCursorAuthError, CursorCliManager, normalizeCursorUsage, parseCursorLine, parseCursorModelList, type CursorChildProcess } from "./cursor-cli"
+import { Effect, Exit, Fiber, Result, Scope, Stream } from "effect"
+import { makeFakeCli, scriptedCli, type FakeCli } from "./cli-process.fake"
+import { clarifyCursorAuthError, makeCursorCli, normalizeCursorUsage, parseCursorLine, parseCursorModelList } from "./cursor-cli"
+import { runTest } from "./effect/testing"
 import type { HarnessEvent } from "./harness-types"
 
 function transcriptEntries(events: HarnessEvent[]) {
@@ -110,6 +112,20 @@ describe("parseCursorLine", () => {
     expect(parseCursorLine(`{"type":"thinking","subtype":"delta"}`, "composer-2.5")).toEqual([])
     expect(parseCursorLine("not json", "composer-2.5")).toEqual([])
     expect(parseCursorLine("", "composer-2.5")).toEqual([])
+    expect(parseCursorLine(`["system"]`, "composer-2.5")).toEqual([])
+  })
+
+  test("a newer CLI's unknown event types and extra or retyped fields are tolerated", () => {
+    expect(parseCursorLine(`{"type":"interaction_query","subtype":"x"}`, "composer-2.5")).toEqual([])
+    const entries = transcriptEntries(parseCursorLine(
+      `{"type":"result","is_error":false,"duration_ms":"slow","result":{"text":"Done"},"request_id":"r-1","session_id":"s"}`,
+      "composer-2.5",
+    ))
+    expect(entries).toEqual([expect.objectContaining({ kind: "result", isError: false, durationMs: 0, result: "" })])
+    expect(firstEntry(`{"type":"assistant","message":{"content":[{"type":"image"},{"type":"text","text":"ok","citations":[]},"junk"]}}`))
+      .toMatchObject({ kind: "assistant_text", text: "ok" })
+    expect(parseCursorLine(`{"type":"system","subtype":"init","session_id":42}`, "composer-2.5").map((event) => event.type))
+      .toEqual(["transcript"])
   })
 })
 
@@ -132,90 +148,109 @@ describe("normalizeCursorUsage", () => {
 
 // Exercises the injectable `spawnProcess` seam: argv/stdin/resume wiring, stdout
 // stream -> events, and the "process ended without a result" error synthesis.
-function makeFakeChild() {
-  const stdin = new PassThrough()
-  const stdout = new PassThrough()
-  const stderr = new PassThrough()
-  let onClose: ((code: number | null) => void) | undefined
-  const child = {
-    stdin,
-    stdout,
-    stderr,
-    kill: () => true,
-    once(event: "close" | "error", listener: (arg: never) => void) {
-      if (event === "close") onClose = listener as unknown as (code: number | null) => void
-      return child
-    },
-  } as unknown as CursorChildProcess
-  return { child, stdin, stdout, stderr, close: (code: number | null) => onClose?.(code) }
-}
+const cursorWith = (fake: FakeCli) => makeCursorCli({ spawnProcess: fake.spawn })
 
-describe("CursorCliManager.startTurn", () => {
-  test("passes --force/--model/--resume and writes the prompt to stdin", async () => {
-    const fake = makeFakeChild()
-    let captured: { cwd: string; argv: string[] } | undefined
-    const manager = new CursorCliManager({ spawnProcess: (args) => { captured = args; return fake.child } })
+describe("CursorCli.startTurn", () => {
+  test("passes --force/--model/--resume and writes the prompt to stdin", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const cursor = yield* cursorWith(fake)
 
-    const stdinText = new Promise<string>((resolve) => {
-      let data = ""
-      fake.stdin.on("data", (chunk) => { data += chunk.toString() })
-      fake.stdin.on("end", () => resolve(data))
-    })
-
-    const turn = await manager.startTurn({ cwd: "/repo", content: "fix the bug", model: "composer-2.5-fast", sessionToken: "sess-9" })
+    const turn = yield* cursor.startTurn({ cwd: "/repo", content: "fix the bug", model: "composer-2.5-fast", sessionToken: "sess-9" })
 
     expect(turn.provider).toBe("cursor")
-    expect(captured?.cwd).toBe("/repo")
-    expect(captured?.argv).toEqual([
+    expect(fake.spawns[0]?.cwd).toBe("/repo")
+    expect(fake.spawns[0]?.argv).toEqual([
       "-p", "--output-format", "stream-json", "--force", "--model", "composer-2.5-fast", "--resume", "sess-9",
     ])
-    expect(await stdinText).toBe("fix the bug")
-  })
+    expect(fake.spawns[0]?.stdin).toBe("fix the bug")
+  })))
 
-  test("omits --resume when there is no session token", async () => {
-    const fake = makeFakeChild()
-    let captured: { cwd: string; argv: string[] } | undefined
-    const manager = new CursorCliManager({ spawnProcess: (args) => { captured = args; return fake.child } })
-    await manager.startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
-    expect(captured?.argv).not.toContain("--resume")
-  })
+  test("omits --resume when there is no session token", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
+    expect(fake.spawns[0]?.argv).not.toContain("--resume")
+  })))
 
-  test("parses stdout NDJSON into events without synthesizing an error", async () => {
-    const fake = makeFakeChild()
-    const manager = new CursorCliManager({ spawnProcess: () => fake.child })
-    const turn = await manager.startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
-    const iter = turn.stream[Symbol.asyncIterator]()
+  test("parses stdout NDJSON into events without synthesizing an error", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const turn = yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
 
-    fake.stdout.write(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]},"session_id":"s"}\n`)
-    fake.stdout.write(`{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s"}\n`)
+    // A line split across two chunks still parses as one.
+    yield* fake.writeStdout(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text",`)
+    yield* fake.writeStdout(`"text":"hi there"}]},"session_id":"s"}\n`)
+    yield* fake.writeStdout(`{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s"}\n`)
+    yield* fake.exit(0)
 
-    // The consumer awaits each event as it is pushed, so this is deterministic without timers.
-    expect((await iter.next()).value).toMatchObject({ type: "transcript", entry: { kind: "assistant_text", text: "hi there" } })
-    expect((await iter.next()).value).toMatchObject({ type: "transcript", entry: { kind: "result", isError: false } })
+    const events = yield* Stream.runCollect(turn.events)
+    expect(events).toHaveLength(2)
+    expect(events[0]).toMatchObject({ type: "transcript", entry: { kind: "assistant_text", text: "hi there" } })
+    expect(events[1]).toMatchObject({ type: "transcript", entry: { kind: "result", isError: false } })
+  })))
 
-    fake.stdout.end()
-    fake.close(0)
-    expect((await iter.next()).done).toBe(true)
-  })
+  test("streams each event as its line arrives, before the process exits", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const turn = yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
 
-  test("synthesizes an error result (with stderr) when the process ends without one", async () => {
-    const fake = makeFakeChild()
-    const manager = new CursorCliManager({ spawnProcess: () => fake.child })
-    const turn = await manager.startTurn({ cwd: "/repo", content: "hi", model: "bad-model", sessionToken: null })
-    const iter = turn.stream[Symbol.asyncIterator]()
+    yield* fake.writeStdout(`{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}\n`)
+    const [first] = yield* Stream.runCollect(turn.events.pipe(Stream.take(1)))
+    expect(first).toMatchObject({ entry: { kind: "assistant_text", text: "first" } })
+    yield* fake.exit(0)
+  })))
 
-    // Awaiting stderr's "end" guarantees the manager's "data" handler ran first.
-    fake.stderr.end("Cannot use this model: bad-model")
-    await new Promise<void>((resolve) => fake.stderr.once("end", resolve))
-    fake.stdout.end()
-    fake.close(1)
+  test("synthesizes an error result (with stderr) when the process ends without one", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const turn = yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "bad-model", sessionToken: null })
 
-    expect((await iter.next()).value).toMatchObject({
+    yield* fake.writeStderr("Cannot use this model: bad-model")
+    yield* fake.exit(1)
+
+    const events = yield* Stream.runCollect(turn.events)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
       type: "transcript",
       entry: { kind: "result", isError: true, subtype: "error", result: expect.stringContaining("Cannot use this model") },
     })
-    expect((await iter.next()).done).toBe(true)
-  })
+  })))
+
+  test("a CLI that can't start ends the turn with the spawn error as its result", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli({ spawnError: `Executable not found in $PATH: "cursor-agent"` })
+    const turn = yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
+
+    const events = yield* Stream.runCollect(turn.events)
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      entry: { kind: "result", isError: true, result: `Executable not found in $PATH: "cursor-agent"` },
+    })
+    yield* turn.interrupt
+  })))
+
+  test("interrupt sends SIGINT and the turn ends once the process does", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const turn = yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null })
+
+    yield* turn.interrupt
+    expect(fake.kills).toEqual(["SIGINT"])
+    const events = yield* Stream.runCollect(turn.events)
+    expect(events.map((event) => event.entry?.kind)).toEqual(["result"])
+    expect(events[0]).toMatchObject({ entry: { isError: true, result: "cursor-agent exited with code unknown" } })
+  })))
+
+  test("closing the turn's scope kills the process and ends the events", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const scope = yield* Scope.make()
+    const turn = yield* (yield* cursorWith(fake)).startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null }).pipe(
+      Scope.provide(scope),
+    )
+    yield* fake.writeStdout(`{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}\n`)
+    expect(yield* Stream.runCollect(turn.events.pipe(Stream.take(1)))).toHaveLength(1)
+    // A reader waiting on the next event when the turn is closed sees the end.
+    const reading = yield* Stream.runCollect(turn.events).pipe(Effect.forkChild)
+    yield* Effect.yieldNow
+
+    yield* Scope.close(scope, Exit.void)
+    expect(fake.released()).toBe(true)
+    expect(yield* Fiber.join(reading)).toEqual([])
+  })))
 })
 
 describe("parseCursorModelList", () => {
@@ -245,36 +280,46 @@ describe("parseCursorModelList", () => {
   })
 })
 
-describe("CursorCliManager.listModels", () => {
-  test("spawns --list-models and resolves the parsed entries", async () => {
-    const fake = makeFakeChild()
-    let captured: { cwd: string; argv: string[] } | undefined
-    const manager = new CursorCliManager({ spawnProcess: (args) => { captured = args; return fake.child } })
+describe("CursorCli.listModels", () => {
+  test("spawns --list-models and resolves the parsed entries", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli("auto - Auto  (default)\ncomposer-2.5 - Composer 2.5  (current)\n", 0)
+    const models = yield* (yield* cursorWith(fake)).listModels()
 
-    const listing = manager.listModels()
-    fake.stdout.end("auto - Auto  (default)\ncomposer-2.5 - Composer 2.5  (current)\n")
-    await new Promise<void>((resolve) => fake.stdout.once("end", resolve))
-    fake.close(0)
-
-    expect(await listing).toEqual([
+    expect(models).toEqual([
       { id: "auto", label: "Auto", isDefault: true },
       { id: "composer-2.5", label: "Composer 2.5", isDefault: false },
     ])
-    expect(captured?.argv).toEqual(["--list-models"])
-  })
+    expect(fake.spawns[0]?.argv).toEqual(["--list-models"])
+    expect(fake.released()).toBe(true)
+  })))
 
-  test("rejects with clarified stderr when the CLI exits without models", async () => {
-    const fake = makeFakeChild()
-    const manager = new CursorCliManager({ spawnProcess: () => fake.child })
+  test("fails with clarified stderr when the CLI exits without models", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli("", 1, "Error: Authentication required. Please run 'agent login' first.")
+    const result = yield* Effect.result((yield* cursorWith(fake)).listModels())
 
-    const listing = manager.listModels()
-    fake.stderr.end("Error: Authentication required. Please run 'agent login' first.")
-    await new Promise<void>((resolve) => fake.stderr.once("end", resolve))
-    fake.stdout.end()
-    fake.close(1)
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/cursor-cli/CursorModelListError")
+      expect(result.failure.message).toContain("'cursor-agent login' (or 'agent login')")
+    }
+  })))
 
-    await expect(listing).rejects.toThrow("'cursor-agent login' (or 'agent login')")
-  })
+  test("times out, killing the CLI", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const result = yield* Effect.result((yield* cursorWith(fake)).listModels(10))
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure.message).toBe("cursor-agent --list-models timed out after 10ms")
+    }
+    expect(fake.released()).toBe(true)
+  })))
+
+  test("a missing CLI fails with the spawn error", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli({ spawnError: "Executable not found" })
+    const result = yield* Effect.result((yield* cursorWith(fake)).listModels())
+    expect(Result.isFailure(result) && result.failure._tag).toBe("@kanna/server/process-utils/CommandSpawnError")
+  })))
 })
 
 describe("clarifyCursorAuthError", () => {
@@ -300,28 +345,45 @@ describe("clarifyCursorAuthError", () => {
 })
 
 describe("Cursor shared tools", () => {
-  test("loads a private MCP plugin and closes it with the turn", async () => {
-    const fake = makeFakeChild()
-    let argv: string[] = []
-    const manager = new CursorCliManager({ spawnProcess: (args) => { argv = args.argv; return fake.child } })
-    const turn = await manager.startTurn({
+  test("loads a private MCP plugin and closes it when the process exits", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const turn = yield* (yield* cursorWith(fake)).startTurn({
       cwd: "/repo", content: "Test tools", model: "composer-2.5", sessionToken: null,
       customTools: { execute: async () => ({ content: [{ type: "text", text: "ok" }] }) },
     })
-    try {
-      const pluginPath = argv[argv.indexOf("--plugin-dir") + 1]!
-      expect(pluginPath).not.toStartWith("/repo")
-      const config = await Bun.file(`${pluginPath}/mcp.json`).json()
-      expect((await Bun.file(`${pluginPath}/.cursor-plugin/plugin.json`).json()).name).toBe("kanna-tools")
-      expect(config.mcpServers.kanna.url).toStartWith("http://127.0.0.1:")
-      expect(argv).toContain("--approve-mcps")
-      expect((await fetch(config.mcpServers.kanna.url)).status).toBe(401)
-      fake.close(0)
-      await expect(fetch(config.mcpServers.kanna.url)).rejects.toThrow()
-    } finally {
-      turn.close()
-    }
-  })
+    const argv = fake.spawns[0]?.argv ?? []
+    const pluginPath = argv[argv.indexOf("--plugin-dir") + 1]!
+    expect(pluginPath).not.toStartWith("/repo")
+    const { config, plugin } = yield* Effect.promise(async () => ({
+      config: await Bun.file(`${pluginPath}/mcp.json`).json(),
+      plugin: await Bun.file(`${pluginPath}/.cursor-plugin/plugin.json`).json(),
+    }))
+    expect(plugin.name).toBe("kanna-tools")
+    expect(config.mcpServers.kanna.url).toStartWith("http://127.0.0.1:")
+    expect(argv).toContain("--approve-mcps")
+    expect((yield* Effect.promise(() => fetch(config.mcpServers.kanna.url))).status).toBe(401)
+
+    yield* fake.exit(0)
+    yield* Stream.runDrain(turn.events)
+    const after = yield* Effect.promise(() => fetch(config.mcpServers.kanna.url).then(() => "reachable", () => "closed"))
+    expect(after).toBe("closed")
+    expect(yield* Effect.promise(() => Bun.file(`${pluginPath}/mcp.json`).exists())).toBe(false)
+  })))
+
+  test("closing the turn's scope closes the plugin too", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const scope = yield* Scope.make()
+    yield* (yield* cursorWith(fake)).startTurn({
+      cwd: "/repo", content: "Test tools", model: "composer-2.5", sessionToken: null,
+      customTools: { execute: async () => ({ content: [] }) },
+    }).pipe(Scope.provide(scope))
+    const argv = fake.spawns[0]?.argv ?? []
+    const pluginPath = argv[argv.indexOf("--plugin-dir") + 1]!
+    expect(yield* Effect.promise(() => Bun.file(`${pluginPath}/mcp.json`).exists())).toBe(true)
+
+    yield* Scope.close(scope, Exit.void)
+    expect(yield* Effect.promise(() => Bun.file(`${pluginPath}/mcp.json`).exists())).toBe(false)
+  })))
 
   test("preserves the MCP tool name from Cursor's nested args", () => {
     const entry = firstEntry(JSON.stringify({

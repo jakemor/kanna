@@ -1,10 +1,30 @@
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, utimesSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
-import { deriveChatSnapshot, deriveChatTouchedFiles, deriveLocalProjectsSnapshot, deriveSidebarData, SIDEBAR_ACTIVITY_RESOLUTION_MS } from "./read-models"
+import { Effect } from "effect"
+import { runTest } from "./effect/testing"
+import { FileSystemExtras } from "./platform/file-system-extras"
+import {
+  deriveChatSnapshot,
+  deriveChatTouchedFiles,
+  deriveLocalProjectsSnapshot,
+  deriveSidebarData,
+  folderModifiedAtReader,
+  type LocalMachineFacts,
+  SIDEBAR_ACTIVITY_RESOLUTION_MS,
+} from "./read-models"
 import { createEmptyState, type TouchedFile } from "./events"
 import type { WorkingTreeProbe } from "./diff-store"
+
+const files = await runTest(Effect.gen(function* () {
+  return yield* FileSystemExtras
+}))
+
+const machine = (
+  displayName = "Machine",
+  folderModifiedAt: LocalMachineFacts["folderModifiedAt"] = () => undefined,
+): LocalMachineFacts => ({ displayName, platform: process.platform, homeDirectory: homedir(), folderModifiedAt })
 
 describe("read models", () => {
   test("a sub-chat stays in the project's chats but is left out of the lists it shows", () => {
@@ -136,12 +156,12 @@ describe("read models", () => {
     const snapshot = deriveLocalProjectsSnapshot(state, [
       { localPath: "/tmp/hidden-project/", title: "Hidden Project", modifiedAt: 3 },
       { localPath: "/tmp/visible-project", title: "Visible Project", modifiedAt: 1 },
-    ], "Machine")
+    ], machine())
 
     expect(snapshot.projects.map((project) => project.localPath)).toEqual(["/tmp/visible-project"])
   })
 
-  test("includes the project folder modification time", () => {
+  test("includes the project folder modification time", async () => {
     const tempRoot = mkdtempSync(path.join(tmpdir(), "kanna-project-mtime-"))
     const projectDir = path.join(tempRoot, "project")
     const modifiedAt = new Date("2026-07-15T14:30:00.000Z")
@@ -150,16 +170,31 @@ describe("read models", () => {
       mkdirSync(projectDir)
       utimesSync(projectDir, modifiedAt, modifiedAt)
 
+      const folderModifiedAt = await runTest(folderModifiedAtReader(files, homedir())(projectDir))
       const snapshot = deriveLocalProjectsSnapshot(createEmptyState(), [{
         localPath: projectDir,
         title: "Project",
         modifiedAt: 1,
-      }], "Machine")
+      }], machine("Machine", () => folderModifiedAt))
 
       expect(snapshot.projects[0]?.folderModifiedAt).toBe(modifiedAt.getTime())
     } finally {
       rmSync(tempRoot, { recursive: true, force: true })
     }
+  })
+
+  test("reads folder times through the reader it is given, so the derivation stays pure", () => {
+    const asked: string[] = []
+    const snapshot = deriveLocalProjectsSnapshot(createEmptyState(), [
+      { localPath: "/tmp/kanna-pure-a", title: "A", modifiedAt: 2 },
+      { localPath: "/tmp/kanna-pure-b", title: "B", modifiedAt: 1 },
+    ], machine("Machine", (localPath) => {
+      asked.push(localPath)
+      return localPath.endsWith("a") ? 123.5 : undefined
+    }))
+
+    expect(asked).toEqual(["/tmp/kanna-pure-a", "/tmp/kanna-pure-b"])
+    expect(snapshot.projects.map((project) => project.folderModifiedAt)).toEqual([123.5, undefined])
   })
 
   test("hidden (dot-directory) discovered projects are filtered; saved ones are kept", () => {
@@ -177,7 +212,7 @@ describe("read models", () => {
       { localPath: "/home/user/.claude/scratch", title: "scratch", modifiedAt: 2 },
       { localPath: "/home/user/work/.hidden-repo", title: "hidden-repo", modifiedAt: 3 },
       { localPath: "/home/user/work/visible", title: "visible", modifiedAt: 4 },
-    ], "Machine")
+    ], machine())
 
     const paths = snapshot.projects.map((project) => project.localPath)
     expect(paths).toContain("/home/user/work/visible")
@@ -209,7 +244,7 @@ describe("read models", () => {
       // A real project that merely lives near/under a Codex-ish name.
       { localPath: "/home/user/code/codex-clone", title: "codex-clone", modifiedAt: 7 },
       { localPath: "/home/user/code/Codex/packages/core", title: "core", modifiedAt: 8 },
-    ], "Machine")
+    ], machine())
 
     const paths = snapshot.projects.map((project) => project.localPath)
     expect(paths).not.toContain("/home/user/Documents/Codex/2026-07-11/what")
@@ -362,8 +397,8 @@ describe("read models", () => {
     state.projectIdsByPath.set("/tmp/project", "project-1")
 
     expect(deriveSidebarData(state, new Map()).projectGroups[0]?.title).toBe("Sidebar Name")
-    expect(deriveLocalProjectsSnapshot(state, [], "Machine").projects[0]?.title).toBe("Project")
-    expect(deriveLocalProjectsSnapshot(state, [], "Machine").projects[0]?.sidebarTitle).toBe("Sidebar Name")
+    expect(deriveLocalProjectsSnapshot(state, [], machine()).projects[0]?.title).toBe("Project")
+    expect(deriveLocalProjectsSnapshot(state, [], machine()).projects[0]?.sidebarTitle).toBe("Sidebar Name")
   })
 
   test("keeps archived chats out of the main sidebar rows", () => {
@@ -513,7 +548,7 @@ describe("read models", () => {
         title: "Discovered Project",
         modifiedAt: 10,
       },
-    ], "Local Machine")
+    ], machine("Local Machine"))
 
     expect(snapshot.projects).toEqual([
       {

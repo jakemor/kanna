@@ -1,7 +1,10 @@
-import process from "node:process"
+import { Context, Effect, Layer } from "effect"
+import { Machine } from "./platform/machine"
+import type { ProcessSpawner } from "./platform/process-spawner"
 import type { EditorPreset } from "../shared/types"
 import { EDITOR_SPECS } from "../shared/editor-presets"
 import { commandExists, macAppExists } from "./process-utils"
+import { capturePlatform } from "./platform"
 
 /**
  * How long a detection result is reused. Installing an editor mid-session is
@@ -11,54 +14,58 @@ import { commandExists, macAppExists } from "./process-utils"
  */
 const DETECTION_TTL_MS = 60_000
 
-let cached: { editors: EditorPreset[]; at: number } | null = null
-let inFlight: Promise<EditorPreset[]> | null = null
-
-export function getCachedInstalledEditors() {
-  return cached?.editors ?? null
-}
-
 /**
- * Probe the machine for installed editors, at most once per TTL. Async on
- * purpose: the probes shell out, and this runs while sockets are being served.
+ * Which editors this machine has, for the "Open in…" menu. Probed at most
+ * once per TTL, and callers that ask while a probe runs share it.
  */
-export function detectInstalledEditors(options: { force?: boolean; platform?: NodeJS.Platform } = {}) {
-  const platform = options.platform ?? process.platform
-  if (!options.force && cached && Date.now() - cached.at < DETECTION_TTL_MS) {
-    return Promise.resolve(cached.editors)
-  }
-  if (inFlight) return inFlight
-
-  inFlight = probe(platform)
-    .then((editors) => {
-      cached = { editors, at: Date.now() }
-      return editors
-    })
-    .finally(() => {
-      inFlight = null
-    })
-  return inFlight
+export class EditorDetection extends Context.Service<EditorDetection, {
+  /**
+   * The installed editors. `force` skips the TTL, but still joins a probe
+   * that is already running. Async on purpose: the probes shell out, and
+   * this runs while sockets are being served.
+   */
+  readonly detect: (options?: { readonly force?: boolean }) => Effect.Effect<EditorPreset[]>
+  /**
+   * Detect and publish, at most once per TTL. Safe to call whenever a client
+   * shows up: an editor installed after Kanna started is picked up on the
+   * next page load rather than the next restart.
+   */
+  readonly refresh: (target: { setInstalledEditors: (editors: EditorPreset[]) => void }) => Effect.Effect<void>
+}>()("@kanna/server/EditorDetection") {
+  static readonly layer = (options: { readonly platform?: NodeJS.Platform } = {}) =>
+    Layer.effect(this, makeEditorDetection(options.platform))
 }
 
-/**
- * Detect and publish, at most once per TTL. Safe to call whenever a client
- * shows up: an editor installed after Kanna started is picked up on the next
- * page load rather than the next restart.
- */
-export async function refreshInstalledEditors(target: { setInstalledEditors: (editors: EditorPreset[]) => void }) {
-  const editors = await detectInstalledEditors()
-  target.setInstalledEditors(editors)
-}
+const makeEditorDetection = Effect.fn("EditorDetection.make")(function* (platformOverride?: NodeJS.Platform) {
+  const platform = platformOverride ?? (yield* Machine).platform
+  const processes = yield* capturePlatform<Machine | ProcessSpawner>()
+  const [cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(probe(platform).pipe(Effect.provide(processes)), DETECTION_TTL_MS)
 
-async function probe(platform: NodeJS.Platform): Promise<EditorPreset[]> {
+  const detect = Effect.fn("EditorDetection.detect")(function* (options: { readonly force?: boolean } = {}) {
+    if (options.force) yield* invalidate
+    return yield* cached
+  })
+
+  const refresh = Effect.fn("EditorDetection.refresh")(function* (
+    target: { setInstalledEditors: (editors: EditorPreset[]) => void },
+  ) {
+    const editors = yield* detect()
+    target.setInstalledEditors(editors)
+  })
+
+  return { detect, refresh }
+})
+
+const probe = Effect.fn("EditorDetection.probe")(function* (platform: NodeJS.Platform) {
   const presets = (Object.keys(EDITOR_SPECS) as Array<Exclude<EditorPreset, "custom">>)
     .filter((preset) => !EDITOR_SPECS[preset].macOnly || platform === "darwin")
-  const results = await Promise.all(presets.map(async (preset) => {
+  const results = yield* Effect.forEach(presets, Effect.fnUntraced(function* (preset) {
     const spec = EDITOR_SPECS[preset]
-    if (await commandExists(spec.cli)) return preset
-    if (platform === "darwin" && await macAppExists(spec.macApp)) return preset
+    if (yield* commandExists(spec.cli)) return preset
+    if (platform === "darwin" && (yield* macAppExists(spec.macApp))) return preset
     return null
-  }))
+  }), { concurrency: "unbounded" })
   // "custom" is a command template the user wrote, not an app we can look for.
-  return [...results.filter((preset): preset is Exclude<EditorPreset, "custom"> => preset !== null), "custom"]
-}
+  const editors: EditorPreset[] = [...results.filter((preset) => preset !== null), "custom"]
+  return editors
+})

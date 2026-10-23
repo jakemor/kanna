@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
+import { Deferred, Effect, Fiber } from "effect"
 import { resumeInterruptedTurns } from "./resume-turns"
 import type { ChatRecord, StoreState } from "./events"
+import { EventStoreFileError } from "./event-store"
 
 function createChat(id: string, overrides?: Partial<ChatRecord>): ChatRecord {
   return {
@@ -19,7 +21,11 @@ function createChat(id: string, overrides?: Partial<ChatRecord>): ChatRecord {
   }
 }
 
-function createDeps(chats: ChatRecord[], options?: { resume?: (chatId: string) => Promise<boolean> }) {
+function createDeps(chats: ChatRecord[], options?: {
+  clear?: (chatId: string) => Promise<void>
+  resume?: (chatId: string) => Promise<boolean>
+  crash?: string
+}) {
   const state = {
     projectsById: new Map(),
     projectIdsByPath: new Map(),
@@ -36,16 +42,23 @@ function createDeps(chats: ChatRecord[], options?: { resume?: (chatId: string) =
     deps: {
       store: {
         state,
-        setTurnResumePending: async (chatId: string, pending: boolean) => {
-          if (!pending) cleared.push(chatId)
-          delete state.chatsById.get(chatId)!.resumePending
-        },
+        setTurnResumePending: (chatId: string, pending: boolean) => Effect.tryPromise({
+          try: async () => {
+            await options?.clear?.(chatId)
+            if (!pending) cleared.push(chatId)
+            if (pending) state.chatsById.get(chatId)!.resumePending = true
+            else delete state.chatsById.get(chatId)!.resumePending
+          },
+          catch: (cause) => new EventStoreFileError({ operation: "write", filePath: "test", chatId, cause }),
+        }),
       },
       agent: {
-        resumeInterruptedTurn: async (chatId: string) => {
-          attempted.push(chatId)
-          return await (options?.resume?.(chatId) ?? Promise.resolve(true))
-        },
+        resumeInterruptedTurnEffect: (chatId: string) => chatId === options?.crash
+          ? Effect.sync(() => { attempted.push(chatId) }).pipe(Effect.andThen(Effect.die(new Error("bug in resume"))))
+          : Effect.tryPromise(() => {
+            attempted.push(chatId)
+            return options?.resume?.(chatId) ?? Promise.resolve(true)
+          }),
       },
       onError: (chatId: string, error: unknown) => {
         errors.push({ chatId, error })
@@ -64,7 +77,7 @@ describe("resumeInterruptedTurns", () => {
       createChat("crashed", { lastTurnStartedAt: 10 }),
     ])
 
-    expect(await resumeInterruptedTurns(deps)).toEqual(["marked"])
+    expect(await Effect.runPromise(resumeInterruptedTurns(deps))).toEqual(["marked"])
     expect(attempted).toEqual(["marked"])
   })
 
@@ -74,7 +87,7 @@ describe("resumeInterruptedTurns", () => {
       createChat("archived", { resumePending: true, archivedAt: 5 }),
     ])
 
-    expect(await resumeInterruptedTurns(deps)).toEqual([])
+    expect(await Effect.runPromise(resumeInterruptedTurns(deps))).toEqual([])
     expect(attempted).toEqual([])
   })
 
@@ -85,7 +98,7 @@ describe("resumeInterruptedTurns", () => {
       createChat("third", { resumePending: true, lastTurnStartedAt: 300 }),
     ])
 
-    await resumeInterruptedTurns(deps)
+    await Effect.runPromise(resumeInterruptedTurns(deps))
     expect(attempted).toEqual(["first", "second", "third"])
   })
 
@@ -101,7 +114,7 @@ describe("resumeInterruptedTurns", () => {
       } }
     )
 
-    expect(await resumeInterruptedTurns(deps)).toEqual(["fine"])
+    expect(await Effect.runPromise(resumeInterruptedTurns(deps))).toEqual(["fine"])
     expect(cleared).toEqual(["broken", "fine"])
     expect(errors).toHaveLength(1)
     expect(errors[0]?.chatId).toBe("broken")
@@ -109,11 +122,56 @@ describe("resumeInterruptedTurns", () => {
     expect(deps.store.state.chatsById.get("fine")?.resumePending).toBeUndefined()
   })
 
+  test("reports a chat whose resume crashes and still resumes the next", async () => {
+    const { deps, attempted, errors } = createDeps([
+      createChat("crashes", { resumePending: true, lastTurnStartedAt: 100 }),
+      createChat("fine", { resumePending: true, lastTurnStartedAt: 200 }),
+    ], { crash: "crashes" })
+
+    expect(await Effect.runPromise(resumeInterruptedTurns(deps))).toEqual(["fine"])
+    expect(attempted).toEqual(["crashes", "fine"])
+    expect(errors.map((error) => error.chatId)).toEqual(["crashes"])
+    expect((errors[0]?.error as Error).message).toBe("bug in resume")
+  })
+
   test("reports a chat that could not be resumed without counting it as resumed", async () => {
     const { deps } = createDeps([createChat("no-session", { resumePending: true })], {
       resume: async () => false,
     })
 
-    expect(await resumeInterruptedTurns(deps)).toEqual([])
+    expect(await Effect.runPromise(resumeInterruptedTurns(deps))).toEqual([])
+  })
+
+  test("does not resume a chat whose marker could not be cleared, but continues to the next", async () => {
+    const failure = new Error("store unavailable")
+    const { deps, cleared, attempted, errors } = createDeps([
+      createChat("broken", { resumePending: true, lastTurnStartedAt: 100 }),
+      createChat("fine", { resumePending: true, lastTurnStartedAt: 200 }),
+    ], {
+      clear: async (chatId) => {
+        if (chatId === "broken") throw failure
+      },
+    })
+
+    expect(await Effect.runPromise(resumeInterruptedTurns(deps))).toEqual(["fine"])
+    expect(cleared).toEqual(["fine"])
+    expect(attempted).toEqual(["fine"])
+    expect(errors).toEqual([{ chatId: "broken", error: failure }])
+    expect(deps.store.state.chatsById.get("broken")?.resumePending).toBe(true)
+  })
+
+  test("restores the marker if shutdown interrupts an in-flight resume", async () => {
+    const started = Effect.runSync(Deferred.make<void>())
+    const { deps } = createDeps([createChat("interrupted", { resumePending: true })])
+    deps.agent.resumeInterruptedTurnEffect = () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never))
+
+    await Effect.runPromise(Effect.gen(function* () {
+      const recovery = yield* Effect.forkChild(resumeInterruptedTurns(deps))
+      yield* Deferred.await(started)
+      expect(deps.store.state.chatsById.get("interrupted")?.resumePending).toBeUndefined()
+      yield* Fiber.interrupt(recovery)
+    }))
+
+    expect(deps.store.state.chatsById.get("interrupted")?.resumePending).toBe(true)
   })
 })

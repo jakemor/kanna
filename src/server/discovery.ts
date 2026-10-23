@@ -1,9 +1,9 @@
-import type { Dirent, Stats } from "node:fs"
-import { open, readFile, readdir, stat } from "node:fs/promises"
-import { homedir } from "node:os"
 import path from "node:path"
+import { Context, Deferred, Effect, FileSystem, Layer, Option, Predicate, Schema } from "effect"
+import type { PlatformError } from "effect/PlatformError"
 import type { AgentProvider } from "../shared/types"
 import { resolveLocalPath } from "./paths"
+import { Machine } from "./platform/machine"
 
 /**
  * Read only the first few KB of a file. Codex session logs run to many MB and
@@ -12,49 +12,22 @@ import { resolveLocalPath } from "./paths"
  */
 const FILE_HEAD_BYTES = 64 * 1024
 
-async function readFileHead(filePath: string): Promise<string> {
-  const handle = await open(filePath, "r")
-  try {
-    const buffer = Buffer.alloc(FILE_HEAD_BYTES)
-    const { bytesRead } = await handle.read(buffer, 0, FILE_HEAD_BYTES, 0)
-    return buffer.toString("utf8", 0, bytesRead)
-  } finally {
-    await handle.close()
-  }
-}
-
 /**
  * Upper bound on file handles one scan holds open at once. A Codex history
  * has thousands of session files; opening them all together would hit EMFILE.
  */
 const SCAN_CONCURRENCY = 32
 
-/** `Promise.all(items.map(fn))` with at most `limit` calls in flight; keeps input order. */
-async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length)
-  let next = 0
-  async function worker() {
-    while (next < items.length) {
-      const index = next
-      next += 1
-      results[index] = await fn(items[index] as T)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return results
-}
-
-async function statOrNull(filePath: string): Promise<Stats | null> {
-  try {
-    return await stat(filePath)
-  } catch {
-    return null
-  }
-}
-
-async function pathExists(filePath: string) {
-  return (await statOrNull(filePath)) !== null
-}
+/** A provider's history could not be listed, so discovery could not finish. */
+export class ProjectDiscoveryError extends Schema.TaggedError<ProjectDiscoveryError>()(
+  "@kanna/server/discovery/ProjectDiscoveryError",
+  {
+    provider: Schema.String,
+    path: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
 export interface DiscoveredProject {
   localPath: string
@@ -67,51 +40,65 @@ export interface ProviderDiscoveredProject extends DiscoveredProject {
 }
 
 export interface ProjectDiscoveryAdapter {
-  provider: AgentProvider
-  scan(homeDir?: string): Promise<ProviderDiscoveredProject[]>
+  readonly provider: AgentProvider
+  readonly scan: (homeDir: string) => Effect.Effect<ProviderDiscoveredProject[], ProjectDiscoveryError>
 }
 
-async function resolveEncodedClaudePath(folderName: string) {
-  const segments = folderName.replace(/^-/, "").split("-").filter(Boolean)
-  let currentPath = ""
-  let remainingSegments = [...segments]
+const discoveryError = (provider: AgentProvider, filePath: string) => (cause: PlatformError) =>
+  Effect.fail(new ProjectDiscoveryError({ provider, path: filePath, message: cause.message, cause }))
 
-  while (remainingSegments.length > 0) {
-    let found = false
+/** Stat, or none when the path is gone or unreadable. */
+const statOption = (fs: FileSystem.FileSystem, filePath: string) =>
+  fs.stat(filePath).pipe(Effect.option)
 
-    for (let index = remainingSegments.length; index >= 1; index -= 1) {
-      const segment = remainingSegments.slice(0, index).join("-")
-      const candidate = `${currentPath}/${segment}`
+const pathExists = (fs: FileSystem.FileSystem, filePath: string) =>
+  statOption(fs, filePath).pipe(Effect.map(Option.isSome))
 
-      if (await pathExists(candidate)) {
-        currentPath = candidate
-        remainingSegments = remainingSegments.slice(index)
-        found = true
-        break
+function mtimeMs(info: FileSystem.File.Info) {
+  return Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() })
+}
+
+const resolveLocalPathOption = Option.liftThrowable(resolveLocalPath)
+
+/** The path as Kanna stores it (`~` against the machine's home), if it is a directory that exists. */
+const normalizeExistingDirectory = (fs: FileSystem.FileSystem, machine: Machine["Service"], localPath: string) =>
+  Effect.gen(function* () {
+    const normalized = resolveLocalPathOption(localPath, machine.homeDirectory)
+    if (Option.isNone(normalized)) return Option.none<string>()
+    const info = yield* statOption(fs, normalized.value)
+    return Option.isSome(info) && info.value.type === "Directory" ? normalized : Option.none<string>()
+  })
+
+const resolveEncodedClaudePath = (fs: FileSystem.FileSystem, folderName: string) =>
+  Effect.gen(function* () {
+    const segments = folderName.replace(/^-/, "").split("-").filter(Boolean)
+    let currentPath = ""
+    let remainingSegments = [...segments]
+
+    while (remainingSegments.length > 0) {
+      let found = false
+
+      for (let index = remainingSegments.length; index >= 1; index -= 1) {
+        const segment = remainingSegments.slice(0, index).join("-")
+        const candidate = `${currentPath}/${segment}`
+
+        if (yield* pathExists(fs, candidate)) {
+          currentPath = candidate
+          remainingSegments = remainingSegments.slice(index)
+          found = true
+          break
+        }
+      }
+
+      if (!found) {
+        const [head, ...tail] = remainingSegments
+        currentPath = `${currentPath}/${head}`
+        remainingSegments = tail
       }
     }
 
-    if (!found) {
-      const [head, ...tail] = remainingSegments
-      currentPath = `${currentPath}/${head}`
-      remainingSegments = tail
-    }
-  }
-
-  return currentPath || "/"
-}
-
-async function normalizeExistingDirectory(localPath: string) {
-  try {
-    const normalized = resolveLocalPath(localPath)
-    if (!(await stat(normalized)).isDirectory()) {
-      return null
-    }
-    return normalized
-  } catch {
-    return null
-  }
-}
+    return currentPath || "/"
+  })
 
 function mergeDiscoveredProjects(projects: Iterable<DiscoveredProject>): DiscoveredProject[] {
   const merged = new Map<string, DiscoveredProject>()
@@ -135,117 +122,73 @@ function mergeDiscoveredProjects(projects: Iterable<DiscoveredProject>): Discove
   return [...merged.values()].sort((a, b) => b.modifiedAt - a.modifiedAt)
 }
 
-export class ClaudeProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
-  readonly provider = "claude" as const
+function asProviderProjects(provider: AgentProvider, projects: Iterable<DiscoveredProject>): ProviderDiscoveredProject[] {
+  return mergeDiscoveredProjects(projects).map((project) => ({ provider, ...project }))
+}
 
-  async scan(homeDir: string = homedir()): Promise<ProviderDiscoveredProject[]> {
+function isPresent<A>(value: A | null): value is A {
+  return value !== null
+}
+
+/** Claude: one folder per project under ~/.claude/projects, named for its path. */
+export const makeClaudeDiscoveryAdapter = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const machine = yield* Machine
+  const provider = "claude" as const
+
+  const scan = Effect.fn("ProjectDiscovery.scanClaude")(function* (homeDir: string) {
     const projectsDir = path.join(homeDir, ".claude", "projects")
-    if (!(await pathExists(projectsDir))) {
+    if (!(yield* pathExists(fs, projectsDir))) {
       return []
     }
 
-    const entries = await readdir(projectsDir, { withFileTypes: true })
-    const scanned = await mapWithConcurrency(entries, SCAN_CONCURRENCY, async (entry): Promise<ProviderDiscoveredProject | null> => {
-      if (!entry.isDirectory()) return null
+    const entries = yield* fs.readDirectory(projectsDir).pipe(Effect.catchTag("PlatformError", discoveryError(provider, projectsDir)))
+    const scanned = yield* Effect.forEach(entries, (name) => Effect.gen(function* () {
+      const markerPath = path.join(projectsDir, name)
+      const stats = yield* fs.stat(markerPath).pipe(Effect.catchTag("PlatformError", discoveryError(provider, markerPath)))
+      if (stats.type !== "Directory") return null
 
-      const resolvedPath = await resolveEncodedClaudePath(entry.name)
-      const normalizedPath = await normalizeExistingDirectory(resolvedPath)
-      if (!normalizedPath) {
+      const resolvedPath = yield* resolveEncodedClaudePath(fs, name)
+      const normalizedPath = yield* normalizeExistingDirectory(fs, machine, resolvedPath)
+      if (Option.isNone(normalizedPath)) {
         return null
       }
 
-      const stats = await stat(path.join(projectsDir, entry.name))
-      return {
-        provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt: stats.mtimeMs,
+      const project: ProviderDiscoveredProject = {
+        provider,
+        localPath: normalizedPath.value,
+        title: path.basename(normalizedPath.value) || normalizedPath.value,
+        modifiedAt: mtimeMs(stats),
       }
-    })
-    const projects = scanned.filter((project): project is ProviderDiscoveredProject => project !== null)
+      return project
+    }), { concurrency: SCAN_CONCURRENCY })
 
-    const mergedProjects = mergeDiscoveredProjects(projects).map((project) => ({
-      provider: this.provider,
-      ...project,
-    }))
+    return asProviderProjects(provider, scanned.filter(isPresent))
+  })
 
-    return mergedProjects
-  }
-}
+  const adapter: ProjectDiscoveryAdapter = { provider, scan }
+  return adapter
+})
 
-function parseJsonRecord(line: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(line)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null
-    }
-    return parsed as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
+const CodexSessionIndexLine = Schema.Struct({
+  id: Schema.NonEmptyString,
+  updated_at: Schema.String,
+})
+const decodeCodexSessionIndexLine = Schema.decodeUnknownOption(Schema.fromJsonString(CodexSessionIndexLine))
 
-async function readCodexSessionIndex(indexPath: string) {
-  const updatedAtById = new Map<string, number>()
-  if (!(await pathExists(indexPath))) {
-    return updatedAtById
-  }
+/** session_meta, the first line of a Codex session file. Timestamps are read only when they are strings. */
+const CodexSessionMeta = Schema.Struct({
+  type: Schema.Literal("session_meta"),
+  timestamp: Schema.optionalKey(Schema.Unknown),
+  payload: Schema.Struct({
+    id: Schema.NonEmptyString,
+    cwd: Schema.NonEmptyString,
+    timestamp: Schema.optionalKey(Schema.Unknown),
+  }),
+})
+const decodeCodexSessionMeta = Schema.decodeUnknownOption(Schema.fromJsonString(CodexSessionMeta))
 
-  for (const line of (await readFile(indexPath, "utf8")).split("\n")) {
-    if (!line.trim()) continue
-    const record = parseJsonRecord(line)
-    if (!record) continue
-
-    const id = typeof record.id === "string" ? record.id : null
-    const updatedAt = typeof record.updated_at === "string" ? Date.parse(record.updated_at) : Number.NaN
-    if (!id || Number.isNaN(updatedAt)) continue
-
-    const existing = updatedAtById.get(id)
-    if (existing === undefined || updatedAt > existing) {
-      updatedAtById.set(id, updatedAt)
-    }
-  }
-
-  return updatedAtById
-}
-
-async function collectCodexSessionFiles(directory: string): Promise<string[]> {
-  if (!(await pathExists(directory))) {
-    return []
-  }
-
-  const entries = await readdir(directory, { withFileTypes: true })
-  // Subdirectories are walked in parallel but flattened in readdir order, so
-  // the file list (and which duplicate session id wins) matches a serial walk.
-  const nested = await Promise.all(entries.map(async (entry): Promise<string[]> => {
-    const fullPath = path.join(directory, entry.name)
-    if (entry.isDirectory()) {
-      return collectCodexSessionFiles(fullPath)
-    }
-    if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      return [fullPath]
-    }
-    return []
-  }))
-  return nested.flat()
-}
-
-async function readCodexConfiguredProjects(configPath: string) {
-  const projects = new Map<string, number>()
-  const configStat = await statOrNull(configPath)
-  if (!configStat) {
-    return projects
-  }
-
-  const configMtime = configStat.mtimeMs
-  for (const line of (await readFile(configPath, "utf8")).split("\n")) {
-    const match = line.match(/^\[projects\."(.+)"\]$/)
-    if (!match?.[1]) continue
-    projects.set(match[1], configMtime)
-  }
-
-  return projects
-}
+const parseTimestamp = (value: unknown) => Predicate.isString(value) ? Date.parse(value) : Number.NaN
 
 interface CodexSessionMetadata {
   sessionId: string
@@ -253,42 +196,50 @@ interface CodexSessionMetadata {
   modifiedAt: number
 }
 
-function parseCodexSessionHead(head: string, mtimeMs: number): CodexSessionMetadata | null {
+function parseCodexSessionHead(head: string, mtime: number): CodexSessionMetadata | null {
   const firstLine = head.split("\n", 1)[0]
   if (!firstLine?.trim()) return null
 
-  const record = parseJsonRecord(firstLine)
-  if (!record || record.type !== "session_meta") return null
+  const record = decodeCodexSessionMeta(firstLine)
+  if (Option.isNone(record)) return null
 
-  const payload = record.payload
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null
+  const { payload } = record.value
+  const recordTimestamp = parseTimestamp(record.value.timestamp)
+  const payloadTimestamp = parseTimestamp(payload.timestamp)
+  const modifiedAt = [recordTimestamp, payloadTimestamp, mtime].find((value) => !Number.isNaN(value)) ?? mtime
 
-  const payloadRecord = payload as Record<string, unknown>
-  const sessionId = typeof payloadRecord.id === "string" ? payloadRecord.id : null
-  const cwd = typeof payloadRecord.cwd === "string" ? payloadRecord.cwd : null
-  if (!sessionId || !cwd) return null
-
-  const recordTimestamp = typeof record.timestamp === "string" ? Date.parse(record.timestamp) : Number.NaN
-  const payloadTimestamp = typeof payloadRecord.timestamp === "string" ? Date.parse(payloadRecord.timestamp) : Number.NaN
-  const modifiedAt = [recordTimestamp, payloadTimestamp, mtimeMs].find((value) => !Number.isNaN(value)) ?? mtimeMs
-
-  return { sessionId, cwd, modifiedAt }
+  return { sessionId: payload.id, cwd: payload.cwd, modifiedAt }
 }
 
 interface CachedCodexSession {
   mtimeMs: number
-  size: number
+  size: bigint
   metadata: CodexSessionMetadata | null
 }
 
 export interface CodexProjectDiscoveryOptions {
   /** Injectable for tests that count how often a session file is opened. */
-  readFileHead?: (filePath: string) => Promise<string>
+  readFileHead?: (filePath: string) => Effect.Effect<string, PlatformError>
 }
 
-export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
-  readonly provider = "codex" as const
-  private readonly readHead: (filePath: string) => Promise<string>
+/**
+ * Codex: the cwd each session recorded, plus the projects config.toml
+ * trusts. Session timestamps come from session_index.jsonl when it has them.
+ */
+export const makeCodexDiscoveryAdapter = Effect.fn("ProjectDiscovery.makeCodex")(function* (
+  options: CodexProjectDiscoveryOptions = {},
+) {
+  const fs = yield* FileSystem.FileSystem
+  const machine = yield* Machine
+  const provider = "codex" as const
+
+  const readHead = options.readFileHead ?? ((filePath: string) =>
+    fs.open(filePath, { flag: "r" }).pipe(
+      Effect.flatMap((file) => file.readAlloc(FILE_HEAD_BYTES)),
+      Effect.map(Option.match({ onNone: () => "", onSome: (bytes) => new TextDecoder().decode(bytes) })),
+      Effect.scoped,
+    ))
+
   /**
    * Parsed session_meta per session file, keyed by sessions dir then file path.
    * Discovery reruns on every local-projects subscribe, so each WebSocket
@@ -297,195 +248,249 @@ export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
    * but never rewrites its first line, so an unchanged mtime + size means the
    * cached parse still holds.
    */
-  private readonly sessionCache = new Map<string, Map<string, CachedCodexSession>>()
+  const sessionCache = new Map<string, Map<string, CachedCodexSession>>()
 
-  constructor(options: CodexProjectDiscoveryOptions = {}) {
-    this.readHead = options.readFileHead ?? readFileHead
-  }
+  const readSessionIndex = Effect.fn("ProjectDiscovery.readCodexSessionIndex")(function* (indexPath: string) {
+    const updatedAtById = new Map<string, number>()
+    if (!(yield* pathExists(fs, indexPath))) {
+      return updatedAtById
+    }
 
-  private async readCodexSessionMetadata(sessionsDir: string) {
-    const previous = this.sessionCache.get(sessionsDir)
+    const text = yield* fs.readFileString(indexPath).pipe(Effect.catchTag("PlatformError", discoveryError(provider, indexPath)))
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue
+      const record = decodeCodexSessionIndexLine(line)
+      if (Option.isNone(record)) continue
+
+      const updatedAt = Date.parse(record.value.updated_at)
+      if (Number.isNaN(updatedAt)) continue
+
+      const existing = updatedAtById.get(record.value.id)
+      if (existing === undefined || updatedAt > existing) {
+        updatedAtById.set(record.value.id, updatedAt)
+      }
+    }
+
+    return updatedAtById
+  })
+
+  /**
+   * Every *.jsonl under the sessions dir, with its stat. Subdirectories are
+   * walked in parallel but flattened in listing order, so the file list (and
+   * which duplicate session id wins) matches a serial walk. An entry that
+   * vanishes mid-walk is skipped.
+   */
+  const collectSessionFiles = (directory: string): Effect.Effect<Array<{ filePath: string; info: FileSystem.File.Info }>, ProjectDiscoveryError> =>
+    Effect.gen(function* () {
+      const names = yield* fs.readDirectory(directory).pipe(Effect.catchTag("PlatformError", discoveryError(provider, directory)))
+      const nested = yield* Effect.forEach(names, (name) => Effect.gen(function* () {
+        const filePath = path.join(directory, name)
+        const info = yield* statOption(fs, filePath)
+        if (Option.isNone(info)) return []
+        if (info.value.type === "Directory") return yield* collectSessionFiles(filePath)
+        if (info.value.type === "File" && name.endsWith(".jsonl")) return [{ filePath, info: info.value }]
+        return []
+      }), { concurrency: "unbounded" })
+      return nested.flat()
+    })
+
+  const readSessionMetadata = Effect.fn("ProjectDiscovery.readCodexSessionMetadata")(function* (sessionsDir: string) {
+    const metadataById = new Map<string, { cwd: string; modifiedAt: number }>()
+    if (!(yield* pathExists(fs, sessionsDir))) {
+      sessionCache.set(sessionsDir, new Map())
+      return metadataById
+    }
+
+    const previous = sessionCache.get(sessionsDir)
     // Rebuilt from scratch each scan, so files that disappeared fall out.
     const next = new Map<string, CachedCodexSession>()
-    const sessionFiles = await collectCodexSessionFiles(sessionsDir)
+    const sessionFiles = yield* collectSessionFiles(sessionsDir)
 
-    const results = await mapWithConcurrency(sessionFiles, SCAN_CONCURRENCY, async (sessionFile) => {
-      // Codex can delete or rotate a session between readdir and stat/open;
-      // skip it rather than fail the whole discovery.
-      try {
-        const fileStat = await stat(sessionFile)
-        const cached = previous?.get(sessionFile)
-        if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
-          next.set(sessionFile, cached)
-          return cached.metadata
-        }
-        const metadata = parseCodexSessionHead(await this.readHead(sessionFile), fileStat.mtimeMs)
-        next.set(sessionFile, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, metadata })
-        return metadata
-      } catch {
-        return null
+    const results = yield* Effect.forEach(sessionFiles, ({ filePath, info }) => {
+      const fileMtime = mtimeMs(info)
+      const cached = previous?.get(filePath)
+      if (cached && cached.mtimeMs === fileMtime && cached.size === info.size) {
+        next.set(filePath, cached)
+        return Effect.succeed(cached.metadata)
       }
-    })
-    this.sessionCache.set(sessionsDir, next)
+      return readHead(filePath).pipe(
+        Effect.map((head) => {
+          const metadata = parseCodexSessionHead(head, fileMtime)
+          next.set(filePath, { mtimeMs: fileMtime, size: info.size, metadata })
+          return metadata
+        }),
+        // Codex can delete or rotate a session between listing and opening;
+        // skip it rather than fail the whole discovery.
+        Effect.catchTag("PlatformError", () => Effect.succeed(null)),
+      )
+    }, { concurrency: SCAN_CONCURRENCY })
+    sessionCache.set(sessionsDir, next)
 
-    const metadataById = new Map<string, { cwd: string; modifiedAt: number }>()
     for (const metadata of results) {
       if (!metadata) continue
       metadataById.set(metadata.sessionId, { cwd: metadata.cwd, modifiedAt: metadata.modifiedAt })
     }
     return metadataById
-  }
+  })
 
-  async scan(homeDir: string = homedir()): Promise<ProviderDiscoveredProject[]> {
+  const readConfiguredProjects = Effect.fn("ProjectDiscovery.readCodexConfiguredProjects")(function* (configPath: string) {
+    const projects = new Map<string, number>()
+    const configStat = yield* statOption(fs, configPath)
+    if (Option.isNone(configStat)) {
+      return projects
+    }
+
+    const configMtime = mtimeMs(configStat.value)
+    const text = yield* fs.readFileString(configPath).pipe(Effect.catchTag("PlatformError", discoveryError(provider, configPath)))
+    for (const line of text.split("\n")) {
+      const match = line.match(/^\[projects\."(.+)"\]$/)
+      if (!match?.[1]) continue
+      projects.set(match[1], configMtime)
+    }
+
+    return projects
+  })
+
+  const projectAt = (localPath: string, modifiedAt: number) =>
+    Effect.gen(function* () {
+      if (!path.isAbsolute(localPath)) return null
+      const normalizedPath = yield* normalizeExistingDirectory(fs, machine, localPath)
+      if (Option.isNone(normalizedPath)) return null
+      const project: ProviderDiscoveredProject = {
+        provider,
+        localPath: normalizedPath.value,
+        title: path.basename(normalizedPath.value) || normalizedPath.value,
+        modifiedAt,
+      }
+      return project
+    })
+
+  const scan = Effect.fn("ProjectDiscovery.scanCodex")(function* (homeDir: string) {
     const indexPath = path.join(homeDir, ".codex", "session_index.jsonl")
     const sessionsDir = path.join(homeDir, ".codex", "sessions")
     const configPath = path.join(homeDir, ".codex", "config.toml")
-    const [updatedAtById, metadataById, configuredProjects] = await Promise.all([
-      readCodexSessionIndex(indexPath),
-      this.readCodexSessionMetadata(sessionsDir),
-      readCodexConfiguredProjects(configPath),
-    ])
+    const [updatedAtById, metadataById, configuredProjects] = yield* Effect.all([
+      readSessionIndex(indexPath),
+      readSessionMetadata(sessionsDir),
+      readConfiguredProjects(configPath),
+    ], { concurrency: "unbounded" })
 
-    const sessionProjects = await mapWithConcurrency([...metadataById.entries()], SCAN_CONCURRENCY, async ([sessionId, metadata]): Promise<ProviderDiscoveredProject | null> => {
-      const modifiedAt = updatedAtById.get(sessionId) ?? metadata.modifiedAt
-      const cwd = metadata.cwd
-      if (!cwd) {
-        return null
-      }
-      if (!path.isAbsolute(cwd)) {
-        return null
-      }
+    const sessionProjects = yield* Effect.forEach(
+      metadataById.entries(),
+      ([sessionId, metadata]) => projectAt(metadata.cwd, updatedAtById.get(sessionId) ?? metadata.modifiedAt),
+      { concurrency: SCAN_CONCURRENCY },
+    )
+    const configProjects = yield* Effect.forEach(
+      configuredProjects.entries(),
+      ([configuredPath, modifiedAt]) => projectAt(configuredPath, modifiedAt),
+      { concurrency: SCAN_CONCURRENCY },
+    )
 
-      const normalizedPath = await normalizeExistingDirectory(cwd)
-      if (!normalizedPath) {
-        return null
-      }
+    return asProviderProjects(provider, [...sessionProjects, ...configProjects].filter(isPresent))
+  })
 
-      return {
-        provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt,
-      }
-    })
+  const adapter: ProjectDiscoveryAdapter = { provider, scan }
+  return adapter
+})
 
-    const configProjects = await mapWithConcurrency([...configuredProjects.entries()], SCAN_CONCURRENCY, async ([configuredPath, modifiedAt]): Promise<ProviderDiscoveredProject | null> => {
-      if (!path.isAbsolute(configuredPath)) {
-        return null
-      }
+const decodeUriComponentOption = Option.liftThrowable(decodeURIComponent)
 
-      const normalizedPath = await normalizeExistingDirectory(configuredPath)
-      if (!normalizedPath) {
-        return null
-      }
+/** Grok: one folder per working directory under ~/.grok/sessions, named for it URI-encoded. */
+export const makeGrokDiscoveryAdapter = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const machine = yield* Machine
+  const provider = "grok" as const
 
-      return {
-        provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt,
-      }
-    })
-
-    const projects = [...sessionProjects, ...configProjects]
-      .filter((project): project is ProviderDiscoveredProject => project !== null)
-
-    const mergedProjects = mergeDiscoveredProjects(projects).map((project) => ({
-      provider: this.provider,
-      ...project,
-    }))
-
-    return mergedProjects
-  }
-}
-
-export class GrokProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
-  readonly provider = "grok" as const
-
-  async scan(homeDir: string = homedir()): Promise<ProviderDiscoveredProject[]> {
+  const scan = Effect.fn("ProjectDiscovery.scanGrok")(function* (homeDir: string) {
     const sessionsDir = path.join(homeDir, ".grok", "sessions")
-    if (!(await pathExists(sessionsDir))) return []
+    if (!(yield* pathExists(fs, sessionsDir))) return []
 
     // The grok CLI owns this directory and can delete or rewrite session
     // folders while we scan. Discovery runs at boot and on refresh for every
     // provider, so a folder that vanishes mid-scan is skipped, never thrown.
-    let entries: Dirent[]
-    try {
-      entries = await readdir(sessionsDir, { withFileTypes: true })
-    } catch {
-      return []
-    }
+    const entries = yield* fs.readDirectory(sessionsDir).pipe(
+      Effect.catchTag("PlatformError", () => Effect.succeed<Array<string>>([])),
+    )
 
-    const scanned = await mapWithConcurrency(entries, SCAN_CONCURRENCY, async (entry): Promise<ProviderDiscoveredProject | null> => {
-      if (!entry.isDirectory()) return null
-      let cwd: string
-      try {
-        cwd = decodeURIComponent(entry.name)
-      } catch {
-        return null
+    const scanned = yield* Effect.forEach(entries, (name) => Effect.gen(function* () {
+      const folderStat = yield* statOption(fs, path.join(sessionsDir, name))
+      if (Option.isNone(folderStat) || folderStat.value.type !== "Directory") return null
+      const cwd = decodeUriComponentOption(name)
+      if (Option.isNone(cwd) || !path.isAbsolute(cwd.value)) return null
+      const normalizedPath = yield* normalizeExistingDirectory(fs, machine, cwd.value)
+      if (Option.isNone(normalizedPath)) return null
+      const project: ProviderDiscoveredProject = {
+        provider,
+        localPath: normalizedPath.value,
+        title: path.basename(normalizedPath.value) || normalizedPath.value,
+        modifiedAt: mtimeMs(folderStat.value),
       }
-      if (!path.isAbsolute(cwd)) return null
-      const normalizedPath = await normalizeExistingDirectory(cwd)
-      if (!normalizedPath) return null
-      const folderStat = await statOrNull(path.join(sessionsDir, entry.name))
-      if (!folderStat) return null
-      return {
-        provider: this.provider,
-        localPath: normalizedPath,
-        title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt: folderStat.mtimeMs,
-      }
-    })
-    const projects = scanned.filter((project): project is ProviderDiscoveredProject => project !== null)
+      return project
+    }), { concurrency: SCAN_CONCURRENCY })
 
-    return mergeDiscoveredProjects(projects).map((project) => ({
-      provider: this.provider,
-      ...project,
-    }))
-  }
-}
-
-export const DEFAULT_PROJECT_DISCOVERY_ADAPTERS: ProjectDiscoveryAdapter[] = [
-  new ClaudeProjectDiscoveryAdapter(),
-  new CodexProjectDiscoveryAdapter(),
-  new GrokProjectDiscoveryAdapter(),
-]
-
-/**
- * Scans in flight, per adapter set and home dir. Every client resubscribes to
- * local-projects on reconnect, and each subscribe asks for a fresh discovery;
- * a reconnect storm would otherwise stack one full scan per socket.
- */
-const inFlightDiscoveries = new WeakMap<ProjectDiscoveryAdapter[], Map<string, Promise<DiscoveredProject[]>>>()
-
-async function runDiscovery(homeDir: string, adapters: ProjectDiscoveryAdapter[]): Promise<DiscoveredProject[]> {
-  const scans = await Promise.all(adapters.map((adapter) => adapter.scan(homeDir)))
-  return mergeDiscoveredProjects(
-    scans.flatMap((projects) => projects.map(({ provider: _provider, ...project }) => project))
-  )
-}
-
-/**
- * Callers that arrive while a scan is running share its result instead of
- * starting another. The project commands that refresh discovery also save the
- * project in the store, and the local-projects snapshot lists saved projects
- * itself, so joining a scan that started a moment earlier loses nothing.
- */
-export function discoverProjects(
-  homeDir: string = homedir(),
-  adapters: ProjectDiscoveryAdapter[] = DEFAULT_PROJECT_DISCOVERY_ADAPTERS
-): Promise<DiscoveredProject[]> {
-  let byHome = inFlightDiscoveries.get(adapters)
-  if (!byHome) {
-    byHome = new Map()
-    inFlightDiscoveries.set(adapters, byHome)
-  }
-  const existing = byHome.get(homeDir)
-  if (existing) return existing
-
-  const discovery = runDiscovery(homeDir, adapters).finally(() => {
-    byHome.delete(homeDir)
+    return asProviderProjects(provider, scanned.filter(isPresent))
   })
-  byHome.set(homeDir, discovery)
-  return discovery
+
+  const adapter: ProjectDiscoveryAdapter = { provider, scan }
+  return adapter
+})
+
+export interface ProjectDiscoveryOptions {
+  /** Defaults to Claude, Codex and Grok. */
+  adapters?: ReadonlyArray<ProjectDiscoveryAdapter>
 }
+
+/**
+ * Finds projects the user has worked in with any provider, from each
+ * provider's own history on disk.
+ *
+ * Callers that arrive while a scan of the same home dir is running share its
+ * result instead of starting another. Every client resubscribes to
+ * local-projects on reconnect, and each subscribe asks for a fresh discovery;
+ * a reconnect storm would otherwise stack one full scan per socket. The
+ * project commands that refresh discovery also save the project in the
+ * store, and the local-projects snapshot lists saved projects itself, so
+ * joining a scan that started a moment earlier loses nothing.
+ */
+export class ProjectDiscovery extends Context.Service<ProjectDiscovery, {
+  readonly discover: (homeDir?: string) => Effect.Effect<DiscoveredProject[], ProjectDiscoveryError>
+}>()("@kanna/server/ProjectDiscovery") {
+  static readonly layer = (options: ProjectDiscoveryOptions = {}) => Layer.effect(this, makeProjectDiscovery(options))
+}
+
+const makeProjectDiscovery = Effect.fn("ProjectDiscovery.make")(function* (options: ProjectDiscoveryOptions) {
+  const adapters = options.adapters ?? [
+    yield* makeClaudeDiscoveryAdapter,
+    yield* makeCodexDiscoveryAdapter(),
+    yield* makeGrokDiscoveryAdapter,
+  ]
+  const scope = yield* Effect.scope
+  const machine = yield* Machine
+  const inFlight = new Map<string, Deferred.Deferred<DiscoveredProject[], ProjectDiscoveryError>>()
+
+  const runDiscovery = (homeDir: string) =>
+    Effect.forEach(adapters, (adapter) => adapter.scan(homeDir), { concurrency: "unbounded" }).pipe(
+      Effect.map((scans) => mergeDiscoveredProjects(
+        scans.flatMap((projects) => projects.map(({ provider: _provider, ...project }) => project)),
+      )),
+    )
+
+  const discover = Effect.fn("ProjectDiscovery.discover")(function* (homeDir: string = machine.homeDirectory) {
+    const existing = inFlight.get(homeDir)
+    if (existing) return yield* Deferred.await(existing)
+
+    // The scan runs in the service's scope, not the caller's: a caller that
+    // goes away doesn't cancel it for the others waiting on it.
+    const deferred = yield* Deferred.make<DiscoveredProject[], ProjectDiscoveryError>()
+    inFlight.set(homeDir, deferred)
+    yield* runDiscovery(homeDir).pipe(
+      Effect.onExit((exit) => Effect.sync(() => {
+        inFlight.delete(homeDir)
+      }).pipe(Effect.andThen(Deferred.done(deferred, exit)))),
+      Effect.forkIn(scope),
+    )
+    return yield* Deferred.await(deferred)
+  })
+
+  return { discover }
+})

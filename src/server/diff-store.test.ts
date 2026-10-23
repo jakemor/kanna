@@ -1,9 +1,45 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, probeWorkingTree, resolveWorkingTreeLocation } from "./diff-store"
+import { Effect, Fiber, Layer, ManagedRuntime, Result, Stream } from "effect"
+import {
+  appendGitIgnoreEntry,
+  DiffStore,
+  extractGitHubRepoSlug,
+  fetchGitHubPullRequests,
+} from "./diff-store"
+import { QuickResponse } from "./quick-response"
+import { CommandSpawnError } from "./process-utils"
 import { KANNA_COMMIT_FOOTER, KANNA_COMMIT_TRAILER } from "./attribution"
+import { runTest, TestPlatform } from "./effect/testing"
+
+const runtimes: Array<ManagedRuntime.ManagedRuntime<DiffStore, never>> = []
+
+/** A real DiffStore on the platform services, released after the test. */
+async function openStore() {
+  const runtime = ManagedRuntime.make(DiffStore.layer.pipe(Layer.provide(QuickResponse.layer()), Layer.provide(TestPlatform)))
+  runtimes.push(runtime)
+  return await runtime.runPromise(DiffStore)
+}
+
+afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()))
+})
+
+/** Fails with `tag`, and says `message` (the text the client shows). */
+async function expectFailure<A, E extends { readonly _tag: string; readonly message: string }>(
+  effect: Effect.Effect<A, E>,
+  tag: E["_tag"],
+  message: string,
+) {
+  const result = await runTest(Effect.result(effect))
+  expect(Result.isFailure(result)).toBe(true)
+  if (Result.isFailure(result)) {
+    expect(result.failure._tag).toBe(tag)
+    expect(result.failure.message).toContain(message)
+  }
+}
 
 async function run(command: string[], cwd: string) {
   const process = Bun.spawn(command, {
@@ -56,9 +92,8 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.status).toBe("ready")
@@ -67,7 +102,7 @@ describe("DiffStore", () => {
     expect(snapshot.files[0]?.isUntracked).toBe(false)
     expect(snapshot.files[0]?.additions).toBe(1)
     expect(snapshot.files[0]?.deletions).toBe(1)
-    await expect(store.readPatch({ projectPath: repoRoot, path: "app.txt" })).resolves.toMatchObject({
+    await expect(runTest(store.readPatch({ projectPath: repoRoot, path: "app.txt" }))).resolves.toMatchObject({
       patch: expect.stringContaining("-base"),
     })
   })
@@ -100,9 +135,8 @@ describe("DiffStore", () => {
       expect(await run(["git", "status", "--short", "--untracked-files=all"], repoRoot))
         .toContain("?? .claude/skills/shadcn")
 
-      const store = new DiffStore(repoRoot)
-      await store.initialize()
-      await store.refreshSnapshot("project-1", repoRoot)
+      const store = await openStore()
+      await runTest(store.refreshSnapshot("project-1", repoRoot))
 
       const link = store.getProjectSnapshot("project-1").files.find((file) => file.path === ".claude/skills/shadcn")
       expect(link).toBeDefined()
@@ -120,11 +154,10 @@ describe("DiffStore", () => {
       await run(["git", "commit", "-m", "init"], repoRoot)
       await createLinkedSkill(repoRoot)
 
-      const store = new DiffStore(repoRoot)
-      await store.initialize()
-      await store.refreshSnapshot("project-1", repoRoot)
+      const store = await openStore()
+      await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-      const { patch } = await store.readPatch({ projectPath: repoRoot, path: ".claude/skills/shadcn" })
+      const { patch } = await runTest(store.readPatch({ projectPath: repoRoot, path: ".claude/skills/shadcn" }))
       // Following the link would have thrown EISDIR and rendered nothing.
       expect(patch).toContain("+../../.agents/skills/shadcn")
       expect(patch).not.toContain("# shadcn")
@@ -140,13 +173,12 @@ describe("DiffStore", () => {
       await run(["git", "commit", "-m", "init"], repoRoot)
       await symlink("real.txt", path.join(repoRoot, "alias.txt"))
 
-      const store = new DiffStore(repoRoot)
-      await store.initialize()
-      await store.refreshSnapshot("project-1", repoRoot)
+      const store = await openStore()
+      await runTest(store.refreshSnapshot("project-1", repoRoot))
 
       const link = store.getProjectSnapshot("project-1").files.find((file) => file.path === "alias.txt")
       expect(link?.additions).toBe(1)
-      const { patch } = await store.readPatch({ projectPath: repoRoot, path: "alias.txt" })
+      const { patch } = await runTest(store.readPatch({ projectPath: repoRoot, path: "alias.txt" }))
       expect(patch).toContain("+real.txt")
       expect(patch).not.toContain("line two")
     })
@@ -160,10 +192,9 @@ describe("DiffStore", () => {
       await run(["git", "commit", "-m", "init"], repoRoot)
       await writeFile(path.join(repoRoot, "ghost.txt"), "here for now\n", "utf8")
 
-      const store = new DiffStore(repoRoot)
-      await store.initialize()
+      const store = await openStore()
       await rm(path.join(repoRoot, "ghost.txt"))
-      await store.refreshSnapshot("project-1", repoRoot)
+      await runTest(store.refreshSnapshot("project-1", repoRoot))
 
       expect(store.getProjectSnapshot("project-1").files.map((file) => file.path)).not.toContain("ghost.txt")
     })
@@ -176,13 +207,12 @@ describe("DiffStore", () => {
       await run(["git", "commit", "-m", "init"], repoRoot)
       await symlink("nowhere/at/all", path.join(repoRoot, "broken-link"))
 
-      const store = new DiffStore(repoRoot)
-      await store.initialize()
-      await store.refreshSnapshot("project-1", repoRoot)
+      const store = await openStore()
+      await runTest(store.refreshSnapshot("project-1", repoRoot))
 
       const link = store.getProjectSnapshot("project-1").files.find((file) => file.path === "broken-link")
       expect(link?.additions).toBe(1)
-      const { patch } = await store.readPatch({ projectPath: repoRoot, path: "broken-link" })
+      const { patch } = await runTest(store.readPatch({ projectPath: repoRoot, path: "broken-link" }))
       expect(patch).toContain("+nowhere/at/all")
     })
   })
@@ -191,9 +221,8 @@ describe("DiffStore", () => {
     const root = await mkdtemp(path.join(tmpdir(), "kanna-no-repo-"))
     tempDirs.push(root)
 
-    const store = new DiffStore(root)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", root)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", root))
 
     expect(store.getProjectSnapshot("project-1")).toEqual({
       status: "no_repo",
@@ -214,18 +243,17 @@ describe("DiffStore", () => {
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await writeFile(path.join(repoRoot, "notes.txt"), "changed too\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    await store.commitFiles({
+    await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt"],
       summary: "Update app",
       description: "Only app changes",
       mode: "commit_only",
-    })
+    }))
 
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.status).toBe("ready")
@@ -240,18 +268,17 @@ describe("DiffStore", () => {
     const repoRoot = await createRepo()
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    await store.commitFiles({
+    await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt"],
       summary: "Update app",
       description: `Body text\n\n${KANNA_COMMIT_FOOTER}\n\n${KANNA_COMMIT_TRAILER}`,
       mode: "commit_only",
-    })
+    }))
 
     const lastMessage = (await run(["git", "log", "-1", "--pretty=%B"], repoRoot)).trim()
     expect(lastMessage).toBe(`Update app\n\nBody text\n\n${KANNA_COMMIT_FOOTER}\n\n${KANNA_COMMIT_TRAILER}`)
@@ -261,18 +288,17 @@ describe("DiffStore", () => {
     const repoRoot = await createRepo()
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    await store.commitFiles({
+    await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt"],
       summary: "Update app",
       description: `Body text\n\n${KANNA_COMMIT_FOOTER}`,
       mode: "commit_only",
-    })
+    }))
 
     const lastMessage = (await run(["git", "log", "-1", "--pretty=%B"], repoRoot)).trim()
     expect(lastMessage).toBe(`Update app\n\nBody text\n\n${KANNA_COMMIT_FOOTER}\n\n${KANNA_COMMIT_TRAILER}`)
@@ -290,17 +316,16 @@ describe("DiffStore", () => {
     await run(["git", "rm", "--quiet", "gone.txt"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    const result = await store.commitFiles({
+    const result = await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt", "gone.txt"],
       summary: "Commit staged deletion",
       mode: "commit_only",
-    })
+    }))
 
     expect(result).toMatchObject({
       ok: true,
@@ -324,22 +349,21 @@ describe("DiffStore", () => {
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await writeFile(path.join(repoRoot, "notes.txt"), "changed too\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     // An agent commits one of the selected files out-of-band, the way it would
     // while the sidebar snapshot sits in the browser.
     await run(["git", "add", "notes.txt"], repoRoot)
     await run(["git", "commit", "-m", "agent commit"], repoRoot)
 
-    const result = await store.commitFiles({
+    const result = await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt", "notes.txt"],
       summary: "Update app",
       mode: "commit_only",
-    })
+    }))
 
     expect(result).toMatchObject({
       ok: true,
@@ -360,20 +384,19 @@ describe("DiffStore", () => {
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     await run(["git", "add", "app.txt"], repoRoot)
     await run(["git", "commit", "-m", "agent commit"], repoRoot)
 
-    await expect(store.commitFiles({
+    await expectFailure(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt"],
       summary: "Update app",
       mode: "commit_only",
-    })).rejects.toThrow("Nothing to commit: app.txt is no longer changed.")
+    }), "@kanna/server/diff-store/FileNoLongerChangedError", "Nothing to commit: app.txt is no longer changed.")
   })
 
   test("commit_and_push publishes an unpublished branch", async () => {
@@ -387,17 +410,16 @@ describe("DiffStore", () => {
     await run(["git", "switch", "-c", "feature/publish-me"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    const result = await store.commitFiles({
+    const result = await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt"],
       summary: "Publish branch",
       mode: "commit_and_push",
-    })
+    }))
 
     expect(result).toMatchObject({
       ok: true,
@@ -415,17 +437,16 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    const result = await store.commitFiles({
+    const result = await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["app.txt"],
       summary: "Local only",
       mode: "commit_and_push",
-    })
+    }))
 
     expect(result).toMatchObject({
       ok: true,
@@ -446,17 +467,16 @@ describe("DiffStore", () => {
     await writeFile(path.join(repoRoot, "build", ".gitignore"), ".wrangler/\n", "utf8")
     await writeFile(path.join(repoRoot, "build", ".wrangler", "state.sqlite"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    const result = await store.commitFiles({
+    const result = await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths: ["build/.wrangler/state.sqlite"],
       summary: "Commit tracked ignored file",
       mode: "commit_only",
-    })
+    }))
 
     expect(result).toMatchObject({
       ok: true,
@@ -476,9 +496,8 @@ describe("DiffStore", () => {
     await run(["git", "remote", "add", "origin", "https://github.com/jakemor/test224.git"], repoRoot)
     await writeFile(path.join(repoRoot, "poem.md"), "rose\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     expect(store.getProjectSnapshot("project-1")).toMatchObject({
       status: "ready",
@@ -496,9 +515,8 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await run(["git", "mv", "before.txt", "after.txt"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.status).toBe("ready")
@@ -516,9 +534,8 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "scratch.log"), "tmp\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.files).toHaveLength(1)
@@ -537,9 +554,8 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "notes.md"), "one\ntwo\nthree", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     const first = store.getProjectSnapshot("project-1")
     expect(first.files).toHaveLength(1)
@@ -547,12 +563,12 @@ describe("DiffStore", () => {
     const firstDigest = first.files[0]?.patchDigest
 
     // No changes: refresh reports no snapshot change and digest is stable.
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(false)
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(false)
     expect(store.getProjectSnapshot("project-1").files[0]?.patchDigest).toBe(firstDigest)
 
     // Content change: line count and digest both update.
     await writeFile(path.join(repoRoot, "notes.md"), "one\ntwo\nthree\nfour\n", "utf8")
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
     const second = store.getProjectSnapshot("project-1")
     expect(second.files[0]?.additions).toBe(4)
     expect(second.files[0]?.patchDigest).not.toBe(firstDigest)
@@ -565,19 +581,18 @@ describe("DiffStore", () => {
     await run(["git", "add", "."], repoRoot)
     await run(["git", "commit", "-m", "init"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
+    const store = await openStore()
     expect(store.getSnapshotVersion("project-1")).toBe(0)
 
-    await store.refreshSnapshot("project-1", repoRoot)
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
     const versionAfterFirstRefresh = store.getSnapshotVersion("project-1")
     expect(versionAfterFirstRefresh).toBe(1)
 
-    await store.refreshSnapshot("project-1", repoRoot)
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
     expect(store.getSnapshotVersion("project-1")).toBe(versionAfterFirstRefresh)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
-    await store.refreshSnapshot("project-1", repoRoot)
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
     expect(store.getSnapshotVersion("project-1")).toBe(versionAfterFirstRefresh + 1)
   })
 
@@ -589,12 +604,12 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
+    const store = await openStore()
 
-    const results = await Promise.all(
-      Array.from({ length: 10 }, () => store.refreshSnapshot("project-1", repoRoot))
-    )
+    const results = await runTest(Effect.all(
+      Array.from({ length: 10 }, () => store.refreshSnapshot("project-1", repoRoot)),
+      { concurrency: "unbounded" },
+    ))
     expect(results.some((changed) => changed)).toBe(true)
     // At most two runs happen (the active one plus a single queued follow-up),
     // so the version can advance at most once for identical repository state.
@@ -618,17 +633,16 @@ describe("DiffStore", () => {
       await writeFile(path.join(repoRoot, relativePath), `content ${index}\n`, "utf8")
     }
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    const result = await store.commitFiles({
+    const result = await runTest(store.commitFiles({
       projectId: "project-1",
       projectPath: repoRoot,
       paths,
       summary: "Add generated files",
       mode: "commit_only",
-    })
+    }))
 
     expect(result).toMatchObject({ ok: true, mode: "commit_only" })
     expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Add generated files")
@@ -646,9 +660,8 @@ describe("DiffStore", () => {
     const hugeBytes = Buffer.alloc(6 * 1024 * 1024, 0x61)
     await writeFile(path.join(repoRoot, "artifact.data"), hugeBytes)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
+    const store = await openStore()
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
 
     const snapshot = store.getProjectSnapshot("project-1")
     const artifact = snapshot.files.find((file) => file.path === "artifact.data")
@@ -658,8 +671,11 @@ describe("DiffStore", () => {
       size: hugeBytes.length,
     })
 
-    await expect(store.readPatch({ projectPath: repoRoot, path: "artifact.data" }))
-      .rejects.toThrow("too large to preview")
+    await expectFailure(
+      store.readPatch({ projectPath: repoRoot, path: "artifact.data" }),
+      "@kanna/server/diff-store/PatchTooLargeError",
+      "too large to preview",
+    )
   })
 
   test("refreshSnapshot tolerates tracked files replaced by directories", async () => {
@@ -673,9 +689,8 @@ describe("DiffStore", () => {
     await mkdir(path.join(repoRoot, "thing"), { recursive: true })
     await writeFile(path.join(repoRoot, "thing", "file.txt"), "nested\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
+    const store = await openStore()
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
 
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.status).toBe("ready")
@@ -692,14 +707,13 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
-    await store.discardFile({
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    await runTest(store.discardFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "app.txt",
-    })
+    }))
 
     expect(await readFile(path.join(repoRoot, "app.txt"), "utf8")).toBe("base\n")
     expect(store.getProjectSnapshot("project-1").files).toHaveLength(0)
@@ -713,14 +727,13 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "scratch.log"), "tmp\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
-    await store.discardFile({
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    await runTest(store.discardFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "scratch.log",
-    })
+    }))
 
     expect(await Bun.file(path.join(repoRoot, "scratch.log")).exists()).toBe(false)
     expect(store.getProjectSnapshot("project-1").files).toHaveLength(0)
@@ -734,14 +747,13 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await run(["git", "mv", "before.txt", "after.txt"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
-    await store.discardFile({
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    await runTest(store.discardFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "after.txt",
-    })
+    }))
 
     expect(await Bun.file(path.join(repoRoot, "before.txt")).exists()).toBe(true)
     expect(await Bun.file(path.join(repoRoot, "after.txt")).exists()).toBe(false)
@@ -756,14 +768,13 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "scratch.log"), "tmp\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
-    await store.ignoreFile({
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    await runTest(store.ignoreFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "scratch.log",
-    })
+    }))
 
     expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("scratch.log\n")
   })
@@ -777,14 +788,13 @@ describe("DiffStore", () => {
     await mkdir(path.join(repoRoot, "tmp/cache"), { recursive: true })
     await writeFile(path.join(repoRoot, "tmp/cache/output.log"), "tmp\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
-    await store.ignoreFile({
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    await runTest(store.ignoreFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "tmp/cache/",
-    })
+    }))
 
     expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("tmp/cache/\n")
   })
@@ -815,9 +825,8 @@ describe("DiffStore", () => {
     await run(["git", "tag", "v1.0.0"], repoRoot)
     await run(["git", "remote", "add", "origin", "git@github.com:acme/repo.git"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.branchHistory?.entries).toHaveLength(1)
@@ -837,15 +846,14 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    await expect(store.ignoreFile({
+    await expectFailure(store.ignoreFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "app.txt",
-    })).rejects.toThrow("Only new files can be ignored from the diff viewer")
+    }), "@kanna/server/diff-store/InvalidGitRequestError", "Only new files can be ignored from the diff viewer")
   })
 
   test("ignoreFile unstages a staged new file before ignoring it", async () => {
@@ -857,9 +865,8 @@ describe("DiffStore", () => {
     await writeFile(path.join(repoRoot, "scratch.log"), "tmp\n", "utf8")
     await run(["git", "add", "scratch.log"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
     const beforeIgnore = store.getProjectSnapshot("project-1")
     expect(beforeIgnore.files.find((file) => file.path === "scratch.log")).toMatchObject({
@@ -867,11 +874,11 @@ describe("DiffStore", () => {
       isUntracked: false,
     })
 
-    const result = await store.ignoreFile({
+    const result = await runTest(store.ignoreFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "scratch.log",
-    })
+    }))
     expect(result.snapshotChanged).toBe(true)
 
     expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("scratch.log\n")
@@ -893,15 +900,14 @@ describe("DiffStore", () => {
     await writeFile(path.join(repoRoot, "tmp/cache/untracked.log"), "two\n", "utf8")
     await run(["git", "add", "tmp/cache/staged.log"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
+    const store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
 
-    await store.ignoreFile({
+    await runTest(store.ignoreFile({
       projectId: "project-1",
       projectPath: repoRoot,
       path: "tmp/cache/",
-    })
+    }))
 
     expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("tmp/cache/\n")
     expect((await run(["git", "status", "--porcelain", "--", "tmp"], repoRoot)).trim()).toBe("")
@@ -911,15 +917,15 @@ describe("DiffStore", () => {
   test("fetchGitHubPullRequests prefers gh api when available", async () => {
     let requestedPath = ""
 
-    const pulls = await fetchGitHubPullRequests("acme/repo", {
-      ghApiImpl: async (path) => {
+    const pulls = await runTest(fetchGitHubPullRequests("acme/repo", {
+      ghApiImpl: (path) => Effect.sync(() => {
         requestedPath = path
         return [{ number: 7, title: "Fix bug", head: { ref: "feature/fix" } }]
-      },
+      }),
       fetchImpl: async () => {
         throw new Error("fetch should not be used when gh succeeds")
       },
-    })
+    }))
 
     expect(requestedPath).toBe("repos/acme/repo/pulls?state=open&per_page=50")
     expect(pulls).toHaveLength(1)
@@ -929,8 +935,8 @@ describe("DiffStore", () => {
     let requestedUrl = ""
     let requestedAcceptHeader = ""
 
-    const pulls = await fetchGitHubPullRequests("acme/repo", {
-      ghApiImpl: async () => null,
+    const pulls = await runTest(fetchGitHubPullRequests("acme/repo", {
+      ghApiImpl: () => Effect.succeed(null),
       fetchImpl: async (input, init) => {
         requestedUrl = String(input)
         requestedAcceptHeader = String(new Headers(init?.headers).get("Accept"))
@@ -939,11 +945,33 @@ describe("DiffStore", () => {
           headers: { "Content-Type": "application/json" },
         })
       },
-    })
+    }))
 
     expect(requestedUrl).toBe("https://api.github.com/repos/acme/repo/pulls?state=open&per_page=50")
     expect(requestedAcceptHeader).toBe("application/vnd.github+json")
     expect(pulls).toHaveLength(1)
+  })
+
+  test("fetchGitHubPullRequests fails with the status when GitHub refuses", async () => {
+    const result = await runTest(fetchGitHubPullRequests("acme/repo", {
+      ghApiImpl: () => Effect.succeed(null),
+      fetchImpl: async () => new Response("rate limited", { status: 403 }),
+    }).pipe(Effect.result))
+
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/diff-store/GitHubRequestError")
+      expect(result.failure.message).toBe("GitHub pull requests request failed with status 403")
+    }
+  })
+
+  test("fetchGitHubPullRequests falls back to fetch when gh can't start", async () => {
+    const pulls = await runTest(fetchGitHubPullRequests("acme/repo", {
+      ghApiImpl: () => Effect.fail(new CommandSpawnError({ command: "gh", message: "Command not found: gh", cause: null })),
+      fetchImpl: async () => Response.json([{ number: 8, title: "Other", head: { ref: "feature/other" } }]),
+    }))
+
+    expect(pulls.map((pull) => pull.number)).toEqual([8])
   })
 
   test("listBranches includes default branch, local and remote branches, and recent branches", async () => {
@@ -960,10 +988,9 @@ describe("DiffStore", () => {
     await run(["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], repoRoot).catch(() => {})
     await run(["git", "update-ref", "refs/remotes/origin/feature/remote", "HEAD"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
+    const store = await openStore()
 
-    const result = await store.listBranches({ projectPath: repoRoot })
+    const result = await runTest(store.listBranches({ projectPath: repoRoot }))
     expect(result.defaultBranchName).toBe("main")
     expect(result.local.some((entry) => entry.name === "feature/recent")).toBe(true)
     expect(result.remote.some((entry) => entry.remoteRef === "origin/feature/remote")).toBe(true)
@@ -1010,10 +1037,9 @@ describe("DiffStore", () => {
     ) as typeof fetch
 
     try {
-      const store = new DiffStore(repoRoot)
-      await store.initialize()
+      const store = await openStore()
 
-      const result = await store.listBranches({ projectPath: repoRoot })
+      const result = await runTest(store.listBranches({ projectPath: repoRoot }))
       expect(result.pullRequests.some((entry) => entry.prNumber === 42)).toBe(true)
       expect(result.remote.some((entry) => entry.remoteRef === "github-desktop-jane/feature/pr-branch")).toBe(false)
       expect(result.remote.some((entry) => entry.remoteRef === "origin/feature/pr-branch")).toBe(false)
@@ -1032,13 +1058,12 @@ describe("DiffStore", () => {
     await run(["git", "remote", "add", "origin", "git@github.com:acme/repo.git"], repoRoot)
     await run(["git", "update-ref", "refs/remotes/origin/feature/remote", "HEAD"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    const result = await store.checkoutBranch({
+    const store = await openStore()
+    const result = await runTest(store.checkoutBranch({
       projectId: "project-1",
       projectPath: repoRoot,
       branch: { kind: "remote", name: "feature/remote", remoteRef: "origin/feature/remote" },
-    })
+    }))
 
     expect(result.ok).toBe(true)
     expect((await run(["git", "branch", "--show-current"], repoRoot)).trim()).toBe("feature/remote")
@@ -1054,14 +1079,13 @@ describe("DiffStore", () => {
     await run(["git", "switch", "main"], repoRoot).catch(async () => run(["git", "switch", "master"], repoRoot))
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    const result = await store.checkoutBranch({
+    const store = await openStore()
+    const result = await runTest(store.checkoutBranch({
       projectId: "project-1",
       projectPath: repoRoot,
       branch: { kind: "local", name: "feature/other" },
       bringChanges: false,
-    })
+    }))
 
     expect(result.ok).toBe(false)
     if (!result.ok) {
@@ -1077,14 +1101,13 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await run(["git", "switch", "-c", "feature/base"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    const result = await store.createBranch({
+    const store = await openStore()
+    const result = await runTest(store.createBranch({
       projectId: "project-1",
       projectPath: repoRoot,
       name: "feature/new",
       baseBranchName: "feature/base",
-    })
+    }))
 
     expect(result.ok).toBe(true)
     expect((await run(["git", "branch", "--show-current"], repoRoot)).trim()).toBe("feature/new")
@@ -1102,8 +1125,8 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-am", "edit and move"], repoRoot)
     const sha = (await run(["git", "rev-parse", "HEAD"], repoRoot)).trim()
 
-    const store = new DiffStore(repoRoot)
-    const details = await store.readCommit({ projectPath: repoRoot, sha })
+    const store = await openStore()
+    const details = await runTest(store.readCommit({ projectPath: repoRoot, sha }))
 
     expect(details.sha).toBe(sha)
     expect(details.parentCount).toBe(1)
@@ -1113,7 +1136,7 @@ describe("DiffStore", () => {
     expect(details.additions).toBe(2)
     expect(details.deletions).toBe(1)
 
-    const root = await store.readCommit({ projectPath: repoRoot, sha: (await run(["git", "rev-parse", "HEAD~1"], repoRoot)).trim() })
+    const root = await runTest(store.readCommit({ projectPath: repoRoot, sha: (await run(["git", "rev-parse", "HEAD~1"], repoRoot)).trim() }))
     expect(root.parentCount).toBe(0)
     expect(root.totalFileCount).toBe(2)
   })
@@ -1121,9 +1144,9 @@ describe("DiffStore", () => {
   test("readCommit refuses anything but a hash", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)
-    const store = new DiffStore(repoRoot)
-    await expect(store.readCommit({ projectPath: repoRoot, sha: "--output=/tmp/x" })).rejects.toThrow("Not a commit hash")
-    await expect(store.readCommit({ projectPath: repoRoot, sha: "HEAD~1" })).rejects.toThrow("Not a commit hash")
+    const store = await openStore()
+    await expectFailure(store.readCommit({ projectPath: repoRoot, sha: "--output=/tmp/x" }), "@kanna/server/diff-store/InvalidGitRequestError", "Not a commit hash")
+    await expectFailure(store.readCommit({ projectPath: repoRoot, sha: "HEAD~1" }), "@kanna/server/diff-store/InvalidGitRequestError", "Not a commit hash")
   })
 
   test("syncBranch pull rebases divergent local commits onto the upstream branch", async () => {
@@ -1151,13 +1174,12 @@ describe("DiffStore", () => {
     await run(["git", "add", "."], repoRoot)
     await run(["git", "commit", "-m", "local change"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
-    const result = await store.syncBranch({
+    const store = await openStore()
+    const result = await runTest(store.syncBranch({
       projectId: "project-1",
       projectPath: repoRoot,
       action: "pull",
-    })
+    }))
 
     expect(result).toMatchObject({
       ok: true,
@@ -1181,13 +1203,12 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-m", "init"], repoRoot)
     await run(["git", "switch", "-c", "feature/preview"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
+    const store = await openStore()
 
-    const upToDatePreview = await store.previewMergeBranch({
+    const upToDatePreview = await runTest(store.previewMergeBranch({
       projectPath: repoRoot,
       branch: { kind: "local", name: "main" },
-    })
+    }))
 
     expect(upToDatePreview.status).toBe("up_to_date")
     expect(upToDatePreview.commitCount).toBe(0)
@@ -1196,10 +1217,10 @@ describe("DiffStore", () => {
     await run(["git", "commit", "-am", "feature"], repoRoot)
     await run(["git", "switch", "main"], repoRoot)
 
-    const mergeablePreview = await store.previewMergeBranch({
+    const mergeablePreview = await runTest(store.previewMergeBranch({
       projectPath: repoRoot,
       branch: { kind: "local", name: "feature/preview" },
-    })
+    }))
 
     expect(mergeablePreview.status).toBe("mergeable")
     expect(mergeablePreview.commitCount).toBe(1)
@@ -1219,13 +1240,12 @@ describe("DiffStore", () => {
     await writeFile(path.join(repoRoot, "conflict.txt"), "main\n", "utf8")
     await run(["git", "commit", "-am", "main"], repoRoot)
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
+    const store = await openStore()
 
-    const preview = await store.previewMergeBranch({
+    const preview = await runTest(store.previewMergeBranch({
       projectPath: repoRoot,
       branch: { kind: "local", name: "feature/conflict" },
-    })
+    }))
 
     expect(preview.status).toBe("conflicts")
     expect(preview.hasConflicts).toBe(true)
@@ -1244,14 +1264,13 @@ describe("DiffStore", () => {
     await run(["git", "switch", "main"], repoRoot)
     await writeFile(path.join(repoRoot, "scratch.txt"), "dirty\n", "utf8")
 
-    const store = new DiffStore(repoRoot)
-    await store.initialize()
+    const store = await openStore()
 
-    const blockedResult = await store.mergeBranch({
+    const blockedResult = await runTest(store.mergeBranch({
       projectId: "project-1",
       projectPath: repoRoot,
       branch: { kind: "local", name: "feature/merge" },
-    })
+    }))
 
     expect(blockedResult).toMatchObject({
       ok: false,
@@ -1261,11 +1280,11 @@ describe("DiffStore", () => {
 
     await rm(path.join(repoRoot, "scratch.txt"))
 
-    const mergeResult = await store.mergeBranch({
+    const mergeResult = await runTest(store.mergeBranch({
       projectId: "project-1",
       projectPath: repoRoot,
       branch: { kind: "local", name: "feature/merge" },
-    })
+    }))
 
     expect(mergeResult).toMatchObject({
       ok: true,
@@ -1276,104 +1295,72 @@ describe("DiffStore", () => {
   })
 })
 
-describe("probeWorkingTree", () => {
+describe("DiffStore as a service", () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
   })
 
-  async function createCommittedRepo() {
+  test("publishes each refresh's working-tree scan", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
     await run(["git", "add", "."], repoRoot)
     await run(["git", "commit", "-m", "init"], repoRoot)
-    return repoRoot
-  }
-
-  test("reports a clean tree as not dirty", async () => {
-    const repoRoot = await createCommittedRepo()
-
-    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: false, paths: [] })
-  })
-
-  test("reports a modified file's path", async () => {
-    const repoRoot = await createCommittedRepo()
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+    const store = await openStore()
 
-    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: true, paths: ["app.txt"] })
+    const scans = await runTest(Effect.gen(function* () {
+      const collected = yield* store.workingTreeScans.pipe(Stream.take(1), Stream.runCollect, Effect.forkChild)
+      // Let the subscription start before the refresh publishes.
+      yield* Effect.yieldNow
+      yield* store.refreshSnapshot("project-1", repoRoot, { force: true })
+      return yield* Fiber.join(collected)
+    }))
+
+    expect([...scans]).toEqual([{ projectId: "project-1", scan: { dirty: true, paths: ["app.txt"] } }])
   })
 
-  test("reports untracked files too", async () => {
-    const repoRoot = await createCommittedRepo()
-    await writeFile(path.join(repoRoot, "scratch.txt"), "new\n", "utf8")
-
-    const scan = await probeWorkingTree(repoRoot)
-
-    expect(scan.paths).toEqual(["scratch.txt"])
-  })
-
-  test("reports every dirty path, regardless of age", async () => {
-    // No mtimes anywhere: the reading is the set of paths, and a chat is
-    // relevant because it touched one of them, not because of when they moved.
-    const repoRoot = await createCommittedRepo()
-    await writeFile(path.join(repoRoot, "old.txt"), "old\n", "utf8")
-    const oldMs = Date.now() - 60 * 60 * 1000
-    await utimes(path.join(repoRoot, "old.txt"), new Date(oldMs), new Date(oldMs))
-    await writeFile(path.join(repoRoot, "new.txt"), "new\n", "utf8")
-
-    const scan = await probeWorkingTree(repoRoot)
-
-    expect(scan.paths.sort()).toEqual(["new.txt", "old.txt"])
-  })
-
-  test("reports a deleted file's path — it can still be what a chat touched", async () => {
-    const repoRoot = await createCommittedRepo()
-    await rm(path.join(repoRoot, "app.txt"))
-
-    // The old version stat'ed each dirty file and so dropped deletions
-    // entirely; a chat that deleted a file had changed it all the same.
-    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: true, paths: ["app.txt"] })
-  })
-
-  test("reports both sides of a rename", async () => {
-    const repoRoot = await createCommittedRepo()
-    await run(["git", "mv", "app.txt", "renamed.txt"], repoRoot)
-
-    const scan = await probeWorkingTree(repoRoot)
-
-    expect(scan.paths.sort()).toEqual(["app.txt", "renamed.txt"])
-  })
-
-  test("reports not dirty outside a repo instead of throwing", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "kanna-probe-no-repo-"))
+  test("fails outside a repo with the message the client shows", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "kanna-diff-no-repo-"))
     tempDirs.push(root)
+    const store = await openStore()
 
-    expect(await probeWorkingTree(root)).toEqual({ dirty: false, paths: [] })
+    await expectFailure(
+      store.readPatch({ projectPath: root, path: "app.txt" }),
+      "@kanna/server/diff-store/NotAGitRepositoryError",
+      "Project is not in a git repository",
+    )
+    await expectFailure(
+      store.listBranches({ projectPath: root }),
+      "@kanna/server/diff-store/NotAGitRepositoryError",
+      "Project is not in a git repository",
+    )
   })
-})
 
-describe("resolveWorkingTreeLocation", () => {
-  afterEach(async () => {
-    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
-  })
-
-  test("resolves the repo root and git dir", async () => {
+  test("refuses a path that leaves the repo before git sees it", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)
-    await mkdir(path.join(repoRoot, "nested", "deep"), { recursive: true })
+    const store = await openStore()
 
-    const location = await resolveWorkingTreeLocation(path.join(repoRoot, "nested", "deep"))
-
-    // macOS hands out /var/folders symlinks for tmpdir; compare resolved paths.
-    expect(location).not.toBeNull()
-    expect(path.basename(location!.gitDir)).toBe(".git")
-    expect(location!.gitDir).toBe(path.join(location!.repoRoot, ".git"))
+    await expectFailure(
+      store.readPatch({ projectPath: repoRoot, path: "../outside.txt" }),
+      "@kanna/server/diff-store/InvalidGitRequestError",
+      "Invalid diff path: ../outside.txt",
+    )
   })
 
-  test("returns null outside a repo", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "kanna-probe-loc-"))
-    tempDirs.push(root)
+  test("says which file is no longer changed", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    const store = await openStore()
 
-    expect(await resolveWorkingTreeLocation(root)).toBeNull()
+    await expectFailure(
+      store.discardFile({ projectId: "project-1", projectPath: repoRoot, path: "app.txt" }),
+      "@kanna/server/diff-store/FileNoLongerChangedError",
+      "File is no longer changed: app.txt",
+    )
   })
 })

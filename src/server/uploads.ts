@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, open, rm } from "node:fs/promises"
 import path from "node:path"
+import { Effect, FileSystem, Schema } from "effect"
 import { fileTypeFromBuffer } from "file-type"
 import type { ChatAttachment } from "../shared/types"
 import { getProjectUploadDir } from "./paths"
+import { Machine } from "./platform/machine"
 
 const DEFAULT_BINARY_MIME_TYPE = "application/octet-stream"
 const IMAGE_MIME_PREFIX = "image/"
@@ -43,44 +44,58 @@ function getUploadCandidateNames(originalName: string) {
   }
 }
 
-export async function persistProjectUpload(args: {
+export class UploadError extends Schema.TaggedError<UploadError>()(
+  "@kanna/server/uploads/UploadError",
+  {
+    operation: Schema.Literals(["detect", "write"]),
+    projectId: Schema.String,
+    filePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
+export interface PersistProjectUploadArgs {
   projectId: string
   localPath: string
   fileName: string
   bytes: Uint8Array
   fallbackMimeType?: string
-}): Promise<ChatAttachment> {
-  const uploadDir = getProjectUploadDir(args.localPath)
-  await mkdir(uploadDir, { recursive: true })
+}
 
-  const detectedType = await fileTypeFromBuffer(args.bytes)
+/**
+ * Writes an upload into the project's `.kanna/uploads`, never over another
+ * file: a taken name gets a counter (`notes-1.txt`), decided by an exclusive
+ * create, so concurrent uploads of one name all land.
+ */
+export const persistProjectUpload = Effect.fn("Uploads.persist")(function* (args: PersistProjectUploadArgs) {
+  yield* Effect.annotateCurrentSpan("projectId", args.projectId)
+  const fs = yield* FileSystem.FileSystem
+  const uploadDir = getProjectUploadDir(args.localPath, (yield* Machine).homeDirectory)
+  const writeError = (filePath: string) => (cause: unknown) =>
+    Effect.fail(new UploadError({ operation: "write", projectId: args.projectId, filePath, cause }))
+  yield* fs.makeDirectory(uploadDir, { recursive: true }).pipe(Effect.catchTag("PlatformError", writeError(uploadDir)))
+
+  const detectedType = yield* Effect.tryPromise({
+    try: () => fileTypeFromBuffer(args.bytes),
+    catch: (cause) => new UploadError({ operation: "detect", projectId: args.projectId, filePath: args.fileName, cause }),
+  })
   const mimeType = detectedType?.mime ?? args.fallbackMimeType ?? DEFAULT_BINARY_MIME_TYPE
   const candidates = getUploadCandidateNames(args.fileName)
 
-  let storedName = candidates.first
-  let absolutePath = path.join(uploadDir, storedName)
-  let counter = 1
-
-  while (true) {
-    try {
-      const handle = await open(absolutePath, "wx")
-      try {
-        await handle.writeFile(args.bytes)
-      } finally {
-        await handle.close()
-      }
-      break
-    } catch (error) {
-      const code = error instanceof Error && "code" in error ? (error as NodeJS.ErrnoException).code : undefined
-      if (code !== "EEXIST") {
-        throw error
-      }
-
-      storedName = candidates.withCounter(counter)
-      absolutePath = path.join(uploadDir, storedName)
-      counter += 1
-    }
+  const store = (storedName: string, counter: number): Effect.Effect<string, UploadError> => {
+    const absolutePath = path.join(uploadDir, storedName)
+    return fs.writeFile(absolutePath, args.bytes, { flag: "wx" }).pipe(
+      Effect.as(storedName),
+      Effect.catchReason("PlatformError", "AlreadyExists", () => store(candidates.withCounter(counter), counter + 1)),
+      Effect.catchTag("PlatformError", writeError(absolutePath)),
+    )
   }
+  const storedName = yield* store(candidates.first, 1)
+  const absolutePath = path.join(uploadDir, storedName)
 
   return {
     id: randomUUID(),
@@ -91,8 +106,8 @@ export async function persistProjectUpload(args: {
     contentUrl: `/api/projects/${args.projectId}/uploads/${encodeURIComponent(storedName)}/content`,
     mimeType,
     size: args.bytes.byteLength,
-  }
-}
+  } satisfies ChatAttachment
+})
 
 export function inferAttachmentContentType(fileName: string, fallbackType?: string): string {
   const extension = path.extname(fileName).toLowerCase()
@@ -112,20 +127,20 @@ export function inferProjectFileContentType(fileName: string, fallbackType?: str
   return inferAttachmentContentType(fileName, fallbackType)
 }
 
-export async function deleteProjectUpload(args: {
+/** True when the upload is gone (or never was); false for a name outside the uploads dir or a failed delete. */
+export const deleteProjectUpload = Effect.fn("Uploads.delete")(function* (args: {
   localPath: string
   storedName: string
-}): Promise<boolean> {
+}) {
   const storedName = args.storedName
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
     return false
   }
 
-  const absolutePath = path.join(getProjectUploadDir(args.localPath), storedName)
-  try {
-    await rm(absolutePath, { force: true })
-    return true
-  } catch {
-    return false
-  }
-}
+  const fs = yield* FileSystem.FileSystem
+  const absolutePath = path.join(getProjectUploadDir(args.localPath, (yield* Machine).homeDirectory), storedName)
+  return yield* fs.remove(absolutePath, { force: true }).pipe(
+    Effect.as(true),
+    Effect.catchTag("PlatformError", () => Effect.succeed(false)),
+  )
+})

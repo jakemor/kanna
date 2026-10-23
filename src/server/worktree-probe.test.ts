@@ -2,33 +2,80 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EventStore } from "./event-store"
+import { Effect, Layer, ManagedRuntime, Stream } from "effect"
+import { TestPlatform } from "./effect/testing"
+import { openEventStore, type EventStoreBridge as EventStore } from "./event-store-bridge"
 import { createEmptyState, type StoreState } from "./events"
 import { deriveSidebarData } from "./read-models"
 import { extractRemoteOwner, WorktreeProbe } from "./worktree-probe"
-import { TurnFileTracker } from "./worktree-snapshot"
+import { TurnFileRecordError, TurnFileTracker } from "./worktree-snapshot"
+
+const runtimes: Array<{ dispose: () => Promise<void> }> = []
+
+afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()))
+})
+
+/** Lets the change subscriber see what a pass published. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 10))
+
+/**
+ * The real `WorktreeProbe` layer over `getState`, driven the way the server
+ * drives it: calls run to completion, readings read at once, and every
+ * change it announces counted (`changeCount`).
+ */
+async function makeProbe(getState: () => StoreState) {
+  const runtime = ManagedRuntime.make(WorktreeProbe.layer({ state: Effect.sync(getState) }).pipe(Layer.provide(TestPlatform)))
+  runtimes.push(runtime)
+  const service = await runtime.runPromise(Effect.service(WorktreeProbe))
+  let changes = 0
+  runtime.runFork(service.changes.pipe(Stream.runForEach(() => Effect.sync(() => {
+    changes += 1
+  }))))
+  return {
+    refreshForChat: (chatId: string) => runtime.runPromise(service.refreshForChat(chatId)),
+    recordExternalProbe: (projectId: string, scan: { dirty: boolean; paths: string[] }) =>
+      runtime.runPromise(service.recordExternalProbe(projectId, scan)),
+    tick: () => runtime.runPromise(service.tick),
+    getStates: () => runtime.runSync(service.states),
+    getRepoLabels: () => runtime.runSync(service.repoLabels),
+    getProjectsWithoutRepo: () => runtime.runSync(service.projectsWithoutRepo),
+    /** Changes announced so far, once the subscriber has caught up. */
+    changeCount: async () => {
+      await settle()
+      return changes
+    },
+  }
+}
+
+type TestProbe = Awaited<ReturnType<typeof makeProbe>>
 
 /**
  * The exact seam server.ts wires: turn start snapshots the tree, turn end
  * records the delta and then reprobes. Returns the in-flight promises so tests
  * can await work the production hooks deliberately fire and forget.
  */
-function wireTurnTracking(store: EventStore, probe: WorktreeProbe) {
+async function wireTurnTracking(store: EventStore, probe: TestProbe) {
   const turnStarted: Array<Promise<void>> = []
   const turnEnded: Array<Promise<void>> = []
-  const tracker = new TurnFileTracker({
+  const runtime = ManagedRuntime.make(TurnFileTracker.layer({
     resolveChatPath: (chatId) => {
       const chat = store.state.chatsById.get(chatId)
       const project = chat ? store.state.projectsById.get(chat.projectId) : undefined
       return project?.localPath ?? null
     },
-    recordFiles: (chatId, files) => store.recordFilesTouched(chatId, files),
-  })
+    recordFiles: (chatId, files) => Effect.tryPromise({
+      try: () => store.recordFilesTouched(chatId, files),
+      catch: (cause) => new TurnFileRecordError({ chatId, cause }),
+    }),
+  }).pipe(Layer.provide(TestPlatform)))
+  runtimes.push(runtime)
+  const tracker = await runtime.runPromise(Effect.service(TurnFileTracker))
   store.onTurnStarted = (chatId) => {
-    turnStarted.push(tracker.beginTurn(chatId))
+    turnStarted.push(runtime.runPromise(tracker.beginTurn(chatId)))
   }
   store.onTurnEnded = (chatId) => {
-    turnEnded.push(tracker.endTurn(chatId).then(() => probe.refreshForChat(chatId)))
+    turnEnded.push(runtime.runPromise(tracker.endTurn(chatId)).then(() => probe.refreshForChat(chatId)))
   }
   return { tracker, turnStarted, turnEnded }
 }
@@ -88,11 +135,6 @@ function createState(localPath: string, options?: { lastTurnEndedAt?: number }):
   return state
 }
 
-/** The tick is private; exercise it the way the interval would. */
-function tick(probe: WorktreeProbe) {
-  return (probe as unknown as { tick: () => Promise<void> }).tick()
-}
-
 describe("WorktreeProbe", () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
@@ -101,7 +143,7 @@ describe("WorktreeProbe", () => {
   test("refreshForChat records the project's dirty state", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     expect(probe.getStates().get("project-1")).toBeUndefined()
     await probe.refreshForChat("chat-1")
@@ -115,48 +157,42 @@ describe("WorktreeProbe", () => {
     expect([...(recorded?.paths ?? [])]).toEqual(["app.txt"])
   })
 
-  test("onChange fires only when the probe result actually changes", async () => {
+  test("a change is announced only when the probe result actually changes", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    let changes = 0
-    const probe = new WorktreeProbe(() => state, () => {
-      changes += 1
-    })
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
-    expect(changes).toBe(1)
+    expect(await probe.changeCount()).toBe(1)
 
     // Same clean result twice — no rebroadcast.
     await probe.refreshForChat("chat-1")
-    expect(changes).toBe(1)
+    expect(await probe.changeCount()).toBe(1)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await probe.refreshForChat("chat-1")
-    expect(changes).toBe(2)
+    expect(await probe.changeCount()).toBe(2)
   })
 
   test("a probe does not re-trigger itself on the next tick", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    let changes = 0
-    const probe = new WorktreeProbe(() => state, () => {
-      changes += 1
-    })
+    const probe = await makeProbe(() => state)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await probe.refreshForChat("chat-1")
-    const afterFirst = changes
+    const afterFirst = await probe.changeCount()
 
     // The stamp was re-read after probing, so a quiet repo produces no work.
-    await tick(probe)
-    await tick(probe)
-    expect(changes).toBe(afterFirst)
+    await probe.tick()
+    await probe.tick()
+    expect(await probe.changeCount()).toBe(afterFirst)
   })
 
   test("the tick notices a commit made outside Kanna and clears the dirty state", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await probe.refreshForChat("chat-1")
@@ -165,7 +201,7 @@ describe("WorktreeProbe", () => {
     // Commit behind Kanna's back — this rewrites .git/index, which is exactly
     // the signal the stat tick watches for.
     await run(["git", "commit", "-am", "external"], repoRoot)
-    await tick(probe)
+    await probe.tick()
 
     expect(probe.getStates().get("project-1")).toEqual({ dirty: false, paths: new Set(), headBlobs: new Map() })
   })
@@ -173,10 +209,10 @@ describe("WorktreeProbe", () => {
   test("the tick skips projects whose chats never finished a turn", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot)
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
-    await tick(probe)
+    await probe.tick()
 
     // No chat can qualify for the dot, so the project is never probed.
     expect(probe.getStates().get("project-1")).toBeUndefined()
@@ -186,10 +222,10 @@ describe("WorktreeProbe", () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
     state.projectsById.get("project-1")!.deletedAt = 2
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
-    await tick(probe)
+    await probe.tick()
 
     expect(probe.getStates().get("project-1")).toBeUndefined()
   })
@@ -197,10 +233,7 @@ describe("WorktreeProbe", () => {
   test("recordExternalProbe accepts a result computed elsewhere", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    let changes = 0
-    const probe = new WorktreeProbe(() => state, () => {
-      changes += 1
-    })
+    const probe = await makeProbe(() => state)
 
     // Resolves the project's location itself, so a scan arriving from the git
     // panel before any tick still gets its HEAD blobs read.
@@ -212,14 +245,14 @@ describe("WorktreeProbe", () => {
       // Uncommitted file: in the working tree, absent from HEAD.
       headBlobs: new Map([["a.txt", null]]),
     })
-    expect(changes).toBe(1)
+    expect(await probe.changeCount()).toBe(1)
   })
 
   test("a project that is not a repo reports not dirty", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-plain-"))
     tempDirs.push(root)
     const state = createState(root, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
 
@@ -241,17 +274,13 @@ describe("WorktreeProbe integration", () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-data-"))
     tempDirs.push(dataDir)
 
-    const store = new EventStore(dataDir)
-    await store.initialize()
+    const store = await openEventStore(dataDir)
     const project = await store.openProject(repoRoot)
     const chat = await store.createChat(project.id)
 
-    let broadcasts = 0
-    const probe = new WorktreeProbe(() => store.state, () => {
-      broadcasts += 1
-    })
+    const probe = await makeProbe(() => store.state)
     // Mirrors server.ts.
-    const { turnStarted, turnEnded } = wireTurnTracking(store, probe)
+    const { turnStarted, turnEnded } = await wireTurnTracking(store, probe)
 
     // An agent edits a file during its turn.
     await store.recordTurnStarted(chat.id)
@@ -260,7 +289,7 @@ describe("WorktreeProbe integration", () => {
     await store.recordTurnFinished(chat.id)
     await Promise.all(turnEnded)
 
-    expect(broadcasts).toBeGreaterThan(0)
+    expect(await probe.changeCount()).toBeGreaterThan(0)
     const touched = store.state.chatsById.get(chat.id)?.touchedFiles ?? []
     expect(touched.map((file) => file.path)).toEqual(["app.txt"])
     // Recorded against the commit the turn started from, so committing this
@@ -274,7 +303,7 @@ describe("WorktreeProbe integration", () => {
 
     // Committing externally clears it on the next tick.
     await run(["git", "commit", "-am", "external"], repoRoot)
-    await tick(probe)
+    await probe.tick()
 
     const cleared = deriveSidebarData(store.state, new Map(), { workingTrees: probe.getStates() })
     expect(cleared.projectGroups[0]?.chats[0]?.uncommittedWork).toBeUndefined()
@@ -287,13 +316,12 @@ describe("WorktreeProbe integration", () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-data-"))
     tempDirs.push(dataDir)
 
-    const store = new EventStore(dataDir)
-    await store.initialize()
+    const store = await openEventStore(dataDir)
     const project = await store.openProject(repoRoot)
     const chat = await store.createChat(project.id)
 
-    const probe = new WorktreeProbe(() => store.state, () => {})
-    const { turnStarted, turnEnded } = wireTurnTracking(store, probe)
+    const probe = await makeProbe(() => store.state)
+    const { turnStarted, turnEnded } = await wireTurnTracking(store, probe)
 
     await store.recordTurnStarted(chat.id)
     await Promise.all(turnStarted)
@@ -314,7 +342,7 @@ describe("WorktreeProbe integration", () => {
   test("labels a project with its repo name and branch", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
 
@@ -329,7 +357,7 @@ describe("WorktreeProbe integration", () => {
     // no remote simply has none, which must not disturb the rest of the label.
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
     expect(probe.getRepoLabels().get("project-1")?.repoOwner).toBeUndefined()
@@ -348,7 +376,7 @@ describe("WorktreeProbe integration", () => {
     // because this ran.
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
     expect(probe.getRepoLabels().get("project-1")?.repoUrl).toBeUndefined()
@@ -362,7 +390,7 @@ describe("WorktreeProbe integration", () => {
   test("leaves a local-path remote without a page, rather than inventing one", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await run(["git", "remote", "add", "origin", "/srv/git/widgets.git"], repoRoot)
     await probe.refreshForChat("chat-1")
@@ -378,25 +406,47 @@ describe("WorktreeProbe integration", () => {
     // No lastTurnEndedAt: this project can never show the dot, but its label is
     // still on screen, so the label must not depend on being a dot candidate.
     const state = createState(repoRoot)
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
-    await tick(probe)
+    await probe.tick()
 
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("main")
     expect(probe.getStates().get("project-1")).toBeUndefined()
   })
 
+  test("start runs a pass at once, and starting again starts nothing more", async () => {
+    // Without the first pass every label reads as a bare folder name for the
+    // first tick interval after boot.
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot)
+    const labels = await Effect.runPromise(Effect.gen(function* () {
+      const probe = yield* WorktreeProbe
+      yield* probe.start
+      yield* probe.start
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* probe.repoLabels).has("project-1")) break
+        yield* Effect.sleep("20 millis")
+      }
+      return yield* probe.repoLabels
+    }).pipe(
+      Effect.provide(WorktreeProbe.layer({ state: Effect.succeed(state) })),
+      Effect.provide(TestPlatform),
+    ))
+
+    expect(labels.get("project-1")?.branchName).toBe("main")
+  })
+
   test("the tick picks up a branch switch made outside Kanna", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
-    await tick(probe)
+    await probe.tick()
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("main")
 
     await run(["git", "checkout", "-b", "feature/side-quest"], repoRoot)
-    await tick(probe)
+    await probe.tick()
 
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("feature/side-quest")
   })
@@ -410,16 +460,16 @@ describe("WorktreeProbe integration", () => {
     // reads the branch itself, showed the new one.
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
-    await tick(probe)
+    await probe.tick()
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("main")
 
     await run(["git", "checkout", "-b", "feature/side-quest"], repoRoot)
     probe.recordExternalProbe("project-1", { dirty: false, paths: [] })
     // Fire-and-forget by design; let its stamp write land before the tick.
     await new Promise((resolve) => setTimeout(resolve, 20))
-    await tick(probe)
+    await probe.tick()
 
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("feature/side-quest")
   })
@@ -427,7 +477,7 @@ describe("WorktreeProbe integration", () => {
   test("a detached HEAD keeps the repo name and drops the branch", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await run(["git", "checkout", "--detach", "HEAD"], repoRoot)
     await probe.refreshForChat("chat-1")
@@ -442,7 +492,7 @@ describe("WorktreeProbe integration", () => {
     const nested = path.join(repoRoot, "packages", "ui")
     await mkdir(nested, { recursive: true })
     const state = createState(nested, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
 
@@ -453,7 +503,7 @@ describe("WorktreeProbe integration", () => {
     const plainDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-plain-"))
     tempDirs.push(plainDir)
     const state = createState(plainDir, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
 
@@ -466,7 +516,7 @@ describe("WorktreeProbe integration", () => {
   test("nothing is claimed about a project the probe has not looked at", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     expect(probe.getProjectsWithoutRepo().has("project-1")).toBe(false)
 
@@ -481,39 +531,33 @@ describe("WorktreeProbe integration", () => {
     const plainDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-plain-"))
     tempDirs.push(plainDir)
     const state = createState(plainDir, { lastTurnEndedAt: 1 })
-    let changes = 0
-    const probe = new WorktreeProbe(() => state, () => {
-      changes += 1
-    })
+    const probe = await makeProbe(() => state)
 
     await probe.refreshForChat("chat-1")
 
-    expect(changes).toBe(1)
+    expect(await probe.changeCount()).toBe(1)
   })
 
   test("one refresh is one broadcast even when label and dirty state both change", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    let changes = 0
-    const probe = new WorktreeProbe(() => state, () => {
-      changes += 1
-    })
+    const probe = await makeProbe(() => state)
 
     // First pass sets both the label and the probe — one broadcast, not two.
     await probe.refreshForChat("chat-1")
-    expect(changes).toBe(1)
+    expect(await probe.changeCount()).toBe(1)
 
     // A checkout that also dirties the tree still coalesces.
     await run(["git", "checkout", "-b", "next"], repoRoot)
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await probe.refreshForChat("chat-1")
-    expect(changes).toBe(2)
+    expect(await probe.changeCount()).toBe(2)
   })
 
   test("the sidebar snapshot carries the repo label", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
     await probe.refreshForChat("chat-1")
 
     const sidebar = deriveSidebarData(state, new Map(), { repoLabels: probe.getRepoLabels() })
@@ -527,7 +571,7 @@ describe("WorktreeProbe integration", () => {
     const plainDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-plain-"))
     tempDirs.push(plainDir)
     const state = createState(plainDir, { lastTurnEndedAt: 1 })
-    const probe = new WorktreeProbe(() => state, () => {})
+    const probe = await makeProbe(() => state)
 
     const unprobed = deriveSidebarData(state, new Map(), {
       repoLabels: probe.getRepoLabels(),
@@ -555,11 +599,10 @@ async function createTrackedProject() {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-data-"))
   tempDirs.push(dataDir)
 
-  const store = new EventStore(dataDir)
-  await store.initialize()
+  const store = await openEventStore(dataDir)
   const project = await store.openProject(repoRoot)
-  const probe = new WorktreeProbe(() => store.state, () => {})
-  const { turnStarted, turnEnded } = wireTurnTracking(store, probe)
+  const probe = await makeProbe(() => store.state)
+  const { turnStarted, turnEnded } = await wireTurnTracking(store, probe)
 
   /** A whole turn: start (snapshot + base commit), agent edits, finish (record + reprobe). */
   const runTurn = async (chatId: string, mutate: () => Promise<void>) => {
@@ -654,8 +697,7 @@ describe("uncommitted-work claims", () => {
     await tracked.commitAll("chat A's work")
     await tracked.runTurn(chatB.id, () => tracked.write("app.txt", "chat B\n"))
 
-    const reloaded = new EventStore(tracked.dataDir)
-    await reloaded.initialize()
+    const reloaded = await openEventStore(tracked.dataDir)
 
     expect(tracked.flaggedChatIds(reloaded.state)).toEqual([chatB.id])
   })

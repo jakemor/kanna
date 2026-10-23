@@ -2,10 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Deferred, Effect, Fiber } from "effect"
+import { runTest } from "./effect/testing"
 import {
-  ClaudeProjectDiscoveryAdapter,
-  CodexProjectDiscoveryAdapter,
-  discoverProjects,
+  makeClaudeDiscoveryAdapter,
+  makeCodexDiscoveryAdapter,
+  makeGrokDiscoveryAdapter,
+  ProjectDiscovery,
   type ProjectDiscoveryAdapter,
 } from "./discovery"
 
@@ -27,6 +30,15 @@ afterEach(() => {
   }
 })
 
+const scanCodex = (homeDir: string) =>
+  runTest(makeCodexDiscoveryAdapter().pipe(Effect.flatMap((adapter) => adapter.scan(homeDir))))
+
+const discover = (homeDir: string, adapters: ProjectDiscoveryAdapter[]) =>
+  runTest(Effect.gen(function* () {
+    const discovery = yield* ProjectDiscovery
+    return yield* discovery.discover(homeDir)
+  }).pipe(Effect.provide(ProjectDiscovery.layer({ adapters }))))
+
 describe("project discovery", () => {
   test("Claude adapter decodes saved project paths", async () => {
     const homeDir = makeTempDir()
@@ -38,7 +50,7 @@ describe("project discovery", () => {
     mkdirSync(projectMarkerDir, { recursive: true })
     utimesSync(projectMarkerDir, new Date("2026-03-16T10:00:00.000Z"), new Date("2026-03-16T10:00:00.000Z"))
 
-    const projects = await new ClaudeProjectDiscoveryAdapter().scan(homeDir)
+    const projects = await runTest(makeClaudeDiscoveryAdapter.pipe(Effect.flatMap((adapter) => adapter.scan(homeDir))))
 
     expect(projects).toEqual([
       {
@@ -106,7 +118,7 @@ describe("project discovery", () => {
       }),
     ].join("\n"))
 
-    const projects = await new CodexProjectDiscoveryAdapter().scan(homeDir)
+    const projects = await scanCodex(homeDir)
 
     expect(projects).toEqual([
       {
@@ -148,7 +160,7 @@ describe("project discovery", () => {
       }),
     ].join("\n"))
 
-    const projects = await new CodexProjectDiscoveryAdapter().scan(homeDir)
+    const projects = await scanCodex(homeDir)
 
     expect(projects.map((project) => project.localPath).sort()).toEqual([
       cliProjectDir,
@@ -159,25 +171,22 @@ describe("project discovery", () => {
     )
   })
 
-  test("discoverProjects de-dupes provider results by normalized path and keeps the newest timestamp", async () => {
+  test("discover de-dupes provider results by normalized path and keeps the newest timestamp", async () => {
     const adapters: ProjectDiscoveryAdapter[] = [
       {
         provider: "claude",
-        async scan() {
-          return [
-            {
-              provider: "claude",
-              localPath: "/tmp/project",
-              title: "Claude Project",
-              modifiedAt: 10,
-            },
-          ]
-        },
+        scan: () => Effect.succeed([
+          {
+            provider: "claude",
+            localPath: "/tmp/project",
+            title: "Claude Project",
+            modifiedAt: 10,
+          },
+        ]),
       },
       {
         provider: "codex",
-        async scan() {
-          return [
+        scan: () => Effect.succeed([
             {
               provider: "codex",
               localPath: "/tmp/project",
@@ -190,12 +199,11 @@ describe("project discovery", () => {
               title: "Other Project",
               modifiedAt: 15,
             },
-          ]
-        },
+        ]),
       },
     ]
 
-    expect(await discoverProjects("/unused-home", adapters)).toEqual([
+    expect(await discover("/unused-home", adapters)).toEqual([
       {
         localPath: "/tmp/project",
         title: "Codex Project",
@@ -220,13 +228,13 @@ describe("project discovery", () => {
 
   function makeCountingCodexAdapter() {
     const reads: string[] = []
-    const adapter = new CodexProjectDiscoveryAdapter({
-      readFileHead: async (filePath) => {
+    const adapter = runTest(makeCodexDiscoveryAdapter({
+      readFileHead: (filePath) => Effect.sync(() => {
         reads.push(filePath)
         return readFileSync(filePath, "utf8")
-      },
-    })
-    return { adapter, reads }
+      }),
+    }))
+    return { scan: async (homeDir: string) => runTest((await adapter).scan(homeDir)), reads }
   }
 
   test("Codex adapter does not reopen a session file whose mtime and size are unchanged", async () => {
@@ -241,14 +249,14 @@ describe("project discovery", () => {
     const mtime = new Date("2026-03-16T23:05:52.000Z")
     writeCodexSession(sessionFile, "session", firstProject, mtime)
 
-    const { adapter, reads } = makeCountingCodexAdapter()
-    expect((await adapter.scan(homeDir)).map((project) => project.localPath)).toEqual([firstProject])
+    const { scan, reads } = makeCountingCodexAdapter()
+    expect((await scan(homeDir)).map((project) => project.localPath)).toEqual([firstProject])
     expect(reads).toEqual([sessionFile])
 
     // Same length, same mtime: the cache must answer without opening the file,
     // so the stale cwd is what comes back.
     writeCodexSession(sessionFile, "session", secondProject, mtime)
-    expect((await adapter.scan(homeDir)).map((project) => project.localPath)).toEqual([firstProject])
+    expect((await scan(homeDir)).map((project) => project.localPath)).toEqual([firstProject])
     expect(reads).toEqual([sessionFile])
   })
 
@@ -263,46 +271,112 @@ describe("project discovery", () => {
     const sessionFile = path.join(sessionsDir, "rollout-session.jsonl")
     writeCodexSession(sessionFile, "session", firstProject, new Date("2026-03-16T23:05:52.000Z"))
 
-    const { adapter, reads } = makeCountingCodexAdapter()
-    await adapter.scan(homeDir)
+    const { scan, reads } = makeCountingCodexAdapter()
+    await scan(homeDir)
 
     writeCodexSession(sessionFile, "session", secondProject, new Date("2026-03-16T23:10:00.000Z"))
-    expect((await adapter.scan(homeDir)).map((project) => project.localPath)).toEqual([secondProject])
+    expect((await scan(homeDir)).map((project) => project.localPath)).toEqual([secondProject])
     expect(reads).toEqual([sessionFile, sessionFile])
 
     rmSync(sessionFile)
-    expect(await adapter.scan(homeDir)).toEqual([])
+    expect(await scan(homeDir)).toEqual([])
     writeCodexSession(sessionFile, "session", secondProject, new Date("2026-03-16T23:10:00.000Z"))
-    await adapter.scan(homeDir)
+    await scan(homeDir)
     expect(reads).toEqual([sessionFile, sessionFile, sessionFile])
   })
 
-  test("discoverProjects shares one scan between concurrent callers", async () => {
+  test("discover shares one scan between concurrent callers", async () => {
     let scans = 0
-    let release: () => void = () => {}
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const adapters: ProjectDiscoveryAdapter[] = [
-      {
-        provider: "claude",
-        async scan() {
-          scans += 1
-          await gate
-          return [{ provider: "claude", localPath: "/tmp/project", title: "Project", modifiedAt: 1 }]
+    await runTest(Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>()
+      const adapters: ProjectDiscoveryAdapter[] = [
+        {
+          provider: "claude",
+          scan: () => Effect.gen(function* () {
+            scans += 1
+            yield* Deferred.await(gate)
+            return [{ provider: "claude" as const, localPath: "/tmp/project", title: "Project", modifiedAt: 1 }]
+          }),
         },
+      ]
+
+      yield* Effect.gen(function* () {
+        const discovery = yield* ProjectDiscovery
+        const first = yield* Effect.forkChild(discovery.discover("/unused-home"))
+        const second = yield* Effect.forkChild(discovery.discover("/unused-home"))
+        yield* Effect.promise(() => Bun.sleep(10))
+        yield* Deferred.succeed(gate, undefined)
+        const firstResult = yield* Fiber.join(first)
+        const secondResult = yield* Fiber.join(second)
+        expect(scans).toBe(1)
+        expect(secondResult).toEqual(firstResult)
+
+        // Once settled, the next call scans again rather than returning a stale result.
+        yield* discovery.discover("/unused-home")
+        expect(scans).toBe(2)
+      }).pipe(Effect.provide(ProjectDiscovery.layer({ adapters })))
+    }))
+  })
+
+  test("a caller that goes away doesn't cancel the scan the others share", async () => {
+    let scans = 0
+    await runTest(Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>()
+      const adapters: ProjectDiscoveryAdapter[] = [
+        {
+          provider: "claude",
+          scan: () => Effect.gen(function* () {
+            scans += 1
+            yield* Deferred.await(gate)
+            return [{ provider: "claude" as const, localPath: "/tmp/project", title: "Project", modifiedAt: 1 }]
+          }),
+        },
+      ]
+
+      yield* Effect.gen(function* () {
+        const discovery = yield* ProjectDiscovery
+        const leaving = yield* Effect.forkChild(discovery.discover("/unused-home"))
+        const staying = yield* Effect.forkChild(discovery.discover("/unused-home"))
+        yield* Effect.promise(() => Bun.sleep(10))
+        yield* Fiber.interrupt(leaving)
+        yield* Deferred.succeed(gate, undefined)
+        expect(yield* Fiber.join(staying)).toEqual([{ localPath: "/tmp/project", title: "Project", modifiedAt: 1 }])
+        expect(scans).toBe(1)
+      }).pipe(Effect.provide(ProjectDiscovery.layer({ adapters })))
+    }))
+  })
+
+  test("Grok adapter decodes URI-encoded session folders and skips undecodable ones", async () => {
+    const homeDir = makeTempDir()
+    const projectDir = path.join(homeDir, "workspace", "grok project")
+    const sessionsDir = path.join(homeDir, ".grok", "sessions")
+    mkdirSync(projectDir, { recursive: true })
+    const folder = path.join(sessionsDir, encodeURIComponent(projectDir))
+    mkdirSync(folder, { recursive: true })
+    mkdirSync(path.join(sessionsDir, "%E0%A4%A"), { recursive: true })
+    writeFileSync(path.join(sessionsDir, "not-a-folder"), "")
+    utimesSync(folder, new Date("2026-03-16T10:00:00.000Z"), new Date("2026-03-16T10:00:00.000Z"))
+
+    const projects = await runTest(makeGrokDiscoveryAdapter.pipe(Effect.flatMap((adapter) => adapter.scan(homeDir))))
+
+    expect(projects).toEqual([
+      {
+        provider: "grok",
+        localPath: projectDir,
+        title: "grok project",
+        modifiedAt: new Date("2026-03-16T10:00:00.000Z").getTime(),
       },
-    ]
+    ])
+  })
 
-    const first = discoverProjects("/unused-home", adapters)
-    const second = discoverProjects("/unused-home", adapters)
-    release()
-    const [firstResult, secondResult] = await Promise.all([first, second])
-    expect(scans).toBe(1)
-    expect(secondResult).toEqual(firstResult)
-
-    // Once settled, the next call scans again rather than returning a stale result.
-    await discoverProjects("/unused-home", adapters)
-    expect(scans).toBe(2)
+  test("a home with no provider history discovers nothing", async () => {
+    const homeDir = makeTempDir()
+    const projects = await runTest(
+      Effect.gen(function* () {
+        const discovery = yield* ProjectDiscovery
+        return yield* discovery.discover(homeDir)
+      }).pipe(Effect.provide(ProjectDiscovery.layer())),
+    )
+    expect(projects).toEqual([])
   })
 })

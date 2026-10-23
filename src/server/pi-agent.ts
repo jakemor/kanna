@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
 import path from "node:path"
 import type {
   AuthStorage,
@@ -8,30 +6,48 @@ import type {
   AgentSession,
   AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent"
-
-/**
- * The pi SDK is loaded on first use, not at import time. Its module graph
- * pulls the AWS Bedrock, Google GenAI and Mistral clients and measures ~170 ms
- * to evaluate — paid on every boot, by every user, including the ones who
- * only ever pick Claude. Both runtime call sites below are already async.
- */
-let piSdkPromise: Promise<typeof import("@mariozechner/pi-coding-agent")> | null = null
-function loadPiSdk() {
-  return (piSdkPromise ??= import("@mariozechner/pi-coding-agent"))
-}
 import type { Model } from "@mariozechner/pi-ai"
+import { Cause, Context, Effect, Exit, FileSystem, Layer, Option, Queue, Schema, Stream } from "effect"
 import type { ContextWindowUsageSnapshot, HarnessSkill, LlmProviderKind, PiReasoningEffort } from "../shared/types"
 import { getDataRootDir } from "../shared/branding"
 import { normalizeToolCall } from "../shared/tools"
-import type { HarnessEvent, HarnessTurn } from "./harness-types"
-import { AsyncQueue } from "./async-queue"
+import type { HarnessEvent, HarnessTurnEffect } from "./harness-types"
 import { KANNA_TOOL_NAMES, type KannaToolHost } from "./kanna-tools"
 import { createPiKannaTools } from "./kanna-tool-adapters"
 import { buildKannaAgentCorrection, buildKannaAgentId } from "./attribution"
 import { buildKannaSystemInstructions } from "./harness-instructions"
 import { appendSystemMessageBlock } from "./harness-skills"
 import { OPENROUTER_BASE_URL, readLlmProviderSnapshot } from "./llm-provider"
+import { Machine } from "./platform/machine"
 import { timestamped } from "./transcript"
+
+/**
+ * The pi SDK is loaded on first use, not at import time. Its module graph
+ * pulls the AWS Bedrock, Google GenAI and Mistral clients and measures ~170 ms
+ * to evaluate — paid on every boot, by every user, including the ones who
+ * only ever pick Claude.
+ */
+let piSdkPromise: Promise<typeof import("@mariozechner/pi-coding-agent")> | null = null
+const loadPiSdk = Effect.tryPromise({
+  try: () => (piSdkPromise ??= import("@mariozechner/pi-coding-agent")),
+  catch: (cause) => new PiAgentError({ operation: "load", message: failureText(cause), cause }),
+})
+
+/** A pi SDK call failed. The message is the SDK's own, which a failed turn shows the user. */
+export class PiAgentError extends Schema.TaggedError<PiAgentError>()(
+  "@kanna/server/pi-agent/PiAgentError",
+  {
+    operation: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+const failureText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
+const piCall = <A>(operation: string, call: () => PromiseLike<A>) =>
+  Effect.tryPromise({ try: call, catch: (cause) => new PiAgentError({ operation, message: failureText(cause), cause }) })
+const piSync = <A>(operation: string, call: () => A) =>
+  Effect.try({ try: call, catch: (cause) => new PiAgentError({ operation, message: failureText(cause), cause }) })
 
 /**
  * Adapter for the pi coding agent (@mariozechner/pi-coding-agent), driven
@@ -234,25 +250,25 @@ export function buildRegistryModel(connection: PiConnection, modelId: string): M
  * Resolve pi's connection from the Model Registry settings; falls back to an
  * OpenRouter connection built from the OPENROUTER_API_KEY environment variable.
  */
-export async function resolvePiConnection(): Promise<PiConnection | null> {
-  try {
-    const snapshot = await readLlmProviderSnapshot()
-    if (snapshot.apiKey && snapshot.resolvedBaseUrl) {
-      return {
-        provider: snapshot.provider,
-        baseUrl: snapshot.resolvedBaseUrl,
-        apiKey: snapshot.apiKey,
-      }
-    }
-  } catch {
-    // fall through to the environment variable
+export const resolvePiConnection = Effect.fn("PiAgent.resolveConnection")(function* () {
+  // An unreadable registry falls through to the environment variable.
+  const snapshot = yield* readLlmProviderSnapshot().pipe(
+    Effect.map(Option.some),
+    Effect.catchTag("@kanna/server/llm-provider/LlmProviderFileError", () => Effect.succeedNone),
+  )
+  if (Option.isSome(snapshot) && snapshot.value.apiKey && snapshot.value.resolvedBaseUrl) {
+    return {
+      provider: snapshot.value.provider,
+      baseUrl: snapshot.value.resolvedBaseUrl,
+      apiKey: snapshot.value.apiKey,
+    } satisfies PiConnection
   }
-  const envKey = process.env.OPENROUTER_API_KEY?.trim()
+  const envKey = (yield* Machine).env.get("OPENROUTER_API_KEY")?.trim()
   if (envKey) {
-    return { provider: "openrouter", baseUrl: OPENROUTER_BASE_URL, apiKey: envKey }
+    return { provider: "openrouter", baseUrl: OPENROUTER_BASE_URL, apiKey: envKey } satisfies PiConnection
   }
   return null
-}
+})
 
 export const MISSING_PI_CONNECTION_MESSAGE =
   "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
@@ -323,35 +339,38 @@ export function collectPiSkills(loader: DefaultResourceLoader): HarnessSkill[] {
   return skills
 }
 
+
 /** A turn that failed before the agent could start (missing key, bad session file). */
-function failedPiTurn(message: string): HarnessTurn {
-  const queue = new AsyncQueue<HarnessEvent>()
-  queue.push({
-    type: "transcript",
-    entry: timestamped({
-      kind: "result",
-      subtype: "error",
-      isError: true,
-      durationMs: 0,
-      result: message,
-    }),
-  })
-  queue.finish()
+function failedPiTurn(message: string): HarnessTurnEffect {
   return {
     provider: "pi",
-    stream: queue,
-    interrupt: async () => {},
-    close: () => {},
+    events: Stream.make({
+      type: "transcript",
+      entry: timestamped({
+        kind: "result",
+        subtype: "error",
+        isError: true,
+        durationMs: 0,
+        result: message,
+      }),
+    }),
+    interrupt: Effect.void,
   }
 }
 
+/**
+ * Pi's sessions, one per chat. A session outlives its turns: the next turn on
+ * the chat reuses it, and `closeChat` disposes it. A turn is what
+ * `startTurn` opens in its scope.
+ */
 export class PiAgentManager {
   private readonly sessions = new Map<string, PiChatSession>()
   private readonly agentDir: string
   private readonly sessionsDir: string
 
-  constructor(args: { dataDir?: string } = {}) {
-    const dataDir = args.dataDir ?? path.join(getDataRootDir(homedir()), "pi")
+  /** `dataDir` is pi's own directory under Kanna's data root (see `piDataDir`). */
+  constructor(args: { dataDir: string }) {
+    const dataDir = args.dataDir
     this.agentDir = path.join(dataDir, "agent")
     this.sessionsDir = path.join(dataDir, "sessions")
   }
@@ -363,12 +382,12 @@ export class PiAgentManager {
    * session snapshots resources at creation, so a skill added mid-session
    * appears here (fresh menu) but only expands after the next session boot.
    */
-  async listSkills(args: { chatId?: string; cwd: string }): Promise<HarnessSkill[]> {
+  readonly listSkills = Effect.fn("PiAgent.listSkills")(function* (this: PiAgentManager, args: { chatId?: string; cwd: string }) {
     const existing = args.chatId ? this.sessions.get(args.chatId) : undefined
     if (existing && existing.cwd === args.cwd) {
       return collectPiSkills(existing.resourceLoader)
     }
-    const { DefaultResourceLoader, SettingsManager } = await loadPiSdk()
+    const { DefaultResourceLoader, SettingsManager } = yield* loadPiSdk
     const loader = new DefaultResourceLoader({
       cwd: args.cwd,
       agentDir: this.agentDir,
@@ -376,9 +395,9 @@ export class PiAgentManager {
       noExtensions: true,
       noThemes: true,
     })
-    await loader.reload()
+    yield* piCall("reloadResources", () => loader.reload())
     return collectPiSkills(loader)
-  }
+  })
 
   getResourceCounts() {
     return { piSessions: this.sessions.size }
@@ -408,7 +427,7 @@ export class PiAgentManager {
     return buildRegistryModel(connection, modelId)
   }
 
-  private async openSession(args: StartPiTurnArgs & { connection: PiConnection }): Promise<PiChatSession> {
+  private readonly openSession = Effect.fn("PiAgent.openSession")(function* (this: PiAgentManager, args: StartPiTurnArgs & { connection: PiConnection }) {
     const existing = this.sessions.get(args.chatId)
     const connectionUnchanged = existing
       && existing.connectionProvider === args.connection.provider
@@ -416,7 +435,7 @@ export class PiAgentManager {
     if (existing && connectionUnchanged && existing.cwd === args.cwd && existing.delegator === Boolean(args.delegator) && !args.forkSession) {
       existing.authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
       if (existing.model !== args.model) {
-        await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model))
+        yield* piCall("setModel", () => existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model)))
         existing.model = args.model
       }
       if (existing.effort !== args.effort) {
@@ -433,7 +452,7 @@ export class PiAgentManager {
 
     // All state is Kanna-owned: in-memory credentials/settings, sessions under
     // Kanna's data root, and no discovery of the user's ~/.pi setup.
-    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession } = await loadPiSdk()
+    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession } = yield* loadPiSdk
     const authStorage = AuthStorage.inMemory()
     authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
     const modelRegistry = ModelRegistry.inMemory(authStorage)
@@ -453,15 +472,21 @@ export class PiAgentManager {
       noThemes: true,
       appendSystemPrompt: [buildKannaSystemInstructions(buildKannaAgentId("pi", args.model), { delegator: args.delegator })],
     })
-    await resourceLoader.reload()
+    yield* piCall("reloadResources", () => resourceLoader.reload())
 
-    const sessionManager = args.forkSession && args.sessionToken && existsSync(args.sessionToken)
-      ? SessionManager.forkFrom(args.sessionToken, args.cwd, this.sessionsDir)
-      : args.sessionToken && existsSync(args.sessionToken)
-        ? SessionManager.open(args.sessionToken, this.sessionsDir, args.cwd)
-        : SessionManager.create(args.cwd, this.sessionsDir)
+    const fs = yield* FileSystem.FileSystem
+    // A session file that is gone (or unreadable) starts a fresh session, as a missing one always has.
+    const sessionFileExists = args.sessionToken
+      ? yield* fs.exists(args.sessionToken).pipe(Effect.catchTag("PlatformError", () => Effect.succeed(false)))
+      : false
+    const sessionToken = args.sessionToken
+    const sessionManager = yield* piSync("openSessionFile", () => args.forkSession && sessionToken && sessionFileExists
+      ? SessionManager.forkFrom(sessionToken, args.cwd, this.sessionsDir)
+      : sessionToken && sessionFileExists
+        ? SessionManager.open(sessionToken, this.sessionsDir, args.cwd)
+        : SessionManager.create(args.cwd, this.sessionsDir))
 
-    const { session } = await createAgentSession({
+    const { session } = yield* piCall("createSession", () => createAgentSession({
       cwd: args.cwd,
       agentDir: this.agentDir,
       authStorage,
@@ -473,7 +498,7 @@ export class PiAgentManager {
       thinkingLevel: args.effort,
       tools: [...PI_TOOL_NAMES, ...(args.customTools ? KANNA_TOOL_NAMES : [])],
       customTools: args.customTools ? createPiKannaTools(args.customTools) : undefined,
-    })
+    }))
 
     const chatSession: PiChatSession = {
       session,
@@ -490,27 +515,39 @@ export class PiAgentManager {
     }
     this.sessions.set(args.chatId, chatSession)
     return chatSession
-  }
+  })
 
-  async startTurn(args: StartPiTurnArgs): Promise<HarnessTurn> {
+  /**
+   * One turn on the chat's session, in the caller's scope. The turn's events
+   * are what the session reports from the moment the prompt is sent; closing
+   * the scope interrupts the prompt (which aborts the model call through its
+   * signal, so it can't keep executing tools invisibly after the turn is
+   * discarded) and ends the events. The session itself stays for the next
+   * turn. A turn that cannot start is a turn whose only event is the error.
+   */
+  readonly startTurn = Effect.fn("PiAgent.startTurn")(function* (this: PiAgentManager, args: StartPiTurnArgs) {
+    yield* Effect.annotateCurrentSpan("chatId", args.chatId)
     if (!args.connection) {
       return failedPiTurn(MISSING_PI_CONNECTION_MESSAGE)
     }
 
-    let chatSession: PiChatSession
-    try {
-      chatSession = await this.openSession({ ...args, connection: args.connection })
-    } catch (error) {
-      return failedPiTurn(error instanceof Error ? error.message : String(error))
+    // Whatever stops the session from opening, a thrown bug included, is the
+    // turn's error result, as it always was, not a failed startTurn.
+    const opened = yield* Effect.exit(this.openSession({ ...args, connection: args.connection }))
+    if (Exit.isFailure(opened)) {
+      if (Cause.hasInterruptsOnly(opened.cause)) return yield* Effect.interrupt
+      return failedPiTurn(failureText(Cause.squash(opened.cause)))
     }
+    const chatSession = opened.value
     const session = chatSession.session
     // A previous turn on this reused session may still be streaming (its turn
     // was closed without an interrupt); pi throws on concurrent prompt() calls,
     // so stop the old run before starting the new one.
     if (session.isStreaming) {
-      await session.abort()
+      yield* piCall("abort", () => session.abort())
     }
-    const queue = new AsyncQueue<HarnessEvent>()
+    const events = yield* Queue.unbounded<HarnessEvent, Cause.Done>()
+    const push = (event: HarnessEvent) => { Queue.offerUnsafe(events, event) }
     const startedAt = Date.now()
 
     let finished = false
@@ -520,32 +557,11 @@ export class PiAgentManager {
 
     const pushSessionToken = () => {
       if (session.sessionFile) {
-        queue.push({ type: "session_token", sessionToken: session.sessionFile })
+        push({ type: "session_token", sessionToken: session.sessionFile })
       }
     }
 
-    const finalize = (result: { isError: boolean; message: string; cancelled?: boolean }) => {
-      if (finished) return
-      finished = true
-      unsubscribe()
-      pushSessionToken()
-      if (!result.cancelled) {
-        queue.push({
-          type: "transcript",
-          entry: timestamped({
-            kind: "result",
-            subtype: result.isError ? "error" : "success",
-            isError: result.isError,
-            durationMs: Date.now() - startedAt,
-            result: result.message,
-            ...(turnCostUsd > 0 ? { costUsd: turnCostUsd } : {}),
-          }),
-        })
-      }
-      queue.finish()
-    }
-
-    const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+    const listener = (event: AgentSessionEvent) => {
       switch (event.type) {
         case "message_end": {
           const message = asRecord(event.message)
@@ -558,7 +574,7 @@ export class PiAgentManager {
           }
           const usage = normalizePiUsage(message.usage, session.model?.contextWindow)
           if (usage) {
-            queue.push({
+            push({
               type: "transcript",
               entry: timestamped({ kind: "context_window_updated", usage }),
             })
@@ -582,14 +598,14 @@ export class PiAgentManager {
               .join("")
             : ""
           if (text.trim()) {
-            queue.push({ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) })
+            push({ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) })
           }
           return
         }
 
         case "tool_execution_start": {
           const { toolName, input } = translatePiTool(event.toolName, asRecord(event.args))
-          queue.push({
+          push({
             type: "transcript",
             entry: timestamped({
               kind: "tool_call",
@@ -600,7 +616,7 @@ export class PiAgentManager {
         }
 
         case "tool_execution_end": {
-          queue.push({
+          push({
             type: "transcript",
             entry: timestamped({
               kind: "tool_result",
@@ -615,9 +631,38 @@ export class PiAgentManager {
         default:
           return
       }
-    })
+    }
 
-    queue.push({
+    // The subscription is the turn's: its release is the turn's end, with
+    // the session file's token and, unless the turn was cancelled, its result.
+    let unsubscribe: (() => void) | null = null
+    const finalize = (result: { isError: boolean; message: string; cancelled?: boolean }) => {
+      if (finished) return
+      finished = true
+      unsubscribe?.()
+      unsubscribe = null
+      pushSessionToken()
+      if (!result.cancelled) {
+        push({
+          type: "transcript",
+          entry: timestamped({
+            kind: "result",
+            subtype: result.isError ? "error" : "success",
+            isError: result.isError,
+            durationMs: Date.now() - startedAt,
+            result: result.message,
+            ...(turnCostUsd > 0 ? { costUsd: turnCostUsd } : {}),
+          }),
+        })
+      }
+      Queue.endUnsafe(events)
+    }
+    yield* Effect.acquireRelease(
+      Effect.sync(() => { unsubscribe = session.subscribe(listener) }),
+      () => Effect.sync(() => finalize({ isError: false, message: "", cancelled: true })),
+    )
+
+    push({
       type: "transcript",
       entry: timestamped({
         kind: "system_init",
@@ -639,37 +684,53 @@ export class PiAgentManager {
       ? args.content
       : appendSystemMessageBlock(args.content, buildKannaAgentCorrection(piAgentId))
 
-    void session.prompt(piContent)
-      .then(() => {
-        if (aborted) {
-          finalize({ isError: false, message: "", cancelled: true })
-        } else if (lastError) {
-          finalize({ isError: true, message: lastError })
-        } else {
-          finalize({ isError: false, message: "" })
-        }
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error)
-        finalize({ isError: true, message })
-      })
+    // The prompt runs in the turn's scope. Interrupting it (closing the
+    // scope) aborts the session's in-flight model call through the signal.
+    // It starts before startTurn returns, so an interrupt that follows at
+    // once finds the run streaming and stops it.
+    yield* Effect.forkScoped({ startImmediately: true })(Effect.tryPromise({
+      try: (signal) => {
+        signal.addEventListener("abort", () => {
+          if (session.isStreaming) void session.abort().catch(() => {})
+        }, { once: true })
+        return session.prompt(piContent)
+      },
+      catch: (cause) => new PiAgentError({ operation: "prompt", message: failureText(cause), cause }),
+    }).pipe(
+      Effect.match({
+        onSuccess: () => {
+          if (aborted) {
+            finalize({ isError: false, message: "", cancelled: true })
+          } else if (lastError) {
+            finalize({ isError: true, message: lastError })
+          } else {
+            finalize({ isError: false, message: "" })
+          }
+        },
+        onFailure: (error) => finalize({ isError: true, message: error.message }),
+      }),
+    ))
 
     return {
       provider: "pi",
-      stream: queue,
-      interrupt: async () => {
-        await session.abort()
-      },
-      // The AgentSession stays alive across turns (it's reused by the next
-      // startTurn and torn down in closeChat); close ends this turn's stream
-      // and stops any still-running prompt so it can't keep executing tools
-      // invisibly after the turn is discarded.
-      close: () => {
-        if (session.isStreaming) {
-          void session.abort().catch(() => {})
-        }
-        finalize({ isError: false, message: "", cancelled: true })
-      },
-    }
-  }
+      events: Stream.fromQueue(events),
+      // Pi stops the run; the turn's events end on their own once it has.
+      interrupt: Effect.promise(() => session.abort()),
+    } satisfies HarnessTurnEffect
+  })
+}
+
+/** Pi's directory under Kanna's data root on a machine whose home is `homeDirectory`. */
+export function piDataDir(homeDirectory: string) {
+  return path.join(getDataRootDir(homeDirectory), "pi")
+}
+
+export class PiAgent extends Context.Service<PiAgent, PiAgentManager>()("@kanna/server/PiAgent") {
+  static readonly layer = (args: { dataDir?: string } = {}) => Layer.effect(this, Effect.acquireRelease(
+    Effect.gen(function* () {
+      const machine = yield* Machine
+      return new PiAgentManager({ dataDir: args.dataDir ?? piDataDir(machine.homeDirectory) })
+    }),
+    (manager) => Effect.sync(() => manager.dispose()),
+  ))
 }

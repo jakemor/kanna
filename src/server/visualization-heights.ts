@@ -1,4 +1,4 @@
-import { readFile, rename, stat, writeFile } from "node:fs/promises"
+import { Effect, FileSystem, Option, Schema } from "effect"
 import { readVisualizationHeights, withVisualizationHeight, type VisualizationHeights } from "../shared/visualization"
 import type { EventStore } from "./event-store"
 
@@ -14,42 +14,83 @@ import type { EventStore } from "./event-store"
  */
 const ROUTE = /^(\/api\/chats\/[a-zA-Z0-9_-]+\/media\/visualization-[a-zA-Z0-9_-]+\.html)\/heights$/
 
+export class VisualizationHeightsWriteError extends Schema.TaggedError<VisualizationHeightsWriteError>()(
+  "@kanna/server/visualization-heights/VisualizationHeightsWriteError",
+  {
+    filePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
 function heightsPath(documentPath: string) {
   return `${documentPath}.heights.json`
 }
 
-export async function readStoredVisualizationHeights(documentPath: string): Promise<VisualizationHeights> {
-  try {
-    return readVisualizationHeights(JSON.parse(await readFile(heightsPath(documentPath), "utf8")))
-  } catch {
-    // None measured yet, or a file cut short: nothing known, which is where every document starts.
-    return []
-  }
-}
+/** The stored file holds a bare array; `readVisualizationHeights` decides which pairs in it are sound. */
+const decodeStoredHeights = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
-export async function storeVisualizationHeight(documentPath: string, width: number, height: number): Promise<VisualizationHeights> {
-  const heights = withVisualizationHeight(await readStoredVisualizationHeights(documentPath), width, height)
+/** What a client reports: one width and the height it measured there. */
+const decodeMeasurement = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({
+  width: Schema.Number,
+  height: Schema.Number,
+})))
+
+export const readStoredVisualizationHeights = Effect.fn("VisualizationHeights.read")(function* (documentPath: string) {
+  const fs = yield* FileSystem.FileSystem
+  // None measured yet, or a file cut short: nothing known, which is where every document starts.
+  const text = yield* fs.readFileString(heightsPath(documentPath)).pipe(
+    Effect.map(Option.some),
+    Effect.catchTag("PlatformError", () => Effect.succeedNone),
+  )
+  return Option.match(Option.flatMap(text, decodeStoredHeights), {
+    onNone: (): VisualizationHeights => [],
+    onSome: readVisualizationHeights,
+  })
+})
+
+export const storeVisualizationHeight = Effect.fn("VisualizationHeights.store")(function* (documentPath: string, width: number, height: number) {
+  const fs = yield* FileSystem.FileSystem
+  const heights = withVisualizationHeight(yield* readStoredVisualizationHeights(documentPath), width, height)
   // Whole or not at all: two tabs can report at once, and a reader must never see half a file.
-  const temporary = `${heightsPath(documentPath)}.${crypto.randomUUID()}.tmp`
-  await writeFile(temporary, JSON.stringify(heights))
-  await rename(temporary, heightsPath(documentPath))
+  const target = heightsPath(documentPath)
+  const temporary = `${target}.${crypto.randomUUID()}.tmp`
+  yield* fs.writeFileString(temporary, JSON.stringify(heights)).pipe(
+    Effect.andThen(fs.rename(temporary, target)),
+    Effect.catchTag("PlatformError", (cause) => Effect.fail(new VisualizationHeightsWriteError({ filePath: target, cause }))),
+  )
   return heights
-}
+})
 
-export async function handleVisualizationHeights(req: Request, url: URL, store: Pick<EventStore, "resolveTranscriptMediaPath">) {
+export const handleVisualizationHeights = Effect.fn("VisualizationHeights.handle")(function* (
+  req: Request,
+  url: URL,
+  store: Pick<EventStore["Service"], "resolveTranscriptMediaPath">,
+) {
   const match = url.pathname.match(ROUTE)
   if (!match) return null
   if (req.method !== "GET" && req.method !== "PUT") return new Response(null, { status: 405, headers: { Allow: "GET, PUT" } })
 
+  const fs = yield* FileSystem.FileSystem
   const documentPath = store.resolveTranscriptMediaPath(match[1]!)
-  const exists = documentPath ? await stat(documentPath).then((info) => info.isFile(), () => false) : false
+  const exists = documentPath
+    ? yield* fs.stat(documentPath).pipe(
+      Effect.map((info) => info.type === "File"),
+      Effect.catchTag("PlatformError", () => Effect.succeed(false)),
+    )
+    : false
   if (!documentPath || !exists) return Response.json({ error: "Visualization not found" }, { status: 404 })
 
   const headers = { "Cache-Control": "no-store" }
-  if (req.method === "GET") return Response.json({ heights: await readStoredVisualizationHeights(documentPath) }, { headers })
+  if (req.method === "GET") return Response.json({ heights: yield* readStoredVisualizationHeights(documentPath) }, { headers })
 
-  const body = await req.json().catch(() => null) as { width?: unknown; height?: unknown } | null
-  const [measured] = readVisualizationHeights([[body?.width, body?.height]])
+  // An unreadable body is a bad request like a malformed one.
+  const body = yield* Effect.tryPromise(() => req.text()).pipe(
+    Effect.catchTag("UnknownError", () => Effect.succeed("")),
+  )
+  const [measured] = Option.match(decodeMeasurement(body), {
+    onNone: (): VisualizationHeights => [],
+    onSome: ({ width, height }) => readVisualizationHeights([[width, height]]),
+  })
   if (!measured) return Response.json({ error: "Expected a width and a height" }, { status: 400 })
-  return Response.json({ heights: await storeVisualizationHeight(documentPath, measured[0], measured[1]) }, { headers })
-}
+  return Response.json({ heights: yield* storeVisualizationHeight(documentPath, measured[0], measured[1]) }, { headers })
+})

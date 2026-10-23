@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto"
+import { Effect, Schema } from "effect"
 
 const SESSION_COOKIE_NAME = "kanna_session"
 
@@ -11,7 +12,7 @@ export interface AuthManager {
   isAuthenticated(req: Request): boolean
   validateOrigin(req: Request): boolean
   redirectToApp(req: Request): Response
-  handleLogin(req: Request, nextPath: string): Promise<Response>
+  handleLogin(req: Request, nextPath: string): Effect.Effect<Response, LoginFormError>
   handleLogout(req: Request): Response
   handleStatus(req: Request): Response
 }
@@ -80,23 +81,45 @@ function buildCookie(name: string, value: string, req: Request, trustProxy: bool
   return parts.join("; ")
 }
 
-async function readLoginForm(req: Request) {
+/** The login body could not be read: not JSON, or not a form. Left to the server (a 500), as before. */
+export class LoginFormError extends Schema.TaggedError<LoginFormError>()(
+  "@kanna/server/auth/LoginFormError",
+  {
+    contentType: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+
+/** `value[key]` when `value` is an object, as JSON property access reads it. */
+function field(value: unknown, key: string): unknown {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined
+}
+
+const readLoginForm = Effect.fn("Auth.readLoginForm")(function* (req: Request) {
   const contentType = req.headers.get("content-type") ?? ""
+  const formError = (cause: unknown) => new LoginFormError({ contentType, cause })
 
   if (contentType.includes("application/json")) {
-    const payload = await req.json() as { password?: unknown; next?: unknown }
+    const text = yield* Effect.tryPromise({ try: () => req.text(), catch: formError })
+    const payload = yield* decodeJson(text).pipe(
+      Effect.catchTag("SchemaError", (cause) => Effect.fail(formError(cause))),
+    )
+    const password = field(payload, "password")
+    const next = field(payload, "next")
     return {
-      password: typeof payload.password === "string" ? payload.password : "",
-      nextPath: sanitizeNextPath(typeof payload.next === "string" ? payload.next : "/"),
+      password: typeof password === "string" ? password : "",
+      nextPath: sanitizeNextPath(typeof next === "string" ? next : "/"),
     }
   }
 
-  const formData = await req.formData()
+  const formData = yield* Effect.tryPromise({ try: () => req.formData(), catch: formError })
   return {
     password: String(formData.get("password") ?? ""),
     nextPath: sanitizeNextPath(String(formData.get("next") ?? "/")),
   }
-}
+})
 
 export interface AuthManagerOptions {
   /**
@@ -167,12 +190,12 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
     return Response.redirect(new URL(sanitizeNextPath(currentUrl.searchParams.get("next")), effectiveOrigin(req, trustProxy)), 302)
   }
 
-  async function handleLogin(req: Request, fallbackNextPath: string) {
+  const handleLogin = Effect.fn("Auth.handleLogin")(function* (req: Request, fallbackNextPath: string) {
     if (!validateOrigin(req)) {
       return Response.json({ error: "Forbidden" }, { status: 403 })
     }
 
-    const { password: candidate, nextPath } = await readLoginForm(req)
+    const { password: candidate, nextPath } = yield* readLoginForm(req)
     if (!verifyPassword(candidate)) {
       return Response.json({ error: "Invalid password" }, { status: 401 })
     }
@@ -181,7 +204,7 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
 
     response.headers.set("Set-Cookie", createSessionCookie(req))
     return response
-  }
+  })
 
   function handleLogout(req: Request) {
     if (!validateOrigin(req)) {

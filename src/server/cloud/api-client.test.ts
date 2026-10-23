@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { Effect, Result } from "effect"
 import { CLOUD_CONTROL_URL_ENV_VAR, DEFAULT_CLOUD_CONTROL_URL } from "../../shared/cloud-api"
+import { runTest } from "../effect/testing"
 import { CloudApiError, createCloudApiClient, resolveControlUrl } from "./api-client"
 
 function fakeFetch(handler: (url: string, init: RequestInit) => Response) {
@@ -34,7 +36,7 @@ describe("cloud api client", () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json(PAIR_RESPONSE))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    const result = await client.pair("ABC123", "Jake's MBP")
+    const result = await runTest(client.pair("ABC123", "Jake's MBP"))
     expect(result).toEqual(PAIR_RESPONSE)
     expect(calls[0].url).toBe("http://cp/api/cloud/pair")
     expect(JSON.parse(String(calls[0].init.body))).toEqual({
@@ -48,14 +50,13 @@ describe("cloud api client", () => {
       Response.json({ error: "Pairing code expired" }, { status: 410 }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    try {
-      await client.pair("STALE")
-      throw new Error("expected pair to throw")
-    } catch (error) {
-      expect(error).toBeInstanceOf(CloudApiError)
-      expect((error as CloudApiError).status).toBe(410)
-      expect((error as CloudApiError).message).toBe("Pairing code expired")
-    }
+    const result = await runTest(Effect.result(client.pair("STALE")))
+    if (!Result.isFailure(result)) throw new Error("expected pair to fail")
+    expect(result.failure).toBeInstanceOf(CloudApiError)
+    expect(result.failure._tag).toBe("@kanna/server/cloud/api-client/CloudApiError")
+    if (result.failure._tag !== "@kanna/server/cloud/api-client/CloudApiError") return
+    expect(result.failure.status).toBe(410)
+    expect(result.failure.message).toBe("Pairing code expired")
   })
 
   test("pair rejects incomplete responses (e.g. missing tunnel credentials)", async () => {
@@ -67,14 +68,14 @@ describe("cloud api client", () => {
       // tunnelToken / tunnelHost missing
     }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
-    await expect(client.pair("ABC")).rejects.toThrow("incomplete pair response")
+    await expect(runTest(client.pair("ABC"))).rejects.toThrow("incomplete pair response")
   })
 
   test("heartbeat sends the bearer token and local service", async () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json({ ok: true }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    await client.heartbeat("token", { localUrl: "http://localhost:3210" })
+    await runTest(client.heartbeat("token", { localUrl: "http://localhost:3210" }))
     expect(calls[0].url).toBe("http://cp/api/cloud/heartbeat")
     expect(new Headers(calls[0].init.headers).get("authorization")).toBe("Bearer token")
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ localUrl: "http://localhost:3210" })
@@ -84,19 +85,16 @@ describe("cloud api client", () => {
     const { fetchImpl } = fakeFetch(() => Response.json({ error: "Unauthorized" }, { status: 401 }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    try {
-      await client.heartbeat("gone", { localUrl: "http://localhost:3210" })
-      throw new Error("expected heartbeat to throw")
-    } catch (error) {
-      expect((error as CloudApiError).status).toBe(401)
-    }
+    const result = await runTest(Effect.result(client.heartbeat("gone", { localUrl: "http://localhost:3210" })))
+    if (!Result.isFailure(result)) throw new Error("expected heartbeat to fail")
+    expect(result.failure).toMatchObject({ _tag: "@kanna/server/cloud/api-client/CloudApiError", status: 401 })
   })
 
   test("markOffline posts with the bearer token", async () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json({ ok: true }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    await client.markOffline("token")
+    await runTest(client.markOffline("token"))
     expect(calls[0].url).toBe("http://cp/api/cloud/offline")
     expect(calls[0].init.method).toBe("POST")
     expect(new Headers(calls[0].init.headers).get("authorization")).toBe("Bearer token")
@@ -106,8 +104,62 @@ describe("cloud api client", () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json({ ok: true }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
 
-    await client.removeMachine("token")
+    await runTest(client.removeMachine("token"))
     expect(calls[0].url).toBe("http://cp/api/cloud/machine")
     expect(calls[0].init.method).toBe("DELETE")
+  })
+})
+
+describe("cloud api client failures", () => {
+  test("an unreachable control plane fails with a network error naming the route", async () => {
+    const fetchImpl = (async () => {
+      throw new TypeError("Unable to connect")
+    }) as unknown as typeof fetch
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
+
+    const result = await runTest(Effect.result(client.heartbeat("token", { localUrl: "http://localhost:3210" })))
+    if (!Result.isFailure(result)) throw new Error("expected heartbeat to fail")
+    expect(result.failure).toMatchObject({
+      _tag: "@kanna/server/cloud/api-client/CloudNetworkError",
+      path: "/heartbeat",
+      message: "Unable to connect",
+    })
+  })
+
+  test("a non-JSON error body falls back to the status line", async () => {
+    const { fetchImpl } = fakeFetch(() => new Response("<html>bad gateway</html>", { status: 502 }))
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
+
+    const result = await runTest(Effect.result(client.markOffline("token")))
+    if (!Result.isFailure(result)) throw new Error("expected markOffline to fail")
+    expect(result.failure).toMatchObject({ status: 502, message: "control plane returned 502" })
+  })
+
+  test("device code: a missing poll interval reads as 0 (the session's fallback applies)", async () => {
+    const { fetchImpl } = fakeFetch(() => Response.json({
+      code: "ABC123",
+      deviceToken: "device-token",
+      claimUrl: "https://kanna.sh/machine?pair=ABC123",
+      expiresAt: 1_700_000_000_000,
+    }))
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
+
+    const issued = await runTest(client.requestDeviceCode("Jake's MBP"))
+    expect(issued.pollIntervalMs).toBe(0)
+    expect(issued.claimUrl).toBe("https://kanna.sh/machine?pair=ABC123")
+  })
+
+  test("device code poll: any status but claimed is pending; claimed needs credentials", async () => {
+    let body: unknown = { status: "slow_down" }
+    const { fetchImpl } = fakeFetch(() => Response.json(body))
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
+
+    expect(await runTest(client.pollDeviceCode("device-token"))).toEqual({ status: "pending" })
+
+    body = { status: "claimed", pairing: PAIR_RESPONSE }
+    expect(await runTest(client.pollDeviceCode("device-token"))).toEqual({ status: "claimed", pairing: PAIR_RESPONSE })
+
+    body = { status: "claimed", pairing: { machineToken: "" } }
+    await expect(runTest(client.pollDeviceCode("device-token"))).rejects.toThrow("without credentials")
   })
 })

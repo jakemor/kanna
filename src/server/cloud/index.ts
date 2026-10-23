@@ -1,39 +1,42 @@
 /**
  * Cloud runtime shell: created in the CLI *before* the server starts (so the
  * request guard and ws-endpoint route are live from the first request), then
- * `start()`ed with the server's local URL to bring the tunnel up.
+ * `start`ed with the server's local URL to bring the tunnel up.
+ *
+ * Not a layer: whether there is one at all, and when it starts, is decided
+ * at launch (or at pair time, mid-run), so its owner calls `start`/`stop`.
+ * The loop runs in a scope `start` opens and `stop` closes.
  */
 
+import { FileSystem, Effect, Exit, Option, Scope } from "effect"
 import { createCloudApiClient, type CloudApiClient } from "./api-client"
 import { createConnectTokenManager, type ConnectTokenManager } from "./connect-token"
-import {
-  startCloudHeartbeatLoop,
-  type CloudHeartbeatLoop,
-  type HeartbeatLoopDeps,
-} from "./heartbeat-loop"
+import { runCloudHeartbeatLoop, type HeartbeatLoopDeps } from "./heartbeat-loop"
 import type { CloudIdentity } from "./identity"
-import {
-  startCloudTunnelSupervisor,
-  type CloudTunnelSupervisor,
-  type TunnelSupervisorDeps,
-} from "./tunnel-supervisor"
+import { runCloudTunnelSupervisor, type TunnelSupervisorDeps } from "./tunnel-supervisor"
+
+/** How long shutdown waits for the control plane to hear "offline". */
+const MARK_OFFLINE_TIMEOUT = "2 seconds"
+
+export interface CloudRuntimeStartArgs {
+  localUrl: string
+  /** Fired once when the machine first comes online, then on each recovery. */
+  onTunnelUp?: (kind: "started" | "recovered") => void
+}
 
 export interface CloudRuntime {
-  identity: CloudIdentity
-  connectTokens: ConnectTokenManager
-  start(args: {
-    localUrl: string
-    log?: (message: string) => void
-    warn?: (message: string) => void
-    onTunnelUp?: (kind: "started" | "recovered") => void
-  }): void
+  readonly identity: CloudIdentity
+  readonly connectTokens: ConnectTokenManager
+  /** Brings the machine online. A second call while running does nothing. */
+  /** Needs `FileSystem.FileSystem` to find a local `cloudflared` for the connector. */
+  readonly start: (args: CloudRuntimeStartArgs) => Effect.Effect<void, never, FileSystem.FileSystem>
   /**
    * Stops the tunnel and best-effort tells the control plane we're offline
    * (so the dashboard/proxy flip immediately instead of waiting out the
-   * heartbeat window). Resolves within ~2s even if the control plane is
+   * heartbeat window). Finishes within ~2s even if the control plane is
    * unreachable.
    */
-  stop(): Promise<void>
+  readonly stop: Effect.Effect<void>
 }
 
 export interface CloudRuntimeDeps {
@@ -48,54 +51,45 @@ export function createCloudRuntime(
 ): CloudRuntime {
   const apiClient = deps.apiClient ?? createCloudApiClient({ controlUrl: identity.controlUrl })
   const connectTokens = createConnectTokenManager()
-  let supervisor: CloudTunnelSupervisor | null = null
-  let heartbeatLoop: CloudHeartbeatLoop | null = null
+  let running: Option.Option<Scope.Closeable> = Option.none()
 
-  return {
-    identity,
-    connectTokens,
-
-    start(args) {
-      if (supervisor || heartbeatLoop) return
-      if (identity.mode === "direct") {
-        // Dev-box (E2B): the proxy reaches us via our public sandbox URL — no
-        // connector to run, just keep the control plane's liveness fresh.
-        heartbeatLoop = startCloudHeartbeatLoop({
-          localUrl: args.localUrl,
-          identity,
-          apiClient,
-          log: args.log,
-          warn: args.warn,
-          onUp: args.onTunnelUp,
-          deps: deps.heartbeatDeps,
-        })
-        return
-      }
-      supervisor = startCloudTunnelSupervisor({
+  const start = Effect.fn("CloudRuntime.start")(function* (args: CloudRuntimeStartArgs) {
+    if (Option.isSome(running)) return
+    yield* Effect.annotateCurrentSpan("subdomain", identity.subdomain)
+    const scope = yield* Scope.make()
+    running = Option.some(scope)
+    const loop = identity.mode === "direct"
+      // Dev-box (E2B): the proxy reaches us via our public sandbox URL — no
+      // connector to run, just keep the control plane's liveness fresh.
+      ? runCloudHeartbeatLoop({
         localUrl: args.localUrl,
         identity,
         apiClient,
-        log: args.log,
-        warn: args.warn,
+        onUp: args.onTunnelUp,
+        deps: deps.heartbeatDeps,
+      })
+      : runCloudTunnelSupervisor({
+        localUrl: args.localUrl,
+        identity,
+        apiClient,
         onTunnelUp: args.onTunnelUp,
         deps: deps.supervisorDeps,
       })
-    },
+    yield* Effect.forkIn(loop, scope)
+  })
 
-    async stop() {
-      const wasRunning = supervisor !== null || heartbeatLoop !== null
-      supervisor?.stop()
-      supervisor = null
-      heartbeatLoop?.stop()
-      heartbeatLoop = null
+  const stop = Effect.gen(function* () {
+    if (Option.isNone(running)) return
+    const scope = running.value
+    running = Option.none()
+    // Interrupts the loop; its connector is stopped as the scope closes.
+    yield* Scope.close(scope, Exit.void)
+    // Graceful offline signal, capped so shutdown never hangs on it.
+    yield* apiClient.markOffline(identity.machineToken).pipe(
+      Effect.timeout(MARK_OFFLINE_TIMEOUT),
+      Effect.ignore,
+    )
+  }).pipe(Effect.withSpan("CloudRuntime.stop"))
 
-      if (wasRunning) {
-        // Graceful offline signal, capped so shutdown never hangs on it.
-        await Promise.race([
-          apiClient.markOffline(identity.machineToken).catch(() => {}),
-          new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-        ])
-      }
-    },
-  }
+  return { identity, connectTokens, start, stop }
 }

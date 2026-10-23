@@ -1,7 +1,7 @@
-import { LOG_PREFIX } from "../shared/branding"
-import { readTreeBlobs, resolveWorkingTreeLocation, runGit } from "./diff-store"
+import { Effect, Option, Schema } from "effect"
 import type { EventStore } from "./event-store"
 import type { ChatRecord, TouchedFile } from "./events"
+import { git, resolveLocation, treeBlobs } from "./worktree-git"
 
 /**
  * One-time repair of claims recorded before base blobs existed.
@@ -25,6 +25,15 @@ import type { ChatRecord, TouchedFile } from "./events"
  * which keeps today's behaviour rather than guessing.
  */
 
+/** The store could not record a chat's dated claims. */
+export class TouchedFileBackfillError extends Schema.TaggedError<TouchedFileBackfillError>()(
+  "@kanna/server/touched-file-backfill/TouchedFileBackfillError",
+  {
+    chatId: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
 /** Where a chat was in time, for reconstructing what it edited from. */
 function chatActivityAt(chat: ChatRecord): number | null {
   return chat.lastTurnEndedAt ?? chat.lastMessageAt ?? chat.updatedAt ?? null
@@ -37,19 +46,16 @@ function legacyPaths(chat: ChatRecord): string[] {
 }
 
 /**
- * The commit the repo was at when the chat last ran, or `null` when nothing was
- * committed by then (every path's base is genuinely "not committed").
- * `undefined` means the question couldn't be answered and the claim should stay
- * unknown.
+ * The commit the repo was at when the chat last ran: some commit, none when
+ * nothing was committed by then (every path's base is genuinely "not
+ * committed"), or `undefined` when the question couldn't be answered and the
+ * claim should stay unknown.
  */
-async function commitAsOf(repoRoot: string, atMs: number): Promise<string | null | undefined> {
-  const listed = await runGit(
-    ["rev-list", "-1", `--before=${new Date(atMs).toISOString()}`, "HEAD"],
-    repoRoot
-  )
+const commitAsOf = Effect.fnUntraced(function* (repoRoot: string, atMs: number) {
+  const listed = yield* git(["rev-list", "-1", `--before=${new Date(atMs).toISOString()}`, "HEAD"], repoRoot)
   if (listed.exitCode !== 0) return undefined
-  return listed.stdout.trim() || null
-}
+  return Option.fromNullOr(listed.stdout.trim() || null)
+})
 
 export interface TouchedFileBackfillResult {
   /** Chats whose claims were stamped with a base. */
@@ -63,10 +69,9 @@ export interface TouchedFileBackfillResult {
  * normal `chat_files_touched` path — so the repair is an event like any other
  * and survives restart without a second pass.
  */
-export async function backfillTouchedFileBases(
-  store: EventStore,
-  options?: { onProgress?: (message: string) => void }
-): Promise<TouchedFileBackfillResult> {
+export const backfillTouchedFileBases = Effect.fn("TouchedFileBackfill.run")(function* (
+  store: Pick<EventStore["Service"], "state" | "recordFilesTouched">,
+) {
   const pending = new Map<string, ChatRecord[]>()
   for (const chat of store.state.chatsById.values()) {
     if (chat.deletedAt || legacyPaths(chat).length === 0) continue
@@ -76,45 +81,50 @@ export async function backfillTouchedFileBases(
     if (forProject) forProject.push(chat)
     else pending.set(chat.projectId, [chat])
   }
-  if (pending.size === 0) return { chats: 0, files: 0 }
-
   const result: TouchedFileBackfillResult = { chats: 0, files: 0 }
-  for (const [projectId, chats] of pending) {
+  if (pending.size === 0) return result
+
+  /** Dates one chat's claims; whether it recorded any. */
+  const backfillChat = Effect.fnUntraced(function* (repoRoot: string, chat: ChatRecord) {
+    const paths = legacyPaths(chat)
+    const activityAt = chatActivityAt(chat)
+    if (paths.length === 0 || activityAt == null) return
+
+    const commit = yield* commitAsOf(repoRoot, activityAt)
+    if (commit === undefined) return
+    // Nothing was committed when this chat ran, so "not in HEAD" is the
+    // honest base — and whatever commit first added the path retires it.
+    const blobs = Option.isNone(commit)
+      ? Option.some(new Map(paths.map((filePath) => [filePath, null] as const)))
+      : yield* treeBlobs(repoRoot, commit.value, paths)
+    if (Option.isNone(blobs)) return
+
+    const files: TouchedFile[] = paths.map((filePath) => ({
+      path: filePath,
+      baseBlob: blobs.value.get(filePath) ?? null,
+    }))
+    yield* store.recordFilesTouched(chat.id, files).pipe(
+      Effect.catchTag("@kanna/server/event-store/EventStoreFileError", (cause) =>
+        Effect.fail(new TouchedFileBackfillError({ chatId: chat.id, cause }))),
+    )
+    result.chats += 1
+    result.files += files.length
+  })
+
+  yield* Effect.forEach(pending, Effect.fnUntraced(function* ([projectId, chats]) {
     const project = store.state.projectsById.get(projectId)
-    if (!project) continue
-    const location = await resolveWorkingTreeLocation(project.localPath)
+    if (!project) return
+    const location = yield* resolveLocation(project.localPath)
     // Not a repo (any more): nothing to read a base from, and nothing can be
     // dirty either, so the stale claims are harmless where they are.
-    if (!location) continue
-
-    for (const chat of chats) {
-      const paths = legacyPaths(chat)
-      const activityAt = chatActivityAt(chat)
-      if (paths.length === 0 || activityAt == null) continue
-
-      const commit = await commitAsOf(location.repoRoot, activityAt)
-      if (commit === undefined) continue
-      // Nothing was committed when this chat ran, so "not in HEAD" is the
-      // honest base — and whatever commit first added the path retires it.
-      const blobs = commit === null
-        ? new Map(paths.map((filePath) => [filePath, null] as const))
-        : await readTreeBlobs(location.repoRoot, commit, paths)
-      if (!blobs) continue
-
-      const files: TouchedFile[] = paths.map((filePath) => ({
-        path: filePath,
-        baseBlob: blobs.get(filePath) ?? null,
-      }))
-      await store.recordFilesTouched(chat.id, files)
-      result.chats += 1
-      result.files += files.length
-    }
-  }
+    if (Option.isNone(location)) return
+    yield* Effect.forEach(chats, (chat) => backfillChat(location.value.repoRoot, chat), { discard: true })
+  }), { discard: true })
 
   if (result.chats > 0) {
-    options?.onProgress?.(
-      `${LOG_PREFIX} dated ${result.files} touched file(s) across ${result.chats} chat(s) recorded before commit tracking`
+    yield* Effect.logInfo(
+      `dated ${result.files} touched file(s) across ${result.chats} chat(s) recorded before commit tracking`,
     )
   }
   return result
-}
+})

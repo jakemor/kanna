@@ -2,12 +2,25 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EventStore } from "./event-store"
+import { openEventStore, type EventStoreBridge as EventStore } from "./event-store-bridge"
 import { deriveSidebarData } from "./read-models"
-import { backfillTouchedFileBases } from "./touched-file-backfill"
+import { Effect } from "effect"
+import { runTest } from "./effect/testing"
+import { backfillTouchedFileBases as backfillEffect } from "./touched-file-backfill"
 import { WorktreeProbe } from "./worktree-probe"
 
 const tempDirs: string[] = []
+
+const backfillTouchedFileBases = (store: EventStore) => runTest(backfillEffect(store.service))
+
+/** A fresh probe's readings after it refreshed the chat's project, as the sidebar would get them. */
+function probeWorkingTrees(store: EventStore, chatId: string) {
+  return runTest(Effect.gen(function* () {
+    const probe = yield* WorktreeProbe
+    yield* probe.refreshForChat(chatId)
+    return yield* probe.states
+  }).pipe(Effect.provide(WorktreeProbe.layer({ state: Effect.sync(() => store.state) }))))
+}
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
@@ -66,8 +79,7 @@ async function createRepo() {
 async function createStore() {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-backfill-data-"))
   tempDirs.push(dataDir)
-  const store = new EventStore(dataDir)
-  await store.initialize()
+  const store = await openEventStore(dataDir)
   return { store, dataDir }
 }
 
@@ -106,16 +118,15 @@ describe("backfillTouchedFileBases", () => {
     await commitAllAt(repoRoot, "chat A's work", AT.secondCommit)
     await writeFile(path.join(repoRoot, "app.txt"), "someone else\n", "utf8")
 
-    const probe = new WorktreeProbe(() => store.state, () => {})
-    await probe.refreshForChat(chatA.id)
+    const workingTrees = await probeWorkingTrees(store, chatA.id)
     // Before: the claim can't expire, so the chat is still "relevant".
-    const before = deriveSidebarData(store.state, new Map(), { workingTrees: probe.getStates() })
+    const before = deriveSidebarData(store.state, new Map(), { workingTrees })
     expect(before.projectGroups[0]?.chats[0]?.uncommittedWork).toBe(true)
 
     const result = await backfillTouchedFileBases(store)
 
     expect(result).toEqual({ chats: 1, files: 1 })
-    const after = deriveSidebarData(store.state, new Map(), { workingTrees: probe.getStates() })
+    const after = deriveSidebarData(store.state, new Map(), { workingTrees })
     expect(after.projectGroups[0]?.chats[0]?.uncommittedWork).toBeUndefined()
   })
 
@@ -134,9 +145,8 @@ describe("backfillTouchedFileBases", () => {
 
     await backfillTouchedFileBases(store)
 
-    const probe = new WorktreeProbe(() => store.state, () => {})
-    await probe.refreshForChat(chat.id)
-    const sidebar = deriveSidebarData(store.state, new Map(), { workingTrees: probe.getStates() })
+    const workingTrees = await probeWorkingTrees(store, chat.id)
+    const sidebar = deriveSidebarData(store.state, new Map(), { workingTrees })
     expect(sidebar.projectGroups[0]?.chats[0]?.uncommittedWork).toBe(true)
   })
 
@@ -173,9 +183,8 @@ describe("backfillTouchedFileBases", () => {
     // And that difference is what the sidebar reads: dirty the file now and
     // only the chat whose base still matches HEAD is flagged.
     await writeFile(path.join(repoRoot, "app.txt"), "third\n", "utf8")
-    const probe = new WorktreeProbe(() => store.state, () => {})
-    await probe.refreshForChat(recentChat.id)
-    const flagged = (deriveSidebarData(store.state, new Map(), { workingTrees: probe.getStates() })
+    const workingTrees = await probeWorkingTrees(store, recentChat.id)
+    const flagged = (deriveSidebarData(store.state, new Map(), { workingTrees })
       .projectGroups[0]?.chats ?? [])
       .filter((row) => row.uncommittedWork)
       .map((row) => row.chatId)
@@ -210,8 +219,7 @@ describe("backfillTouchedFileBases", () => {
     await backfillTouchedFileBases(store)
     const dated = store.state.chatsById.get(chat.id)?.touchedFiles
 
-    const reloaded = new EventStore(dataDir)
-    await reloaded.initialize()
+    const reloaded = await openEventStore(dataDir)
     expect(reloaded.state.chatsById.get(chat.id)?.touchedFiles).toEqual(dated)
     // Nothing left to date, so a second boot is a no-op.
     expect(await backfillTouchedFileBases(reloaded)).toEqual({ chats: 0, files: 0 })

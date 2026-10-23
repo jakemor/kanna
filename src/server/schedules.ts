@@ -1,3 +1,4 @@
+import { Cause, Effect, Exit, type Fiber, type Scope } from "effect"
 import type { ChatSchedule, ScheduleRun, ScheduleTrigger } from "../shared/types"
 
 /** A schedule fires no more often than this. An agent's typo should not start a chat every second. */
@@ -60,13 +61,14 @@ export type ScheduleFireResult =
   /** The chat or project it targets no longer exists. */
   | { outcome: "gone" }
 
-interface ScheduleRunnerDeps {
+export interface ScheduleRunnerDeps<E = never, FireError = never> {
   store: {
     listSchedules: () => ChatSchedule[]
     getSchedule: (scheduleId: string) => ChatSchedule | null
-    setSchedule: (schedule: ChatSchedule) => Promise<ChatSchedule>
+    setSchedule: (schedule: ChatSchedule) => Effect.Effect<ChatSchedule, E>
   }
-  fire: (schedule: ChatSchedule) => Promise<ScheduleFireResult>
+  /** A failure here is a failed run (`onError`), not a failed pass. */
+  fire: (schedule: ChatSchedule) => Effect.Effect<ScheduleFireResult, FireError>
   onFired?: (schedule: ChatSchedule, result: ScheduleFireResult) => void
   onError?: (schedule: ChatSchedule, error: unknown) => void
   now?: () => number
@@ -79,96 +81,116 @@ interface ScheduleRunnerDeps {
  * time it was due. A machine that was off or asleep for a week runs each
  * schedule once when it comes back, not once per missed slot.
  */
-export class ScheduleRunner {
-  private timer: ReturnType<typeof setTimeout> | null = null
-  private ticking = false
-  private disposed = false
-
-  constructor(private readonly deps: ScheduleRunnerDeps) {}
-
-  start() {
-    this.arm()
-  }
-
+export interface ScheduleRunner<E = never> {
+  /** Arms the timer. Nothing fires before this. */
+  readonly start: Effect.Effect<void>
   /** Call after a schedule is created, changed or deleted. */
-  refresh() {
-    // A pass in progress arms the timer itself when it ends.
-    if (!this.ticking) this.arm()
-  }
+  readonly refresh: Effect.Effect<void>
+  /**
+   * Fires everything due now. Exposed so tests need no real timers. Fails
+   * only when writing a schedule back fails.
+   */
+  readonly tick: Effect.Effect<void, E>
+}
 
-  dispose() {
-    this.disposed = true
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-  }
+/**
+ * A runner that stops when its scope closes: the timer is cleared and no
+ * pass starts after that. A pass already firing finishes, as its message may
+ * be on its way and the schedule has to record that it ran.
+ */
+export const makeScheduleRunner = Effect.fn("ScheduleRunner.make")(function* <E = never, FireError = never>(
+  deps: ScheduleRunnerDeps<E, FireError>,
+): Effect.fn.Return<ScheduleRunner<E>, never, Scope.Scope> {
+  // Detached, not scoped: closing the scope must not wait on (or cut short)
+  // a pass in flight. The finalizer below is what stops the timer.
+  let timer: Fiber.Fiber<void> | null = null
+  let ticking = false
+  let disposed = false
+  const now = () => deps.now?.() ?? Date.now()
 
-  private now() {
-    return this.deps.now?.() ?? Date.now()
-  }
+  const runOne = Effect.fnUntraced(function* (listed: ChatSchedule, at: number) {
+    // Read again: an earlier schedule in this pass may have run long
+    // enough for this one to be changed or deleted.
+    const schedule = deps.store.getSchedule(listed.id)
+    if (!schedule?.enabled || schedule.nextRunAt == null || schedule.nextRunAt > at) return
 
-  private arm() {
-    if (this.timer) clearTimeout(this.timer)
-    this.timer = null
-    if (this.disposed) return
+    const fired = yield* Effect.exit(Effect.suspend(() => deps.fire(schedule)))
+    const failed = Exit.isFailure(fired)
+    if (Exit.isFailure(fired)) deps.onError?.(schedule, Cause.squash(fired.cause))
+    const result: ScheduleFireResult = Exit.isSuccess(fired) ? fired.value : { outcome: "skipped" }
+
+    // A skipped run does not count against `maxRuns`: nothing was sent.
+    const runCount = schedule.runCount + (result.outcome === "sent" ? 1 : 0)
+    const exhausted = schedule.maxRuns != null && runCount >= schedule.maxRuns
+    const nextRunAt = result.outcome === "gone" || exhausted ? null : computeNextRun(schedule.trigger, at)
+    const current = deps.store.getSchedule(schedule.id)
+    if (!current) return
+    yield* deps.store.setSchedule({
+      ...current,
+      runCount,
+      nextRunAt,
+      // Nothing left to run reads as off, so a list shows it as finished.
+      enabled: nextRunAt != null,
+      ...(result.outcome === "sent" ? { lastRunAt: at, lastRunChatId: result.chatId } : {}),
+      // A target that is gone ends the schedule; it is not a run.
+      ...(result.outcome === "gone" ? {} : {
+        runs: [...(current.runs ?? []), {
+          at,
+          outcome: failed ? "failed" : result.outcome,
+          ...(result.outcome === "sent" ? { chatId: result.chatId } : {}),
+        } satisfies ScheduleRun].slice(-MAX_RECORDED_RUNS),
+      }),
+    })
+    deps.onFired?.(schedule, result)
+  })
+
+  const tick: Effect.Effect<void, E> = Effect.suspend(() => {
+    if (ticking || disposed) return Effect.void
+    ticking = true
+    const at = now()
+    const due = deps.store.listSchedules()
+      .filter((schedule) => schedule.enabled && schedule.nextRunAt != null && schedule.nextRunAt <= at)
+    return Effect.forEach(due, (listed) => runOne(listed, at), { discard: true }).pipe(
+      Effect.ensuring(Effect.suspend(() => {
+        ticking = false
+        return arm
+      })),
+    )
+  }).pipe(Effect.withSpan("ScheduleRunner.tick"))
+
+  const arm: Effect.Effect<void> = Effect.suspend(() => {
+    timer?.interruptUnsafe()
+    timer = null
+    if (disposed) return Effect.void
     let earliest: number | null = null
-    for (const schedule of this.deps.store.listSchedules()) {
+    for (const schedule of deps.store.listSchedules()) {
       if (!schedule.enabled || schedule.nextRunAt == null) continue
       if (earliest == null || schedule.nextRunAt < earliest) earliest = schedule.nextRunAt
     }
-    if (earliest == null) return
-    const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - this.now()))
-    this.timer = setTimeout(() => { void this.tick() }, delay)
-  }
+    if (earliest == null) return Effect.void
+    const delay = Math.min(MAX_TIMER_MS, Math.max(0, earliest - now()))
+    return Effect.sleep(delay).pipe(
+      // No longer the timer once it fires: the pass re-arms, and must not
+      // interrupt the fiber it is running on.
+      Effect.andThen(Effect.sync(() => { timer = null })),
+      Effect.andThen(tick.pipe(
+        Effect.catchCause((cause) => Effect.logWarning("A schedule pass failed:", Cause.squash(cause))),
+      )),
+      Effect.forkDetach,
+      Effect.map((fiber) => { timer = fiber }),
+    )
+  })
 
-  /** Fires everything due now. Exposed so tests need no real timers. */
-  async tick() {
-    if (this.ticking || this.disposed) return
-    this.ticking = true
-    try {
-      const now = this.now()
-      const due = this.deps.store.listSchedules()
-        .filter((schedule) => schedule.enabled && schedule.nextRunAt != null && schedule.nextRunAt <= now)
-      for (const listed of due) {
-        // Read again: an earlier schedule in this pass may have run long
-        // enough for this one to be changed or deleted.
-        const schedule = this.deps.store.getSchedule(listed.id)
-        if (!schedule?.enabled || schedule.nextRunAt == null || schedule.nextRunAt > now) continue
+  yield* Effect.addFinalizer(() => Effect.sync(() => {
+    disposed = true
+    timer?.interruptUnsafe()
+    timer = null
+  }))
 
-        let result: ScheduleFireResult = { outcome: "skipped" }
-        let failed = false
-        try {
-          result = await this.deps.fire(schedule)
-        } catch (error) {
-          failed = true
-          this.deps.onError?.(schedule, error)
-        }
-        // A skipped run does not count against `maxRuns`: nothing was sent.
-        const runCount = schedule.runCount + (result.outcome === "sent" ? 1 : 0)
-        const exhausted = schedule.maxRuns != null && runCount >= schedule.maxRuns
-        const nextRunAt = result.outcome === "gone" || exhausted ? null : computeNextRun(schedule.trigger, now)
-        const current = this.deps.store.getSchedule(schedule.id)
-        if (!current) continue
-        await this.deps.store.setSchedule({
-          ...current,
-          runCount,
-          nextRunAt,
-          // Nothing left to run reads as off, so a list shows it as finished.
-          enabled: nextRunAt != null,
-          ...(result.outcome === "sent" ? { lastRunAt: now, lastRunChatId: result.chatId } : {}),
-          // A target that is gone ends the schedule; it is not a run.
-          ...(result.outcome === "gone" ? {} : {
-            runs: [...(current.runs ?? []), {
-              at: now,
-              outcome: failed ? "failed" : result.outcome,
-              ...(result.outcome === "sent" ? { chatId: result.chatId } : {}),
-            } satisfies ScheduleRun].slice(-MAX_RECORDED_RUNS),
-          }),
-        })
-        this.deps.onFired?.(schedule, result)
-      }
-    } finally {
-      this.ticking = false
-      this.arm()
-    }
+  return {
+    start: arm,
+    // A pass in progress arms the timer itself when it ends.
+    refresh: Effect.suspend(() => ticking ? Effect.void : arm),
+    tick,
   }
-}
+})

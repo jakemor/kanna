@@ -2,9 +2,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, te
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Layer, ManagedRuntime } from "effect"
+import { QuickResponse } from "./quick-response"
 import { DiffStore } from "./diff-store"
+import { runTest, TestPlatform } from "./effect/testing"
 
 const tempDirs: string[] = []
+const runtimes: Array<ManagedRuntime.ManagedRuntime<DiffStore, never>> = []
+
+/** A real DiffStore on the platform services, released after the test. */
+async function openStore() {
+  const runtime = ManagedRuntime.make(DiffStore.layer.pipe(Layer.provide(QuickResponse.layer()), Layer.provide(TestPlatform)))
+  runtimes.push(runtime)
+  return await runtime.runPromise(DiffStore)
+}
 
 async function run(command: string[], cwd: string) {
   const process = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" })
@@ -47,7 +58,7 @@ async function countGitSpawns(work: () => Promise<unknown>) {
 
 describe("DiffStore refresh gate", () => {
   let repoRoot: string
-  let store: DiffStore
+  let store: DiffStore["Service"]
   let configDir: string
   let previousGlobalConfig: string | undefined
 
@@ -72,21 +83,21 @@ describe("DiffStore refresh gate", () => {
 
   beforeEach(async () => {
     repoRoot = await createRepo()
-    store = new DiffStore(repoRoot)
-    await store.initialize()
-    await store.refreshSnapshot("project-1", repoRoot)
-    expect(store.lastRefreshSkipped).toBe(false)
+    store = await openStore()
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    expect(store.lastRefreshSkipped()).toBe(false)
   })
 
   afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()))
     await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
   })
 
   test("a second refresh with no changes runs one git status and nothing else", async () => {
     const versionBefore = store.getSnapshotVersion("project-1")
-    const spawns = await countGitSpawns(() => store.refreshSnapshot("project-1", repoRoot))
+    const spawns = await countGitSpawns(() => runTest(store.refreshSnapshot("project-1", repoRoot)))
 
-    expect(store.lastRefreshSkipped).toBe(true)
+    expect(store.lastRefreshSkipped()).toBe(true)
     expect(spawns).toBe(1)
     expect(store.getSnapshotVersion("project-1")).toBe(versionBefore)
     expect(store.getProjectSnapshot("project-1").status).toBe("ready")
@@ -95,28 +106,28 @@ describe("DiffStore refresh gate", () => {
   test("an edit to a clean tracked file invalidates the gate", async () => {
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
-    expect(store.lastRefreshSkipped).toBe(false)
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
+    expect(store.lastRefreshSkipped()).toBe(false)
     expect(store.getProjectSnapshot("project-1").files.map((file) => file.path)).toEqual(["app.txt"])
   })
 
   test("a new untracked file invalidates the gate", async () => {
     await writeFile(path.join(repoRoot, "notes.md"), "one\n", "utf8")
 
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
-    expect(store.lastRefreshSkipped).toBe(false)
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
+    expect(store.lastRefreshSkipped()).toBe(false)
     expect(store.getProjectSnapshot("project-1").files[0]).toMatchObject({ path: "notes.md", isUntracked: true })
   })
 
   test("an edit to an already-reported untracked file invalidates the gate", async () => {
     await writeFile(path.join(repoRoot, "notes.md"), "one\n", "utf8")
-    await store.refreshSnapshot("project-1", repoRoot)
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
     expect(store.getProjectSnapshot("project-1").files[0]?.additions).toBe(1)
     // Status reports `?? notes.md` before and after, so only the lstat can see this.
     await writeFile(path.join(repoRoot, "notes.md"), "one\ntwo\nthree\n", "utf8")
 
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
-    expect(store.lastRefreshSkipped).toBe(false)
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
+    expect(store.lastRefreshSkipped()).toBe(false)
     expect(store.getProjectSnapshot("project-1").files[0]?.additions).toBe(3)
   })
 
@@ -124,36 +135,36 @@ describe("DiffStore refresh gate", () => {
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await run(["git", "commit", "-am", "outside"], repoRoot)
 
-    await expect(store.refreshSnapshot("project-1", repoRoot)).resolves.toBe(true)
-    expect(store.lastRefreshSkipped).toBe(false)
+    await expect(runTest(store.refreshSnapshot("project-1", repoRoot))).resolves.toBe(true)
+    expect(store.lastRefreshSkipped()).toBe(false)
     const snapshot = store.getProjectSnapshot("project-1")
     expect(snapshot.files).toHaveLength(0)
     expect(snapshot.branchHistory?.entries[0]?.summary).toBe("outside")
   })
 
   test("force runs the full scan on an unchanged repo", async () => {
-    const spawns = await countGitSpawns(() => store.refreshSnapshot("project-1", repoRoot, { force: true }))
+    const spawns = await countGitSpawns(() => runTest(store.refreshSnapshot("project-1", repoRoot, { force: true })))
 
-    expect(store.lastRefreshSkipped).toBe(false)
+    expect(store.lastRefreshSkipped()).toBe(false)
     expect(spawns).toBeGreaterThan(1)
   })
 
   test("a forced call queued behind a running refresh keeps its force", async () => {
-    const first = store.refreshSnapshot("project-1", repoRoot)
-    const second = store.refreshSnapshot("project-1", repoRoot, { force: true })
+    const first = runTest(store.refreshSnapshot("project-1", repoRoot))
+    const second = runTest(store.refreshSnapshot("project-1", repoRoot, { force: true }))
     await Promise.all([first, second])
 
-    expect(store.lastRefreshSkipped).toBe(false)
+    expect(store.lastRefreshSkipped()).toBe(false)
   })
 
   test("a refresh after the repo turns into a plain folder does not use the gate", async () => {
     await rm(path.join(repoRoot, ".git"), { recursive: true, force: true })
 
-    await store.refreshSnapshot("project-1", repoRoot)
-    expect(store.lastRefreshSkipped).toBe(false)
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    expect(store.lastRefreshSkipped()).toBe(false)
     expect(store.getProjectSnapshot("project-1").status).toBe("no_repo")
 
-    await store.refreshSnapshot("project-1", repoRoot)
-    expect(store.lastRefreshSkipped).toBe(false)
+    await runTest(store.refreshSnapshot("project-1", repoRoot))
+    expect(store.lastRefreshSkipped()).toBe(false)
   })
 })

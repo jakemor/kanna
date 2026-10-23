@@ -1,3 +1,4 @@
+import { Effect, Option, Schema } from "effect"
 import { VISUALIZATION_TOOL_NAME } from "./visualization"
 import { ATTACHMENT_TOOL_NAMES, resolveChartKeys, type ChartToolPayload } from "./display-tools"
 import type {
@@ -17,9 +18,25 @@ export const CHAT_TOOL_NAMES: readonly string[] = ["create_chat", "fork_chat", "
 /** The Kanna tools whose call is drawn as a card for the schedule they set, changed or deleted. */
 export const SCHEDULE_TOOL_NAMES: readonly string[] = ["set_schedule", "delete_schedule"]
 
+// Tool results come from every provider in its own shape, so each field below
+// is optional and a field of the wrong type reads as absent instead of failing
+// the whole result: a result is drawn with what it has.
+
+/** A field kept when it is a string and dropped otherwise. */
+const LenientString = Schema.optionalKey(Schema.String.pipe(Schema.catchDecoding(() => Effect.succeedNone)))
+/** A field kept when it is a boolean and dropped otherwise. */
+const LenientBoolean = Schema.optionalKey(Schema.Boolean.pipe(Schema.catchDecoding(() => Effect.succeedNone)))
+
+const UnknownRecord = Schema.Record(Schema.String, Schema.Unknown)
+const UnknownArray = Schema.Array(Schema.Unknown)
+
+const decodeRecord = Schema.decodeUnknownOption(UnknownRecord)
+const decodeArray = Schema.decodeUnknownOption(UnknownArray)
+const decodeJsonString = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
+/** A plain object (not an array, not null), or null. */
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  return value as Record<string, unknown>
+  return Option.getOrNull(decodeRecord(value))
 }
 
 export function normalizeToolCall(args: {
@@ -225,13 +242,9 @@ export function normalizeToolCall(args: {
   }
 }
 
+/** A JSON string parsed, or the value as it came when it is not one. */
 function parseJsonValue(value: unknown): unknown {
-  if (typeof value !== "string") return value
-  try {
-    return JSON.parse(value)
-  } catch {
-    return value
-  }
+  return Option.getOrElse(decodeJsonString(value), () => value)
 }
 
 type ReadStructuredTextBlock = {
@@ -250,69 +263,69 @@ type ReadStructuredImageBlock = {
   mimeType?: string
 }
 
-function normalizeReadBlocks(value: unknown): Array<ReadStructuredTextBlock | ReadStructuredImageBlock> {
-  const blocks = (
-    value
-    && typeof value === "object"
-    && "content" in value
-    && Array.isArray((value as { content?: unknown }).content)
+/** `{ content: [...blocks] }`, as Claude's Read returns an image. */
+const ReadBlocksContainer = Schema.Struct({ content: UnknownArray })
+const ReadTextBlock = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })
+/** A stored image (see server/transcript-media.ts). An empty url falls through to the next shape. */
+const ReadUrlImageBlock = Schema.Struct({ type: Schema.Literal("image"), url: Schema.NonEmptyString, mimeType: LenientString })
+const ReadDataImageBlock = Schema.Struct({ type: Schema.Literal("image"), data: Schema.String, mimeType: LenientString })
+/** Anthropic's own image block shape. */
+const ReadSourceImageBlock = Schema.Struct({
+  type: Schema.Literal("image"),
+  source: Schema.Struct({ type: Schema.Literal("base64"), data: Schema.String, media_type: LenientString }),
+})
+
+const decodeReadBlocksContainer = Schema.decodeUnknownOption(ReadBlocksContainer)
+const decodeReadTextBlock = Schema.decodeUnknownOption(ReadTextBlock)
+const decodeReadUrlImageBlock = Schema.decodeUnknownOption(ReadUrlImageBlock)
+const decodeReadDataImageBlock = Schema.decodeUnknownOption(ReadDataImageBlock)
+const decodeReadSourceImageBlock = Schema.decodeUnknownOption(ReadSourceImageBlock)
+
+function normalizeReadBlock(block: unknown): Option.Option<ReadStructuredTextBlock | ReadStructuredImageBlock> {
+  return decodeReadTextBlock(block).pipe(
+    Option.map((text): ReadStructuredTextBlock | ReadStructuredImageBlock => ({ type: "text", text: text.text })),
+    Option.orElse(() => decodeReadUrlImageBlock(block).pipe(
+      Option.map((image) => ({ type: "image" as const, url: image.url, mimeType: image.mimeType })),
+    )),
+    Option.orElse(() => decodeReadDataImageBlock(block).pipe(
+      Option.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
+    )),
+    Option.orElse(() => decodeReadSourceImageBlock(block).pipe(
+      Option.map((image) => ({ type: "image" as const, data: image.source.data, mimeType: image.source.media_type })),
+    )),
   )
-    ? (value as { content: unknown[] }).content
-    : Array.isArray(value)
-      ? value
-      : []
-
-  const normalized: Array<ReadStructuredTextBlock | ReadStructuredImageBlock> = []
-
-  for (const block of blocks) {
-    if (!block || typeof block !== "object" || !("type" in block)) {
-      continue
-    }
-
-    if (block.type === "text" && typeof block.text === "string") {
-      normalized.push({ type: "text", text: block.text })
-      continue
-    }
-
-    if (block.type === "image") {
-      if ("url" in block && typeof block.url === "string" && block.url) {
-        normalized.push({
-          type: "image",
-          url: block.url,
-          mimeType: typeof block.mimeType === "string" ? block.mimeType : undefined,
-        })
-        continue
-      }
-
-      if ("data" in block && typeof block.data === "string") {
-        normalized.push({
-          type: "image",
-          data: block.data,
-          mimeType: typeof block.mimeType === "string" ? block.mimeType : undefined,
-        })
-        continue
-      }
-
-      if (
-        "source" in block
-        && block.source
-        && typeof block.source === "object"
-        && "type" in block.source
-        && block.source.type === "base64"
-        && "data" in block.source
-        && typeof block.source.data === "string"
-      ) {
-        normalized.push({
-          type: "image",
-          data: block.source.data,
-          mimeType: typeof block.source.media_type === "string" ? block.source.media_type : undefined,
-        })
-      }
-    }
-  }
-
-  return normalized
 }
+
+function normalizeReadBlocks(value: unknown): Array<ReadStructuredTextBlock | ReadStructuredImageBlock> {
+  const blocks: readonly unknown[] = decodeReadBlocksContainer(value).pipe(
+    Option.map((container) => container.content),
+    Option.orElse(() => decodeArray(value)),
+    Option.getOrElse((): readonly unknown[] => []),
+  )
+  return blocks.flatMap((block) => Option.toArray(normalizeReadBlock(block)))
+}
+
+/** One question's answer, as a list or as `{ answers: [...] }`. */
+const NestedAnswers = Schema.Struct({ answers: UnknownArray })
+const decodeNestedAnswers = Schema.decodeUnknownOption(NestedAnswers)
+
+function answerStrings(value: unknown): string[] {
+  const list = decodeArray(value).pipe(
+    Option.orElse(() => decodeNestedAnswers(value).pipe(Option.map((nested) => nested.answers))),
+  )
+  if (Option.isSome(list)) return list.value.map((entry) => String(entry))
+  if (value == null || value === "") return []
+  return [String(value)]
+}
+
+const ExitPlanModeResult = Schema.Struct({
+  confirmed: LenientBoolean,
+  clearContext: LenientBoolean,
+  message: LenientString,
+})
+const decodeExitPlanModeResult = Schema.decodeUnknownOption(ExitPlanModeResult)
+
+const decodeReadFileContent = Schema.decodeUnknownOption(Schema.Struct({ content: Schema.String }))
 
 export function hydrateToolResult(tool: NormalizedToolCall, raw: unknown): HydratedToolCall["result"] {
   const parsed = parseJsonValue(raw)
@@ -323,28 +336,18 @@ export function hydrateToolResult(tool: NormalizedToolCall, raw: unknown): Hydra
       const answers = asRecord(record?.answers) ?? (record ? record : {})
       return {
         answers: Object.fromEntries(
-          Object.entries(answers).map(([key, value]) => {
-            if (Array.isArray(value)) {
-              return [key, value.map((entry) => String(entry))]
-            }
-            if (value && typeof value === "object" && Array.isArray((value as { answers?: unknown }).answers)) {
-              return [key, (value as { answers: unknown[] }).answers.map((entry) => String(entry))]
-            }
-            if (value == null || value === "") {
-              return [key, []]
-            }
-            return [key, [String(value)]]
-          })
+          Object.entries(answers).map(([key, value]) => [key, answerStrings(value)])
         ) as AskUserQuestionAnswerMap,
         ...(record?.discarded === true ? { discarded: true } : {}),
       } satisfies AskUserQuestionToolResult
     }
     case "exit_plan_mode": {
       const record = asRecord(parsed)
+      const result = Option.getOrNull(decodeExitPlanModeResult(record))
       return {
-        confirmed: typeof record?.confirmed === "boolean" ? record.confirmed : undefined,
-        clearContext: typeof record?.clearContext === "boolean" ? record.clearContext : undefined,
-        message: typeof record?.message === "string" ? record.message : undefined,
+        confirmed: result?.confirmed,
+        clearContext: result?.clearContext,
+        message: result?.message,
         ...(record?.discarded === true ? { discarded: true } : {}),
       } satisfies ExitPlanModeToolResult
     }
@@ -362,9 +365,11 @@ export function hydrateToolResult(tool: NormalizedToolCall, raw: unknown): Hydra
         } satisfies ReadFileToolResult
       }
 
-      const record = asRecord(parsed)
       return {
-        content: typeof record?.content === "string" ? record.content : JSON.stringify(parsed, null, 2),
+        content: Option.getOrElse(
+          decodeReadFileContent(asRecord(parsed)).pipe(Option.map((record) => record.content)),
+          () => JSON.stringify(parsed, null, 2),
+        ),
       } satisfies ReadFileToolResult
     default:
       return parsed

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { runTest } from "./effect/testing"
 import { getMachineDisplayName, readDevboxSubdomain, readMachineNameOverride } from "./machine-name"
 
 let tempDir: string | null = null
@@ -20,35 +21,36 @@ afterEach(() => {
 })
 
 describe("machine-name override file", () => {
-  test("first non-empty line wins over everything", () => {
+  test("first non-empty line wins over everything", async () => {
     const identity = tempFile("cloud.json", JSON.stringify({ mode: "direct", subdomain: "jakemor-remote" }))
     const override = tempFile("machine-name", "preview: main\nsecond line ignored\n")
-    expect(readMachineNameOverride(override)).toBe("preview: main")
-    expect(getMachineDisplayName(identity, override)).toBe("preview: main")
+    expect(await runTest(readMachineNameOverride(override))).toBe("preview: main")
+    expect(await runTest(getMachineDisplayName(identity, override))).toBe("preview: main")
   })
 
-  test("missing or blank override files fall through", () => {
-    expect(readMachineNameOverride(MISSING)).toBeNull()
-    expect(readMachineNameOverride(tempFile("machine-name", "\n \n"))).toBeNull()
+  test("missing or blank override files fall through", async () => {
+    expect(await runTest(readMachineNameOverride(MISSING))).toBeNull()
+    expect(await runTest(readMachineNameOverride(tempFile("machine-name", "\n \n")))).toBeNull()
   })
 })
 
 describe("dev-box display name", () => {
-  test("a direct-mode identity names the machine after its subdomain", () => {
+  test("a direct-mode identity names the machine after its subdomain", async () => {
     const filePath = tempFile("cloud.json", JSON.stringify({ mode: "direct", subdomain: "jakemor-remote" }))
-    expect(readDevboxSubdomain(filePath)).toBe("jakemor-remote")
-    expect(getMachineDisplayName(filePath, MISSING)).toBe("jakemor-remote")
+    expect(await runTest(readDevboxSubdomain(filePath))).toBe("jakemor-remote")
+    expect(await runTest(getMachineDisplayName(filePath, MISSING))).toBe("jakemor-remote")
   })
 
-  test("tunnel-mode identities keep the hostname-based name", () => {
+  test("tunnel-mode identities keep the hostname-based name", async () => {
     const filePath = tempFile("cloud.json", JSON.stringify({ mode: "tunnel", subdomain: "jakemor-mbp" }))
-    expect(readDevboxSubdomain(filePath)).toBeNull()
+    expect(await runTest(readDevboxSubdomain(filePath))).toBeNull()
   })
 
-  test("missing or invalid identity files fall through", () => {
-    expect(readDevboxSubdomain("/nonexistent/cloud.json")).toBeNull()
+  test("missing or invalid identity files fall through", async () => {
+    expect(await runTest(readDevboxSubdomain("/nonexistent/cloud.json"))).toBeNull()
     const filePath = tempFile("cloud.json", "not json")
-    expect(readDevboxSubdomain(filePath)).toBeNull()
-    expect(getMachineDisplayName(filePath, MISSING)).not.toBe("")
+    expect(await runTest(readDevboxSubdomain(filePath))).toBeNull()
+    expect(await runTest(readDevboxSubdomain(tempFile("cloud.json", "null")))).toBeNull()
+    expect(await runTest(getMachineDisplayName(filePath, MISSING))).not.toBe("")
   })
 })

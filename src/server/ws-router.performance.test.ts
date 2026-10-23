@@ -1,25 +1,31 @@
 import { expect, test } from "bun:test"
+import { Effect } from "effect"
+import { makeFakeDiffStore } from "./diff-store.fake"
+import { makeFakeKeybindings } from "./keybindings.fake"
+import { makeFakeAppSettings } from "./app-settings.fake"
+import { makeFakeTerminals } from "./terminal-manager.fake"
+import { makeFakeWorktreeProbe } from "./worktree-probe.fake"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { EventStore } from "./event-store"
+import { openEventStore } from "./event-store-bridge"
 import { createWsRouter, type ClientState } from "./ws-router"
 import type { ChatSnapshot } from "../shared/types"
+import { testPlatformContext } from "./platform/testing"
 
-const onChange = () => () => {}
 
 test("stream updates read only the new tail and release subscription maps", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "kanna-router-performance-"))
-  const store = new EventStore(directory)
-  await store.initialize()
+  const store = await openEventStore(directory)
   const project = await store.openProject(directory)
   const chat = await store.createChat(project.id)
   const router = createWsRouter({
-    store,
+    platform: testPlatformContext,
+    store: store.service,
     agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() },
-    diffStore: {}, worktreeProbe: {}, terminals: { onEvent: onChange },
-    keybindings: { onChange }, appSettings: { onChange, getSnapshot: () => ({ transcript: { windowAssistantMessages: 5 } }) },
-    llmProvider: {}, refreshDiscovery: async () => [], getDiscoveredProjects: () => [],
+    diffStore: makeFakeDiffStore(), worktreeProbe: makeFakeWorktreeProbe(), terminals: makeFakeTerminals(),
+    keybindings: makeFakeKeybindings({} as never), appSettings: makeFakeAppSettings({ transcript: { windowAssistantMessages: 5 } }),
+    llmProvider: {}, refreshDiscovery: () => Effect.succeed([]), getDiscoveredProjects: () => [],
     machineDisplayName: "test", updateManager: null,
   } as never)
   const data: ClientState = { subscriptions: new Map(), snapshotSignatures: new Map() }
@@ -31,8 +37,10 @@ test("stream updates read only the new tail and release subscription maps", asyn
     for (let i = 0; i < 20; i++) await store.appendMessage(chat.id, { _id: `${i}`, kind: "assistant_text", createdAt: i, text: "test" })
     await send({ type: "subscribe", id: "chat", topic: { type: "chat", chatId: chat.id } })
     const starts: number[] = []
-    const original = store.getClientTranscript.bind(store)
-    store.getClientTranscript = (id, start = 0) => { starts.push(start); return original(id, start) }
+    const original = store.service.getClientTranscript
+    Object.assign(store.service, {
+      getClientTranscript: (id: string, start = 0) => { starts.push(start); return original(id, start) },
+    })
     await store.appendMessage(chat.id, { _id: "20", kind: "assistant_text", createdAt: 20, text: "test" })
     await router.broadcastSnapshots()
     expect(starts).toEqual([20])

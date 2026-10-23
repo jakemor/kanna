@@ -1,36 +1,57 @@
+import { Clock, Context, Effect, Layer, Schema } from "effect"
 import type { ChatCheckRun, ChatCheckRunState, ChatCommitChecks, ChatCommitChecksState } from "../shared/types"
-import { resolveCommandPath } from "./process-utils"
+import type { FileSystemExtras } from "./platform/file-system-extras"
+import type { Machine } from "./platform/machine"
+import type { ProcessSpawner } from "./platform/process-spawner"
+import { type CommandSpawnError, resolveCommandPath, runCommand } from "./process-utils"
+import { capturePlatform } from "./platform"
 
 /** Runs one `gh api graphql` query. Injected in tests so they never spawn `gh`. */
-export type GraphqlRunner = (query: string) => Promise<{ stdout: string; exitCode: number }>
+export type GraphqlRunner = (query: string) => Effect.Effect<{ stdout: string; exitCode: number | null }, CommandSpawnError>
 
-interface CheckRunNode {
-  __typename?: string
-  // A CheckRun (an Actions job, or another app's check)...
-  name?: string | null
-  conclusion?: string | null
-  status?: string | null
-  startedAt?: string | null
-  completedAt?: string | null
-  detailsUrl?: string | null
-  checkSuite?: { workflowRun?: { url?: string | null; workflow?: { name?: string | null } | null } | null } | null
-  // ...or a StatusContext (a commit status, as deploy services post).
-  context?: string | null
-  description?: string | null
-  state?: string | null
-  targetUrl?: string | null
-}
+const NullableString = Schema.optionalKey(Schema.NullOr(Schema.String))
 
-interface CommitNode {
-  oid?: string
-  statusCheckRollup?: {
-    state?: string | null
-    contexts?: {
-      totalCount?: number
-      nodes?: CheckRunNode[]
-    } | null
-  } | null
-}
+/** A CheckRun (an Actions job, or another app's check), or a StatusContext (a commit status, as deploy services post). */
+const CheckRunNode = Schema.Struct({
+  __typename: Schema.optionalKey(Schema.String),
+  name: NullableString,
+  conclusion: NullableString,
+  status: NullableString,
+  startedAt: NullableString,
+  completedAt: NullableString,
+  detailsUrl: NullableString,
+  checkSuite: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+    workflowRun: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+      url: NullableString,
+      workflow: Schema.optionalKey(Schema.NullOr(Schema.Struct({ name: NullableString }))),
+    }))),
+  }))),
+  context: NullableString,
+  description: NullableString,
+  state: NullableString,
+  targetUrl: NullableString,
+})
+type CheckRunNode = typeof CheckRunNode.Type
+
+const CommitNode = Schema.Struct({
+  oid: Schema.optionalKey(Schema.String),
+  statusCheckRollup: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+    state: NullableString,
+    contexts: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+      totalCount: Schema.optionalKey(Schema.Number),
+      nodes: Schema.optionalKey(Schema.Array(Schema.NullOr(CheckRunNode))),
+    }))),
+  }))),
+})
+type CommitNode = typeof CommitNode.Type
+
+/** `{ data: { repository: { c0: Commit, c1: Commit, ... } } }`. */
+const ChecksResponse = Schema.Struct({
+  data: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+    repository: Schema.optionalKey(Schema.NullOr(Schema.Record(Schema.String, Schema.NullOr(CommitNode)))),
+  }))),
+})
+const decodeChecksResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ChecksResponse))
 
 interface CacheEntry {
   fetchedAt: number
@@ -54,19 +75,14 @@ const MAX_CACHE_ENTRIES = 500
 const REPO_SLUG_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u
 const SHA_PATTERN = /^[0-9a-f]{7,40}$/u
 
-async function runGhGraphql(query: string) {
-  // Resolve gh through a login shell so servers started without the user's
-  // PATH still find it — the same treatment every other gh caller uses.
-  const process = Bun.spawn([resolveCommandPath("gh") ?? "gh", "api", "graphql", "-f", `query=${query}`], {
-    stdout: "pipe",
-    stderr: "ignore",
-  })
-  const [stdout, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    process.exited,
-  ])
-  return { stdout, exitCode }
-}
+/**
+ * Resolves gh through a login shell so servers started without the user's
+ * PATH still find it — the same treatment every other gh caller uses.
+ */
+const runGhGraphql = (query: string) =>
+  resolveCommandPath("gh").pipe(
+    Effect.flatMap((gh) => runCommand([gh ?? "gh", "api", "graphql", "-f", `query=${query}`], { stdout: true })),
+  )
 
 function buildQuery(owner: string, name: string, shas: string[]) {
   const objects = shas
@@ -177,7 +193,7 @@ function summarizeCommit(commit: CommitNode | null | undefined): ChatCommitCheck
   const rollup = commit?.statusCheckRollup
   if (!rollup) return null
 
-  const nodes = rollup.contexts?.nodes?.filter(Boolean) ?? []
+  const nodes = rollup.contexts?.nodes?.filter((node): node is CheckRunNode => Boolean(node)) ?? []
   const total = rollup.contexts?.totalCount ?? nodes.length
   if (total === 0) return null
 
@@ -205,35 +221,103 @@ function ttlFor(checks: ChatCommitChecks | null) {
   return checks.state === "pending" ? PENDING_TTL_MS : SETTLED_TTL_MS
 }
 
+export interface CommitChecksOptions {
+  readonly runGraphql?: GraphqlRunner
+}
+
 /**
  * Caches GitHub check rollups per commit.
  *
  * Reads never wait on the network. The git snapshot refresh asks for what the
- * cache holds and the store fetches stale commits in the background, so check
- * counts land on the next snapshot poll instead of slowing every refresh.
+ * cache holds and the store fetches stale commits in the background (in the
+ * service's scope, so shutdown stops them), and check counts land on the next
+ * snapshot poll instead of slowing every refresh.
  */
-export class CommitChecksStore {
-  private readonly entries = new Map<string, CacheEntry>()
-  private readonly inFlight = new Set<string>()
-  private unavailableUntil = 0
-  private readonly runGraphql: GraphqlRunner
-  private readonly now: () => number
+export class CommitChecks extends Context.Service<CommitChecks, {
+  /** What the cache holds for these commits; stale ones refetch behind the answer. */
+  readonly read: (repoSlug: string, shas: ReadonlyArray<string>) => Effect.Effect<Map<string, ChatCommitChecks>>
+  /**
+   * A commit's checks one by one, for a hover card. A commit already in the
+   * cache answers at once (History's snapshot read keeps pushed commits warm)
+   * and refetches behind the answer when stale; one the cache has never seen
+   * waits on a single read.
+   */
+  readonly readRuns: (repoSlug: string, sha: string) => Effect.Effect<ChatCheckRun[] | undefined>
+  /** Fetches one batch and stores it. Never fails: a failure backs off instead. */
+  readonly refresh: (repoSlug: string, shas: ReadonlyArray<string>) => Effect.Effect<void>
+}>()("@kanna/server/CommitChecks") {
+  static readonly layer = (options: CommitChecksOptions = {}) => Layer.effect(this, makeCommitChecks(options))
+}
 
-  constructor(deps: { runGraphql?: GraphqlRunner; now?: () => number } = {}) {
-    this.runGraphql = deps.runGraphql ?? runGhGraphql
-    this.now = deps.now ?? (() => Date.now())
+const makeCommitChecks = Effect.fn("CommitChecks.make")(function* (options: CommitChecksOptions) {
+  const platform = yield* capturePlatform<ProcessSpawner | Machine | FileSystemExtras>()
+  const runGraphql: GraphqlRunner = options.runGraphql ?? ((query) => runGhGraphql(query).pipe(Effect.provide(platform)))
+  const scope = yield* Effect.scope
+  const entries = new Map<string, CacheEntry>()
+  const inFlight = new Set<string>()
+  let unavailableUntil = 0
+
+  const cacheKey = (repoSlug: string, sha: string) => `${repoSlug}\n${sha}`
+
+  const store = (key: string, entry: CacheEntry) => {
+    entries.delete(key)
+    entries.set(key, entry)
+    while (entries.size > MAX_CACHE_ENTRIES) {
+      const oldest = entries.keys().next()
+      if (oldest.done) break
+      entries.delete(oldest.value)
+    }
   }
 
-  read(repoSlug: string, shas: string[]): Map<string, ChatCommitChecks> {
+  const backOff = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => {
+      unavailableUntil = now + UNAVAILABLE_TTL_MS
+    }),
+  )
+
+  const refresh = Effect.fn("CommitChecks.refresh")(function* (repoSlug: string, shas: ReadonlyArray<string>) {
+    yield* Effect.annotateCurrentSpan("repoSlug", repoSlug)
+    const [owner, name] = repoSlug.split("/")
+    const wanted = shas.filter((sha) => SHA_PATTERN.test(sha)).slice(0, MAX_COMMITS_PER_QUERY)
+    if (!owner || !name || wanted.length === 0) return
+
+    const result = yield* runGraphql(buildQuery(owner, name, wanted)).pipe(
+      Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", () => Effect.succeed(null)),
+    )
+    if (!result || result.exitCode !== 0) {
+      // A private repo, a rate limit, or no `gh` login all land here. Backing
+      // off keeps the History tab from spawning gh every five seconds.
+      return yield* backOff
+    }
+
+    const response = yield* decodeChecksResponse(result.stdout).pipe(
+      Effect.catchTag("SchemaError", () => Effect.succeed(null)),
+    )
+    if (!response) return yield* backOff
+    const repository = response.data?.repository
+    if (!repository) return
+
+    const fetchedAt = yield* Clock.currentTimeMillis
+    wanted.forEach((sha, index) => {
+      const commit = repository[`c${index}`]
+      store(cacheKey(repoSlug, sha), {
+        fetchedAt,
+        checks: summarizeCommit(commit),
+        runs: listRuns(commit),
+      })
+    })
+  })
+
+  const read = Effect.fn("CommitChecks.read")(function* (repoSlug: string, shas: ReadonlyArray<string>) {
     const known = new Map<string, ChatCommitChecks>()
     if (!REPO_SLUG_PATTERN.test(repoSlug)) return known
 
-    const now = this.now()
+    const now = yield* Clock.currentTimeMillis
     const stale: string[] = []
 
     for (const sha of shas.slice(0, MAX_COMMITS_PER_QUERY)) {
       if (!SHA_PATTERN.test(sha)) continue
-      const entry = this.entries.get(this.cacheKey(repoSlug, sha))
+      const entry = entries.get(cacheKey(repoSlug, sha))
       if (entry?.checks) {
         known.set(sha, entry.checks)
       }
@@ -242,83 +326,27 @@ export class CommitChecksStore {
       }
     }
 
-    if (stale.length > 0 && now >= this.unavailableUntil && !this.inFlight.has(repoSlug)) {
-      this.inFlight.add(repoSlug)
-      void this.refresh(repoSlug, stale).finally(() => this.inFlight.delete(repoSlug))
+    if (stale.length > 0 && now >= unavailableUntil && !inFlight.has(repoSlug)) {
+      inFlight.add(repoSlug)
+      yield* refresh(repoSlug, stale).pipe(
+        Effect.ensuring(Effect.sync(() => inFlight.delete(repoSlug))),
+        Effect.forkIn(scope),
+      )
     }
 
     return known
-  }
+  })
 
-  /**
-   * A commit's checks one by one, for a hover card. A commit already in the
-   * cache answers at once (History's snapshot read keeps pushed commits warm)
-   * and refetches behind the answer when stale; one the cache has never seen
-   * waits on a single read.
-   */
-  async readRuns(repoSlug: string, sha: string): Promise<ChatCheckRun[] | undefined> {
+  const readRuns = Effect.fn("CommitChecks.readRuns")(function* (repoSlug: string, sha: string) {
     if (!REPO_SLUG_PATTERN.test(repoSlug) || !SHA_PATTERN.test(sha)) return undefined
-    const key = this.cacheKey(repoSlug, sha)
-    if (this.entries.has(key)) {
-      this.read(repoSlug, [sha])
-    } else if (this.now() >= this.unavailableUntil) {
-      await this.refresh(repoSlug, [sha])
+    const key = cacheKey(repoSlug, sha)
+    if (entries.has(key)) {
+      yield* read(repoSlug, [sha])
+    } else if ((yield* Clock.currentTimeMillis) >= unavailableUntil) {
+      yield* refresh(repoSlug, [sha])
     }
-    return this.entries.get(key)?.runs ?? undefined
-  }
+    return entries.get(key)?.runs ?? undefined
+  })
 
-  /** Fetches one batch and stores it. Public so tests can await a fetch. */
-  async refresh(repoSlug: string, shas: string[]): Promise<void> {
-    const [owner, name] = repoSlug.split("/")
-    const wanted = shas.filter((sha) => SHA_PATTERN.test(sha)).slice(0, MAX_COMMITS_PER_QUERY)
-    if (!owner || !name || wanted.length === 0) return
-
-    let result: Awaited<ReturnType<GraphqlRunner>>
-    try {
-      result = await this.runGraphql(buildQuery(owner, name, wanted))
-    } catch {
-      this.unavailableUntil = this.now() + UNAVAILABLE_TTL_MS
-      return
-    }
-
-    if (result.exitCode !== 0) {
-      // A private repo, a rate limit, or no `gh` login all land here. Backing
-      // off keeps the History tab from spawning gh every five seconds.
-      this.unavailableUntil = this.now() + UNAVAILABLE_TTL_MS
-      return
-    }
-
-    let repository: Record<string, CommitNode | null> | undefined
-    try {
-      repository = JSON.parse(result.stdout)?.data?.repository
-    } catch {
-      this.unavailableUntil = this.now() + UNAVAILABLE_TTL_MS
-      return
-    }
-    if (!repository) return
-
-    const fetchedAt = this.now()
-    wanted.forEach((sha, index) => {
-      const commit = repository[`c${index}`]
-      this.store(this.cacheKey(repoSlug, sha), {
-        fetchedAt,
-        checks: summarizeCommit(commit),
-        runs: listRuns(commit),
-      })
-    })
-  }
-
-  private cacheKey(repoSlug: string, sha: string) {
-    return `${repoSlug}\n${sha}`
-  }
-
-  private store(key: string, entry: CacheEntry) {
-    this.entries.delete(key)
-    this.entries.set(key, entry)
-    while (this.entries.size > MAX_CACHE_ENTRIES) {
-      const oldest = this.entries.keys().next()
-      if (oldest.done) break
-      this.entries.delete(oldest.value)
-    }
-  }
-}
+  return { read, readRuns, refresh }
+})

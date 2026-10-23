@@ -1,290 +1,298 @@
+import { Clock, Context, Deferred, Effect, Layer, Option, Result, Scope, Stream, SubscriptionRef } from "effect"
 import type { UpdateInstallResult, UpdateSnapshot } from "../shared/types"
 import { isNightlyVersion } from "../shared/types"
 import { PACKAGE_NAME } from "../shared/branding"
-import { compareVersions, type UpdateInstallAttemptResult } from "./cli-runtime"
-import type { NightlyInstallResult } from "./nightly"
+import { compareVersions, type PackageRegistryError, type UpdateInstallAttemptResult } from "./cli-runtime"
+import type { MainCommitLookupError, NightlyInstallResult } from "./nightly"
 
 const UPDATE_CACHE_TTL_MS = 5 * 60 * 1000
 
 export interface UpdateManagerDeps {
   currentVersion: string
-  fetchLatestVersion: (packageName: string) => Promise<string>
-  fetchLatestNightlySha?: () => Promise<string>
-  installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+  fetchLatestVersion: (packageName: string) => Effect.Effect<string, PackageRegistryError>
+  /** The commit main is at, for nightly installs (see server/nightly.ts). */
+  fetchLatestNightlySha?: Effect.Effect<string, MainCommitLookupError>
+  installVersion: (packageName: string, version: string) => Effect.Effect<UpdateInstallAttemptResult>
   /** Build main from source and install it globally (see server/nightly.ts). */
-  installNightly?: () => Promise<NightlyInstallResult>
+  installNightly?: Effect.Effect<NightlyInstallResult>
   devMode?: boolean
-  trackEvent?: (eventName: string, properties?: Record<string, unknown>) => void
+  trackEvent?: (eventName: string, properties?: Record<string, unknown>) => Effect.Effect<void>
 }
 
-export class UpdateManager {
-  private readonly deps: UpdateManagerDeps
-  private readonly listeners = new Set<(snapshot: UpdateSnapshot) => void>()
-  private snapshot: UpdateSnapshot
-  private checkPromise: Promise<UpdateSnapshot> | null = null
-  private installPromise: Promise<UpdateInstallResult> | null = null
-
-  constructor(deps: UpdateManagerDeps) {
-    this.deps = deps
-    this.snapshot = {
-      currentVersion: deps.currentVersion,
-      latestVersion: deps.devMode ? `${deps.currentVersion}-dev` : null,
-      status: deps.devMode ? "available" : "idle",
-      updateAvailable: Boolean(deps.devMode),
-      lastCheckedAt: deps.devMode ? Date.now() : null,
-      error: null,
-      installAction: "restart",
-      reloadRequestedAt: null,
-    }
-  }
-
-  getSnapshot() {
-    return this.snapshot
-  }
-
-  onChange(listener: (snapshot: UpdateSnapshot) => void) {
-    this.listeners.add(listener)
-    return () => {
-      this.listeners.delete(listener)
-    }
-  }
-
-  async checkForUpdates(options: { force?: boolean } = {}) {
-    if (this.deps.devMode) {
-      return this.snapshot
-    }
-
-    if (this.snapshot.status === "updating" || this.snapshot.status === "restart_pending") {
-      return this.snapshot
-    }
-
-    if (this.checkPromise) {
-      return this.checkPromise
-    }
-
-    if (!options.force && this.snapshot.lastCheckedAt && Date.now() - this.snapshot.lastCheckedAt < UPDATE_CACHE_TTL_MS) {
-      return this.snapshot
-    }
-
-    this.setSnapshot({
-      ...this.snapshot,
-      status: "checking",
-      error: null,
-      reloadRequestedAt: null,
-      nightly: isNightlyVersion(this.snapshot.currentVersion) ? {
-        status: "checking",
-        latestCommitSha: this.snapshot.nightly?.latestCommitSha ?? null,
-        lastCheckedAt: this.snapshot.nightly?.lastCheckedAt ?? null,
-        error: null,
-      } : undefined,
-    })
-
-    const checkPromise = this.runCheck()
-    this.checkPromise = checkPromise
-
-    try {
-      return await checkPromise
-    } finally {
-      if (this.checkPromise === checkPromise) {
-        this.checkPromise = null
-      }
-    }
-  }
-
-  async installUpdate(): Promise<UpdateInstallResult> {
-    if (this.deps.devMode) {
-      this.deps.trackEvent?.("update_installed", {
-        latest_version: this.snapshot.latestVersion,
-      })
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "updating",
-        error: null,
-        reloadRequestedAt: null,
-      })
-
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "restart_pending",
-        updateAvailable: false,
-        error: null,
-        reloadRequestedAt: Date.now(),
-      })
-
-      return {
-        ok: true,
-        action: "restart",
-        errorCode: null,
-        userTitle: null,
-        userMessage: null,
-      }
-    }
-
-    if (this.snapshot.status === "updating" || this.snapshot.status === "restart_pending") {
-      return {
-        ok: this.snapshot.updateAvailable,
-        action: "restart",
-        errorCode: null,
-        userTitle: null,
-        userMessage: null,
-      }
-    }
-
-    if (this.installPromise) {
-      return this.installPromise
-    }
-
-    const installPromise = this.runInstall()
-    this.installPromise = installPromise
-
-    try {
-      return await installPromise
-    } finally {
-      if (this.installPromise === installPromise) {
-        this.installPromise = null
-      }
-    }
-  }
-
+/**
+ * Kanna's self-update: checks npm (and GitHub, for a nightly install) for a
+ * newer build, installs one when the user asks, and then reports
+ * `restart_pending` so the CLI restarts into it (cli.ts).
+ *
+ * A check, or an install, already running is shared: a second caller waits
+ * for the same result instead of starting another. The work runs in the
+ * layer's scope, so a caller that gives up does not cancel it for the rest.
+ *
+ * `changes` emits each snapshot after the current one, never the current one
+ * itself; read that with `snapshot`.
+ */
+export class UpdateManager extends Context.Service<UpdateManager, {
+  readonly snapshot: Effect.Effect<UpdateSnapshot>
+  readonly changes: Stream.Stream<UpdateSnapshot>
+  readonly checkForUpdates: (options?: { readonly force?: boolean }) => Effect.Effect<UpdateSnapshot>
+  readonly installUpdate: Effect.Effect<UpdateInstallResult>
   /**
    * Build main from GitHub and restart into it. Uses the same busy/restart
    * plumbing as installUpdate; the stamped "-nightly.<sha>" version keeps the
    * base version's ordering, so the next published release upgrades a nightly
    * back to stable through the normal update path.
    */
-  async installNightly(): Promise<UpdateInstallResult> {
-    if (this.deps.devMode) {
-      this.deps.trackEvent?.("update_nightly_installed", { nightly_version: `${this.snapshot.currentVersion}-dev` })
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "restart_pending",
-        updateAvailable: false,
-        error: null,
-        reloadRequestedAt: Date.now(),
-      })
-      return { ok: true, action: "restart", errorCode: null, userTitle: null, userMessage: null }
-    }
-
-    if (this.snapshot.status === "updating" || this.snapshot.status === "restart_pending") {
-      return { ok: false, action: "restart", errorCode: null, userTitle: null, userMessage: null }
-    }
-    if (this.installPromise) {
-      return this.installPromise
-    }
-
-    const installPromise = this.runNightlyInstall()
-    this.installPromise = installPromise
-    try {
-      return await installPromise
-    } finally {
-      if (this.installPromise === installPromise) {
-        this.installPromise = null
-      }
-    }
-  }
-
+  readonly installNightly: Effect.Effect<UpdateInstallResult>
   /**
    * Reinstall the latest published release even when the version number
    * matches the running one — the way back from a nightly build without
    * waiting for the next release.
    */
-  async installStable(): Promise<UpdateInstallResult> {
-    if (this.deps.devMode) {
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "restart_pending",
-        updateAvailable: false,
-        error: null,
-        reloadRequestedAt: Date.now(),
+  readonly installStable: Effect.Effect<UpdateInstallResult>
+}>()("@kanna/server/UpdateManager") {
+  static readonly layer = (deps: UpdateManagerDeps) => Layer.effect(this, makeUpdateManager(deps))
+}
+
+function restartResult(ok: boolean): UpdateInstallResult {
+  return { ok, action: "restart", errorCode: null, userTitle: null, userMessage: null }
+}
+
+function isBusy(snapshot: UpdateSnapshot) {
+  return snapshot.status === "updating" || snapshot.status === "restart_pending"
+}
+
+/**
+ * One run of `work` at a time, in `scope`; callers that arrive while it runs
+ * wait for its result. Cleared when the run ends, so the next call starts a
+ * fresh one.
+ */
+function makeSharedRun<A>(scope: Scope.Scope) {
+  let running: Option.Option<Deferred.Deferred<A>> = Option.none()
+  return {
+    current: () => running,
+    run: (work: Effect.Effect<A>) => Effect.gen(function* () {
+      const deferred = yield* Deferred.make<A>()
+      running = Option.some(deferred)
+      // Cleared before the waiters wake: one of them may start the next run.
+      const clear = Effect.sync(() => {
+        if (Option.isSome(running) && running.value === deferred) running = Option.none()
       })
-      return { ok: true, action: "restart", errorCode: null, userTitle: null, userMessage: null }
-    }
-
-    if (this.snapshot.status === "updating" || this.snapshot.status === "restart_pending") {
-      return { ok: false, action: "restart", errorCode: null, userTitle: null, userMessage: null }
-    }
-    if (this.installPromise) {
-      return this.installPromise
-    }
-
-    const installPromise = this.runStableReinstall()
-    this.installPromise = installPromise
-    try {
-      return await installPromise
-    } finally {
-      if (this.installPromise === installPromise) {
-        this.installPromise = null
-      }
-    }
+      yield* Effect.uninterruptibleMask((restore) =>
+        Effect.exit(restore(work)).pipe(
+          Effect.tap(() => clear),
+          Effect.flatMap((exit) => Deferred.done(deferred, exit)),
+        )).pipe(Effect.forkIn(scope))
+      return yield* Deferred.await(deferred)
+    }),
   }
+}
 
-  private async runNightlyInstall(): Promise<UpdateInstallResult> {
-    if (!this.deps.installNightly) {
+const makeUpdateManager = Effect.fn("UpdateManager.make")(function* (deps: UpdateManagerDeps) {
+  yield* Effect.annotateCurrentSpan("currentVersion", deps.currentVersion)
+  const scope = yield* Effect.scope
+  const startedAt = yield* Clock.currentTimeMillis
+  const ref = yield* SubscriptionRef.make<UpdateSnapshot>({
+    currentVersion: deps.currentVersion,
+    latestVersion: deps.devMode ? `${deps.currentVersion}-dev` : null,
+    status: deps.devMode ? "available" : "idle",
+    updateAvailable: Boolean(deps.devMode),
+    lastCheckedAt: deps.devMode ? startedAt : null,
+    error: null,
+    installAction: "restart",
+    reloadRequestedAt: null,
+  })
+  const current = SubscriptionRef.get(ref)
+  const patch = (changes: Partial<UpdateSnapshot>) => SubscriptionRef.update(ref, (snapshot) => ({ ...snapshot, ...changes }))
+  const track = (eventName: string, properties?: Record<string, unknown>) =>
+    deps.trackEvent ? deps.trackEvent(eventName, properties) : Effect.void
+  const checks = makeSharedRun<UpdateSnapshot>(scope)
+  // One slot for all three installs: a stable install and a nightly one
+  // must not run at the same time.
+  const installs = makeSharedRun<UpdateInstallResult>(scope)
+
+  const checkNightly = Effect.fn("UpdateManager.checkNightly")(function* () {
+    const currentVersion = (yield* current).currentVersion
+    if (!isNightlyVersion(currentVersion)) return undefined
+    const failed = (error: string) => Effect.map(Clock.currentTimeMillis, (now): UpdateSnapshot["nightly"] => ({
+      status: "error",
+      latestCommitSha: null,
+      lastCheckedAt: now,
+      error,
+    }))
+    if (!deps.fetchLatestNightlySha) return yield* failed("This server cannot check nightly builds.")
+    const installedSha = currentVersion.match(/-nightly\.([a-f0-9]{7,40})$/i)?.[1].toLowerCase()
+    if (!installedSha) return yield* failed("The installed nightly has no valid commit ID.")
+    const latest = yield* Effect.result(deps.fetchLatestNightlySha)
+    if (Result.isFailure(latest)) return yield* failed(latest.failure.message)
+    const latestCommitSha = latest.success.toLowerCase()
+    if (!/^[a-f0-9]{40}$/.test(latestCommitSha)) return yield* failed("GitHub returned an invalid commit ID.")
+    const nightly: UpdateSnapshot["nightly"] = {
+      status: latestCommitSha.startsWith(installedSha) ? "up_to_date" : "available",
+      latestCommitSha,
+      lastCheckedAt: yield* Clock.currentTimeMillis,
+      error: null,
+    }
+    return nightly
+  })
+
+  const runCheck = Effect.fn("UpdateManager.runCheck")(function* () {
+    // A failure from either service must not discard the other service's result.
+    const [release, nightly] = yield* Effect.all(
+      [Effect.result(deps.fetchLatestVersion(PACKAGE_NAME)), checkNightly()],
+      { concurrency: "unbounded" },
+    )
+    const snapshot = yield* current
+    // A check can finish after an install starts. Keep the install's status.
+    if (isBusy(snapshot)) return snapshot
+    const now = yield* Clock.currentTimeMillis
+    if (Result.isFailure(release)) {
+      const next: UpdateSnapshot = {
+        ...snapshot,
+        status: "error",
+        lastCheckedAt: now,
+        error: release.failure.message,
+        reloadRequestedAt: null,
+        nightly,
+      }
+      yield* SubscriptionRef.set(ref, next)
+      yield* track("update_failed", { latest_version: next.latestVersion })
+      return next
+    }
+    const latestVersion = release.success
+    const updateAvailable = compareVersions(snapshot.currentVersion, latestVersion) < 0
+    const next: UpdateSnapshot = {
+      ...snapshot,
+      latestVersion,
+      updateAvailable,
+      status: updateAvailable ? "available" : "up_to_date",
+      lastCheckedAt: now,
+      error: null,
+      reloadRequestedAt: null,
+      nightly,
+    }
+    yield* SubscriptionRef.set(ref, next)
+    yield* track("update_checked", { latest_version: latestVersion })
+    return next
+  })
+
+  const checkForUpdates = Effect.fn("UpdateManager.checkForUpdates")(function* (options: { readonly force?: boolean } = {}) {
+    const snapshot = yield* current
+    if (deps.devMode || isBusy(snapshot)) return snapshot
+    const running = checks.current()
+    if (Option.isSome(running)) return yield* Deferred.await(running.value)
+    const now = yield* Clock.currentTimeMillis
+    if (!options.force && snapshot.lastCheckedAt && now - snapshot.lastCheckedAt < UPDATE_CACHE_TTL_MS) {
+      return snapshot
+    }
+
+    yield* SubscriptionRef.set(ref, {
+      ...snapshot,
+      status: "checking",
+      error: null,
+      reloadRequestedAt: null,
+      nightly: isNightlyVersion(snapshot.currentVersion) ? {
+        status: "checking",
+        latestCommitSha: snapshot.nightly?.latestCommitSha ?? null,
+        lastCheckedAt: snapshot.nightly?.lastCheckedAt ?? null,
+        error: null,
+      } : undefined,
+    })
+    return yield* checks.run(runCheck())
+  })
+
+  /** Install the newest release `fetchLatestVersion` reported, checking first if none is known. */
+  const runInstall = Effect.fn("UpdateManager.runInstall")(function* () {
+    if (!(yield* current).updateAvailable) {
+      const checked = yield* checkForUpdates({ force: true })
+      if (!checked.updateAvailable) return restartResult(false)
+    }
+
+    yield* patch({ status: "updating", error: null, reloadRequestedAt: null })
+
+    const targetVersion = (yield* current).latestVersion
+    if (!targetVersion) {
+      yield* patch({ status: "error", error: "Unable to determine which version to install.", reloadRequestedAt: null })
+      yield* track("update_failed", { latest_version: null })
       return {
         ok: false,
         action: "restart",
         errorCode: "install_failed",
-        userTitle: "Nightly update unavailable",
-        userMessage: "This build cannot install nightly versions.",
-      }
+        userTitle: "Update failed",
+        userMessage: "Kanna could not determine which version to install.",
+      } satisfies UpdateInstallResult
     }
 
-    this.setSnapshot({
-      ...this.snapshot,
-      status: "updating",
-      error: null,
-      reloadRequestedAt: null,
-    })
-
-    const installed = await this.deps.installNightly()
+    const installed = yield* deps.installVersion(PACKAGE_NAME, targetVersion)
     if (!installed.ok) {
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "error",
-        error: installed.userMessage ?? "Unable to build the nightly version.",
-        reloadRequestedAt: null,
-      })
-      this.deps.trackEvent?.("update_nightly_failed", {})
+      yield* patch({ status: "error", error: installed.userMessage ?? "Unable to install the latest version.", reloadRequestedAt: null })
+      yield* track("update_failed", { latest_version: targetVersion })
       return {
         ok: false,
         action: "restart",
         errorCode: installed.errorCode,
         userTitle: installed.userTitle,
         userMessage: installed.userMessage,
-      }
+      } satisfies UpdateInstallResult
     }
 
-    this.setSnapshot({
-      ...this.snapshot,
-      currentVersion: installed.version ?? this.snapshot.currentVersion,
+    yield* patch({
+      currentVersion: targetVersion,
       status: "restart_pending",
       updateAvailable: false,
       error: null,
-      reloadRequestedAt: Date.now(),
+      reloadRequestedAt: yield* Clock.currentTimeMillis,
     })
-    this.deps.trackEvent?.("update_nightly_installed", {
-      nightly_version: installed.version,
-    })
-    return { ok: true, action: "restart", errorCode: null, userTitle: null, userMessage: null }
-  }
+    yield* track("update_installed", { latest_version: targetVersion })
+    return restartResult(true)
+  })
 
-  private async runStableReinstall(): Promise<UpdateInstallResult> {
-    this.setSnapshot({
-      ...this.snapshot,
-      status: "updating",
+  const runNightlyInstall = Effect.fn("UpdateManager.runNightlyInstall")(function* () {
+    if (!deps.installNightly) {
+      return {
+        ok: false,
+        action: "restart",
+        errorCode: "install_failed",
+        userTitle: "Nightly update unavailable",
+        userMessage: "This build cannot install nightly versions.",
+      } satisfies UpdateInstallResult
+    }
+
+    yield* patch({ status: "updating", error: null, reloadRequestedAt: null })
+
+    const installed = yield* deps.installNightly
+    if (!installed.ok) {
+      yield* patch({ status: "error", error: installed.userMessage ?? "Unable to build the nightly version.", reloadRequestedAt: null })
+      yield* track("update_nightly_failed", {})
+      return {
+        ok: false,
+        action: "restart",
+        errorCode: installed.errorCode,
+        userTitle: installed.userTitle,
+        userMessage: installed.userMessage,
+      } satisfies UpdateInstallResult
+    }
+
+    const now = yield* Clock.currentTimeMillis
+    yield* SubscriptionRef.update(ref, (snapshot): UpdateSnapshot => ({
+      ...snapshot,
+      currentVersion: installed.version ?? snapshot.currentVersion,
+      status: "restart_pending",
+      updateAvailable: false,
       error: null,
-      reloadRequestedAt: null,
-    })
+      reloadRequestedAt: now,
+    }))
+    yield* track("update_nightly_installed", { nightly_version: installed.version })
+    return restartResult(true)
+  })
 
-    let latestVersion: string
-    try {
-      latestVersion = await this.deps.fetchLatestVersion(PACKAGE_NAME)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.setSnapshot({
-        ...this.snapshot,
+  const runStableReinstall = Effect.fn("UpdateManager.runStableReinstall")(function* () {
+    yield* patch({ status: "updating", error: null, reloadRequestedAt: null })
+
+    const latest = yield* Effect.result(deps.fetchLatestVersion(PACKAGE_NAME))
+    if (Result.isFailure(latest)) {
+      yield* patch({
         status: "error",
-        error: `Could not look up the latest release: ${message}`,
+        error: `Could not look up the latest release: ${latest.failure.message}`,
         reloadRequestedAt: null,
       })
       return {
@@ -293,198 +301,81 @@ export class UpdateManager {
         errorCode: "install_failed",
         userTitle: "Update failed",
         userMessage: "Kanna could not look up the latest published release.",
-      }
+      } satisfies UpdateInstallResult
     }
+    const latestVersion = latest.success
 
-    const installed = this.deps.installVersion(PACKAGE_NAME, latestVersion)
+    const installed = yield* deps.installVersion(PACKAGE_NAME, latestVersion)
     if (!installed.ok) {
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "error",
-        error: installed.userMessage ?? "Unable to install the latest version.",
-        reloadRequestedAt: null,
-      })
-      this.deps.trackEvent?.("update_failed", {
-        latest_version: latestVersion,
-      })
+      yield* patch({ status: "error", error: installed.userMessage ?? "Unable to install the latest version.", reloadRequestedAt: null })
+      yield* track("update_failed", { latest_version: latestVersion })
       return {
         ok: false,
         action: "restart",
         errorCode: installed.errorCode,
         userTitle: installed.userTitle,
         userMessage: installed.userMessage,
-      }
+      } satisfies UpdateInstallResult
     }
 
-    this.setSnapshot({
-      ...this.snapshot,
+    yield* patch({
       currentVersion: latestVersion,
       latestVersion,
       status: "restart_pending",
       updateAvailable: false,
       error: null,
-      reloadRequestedAt: Date.now(),
+      reloadRequestedAt: yield* Clock.currentTimeMillis,
     })
-    this.deps.trackEvent?.("update_stable_reinstalled", {
-      latest_version: latestVersion,
-    })
-    return { ok: true, action: "restart", errorCode: null, userTitle: null, userMessage: null }
-  }
+    yield* track("update_stable_reinstalled", { latest_version: latestVersion })
+    return restartResult(true)
+  })
 
-  private async checkNightly(): Promise<UpdateSnapshot["nightly"]> {
-    if (!isNightlyVersion(this.snapshot.currentVersion)) return undefined
-    try {
-      if (!this.deps.fetchLatestNightlySha) throw new Error("This server cannot check nightly builds.")
-      const installedSha = this.snapshot.currentVersion.match(/-nightly\.([a-f0-9]{7,40})$/i)?.[1].toLowerCase()
-      if (!installedSha) throw new Error("The installed nightly has no valid commit ID.")
-      const latestCommitSha = (await this.deps.fetchLatestNightlySha()).toLowerCase()
-      if (!/^[a-f0-9]{40}$/.test(latestCommitSha)) throw new Error("GitHub returned an invalid commit ID.")
-      return {
-        status: latestCommitSha.startsWith(installedSha) ? "up_to_date" : "available",
-        latestCommitSha,
-        lastCheckedAt: Date.now(),
-        error: null,
-      }
-    } catch (error) {
-      return {
-        status: "error",
-        latestCommitSha: null,
-        lastCheckedAt: Date.now(),
-        error: error instanceof Error ? error.message : String(error),
-      }
-    }
-  }
-
-  private async runCheck() {
-    // A failure from either service must not discard the other service's result.
-    const [release, nightly] = await Promise.allSettled([
-      this.deps.fetchLatestVersion(PACKAGE_NAME),
-      this.checkNightly(),
-    ])
-    // A check can finish after an install starts. Keep the install's status.
-    if (this.snapshot.status === "updating" || this.snapshot.status === "restart_pending") return this.snapshot
-    const nightlySnapshot = nightly.status === "fulfilled" ? nightly.value : undefined
-    try {
-      if (release.status === "rejected") throw release.reason
-      const latestVersion = release.value
-      const updateAvailable = compareVersions(this.snapshot.currentVersion, latestVersion) < 0
-      const nextSnapshot: UpdateSnapshot = {
-        ...this.snapshot,
-        latestVersion,
-        updateAvailable,
-        status: updateAvailable ? "available" : "up_to_date",
-        lastCheckedAt: Date.now(),
-        error: null,
-        reloadRequestedAt: null,
-        nightly: nightlySnapshot,
-      }
-      this.setSnapshot(nextSnapshot)
-      this.deps.trackEvent?.("update_checked", {
-        latest_version: latestVersion,
-      })
-      return nextSnapshot
-    } catch (error) {
-      const nextSnapshot: UpdateSnapshot = {
-        ...this.snapshot,
-        status: "error",
-        lastCheckedAt: Date.now(),
-        error: error instanceof Error ? error.message : String(error),
-        reloadRequestedAt: null,
-        nightly: nightlySnapshot,
-      }
-      this.setSnapshot(nextSnapshot)
-      this.deps.trackEvent?.("update_failed", {
-        latest_version: this.snapshot.latestVersion,
-      })
-      return nextSnapshot
-    }
-  }
-
-  private async runInstall(): Promise<UpdateInstallResult> {
-    if (!this.snapshot.updateAvailable) {
-      const snapshot = await this.checkForUpdates({ force: true })
-      if (!snapshot.updateAvailable) {
-        return {
-          ok: false,
-          action: "restart",
-          errorCode: null,
-          userTitle: null,
-          userMessage: null,
-        }
-      }
-    }
-
-    this.setSnapshot({
-      ...this.snapshot,
-      status: "updating",
-      error: null,
-      reloadRequestedAt: null,
-    })
-
-    const targetVersion = this.snapshot.latestVersion
-    if (!targetVersion) {
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "error",
-        error: "Unable to determine which version to install.",
-        reloadRequestedAt: null,
-      })
-      this.deps.trackEvent?.("update_failed", {
-        latest_version: null,
-      })
-      return {
-        ok: false,
-        action: "restart",
-        errorCode: "install_failed",
-        userTitle: "Update failed",
-        userMessage: "Kanna could not determine which version to install.",
-      }
-    }
-
-    const installed = this.deps.installVersion(PACKAGE_NAME, targetVersion)
-    if (!installed.ok) {
-      this.setSnapshot({
-        ...this.snapshot,
-        status: "error",
-        error: installed.userMessage ?? "Unable to install the latest version.",
-        reloadRequestedAt: null,
-      })
-      this.deps.trackEvent?.("update_failed", {
-        latest_version: targetVersion,
-      })
-      return {
-        ok: false,
-        action: "restart",
-        errorCode: installed.errorCode,
-        userTitle: installed.userTitle,
-        userMessage: installed.userMessage,
-      }
-    }
-
-    this.setSnapshot({
-      ...this.snapshot,
-      currentVersion: this.snapshot.latestVersion ?? this.snapshot.currentVersion,
+  /** Dev mode restarts into the same checkout: there is nothing to install. */
+  const devRestart = Effect.gen(function* () {
+    yield* patch({
       status: "restart_pending",
       updateAvailable: false,
       error: null,
-      reloadRequestedAt: Date.now(),
+      reloadRequestedAt: yield* Clock.currentTimeMillis,
     })
-    this.deps.trackEvent?.("update_installed", {
-      latest_version: targetVersion,
-    })
-    return {
-      ok: true,
-      action: "restart",
-      errorCode: null,
-      userTitle: null,
-      userMessage: null,
-    }
-  }
+    return restartResult(true)
+  })
 
-  private setSnapshot(snapshot: UpdateSnapshot) {
-    this.snapshot = snapshot
-    for (const listener of this.listeners) {
-      listener(snapshot)
-    }
+  /** Joins a running install, or starts `work` when none is running. */
+  const install = (work: Effect.Effect<UpdateInstallResult>, busyResult: (snapshot: UpdateSnapshot) => UpdateInstallResult) =>
+    Effect.gen(function* () {
+      const snapshot = yield* current
+      if (isBusy(snapshot)) return busyResult(snapshot)
+      const running = installs.current()
+      if (Option.isSome(running)) return yield* Deferred.await(running.value)
+      return yield* installs.run(work)
+    })
+
+  const installUpdate = deps.devMode
+    ? Effect.gen(function* () {
+      yield* track("update_installed", { latest_version: (yield* current).latestVersion })
+      yield* patch({ status: "updating", error: null, reloadRequestedAt: null })
+      return yield* devRestart
+    })
+    : install(runInstall(), (snapshot) => restartResult(snapshot.updateAvailable))
+
+  const installNightly = deps.devMode
+    ? Effect.gen(function* () {
+      yield* track("update_nightly_installed", { nightly_version: `${(yield* current).currentVersion}-dev` })
+      return yield* devRestart
+    })
+    : install(runNightlyInstall(), () => restartResult(false))
+
+  const installStable = deps.devMode
+    ? devRestart
+    : install(runStableReinstall(), () => restartResult(false))
+
+  return {
+    snapshot: current,
+    changes: SubscriptionRef.changes(ref).pipe(Stream.drop(1)),
+    checkForUpdates,
+    installUpdate: installUpdate.pipe(Effect.withSpan("UpdateManager.installUpdate")),
+    installNightly: installNightly.pipe(Effect.withSpan("UpdateManager.installNightly")),
+    installStable: installStable.pipe(Effect.withSpan("UpdateManager.installStable")),
   }
-}
+})

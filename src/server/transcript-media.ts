@@ -1,5 +1,5 @@
-import { cp, mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { Effect, FileSystem, Schema } from "effect"
 import type { TranscriptEntry } from "../shared/types"
 
 /**
@@ -69,6 +69,20 @@ function readInlineImage(block: unknown): { data: string; mimeType: string } | n
   return null
 }
 
+export class TranscriptMediaError extends Schema.TaggedError<TranscriptMediaError>()(
+  "@kanna/server/transcript-media/TranscriptMediaError",
+  {
+    operation: Schema.Literals(["write", "copy", "remove"]),
+    chatId: Schema.String,
+    filePath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
+}
+
 /**
  * Write every inline image in a tool result to disk and return the entry
  * with URL blocks in their place. Returns the same object when there was
@@ -77,11 +91,15 @@ function readInlineImage(block: unknown): { data: string; mimeType: string } | n
  * File names are derived from the entry id, so running this twice on the
  * same entry overwrites the same files rather than leaking copies.
  */
-export async function externalizeEntryImages(
+export const externalizeEntryImages = Effect.fn("TranscriptMedia.externalizeEntryImages")(function* (
   entry: TranscriptEntry,
-  args: { dataDir: string; chatId: string }
-): Promise<TranscriptEntry> {
+  args: { dataDir: string; chatId: string },
+): Effect.fn.Return<TranscriptEntry, TranscriptMediaError, FileSystem.FileSystem> {
   if (entry.kind !== "tool_result" || !Array.isArray(entry.content)) return entry
+  const fs = yield* FileSystem.FileSystem
+  const mediaDir = getTranscriptMediaDir(args.dataDir, args.chatId)
+  const fail = (filePath: string) => (cause: unknown) =>
+    Effect.fail(new TranscriptMediaError({ operation: "write", chatId: args.chatId, filePath, cause }))
   let dirReady = false
   let changed = false
   const content: unknown[] = []
@@ -93,16 +111,18 @@ export async function externalizeEntryImages(
       continue
     }
     if (!dirReady) {
-      await mkdir(getTranscriptMediaDir(args.dataDir, args.chatId), { recursive: true })
+      yield* Effect.annotateCurrentSpan("chatId", args.chatId)
+      yield* fs.makeDirectory(mediaDir, { recursive: true }).pipe(Effect.catchTag("PlatformError", fail(mediaDir)))
       dirReady = true
     }
     const name = `${entry._id}-${index}.${EXTENSION_BY_MIME[inline.mimeType] ?? "bin"}`
-    await writeFile(path.join(getTranscriptMediaDir(args.dataDir, args.chatId), name), Buffer.from(inline.data, "base64"))
+    const filePath = path.join(mediaDir, name)
+    yield* fs.writeFile(filePath, Buffer.from(inline.data, "base64")).pipe(Effect.catchTag("PlatformError", fail(filePath)))
     content.push({ type: "image", url: buildTranscriptMediaUrl(args.chatId, name), mimeType: inline.mimeType } satisfies TranscriptImageUrlBlock)
     changed = true
   }
   return changed ? { ...entry, content } : entry
-}
+})
 
 /**
  * Point a copied entry's media URLs at the fork's own chat id. Used with
@@ -123,16 +143,24 @@ export function retargetEntryMediaUrls(entry: TranscriptEntry, sourceChatId: str
   return changed ? { ...entry, content } : entry
 }
 
-export async function copyTranscriptMedia(dataDir: string, sourceChatId: string, chatId: string) {
+export const copyTranscriptMedia = Effect.fn("TranscriptMedia.copy")(function* (dataDir: string, sourceChatId: string, chatId: string) {
+  yield* Effect.annotateCurrentSpan({ sourceChatId, chatId })
+  const fs = yield* FileSystem.FileSystem
   const sourceDir = getTranscriptMediaDir(dataDir, sourceChatId)
-  try {
-    await cp(sourceDir, getTranscriptMediaDir(dataDir, chatId), { recursive: true })
-  } catch (error) {
+  yield* fs.copy(sourceDir, getTranscriptMediaDir(dataDir, chatId), { overwrite: true }).pipe(
     // No media dir is the common case: the source chat never read an image.
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-  }
-}
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(new TranscriptMediaError({ operation: "copy", chatId, filePath: sourceDir, cause }))),
+  )
+})
 
-export async function removeTranscriptMedia(dataDir: string, chatId: string) {
-  await rm(getTranscriptMediaDir(dataDir, chatId), { recursive: true, force: true })
-}
+export const removeTranscriptMedia = Effect.fn("TranscriptMedia.remove")(function* (dataDir: string, chatId: string) {
+  yield* Effect.annotateCurrentSpan("chatId", chatId)
+  const fs = yield* FileSystem.FileSystem
+  const mediaDir = getTranscriptMediaDir(dataDir, chatId)
+  yield* fs.remove(mediaDir, { recursive: true, force: true }).pipe(
+    Effect.catchTag("PlatformError", (cause) =>
+      Effect.fail(new TranscriptMediaError({ operation: "remove", chatId, filePath: mediaDir, cause }))),
+  )
+})

@@ -2,16 +2,25 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Effect, Result } from "effect"
 import type { TranscriptEntry } from "../shared/types"
+import { runTest } from "./effect/testing"
 import {
+  loadTranscriptPayloadIndex,
   mergeTranscriptPayload,
-  readAllTranscriptPayloads,
+  readTranscriptPayloads,
+  readTranscriptPayloadsById,
   serializeTranscriptPayload,
   splitTranscriptEntry,
-  TranscriptPayloadIndex,
 } from "./transcript-payloads"
 
 const dirs: string[] = []
+
+/** The payloads of `ids` in `sidecar`, read through a freshly loaded index. */
+const readIds = (sidecar: string, ids: string[]) => runTest(Effect.gen(function* () {
+  const index = yield* loadTranscriptPayloadIndex(sidecar)
+  return yield* readTranscriptPayloadsById(index, ids)
+}))
 
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
@@ -84,25 +93,90 @@ describe("TranscriptPayloadIndex", () => {
       serializeTranscriptPayload({ _id: "r1", content: "rewritten" }),
     ].join(""))
 
-    const index = new TranscriptPayloadIndex(sidecar)
-    expect(index.read("r1")).toEqual({ _id: "r1", content: "rewritten" })
-    expect(index.read("r2")).toEqual({ _id: "r2", content: "héllo wörld" })
-    expect(index.read("nope")).toBeNull()
-
-    const line = serializeTranscriptPayload({ _id: "r3", tool: { input: { content: "body" } } })
-    await appendFile(sidecar, line)
-    index.noteAppended("r3", Buffer.byteLength(line, "utf8"))
-    expect(index.read("r3")).toEqual({ _id: "r3", tool: { input: { content: "body" } } })
+    const { before, after, all } = await runTest(Effect.gen(function* () {
+      const index = yield* loadTranscriptPayloadIndex(sidecar)
+      const before = yield* readTranscriptPayloadsById(index, ["r1", "r2", "nope"])
+      const line = serializeTranscriptPayload({ _id: "r3", tool: { input: { content: "body" } } })
+      yield* Effect.promise(() => appendFile(sidecar, line))
+      index.noteAppended("r3", Buffer.byteLength(line, "utf8"))
+      return {
+        before,
+        after: yield* readTranscriptPayloadsById(index, ["r2", "r3"]),
+        all: yield* readTranscriptPayloads(sidecar),
+      }
+    }))
+    expect(before).toEqual(new Map([
+      ["r1", { _id: "r1", content: "rewritten" }],
+      ["r2", { _id: "r2", content: "héllo wörld" }],
+    ]))
+    expect(after.get("r3")).toEqual({ _id: "r3", tool: { input: { content: "body" } } })
     // Still correct after the append shifted nothing before it.
-    expect(index.read("r2")).toEqual({ _id: "r2", content: "héllo wörld" })
+    expect(after.get("r2")).toEqual({ _id: "r2", content: "héllo wörld" })
 
-    expect([...readAllTranscriptPayloads(sidecar).keys()]).toEqual(["r1", "r2", "r3"])
-    expect(readAllTranscriptPayloads(sidecar).get("r1")).toEqual({ _id: "r1", content: "rewritten" })
+    expect([...all.keys()]).toEqual(["r1", "r2", "r3"])
+    expect(all.get("r1")).toEqual({ _id: "r1", content: "rewritten" })
   })
 
-  test("a missing sidecar is an empty index", () => {
-    const index = new TranscriptPayloadIndex("/nonexistent/c.payloads.jsonl")
+  test("loads sidecar lines as earlier builds wrote them, and skips ones that are not payloads", async () => {
+    const dir = await makeDir()
+    const sidecar = join(dir, "c.payloads.jsonl")
+    // Real shapes: an edit's input, a Claude result with image and text
+    // blocks, a null body, a body that is a bare string. Then a truncated
+    // tail, a line whose id is not a string, and a JSON array.
+    const lines = [
+      '{"_id":"8f3c6a1e-2b7d-4c5e-9a10-1f2e3d4c5b6a","tool":{"rawInput":{"file_path":"/w/a.ts","old_string":"a","new_string":"b"},"input":{"oldString":"a","newString":"b"}}}\n',
+      '{"_id":"toolu_01ABC","content":[{"type":"text","text":"ok"},{"type":"image","url":"/api/chats/c/media/x-1.png","mimeType":"image/png"}]}\n',
+      '{"_id":"r-null","content":null}\n',
+      '{"_id":"r-text","content":"plain output\\nwith a newline"}\n',
+      '{"_id":"r-cut","content":"trunc\n',
+      '{"_id":7,"content":"x"}\n',
+      '[1,2]\n',
+    ]
+    await writeFile(sidecar, lines.join(""))
+
+    const payloads = await readIds(sidecar, ["8f3c6a1e-2b7d-4c5e-9a10-1f2e3d4c5b6a", "toolu_01ABC", "r-null", "r-text", "r-cut"])
+    expect(payloads.get("8f3c6a1e-2b7d-4c5e-9a10-1f2e3d4c5b6a")).toEqual({
+      _id: "8f3c6a1e-2b7d-4c5e-9a10-1f2e3d4c5b6a",
+      tool: { rawInput: { file_path: "/w/a.ts", old_string: "a", new_string: "b" }, input: { oldString: "a", newString: "b" } },
+    })
+    expect(payloads.get("toolu_01ABC")?.content).toEqual([
+      { type: "text", text: "ok" },
+      { type: "image", url: "/api/chats/c/media/x-1.png", mimeType: "image/png" },
+    ])
+    // A null body is still a body: the merge puts it back.
+    const nullPayload = payloads.get("r-null")
+    expect(nullPayload).toEqual({ _id: "r-null", content: null })
+    expect("content" in nullPayload!).toBe(true)
+    expect(payloads.get("r-text")?.content).toBe("plain output\nwith a newline")
+    expect(payloads.has("r-cut")).toBe(false)
+
+    const all = await runTest(readTranscriptPayloads(sidecar))
+    expect([...all.keys()]).toEqual([
+      "8f3c6a1e-2b7d-4c5e-9a10-1f2e3d4c5b6a", "toolu_01ABC", "r-null", "r-text",
+    ])
+  })
+})
+
+describe("Effect readers", () => {
+  test("a missing sidecar reads as empty", async () => {
+    const missing = "/nonexistent/c.payloads.jsonl"
+    const { index, byId, all } = await runTest(Effect.gen(function* () {
+      const index = yield* loadTranscriptPayloadIndex(missing)
+      return { index, byId: yield* readTranscriptPayloadsById(index, ["x"]), all: yield* readTranscriptPayloads(missing) }
+    }))
     expect(index.has("x")).toBe(false)
-    expect(index.read("x")).toBeNull()
+    expect(byId.size).toBe(0)
+    expect(all.size).toBe(0)
+  })
+
+  test("a sidecar that cannot be read fails with a TranscriptPayloadReadError", async () => {
+    const dir = await makeDir()
+    // A directory where the sidecar should be: not missing, but unreadable.
+    const result = await runTest(Effect.result(readTranscriptPayloads(dir)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/transcript-payloads/TranscriptPayloadReadError")
+      expect(result.failure.sidecarPath).toBe(dir)
+    }
   })
 })

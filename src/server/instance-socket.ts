@@ -24,6 +24,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import process from "node:process"
+import { Clock, Deferred, Effect, Exit, Option, Schema, type Scope } from "effect"
 import { getDataDir, getDataRootDir } from "../shared/branding"
 import { instanceFingerprint } from "./instance"
 
@@ -88,6 +89,11 @@ export function startsServer(argv: string[]) {
 
 // Wire
 
+/** One line of the protocol: any JSON object. Anything else is skipped. */
+const decodeMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+)
+
 function readLines(socket: net.Socket, onMessage: (message: Record<string, unknown>) => void) {
   let buffer = ""
   socket.setEncoding("utf8")
@@ -98,10 +104,8 @@ function readLines(socket: net.Socket, onMessage: (message: Record<string, unkno
       const line = buffer.slice(0, newline)
       buffer = buffer.slice(newline + 1)
       if (!line.trim()) continue
-      try {
-        const message = JSON.parse(line) as unknown
-        if (message && typeof message === "object") onMessage(message as Record<string, unknown>)
-      } catch {}
+      const message = decodeMessage(line)
+      if (Option.isSome(message)) onMessage(message.value)
     }
     if (buffer.length > 64_000) socket.destroy()
   })
@@ -119,59 +123,66 @@ type Answer = { kind: "none" } | { kind: "noAnswer" } | { kind: "answer"; messag
  * listens but doesn't reply in time, which is a live process, not a stale
  * socket.
  */
-function ask(socketPath: string, request: InstanceRequest, timeoutMs: number): Promise<Answer> {
+const ask = Effect.fn("InstanceSocket.ask")(function* (socketPath: string, request: InstanceRequest, timeoutMs: number) {
   // Bun throws a failed connect to a missing path instead of emitting it.
-  if (process.platform !== "win32" && !fs.existsSync(socketPath)) return Promise.resolve({ kind: "none" })
-  return new Promise((resolve) => {
-    let settled = false
-    const finish = (answer: Answer) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      socket.destroy()
-      resolve(answer)
-    }
+  if (process.platform !== "win32" && !(yield* Effect.sync(() => fs.existsSync(socketPath)))) {
+    return { kind: "none" } satisfies Answer
+  }
+  // The socket is made and its listeners attached in one go, so an error
+  // emitted on the next tick always has a listener.
+  const answer = yield* Effect.callback<Answer>((resume) => {
     const socket = net.createConnection(socketPath)
-    const timer = setTimeout(() => finish({ kind: "noAnswer" }), timeoutMs)
+    const finish = (answer: Answer) => {
+      socket.destroy()
+      resume(Effect.succeed(answer))
+    }
     socket.once("connect", () => send(socket, request))
     // `on`, not `once`: Bun can emit a failed connect's error twice.
     socket.on("error", (error: NodeJS.ErrnoException) => {
       finish(error.code === "ENOENT" || error.code === "ECONNREFUSED" ? { kind: "none" } : { kind: "noAnswer" })
     })
     readLines(socket, (message) => finish({ kind: "answer", message }))
-  })
-}
+    return Effect.sync(() => socket.destroy())
+  }).pipe(Effect.timeoutOption(timeoutMs))
+  return Option.getOrElse(answer, (): Answer => ({ kind: "noAnswer" }))
+})
 
 function isStatus(message: Record<string, unknown>): message is Record<string, unknown> & InstanceStatus {
   return message.ok === true && typeof message.pid === "number" && typeof message.owner === "string"
 }
 
 /** The running Kanna's status, or null when none is running. */
-export async function instanceStatus(options: { socketPath?: string; timeoutMs?: number } = {}) {
-  const answer = await ask(options.socketPath ?? instanceSocketPath(), { type: "status" }, options.timeoutMs ?? 1_000)
+export const instanceStatus = Effect.fn("InstanceSocket.status")(function* (
+  options: { socketPath?: string; timeoutMs?: number } = {},
+) {
+  const answer = yield* ask(options.socketPath ?? instanceSocketPath(), { type: "status" }, options.timeoutMs ?? 1_000)
   return answer.kind === "answer" && isStatus(answer.message) ? answer.message : null
-}
+})
 
 /**
  * The running Kanna once its server listens. Waits out a start or an update
  * restart, while the port is still unknown. Null if none is running, or if
  * it still has no port after `timeoutMs`.
  */
-export async function waitForInstancePort(options: { socketPath?: string; timeoutMs?: number } = {}) {
-  const deadline = Date.now() + (options.timeoutMs ?? 30_000)
+export const waitForInstancePort = Effect.fn("InstanceSocket.waitForPort")(function* (
+  options: { socketPath?: string; timeoutMs?: number } = {},
+) {
+  const deadline = (yield* Clock.currentTimeMillis) + (options.timeoutMs ?? 30_000)
   while (true) {
-    const status = await instanceStatus({ socketPath: options.socketPath })
+    const status = yield* instanceStatus({ socketPath: options.socketPath })
     if (!status || status.port !== null) return status
-    if (Date.now() >= deadline) return null
-    await sleep(250)
+    if ((yield* Clock.currentTimeMillis) >= deadline) return null
+    yield* Effect.sleep("250 millis")
   }
-}
+})
 
 /** Ask the running Kanna to stop. False when none is running. */
-export async function requestInstanceStop(options: { socketPath?: string } = {}) {
-  const answer = await ask(options.socketPath ?? instanceSocketPath(), { type: "stop" }, 2_000)
+export const requestInstanceStop = Effect.fn("InstanceSocket.requestStop")(function* (
+  options: { socketPath?: string } = {},
+) {
+  const answer = yield* ask(options.socketPath ?? instanceSocketPath(), { type: "stop" }, 2_000)
   return answer.kind === "answer" && answer.message.ok === true
-}
+})
 
 // The lock
 
@@ -180,7 +191,7 @@ export class InstanceLock {
   private server: AttachedServer | null = null
   private link: net.Socket | null = null
   private readonly startedAt = Date.now()
-  private readonly instance = instanceFingerprint()
+  private readonly instance = instanceFingerprint(getDataDir(os.homedir()))
 
   constructor(
     private readonly listener: net.Server,
@@ -284,14 +295,18 @@ export class InstanceLock {
  * Take the socket, or null when another live Kanna holds it. A file left by
  * a process that died is removed and taken over. `onStop` runs on a `stop`
  * request.
+ *
+ * The lock outlives the call: it is released by `close()` or at exit, not by
+ * a scope, because its holder keeps it for the life of the process.
  */
-export async function acquireInstanceLock(options: {
+export const acquireInstanceLock = Effect.fn("InstanceSocket.acquireLock")(function* (options: {
   owner: InstanceOwner
   onStop: () => void
   socketPath?: string
-}): Promise<InstanceLock | null> {
+}) {
   const socketPath = options.socketPath ?? instanceSocketPath()
-  if (process.platform !== "win32") fs.mkdirSync(path.dirname(socketPath), { recursive: true })
+  yield* Effect.annotateCurrentSpan("socketPath", socketPath)
+  if (process.platform !== "win32") yield* Effect.sync(() => fs.mkdirSync(path.dirname(socketPath), { recursive: true }))
 
   for (let attempt = 0; attempt < 50; attempt++) {
     // Checking and listening happen under a short claim, for two reasons.
@@ -299,45 +314,54 @@ export async function acquireInstanceLock(options: {
     // failing, so listening alone isn't exclusive. And two starters that
     // both find a stale file mustn't both remove it, one of them deleting
     // the socket the other just opened.
-    const claim = claimSocket(socketPath)
-    if (!claim) {
-      await sleep(100)
+    const outcome = yield* Effect.acquireRelease(
+      Effect.sync(() => claimSocket(socketPath)),
+      (release) => Effect.sync(() => release?.()),
+    ).pipe(
+      Effect.flatMap((release): Effect.Effect<"busy" | "taken" | Option.Option<net.Server>> =>
+        release ? takeOver(socketPath) : Effect.succeed("busy")),
+      Effect.scoped,
+    )
+    if (outcome === "busy") {
+      yield* Effect.sleep("100 millis")
       continue
     }
-    try {
-      // Something answering, or listening and busy, is a live Kanna.
-      // Nobody accepting is a file a crashed one left: take it over.
-      if ((await ask(socketPath, { type: "status" }, 1_000)).kind !== "none") return null
-      removeSocketFile(socketPath)
-      const listener = await listen(socketPath)
-      if (listener) return adopt(listener)
-    } finally {
-      claim()
+    if (outcome === "taken") return null
+    if (Option.isSome(outcome)) {
+      const lock = new InstanceLock(outcome.value, socketPath, options.owner, options.onStop)
+      process.once("exit", () => removeSocketFile(socketPath))
+      return lock
     }
   }
   return null
+})
 
-  function adopt(listener: net.Server) {
-    const lock = new InstanceLock(listener, socketPath, options.owner, options.onStop)
-    process.once("exit", () => removeSocketFile(socketPath))
-    return lock
-  }
-}
+/** Under the claim: "taken" by a live Kanna, else our listener (none if listening failed). */
+const takeOver = Effect.fn("InstanceSocket.takeOver")(function* (socketPath: string) {
+  // Something answering, or listening and busy, is a live Kanna.
+  // Nobody accepting is a file a crashed one left: take it over.
+  if ((yield* ask(socketPath, { type: "status" }, 1_000)).kind !== "none") return "taken" as const
+  yield* Effect.sync(() => removeSocketFile(socketPath))
+  return yield* listen(socketPath)
+})
 
-function listen(socketPath: string) {
-  return new Promise<net.Server | null>((resolve) => {
+/** A server listening on `socketPath`, or none when listening failed. */
+const listen = Effect.fn("InstanceSocket.listen")(function* (socketPath: string) {
+  return yield* Effect.callback<Option.Option<net.Server>>((resume) => {
     const listener = net.createServer()
-    listener.once("error", () => resolve(null))
+    listener.once("error", () => resume(Effect.succeedNone))
     listener.listen(socketPath, () => {
       // Only this user may ask the server anything, or stop it.
-      if (process.platform !== "win32") {
-        try {
-          fs.chmodSync(socketPath, 0o600)
-        } catch {}
-      }
-      resolve(listener)
+      if (process.platform !== "win32") restrictToOwner(socketPath)
+      resume(Effect.succeedSome(listener))
     })
   })
+})
+
+function restrictToOwner(socketPath: string) {
+  try {
+    fs.chmodSync(socketPath, 0o600)
+  } catch {}
 }
 
 function removeSocketFile(socketPath: string) {
@@ -368,11 +392,27 @@ function claimSocket(socketPath: string): (() => void) | null {
 
 /**
  * The server child's side, under a supervisor that holds the lock: report
- * the port once listening, and push the state the app's quit dialog shows.
+ * the port once listening, and push the state the app's quit dialog shows,
+ * each second, until the scope closes (detaching) or the supervisor goes.
+ *
+ * The push loop runs on Effect's clock, whose timers keep the process
+ * alive; that is fine because the scope is the server's, which ends with
+ * the process (cli.ts). The socket itself is unref'd.
  */
-export function attachToSupervisor(server: AttachedServer, options: { socketPath?: string } = {}) {
-  const socket = net.createConnection(options.socketPath ?? instanceSocketPath())
-  socket.on("error", () => {})
+export const attachToSupervisor = Effect.fn("InstanceSocket.attachToSupervisor")(function* (
+  server: AttachedServer,
+  options: { socketPath?: string } = {},
+) {
+  const socket = yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      const socket = net.createConnection(options.socketPath ?? instanceSocketPath())
+      socket.on("error", () => {})
+      // Don't hold the process open for this.
+      socket.unref()
+      return socket
+    }),
+    (socket) => Effect.sync(() => socket.destroy()),
+  )
   let last = ""
   const push = () => {
     const state = server.state?.()
@@ -382,29 +422,25 @@ export function attachToSupervisor(server: AttachedServer, options: { socketPath
     last = line
     socket.write(`${line}\n`)
   }
-  const timer = setInterval(push, 1_000)
-  timer.unref()
+  const closed = Deferred.makeUnsafe<void>()
   socket.once("connect", () => {
     send(socket, { type: "attach", port: server.port, version: server.version })
     push()
   })
-  socket.once("close", () => clearInterval(timer))
-  // Don't hold the process open for this.
-  socket.unref()
-  return () => {
-    clearInterval(timer)
-    socket.destroy()
-  }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
+  socket.once("close", () => Deferred.doneUnsafe(closed, Exit.void))
+  yield* Effect.sync(push).pipe(
+    Effect.delay("1 second"),
+    Effect.forever,
+    Effect.raceFirst(Deferred.await(closed)),
+    Effect.forkScoped,
+  )
+})
 
 export type InstanceClaim =
   | {
     kind: "ours"
-    attach: (server: AttachedServer) => void
+    /** Reports the listening server for as long as the scope stays open. */
+    attach: (server: AttachedServer) => Effect.Effect<void, never, Scope.Scope>
     /** The app that started this server quit and chose to keep it running. */
     releasedFromParent: () => boolean
   }
@@ -416,9 +452,9 @@ export type InstanceClaim =
  * The server's half of the lock, before it starts: go ahead ("ours"), or
  * point the user at the Kanna already running.
  */
-export async function claimInstance(
+export const claimInstance = Effect.fn("InstanceSocket.claim")(function* (
   env: Record<string, string | undefined> = process.env,
-): Promise<InstanceClaim> {
+) {
   const lockEnv = env[INSTANCE_LOCK_ENV_VAR]
   const owner: InstanceOwner = env[STARTED_BY_ENV_VAR] === "app" ? "app" : "terminal"
   // Read once: the server's own children (terminals, agents) inherit its
@@ -429,15 +465,25 @@ export async function claimInstance(
   // Under a supervisor, the parent this server watches is the supervisor,
   // which does the watching for a release.
   if (lockEnv === "held") {
-    return { kind: "ours", attach: (server) => void attachToSupervisor(server), releasedFromParent: () => false }
+    const claim: InstanceClaim = {
+      kind: "ours",
+      attach: (server) => attachToSupervisor(server),
+      releasedFromParent: () => false,
+    }
+    return claim
   }
-  if (lockEnv === "taken") return { kind: "running", status: await waitForInstancePort() }
+  if (lockEnv === "taken") {
+    const claim: InstanceClaim = { kind: "running", status: yield* waitForInstancePort() }
+    return claim
+  }
 
-  const lock = await acquireInstanceLock({
+  const lock = yield* acquireInstanceLock({
     owner,
     // The same path as Ctrl-C: cli.ts stops the server on SIGTERM.
     onStop: () => process.kill(process.pid, "SIGTERM"),
   })
-  if (lock) return { kind: "ours", attach: (server) => lock.attach(server), releasedFromParent: () => lock.releasedFromParent }
-  return { kind: "running", status: await waitForInstancePort() }
-}
+  const claim: InstanceClaim = lock
+    ? { kind: "ours", attach: (server) => Effect.sync(() => lock.attach(server)), releasedFromParent: () => lock.releasedFromParent }
+    : { kind: "running", status: yield* waitForInstancePort() }
+  return claim
+})

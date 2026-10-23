@@ -1,7 +1,11 @@
+import { Context, Deferred, Effect, Layer, Ref, Schema } from "effect"
 import { ANALYTICS_ENDPOINT } from "../shared/analytics"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import type { ShareMode } from "../shared/share"
 import { isTokenShareMode } from "../shared/share"
+import { AppSettings } from "./app-settings"
+import { Machine } from "./platform/machine"
+
 interface AnalyticsRequestBody {
   userId: string
   environment: AnalyticsEnvironment
@@ -24,94 +28,118 @@ export interface LaunchAnalyticsOptions {
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 type AnalyticsEnvironment = "dev" | "prod"
 
-function isAnalyticsLoggingEnabled() {
-  return process.env.KANNA_LOG_ANALYTICS === "1"
+export interface AnalyticsOptions {
+  currentVersion: string
+  environment: AnalyticsEnvironment
+  endpoint?: string
+  fetchImpl?: FetchLike
 }
 
-export interface AnalyticsReporter {
-  track: (eventName: string, properties?: Record<string, unknown>) => void
-  trackLaunch: (options: LaunchAnalyticsOptions) => void
+
+/** An analytics event did not reach the endpoint. */
+export class AnalyticsRequestError extends Schema.TaggedError<AnalyticsRequestError>()(
+  "@kanna/server/analytics/AnalyticsRequestError",
+  {
+    eventName: Schema.String,
+    endpoint: Schema.String,
+    status: Schema.NullOr(Schema.Number),
+    cause: Schema.Defect(),
+  },
+) {}
+
+/**
+ * Anonymous usage events, sent when the user has analytics on (read from
+ * `AppSettings` at each event). `track` returns once the event is queued:
+ * events go out one at a time, in order, in the background, and a failed send
+ * is dropped (logged only with `KANNA_LOG_ANALYTICS=1`).
+ */
+export class Analytics extends Context.Service<Analytics, {
+  readonly track: (eventName: string, properties?: Record<string, unknown>) => Effect.Effect<void>
+  readonly trackLaunch: (options: LaunchAnalyticsOptions) => Effect.Effect<void>
+  /** Waits until every event queued so far has been sent or dropped. */
+  readonly flush: Effect.Effect<void>
+}>()("@kanna/server/Analytics") {
+  static readonly layer = (options: AnalyticsOptions) => Layer.effect(this, makeAnalytics(options))
 }
 
-interface AnalyticsSettings {
-  getState: () => {
-    analyticsEnabled: boolean
-    analyticsUserId: string
-  }
-}
+const makeAnalytics = Effect.fn("Analytics.make")(function* (options: AnalyticsOptions) {
+  const settings = yield* AppSettings
+  const machine = yield* Machine
+  const isAnalyticsLoggingEnabled = () => machine.env.get("KANNA_LOG_ANALYTICS") === "1"
+  const scope = yield* Effect.scope
+  const endpoint = options.endpoint ?? ANALYTICS_ENDPOINT
+  const fetchImpl = options.fetchImpl ?? fetch
 
-export class KannaAnalyticsReporter implements AnalyticsReporter {
-  private readonly settings: AnalyticsSettings
-  private readonly endpoint: string
-  private readonly fetchImpl: FetchLike
-  private readonly currentVersion: string
-  private readonly environment: AnalyticsEnvironment
-  private queue = Promise.resolve()
+  const send = Effect.fn("Analytics.send")(function* (body: AnalyticsRequestBody) {
+    const eventName = body.event.name
+    const response = yield* Effect.tryPromise({
+      try: (signal) => fetchImpl(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal,
+      }),
+      catch: (cause) => new AnalyticsRequestError({ eventName, endpoint, status: null, cause }),
+    })
+    if (!response.ok) {
+      return yield* new AnalyticsRequestError({
+        eventName,
+        endpoint,
+        status: response.status,
+        cause: new Error(`Analytics request failed with status ${response.status}`),
+      })
+    }
+    if (isAnalyticsLoggingEnabled()) {
+      yield* Effect.logInfo("Sent analytics event:", eventName, response.status)
+    }
+  })
 
-  constructor(args: {
-    settings: AnalyticsSettings
-    currentVersion: string
-    environment: AnalyticsEnvironment
-    endpoint?: string
-    fetchImpl?: FetchLike
-  }) {
-    this.settings = args.settings
-    this.currentVersion = args.currentVersion
-    this.environment = args.environment
-    this.endpoint = args.endpoint ?? ANALYTICS_ENDPOINT
-    this.fetchImpl = args.fetchImpl ?? fetch
-  }
+  // The tail of the send chain: each event waits for the one before it, so
+  // they reach the endpoint in the order they were tracked.
+  const initialTail = yield* Deferred.make<void>()
+  yield* Deferred.succeed(initialTail, undefined)
+  const tail = yield* Ref.make(initialTail)
 
-  track(eventName: string, properties?: Record<string, unknown>) {
-    const { analyticsEnabled, analyticsUserId } = this.settings.getState()
+  const track = Effect.fn("Analytics.track")(function* (eventName: string, properties?: Record<string, unknown>) {
+    const { analyticsEnabled, analyticsUserId } = yield* settings.state
     if (!analyticsEnabled || !analyticsUserId) {
       return
     }
 
     const body: AnalyticsRequestBody = {
       userId: analyticsUserId,
-      environment: this.environment,
+      environment: options.environment,
       event: {
         name: eventName,
-        properties: this.buildEventProperties(properties),
+        properties: {
+          current_version: options.currentVersion,
+          environment: options.environment,
+          ...(properties ?? {}),
+        },
       },
     }
 
-    this.queue = this.queue
-      .then(async () => {
-        const response = await this.fetchImpl(this.endpoint, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(body),
-        })
-        if (!response.ok) {
-          throw new Error(`Analytics request failed with status ${response.status}`)
-        }
-        if (isAnalyticsLoggingEnabled()) {
-          console.log("[kanna/analytics] Sent analytics event:", eventName, response.status)
-        }
-      })
-      .catch((error) => {
-        if (isAnalyticsLoggingEnabled()) {
-          console.warn("[kanna/analytics] Failed to send analytics event:", eventName, error)
-        }
-      })
-  }
+    const done = yield* Deferred.make<void>()
+    const previous = yield* Ref.getAndSet(tail, done)
+    yield* Deferred.await(previous).pipe(
+      Effect.andThen(send(body)),
+      Effect.catchTag("@kanna/server/analytics/AnalyticsRequestError", (error) =>
+        isAnalyticsLoggingEnabled()
+          ? Effect.logWarning("Failed to send analytics event:", eventName, error)
+          : Effect.void),
+      Effect.ensuring(Deferred.succeed(done, undefined)),
+      Effect.forkIn(scope),
+    )
+  })
 
-  trackLaunch(options: LaunchAnalyticsOptions) {
-    this.track("app_launch", getLaunchAnalyticsProperties(options))
-  }
-
-  private buildEventProperties(properties?: Record<string, unknown>) {
-    return {
-      current_version: this.currentVersion,
-      environment: this.environment,
-      ...(properties ?? {}),
-    }
-  }
-}
+  return Analytics.of({
+    track,
+    trackLaunch: (launch) => track("app_launch", getLaunchAnalyticsProperties(launch)),
+    flush: Ref.get(tail).pipe(Effect.flatMap(Deferred.await)),
+  })
+})
 
 export function getLaunchAnalyticsProperties(options: LaunchAnalyticsOptions) {
   return {
@@ -127,6 +155,13 @@ export function getLaunchAnalyticsProperties(options: LaunchAnalyticsOptions) {
   }
 }
 
+/** Tracks nothing: for callers (and tests) that run without analytics. */
+export const NoopAnalytics: Analytics["Service"] = {
+  track: () => Effect.void,
+  trackLaunch: () => Effect.void,
+  flush: Effect.void,
+}
+
 /**
  * Tests and CI start real servers, each with a fresh data dir and so a fresh
  * anonymous id, and every run landed in production analytics as a new install
@@ -134,7 +169,7 @@ export function getLaunchAnalyticsProperties(options: LaunchAnalyticsOptions) {
  * set CI. KANNA_DISABLE_ANALYTICS=1 or DO_NOT_TRACK=1 covers anything else
  * that boots Kanna unattended.
  */
-export function isAnalyticsDisabledByEnv(env: Record<string, string | undefined> = process.env) {
+export function isAnalyticsDisabledByEnv(env: Record<string, string | undefined>) {
   const isSet = (value: string | undefined) => Boolean(value) && value !== "0" && value !== "false"
   return env.NODE_ENV === "test"
     || isSet(env.CI)
@@ -142,7 +177,3 @@ export function isAnalyticsDisabledByEnv(env: Record<string, string | undefined>
     || isSet(env.DO_NOT_TRACK)
 }
 
-export const NoopAnalyticsReporter: AnalyticsReporter = {
-  track: () => {},
-  trackLaunch: () => {},
-}

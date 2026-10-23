@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { audioFormat, handleTranscribe, TRANSCRIPTION_MODEL } from "./transcribe"
+import { Effect, Result } from "effect"
+import { runTest } from "./effect/testing"
+import { audioFormat, handleTranscribe, MAX_TRANSCRIBE_BYTES, TRANSCRIPTION_MODEL } from "./transcribe"
 import type { LlmProviderSnapshot } from "../shared/types"
+
+const transcribe = (req: Request, url: URL, snapshot: LlmProviderSnapshot, fetchImpl?: Parameters<typeof handleTranscribe>[3]) =>
+  runTest(handleTranscribe(req, url, Effect.succeed(snapshot), fetchImpl))
 
 function registry(overrides: Partial<LlmProviderSnapshot> = {}): LlmProviderSnapshot {
   return {
@@ -36,23 +41,23 @@ describe("audioFormat", () => {
 describe("handleTranscribe", () => {
   test("ignores other paths", async () => {
     const other = new URL("http://localhost/api/other")
-    expect(await handleTranscribe(request("x"), other, async () => registry())).toBeNull()
+    expect(await transcribe(request("x"), other, registry())).toBeNull()
   })
 
   test("rejects non-POST", async () => {
-    const response = await handleTranscribe(new Request(url, { method: "GET" }), url, async () => registry())
+    const response = await transcribe(new Request(url, { method: "GET" }), url, registry())
     expect(response?.status).toBe(405)
   })
 
   test("needs an OpenRouter key", async () => {
-    const response = await handleTranscribe(request("abc"), url, async () => registry({ provider: "openai" }))
+    const response = await transcribe(request("abc"), url, registry({ provider: "openai" }))
     expect(response?.status).toBe(400)
     const body = await response!.json()
     expect(body.error.code).toBe("missing_openrouter_key")
   })
 
   test("rejects an empty body", async () => {
-    const response = await handleTranscribe(request(""), url, async () => registry())
+    const response = await transcribe(request(""), url, registry())
     expect(response?.status).toBe(400)
     expect((await response!.json()).error.code).toBe("empty_audio")
   })
@@ -67,10 +72,10 @@ describe("handleTranscribe", () => {
       }
       return Response.json({ text: "hello there" })
     }
-    const response = await handleTranscribe(
+    const response = await transcribe(
       request(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/webm;codecs=opus" } }),
       url,
-      async () => registry(),
+      registry(),
       fetchImpl,
     )
     expect(response?.status).toBe(200)
@@ -83,10 +88,36 @@ describe("handleTranscribe", () => {
 
   test("passes upstream failures through", async () => {
     const fetchImpl = async () => new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 })
-    const response = await handleTranscribe(request("abc"), url, async () => registry(), fetchImpl)
+    const response = await transcribe(request("abc"), url, registry(), fetchImpl)
     expect(response?.status).toBe(401)
     const body = await response!.json()
     expect(body.error.code).toBe("transcription_failed")
     expect(body.error.message).toContain("bad key")
+  })
+
+  test("refuses an oversized upload by its declared length", async () => {
+    const response = await transcribe(request("abc", { headers: { "content-length": String(MAX_TRANSCRIBE_BYTES + 1) } }), url, registry())
+    expect(response?.status).toBe(413)
+    expect((await response!.json()).error.code).toBe("request_too_large")
+  })
+
+  test("reports a 200 that declines, and a body that isn't JSON", async () => {
+    const declined = await transcribe(request("abc"), url, registry(), async () => Response.json({ error: { message: "no speech" } }))
+    expect(declined?.status).toBe(502)
+    expect((await declined!.json()).error.message).toBe("Transcription failed: no speech")
+
+    const garbled = await transcribe(request("abc"), url, registry(), async () => new Response("<html>"))
+    expect(garbled?.status).toBe(502)
+    expect((await garbled!.json()).error.message).toBe("Transcription returned invalid JSON.")
+  })
+
+  test("leaves a failed request to OpenRouter to the caller", async () => {
+    const result = await runTest(Effect.result(handleTranscribe(request("abc"), url, Effect.succeed(registry()), async () => {
+      throw new Error("offline")
+    })))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/transcribe/TranscriptionRequestError")
+    }
   })
 })

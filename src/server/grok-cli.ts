@@ -1,15 +1,13 @@
-import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
 import path from "node:path"
-import { createInterface } from "node:readline"
-import type { Readable, Writable } from "node:stream"
+import { Cause, Context, Effect, Exit, FileSystem, Layer, Match, Option, Queue, Schema, Stream, type Scope } from "effect"
 import type { ContextWindowUsageSnapshot, HarnessSkill, NormalizedToolCall, TodoItem } from "../shared/types"
 import { asNumber, asRecord, asString } from "../shared/json"
 import { normalizeToolCall } from "../shared/tools"
-import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
-import { AsyncQueue } from "./async-queue"
+import { collectCliOutput, lenient, pumpCliTurn, spawnCli, type SpawnCli } from "./cli-process"
+import type { HarnessEvent, HarnessToolRequest, HarnessTurnEffect } from "./harness-types"
+import { Machine } from "./platform/machine"
+import type { CommandSpawnError } from "./process-utils"
 import { timestamped } from "./transcript"
 
 /**
@@ -41,17 +39,6 @@ import { timestamped } from "./transcript"
 
 export const GROK_CLI_CHAT_PROXY_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 
-export interface GrokChildProcess {
-  readonly stdin: Writable | null
-  readonly stdout: Readable | null
-  readonly stderr: Readable | null
-  kill(signal?: NodeJS.Signals): boolean
-  once(event: "close", listener: (code: number | null) => void): unknown
-  once(event: "error", listener: (err: Error) => void): unknown
-}
-
-export type SpawnGrokAgent = (args: { cwd: string; argv: string[] }) => GrokChildProcess
-
 export interface StartGrokTurnArgs {
   cwd: string
   content: string
@@ -60,8 +47,11 @@ export interface StartGrokTurnArgs {
   planMode: boolean
   sessionToken: string | null
   forkSession: boolean
-  /** Plan mode only: parks the turn on the plan approval or question — see startTurn. */
-  onToolRequest?: (request: HarnessToolRequest) => Promise<unknown>
+  /**
+   * Plan mode only: parks the turn on the plan approval or question — see
+   * startTurn. Succeeds once the user answers; fails when the turn is already gone.
+   */
+  onToolRequest?: (request: HarnessToolRequest) => Effect.Effect<unknown, unknown>
 }
 
 type InteractiveTool = HarnessToolRequest["tool"]
@@ -87,29 +77,48 @@ export interface GrokInspectSkill {
   path?: string
 }
 
-export interface GrokBillingProductUsage {
-  product?: string
-  usagePercent?: number
-}
+/** A value that decodes to `fallback` when it has another shape, rather than failing its parent. */
+const orElse = <S extends Schema.Top>(schema: S, fallback: S["Type"]) =>
+  schema.pipe(Schema.catchDecoding(() => Effect.succeed(Option.some(fallback))))
 
-export interface GrokBillingRaw {
-  config?: {
-    currentPeriod?: { type?: string; start?: string; end?: string }
-    creditUsagePercent?: number
-    onDemandCap?: { val?: number } | number
-    onDemandUsed?: { val?: number } | number
-    prepaidBalance?: { val?: number } | number
-    productUsage?: GrokBillingProductUsage[]
-    billingPeriodStart?: string
-    billingPeriodEnd?: string
-  }
-}
+const GrokMoneyValue = Schema.Union([Schema.Number, Schema.Struct({ val: lenient(Schema.Number) })])
 
-export interface GrokUserRaw {
-  email?: string | null
-  subscriptionTier?: string | null
-  hasGrokCodeAccess?: boolean
-}
+const GrokBillingProductUsage = Schema.Struct({
+  product: lenient(Schema.String),
+  usagePercent: lenient(Schema.Number),
+})
+export type GrokBillingProductUsage = typeof GrokBillingProductUsage.Type
+
+/**
+ * cli-chat-proxy's `/billing?format=credits`, decoded conservatively: a field
+ * of an unexpected shape reads as absent, and a body that is not an object at
+ * all reads as `{}` (no usage windows).
+ */
+const GrokBilling = orElse(Schema.Struct({
+  config: lenient(Schema.Struct({
+    currentPeriod: lenient(Schema.Struct({
+      type: lenient(Schema.String),
+      start: lenient(Schema.String),
+      end: lenient(Schema.String),
+    })),
+    creditUsagePercent: lenient(Schema.Number),
+    onDemandCap: lenient(GrokMoneyValue),
+    onDemandUsed: lenient(GrokMoneyValue),
+    prepaidBalance: lenient(GrokMoneyValue),
+    productUsage: lenient(Schema.Array(orElse(GrokBillingProductUsage, {}))),
+    billingPeriodStart: lenient(Schema.String),
+    billingPeriodEnd: lenient(Schema.String),
+  })),
+}), {})
+export type GrokBillingRaw = typeof GrokBilling.Type
+
+/** cli-chat-proxy's `/user?include=subscription`, decoded the same way. */
+const GrokUser = orElse(Schema.Struct({
+  email: lenient(Schema.NullOr(Schema.String)),
+  subscriptionTier: lenient(Schema.NullOr(Schema.String)),
+  hasGrokCodeAccess: lenient(Schema.Boolean),
+}), {})
+export type GrokUserRaw = typeof GrokUser.Type
 
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-9;?]*[A-Za-z]/g
 const MODEL_LINE_PATTERN = /^\s*[*+-]\s+(\S+)(?:\s+\(default\))?/i
@@ -438,6 +447,51 @@ function grokSlashCommands(commands: unknown): string[] {
     .filter((name) => name.length > 0 && !name.startsWith("._") && !name.includes(":"))
 }
 
+// One stdout line of `grok --output-format streaming-json`, decoded
+// conservatively: the event types Kanna reads, each with the fields it uses.
+// Other types ("thought") and fields a newer CLI adds are ignored, not
+// rejected. Tool payloads (`rawInput`, `rawOutput`, `content`) are free-form
+// per tool and read by the helpers above.
+const GrokEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("available_commands"),
+    tools: lenient(Schema.Array(Schema.Unknown)),
+    commands: lenient(Schema.Array(Schema.Unknown)),
+  }),
+  Schema.Struct({ type: Schema.Literal("text"), data: lenient(Schema.String) }),
+  Schema.Struct({
+    type: Schema.Literal("tool_call"),
+    toolCallId: lenient(Schema.String),
+    call_id: lenient(Schema.String),
+    toolName: lenient(Schema.String),
+    title: lenient(Schema.String),
+    rawInput: Schema.optional(Schema.Unknown),
+    input: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("tool_call_update"),
+    toolCallId: lenient(Schema.String),
+    call_id: lenient(Schema.String),
+    status: lenient(Schema.String),
+    content: Schema.optional(Schema.Unknown),
+    rawOutput: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({ type: Schema.Literal("usage"), usage: Schema.optional(Schema.Unknown) }),
+  Schema.Struct({
+    type: Schema.Literal("end"),
+    sessionId: lenient(Schema.String),
+    session_id: lenient(Schema.String),
+    stopReason: lenient(Schema.String),
+    stop_reason: lenient(Schema.String),
+    error: lenient(Schema.String),
+    usage: Schema.optional(Schema.Unknown),
+  }),
+])
+type GrokEvent = typeof GrokEvent.Type
+
+const decodeJsonObject = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)))
+const decodeGrokEvent = Schema.decodeUnknownOption(GrokEvent)
+
 /**
  * Parse a single NDJSON line from `grok --output-format streaming-json`.
  * Text deltas are returned as assistant_text; the manager coalesces them.
@@ -445,21 +499,23 @@ function grokSlashCommands(commands: unknown): string[] {
 export function parseGrokLine(line: string, configuredModel: string): HarnessEvent[] {
   const trimmed = line.trim()
   if (!trimmed) return []
+  const raw = decodeJsonObject(trimmed)
+  if (Option.isNone(raw)) return []
+  const event = decodeGrokEvent(raw.value)
+  if (Option.isNone(event)) return []
+  return grokEventToHarnessEvents(event.value, raw.value, configuredModel, trimmed)
+}
 
-  let value: Record<string, unknown> | null
-  try {
-    value = asRecord(JSON.parse(trimmed))
-  } catch {
-    return []
-  }
-  if (!value) return []
-
-  const type = asString(value.type)
-  const debugRaw = trimmed
-
-  switch (type) {
-    case "available_commands": {
-      return [{
+/** `raw` is the whole line's object, for the tool-payload helpers that read across its fields. */
+function grokEventToHarnessEvents(
+  event: GrokEvent,
+  raw: Record<string, unknown>,
+  configuredModel: string,
+  debugRaw: string,
+): HarnessEvent[] {
+  return Match.value(event).pipe(
+    Match.discriminatorsExhaustive("type")({
+      available_commands: (value): HarnessEvent[] => [{
         type: "transcript",
         entry: timestamped({
           kind: "system_init",
@@ -471,100 +527,97 @@ export function parseGrokLine(line: string, configuredModel: string): HarnessEve
           mcpServers: [],
           debugRaw,
         }),
-      }]
-    }
+      }],
 
-    case "text": {
-      const text = asString(value.data) ?? ""
-      if (!text) return []
-      return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
-    }
+      text: (value): HarnessEvent[] => {
+        const text = value.data ?? ""
+        if (!text) return []
+        return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
+      },
 
-    case "tool_call": {
-      const callId = asString(value.toolCallId) ?? asString(value.call_id) ?? randomUUID()
-      const rawName = asString(value.toolName) ?? asString(value.title) ?? "unknown"
-      const args = asRecord(value.rawInput) ?? asRecord(value.input) ?? {}
-      const { toolName, input } = translateGrokTool(rawName, args)
-      return [{
-        type: "transcript",
-        entry: timestamped({
-          kind: "tool_call",
-          tool: normalizeToolCall({ toolName, toolId: callId, input }),
-        }),
-      }]
-    }
-
-    case "tool_call_update": {
-      const events: HarnessEvent[] = []
-      const callId = asString(value.toolCallId) ?? asString(value.call_id)
-      const todoPayload = grokTodosFromPayload(value)
-      if (todoPayload && callId) {
-        events.push({
+      tool_call: (value): HarnessEvent[] => {
+        const callId = value.toolCallId ?? value.call_id ?? randomUUID()
+        const rawName = value.toolName ?? value.title ?? "unknown"
+        const args = asRecord(value.rawInput) ?? asRecord(value.input) ?? {}
+        const { toolName, input } = translateGrokTool(rawName, args)
+        return [{
           type: "transcript",
           entry: timestamped({
             kind: "tool_call",
-            tool: normalizeToolCall({
-              toolName: "TodoWrite",
-              toolId: callId,
-              input: { todos: todoPayload.todos, merge: todoPayload.merge },
-            }),
+            tool: normalizeToolCall({ toolName, toolId: callId, input }),
           }),
-        })
-      }
-      const status = asString(value.status)
-      const hasContent = Array.isArray(value.content) ? value.content.length > 0 : value.content != null
-      if (status !== "completed" && status !== "failed" && status !== "error" && !hasContent && value.rawOutput == null) {
-        return events
-      }
-      if (!callId) return events
-      const isError = status === "failed" || status === "error"
-      events.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "tool_result",
-          toolId: callId,
-          content: extractToolResultContent(value),
-          isError,
-        }),
-      })
-      return events
-    }
+        }]
+      },
 
-    case "usage": {
-      const usage = normalizeGrokUsage(value.usage)
-      if (!usage) return []
-      return [{ type: "transcript", entry: timestamped({ kind: "context_window_updated", usage }) }]
-    }
-
-    case "end": {
-      const events: HarnessEvent[] = []
-      const sessionId = asString(value.sessionId) ?? asString(value.session_id)
-      if (sessionId) events.push({ type: "session_token", sessionToken: sessionId })
-      const usage = normalizeGrokUsage(value.usage)
-      if (usage) {
+      tool_call_update: (value): HarnessEvent[] => {
+        const events: HarnessEvent[] = []
+        const callId = value.toolCallId ?? value.call_id
+        const todoPayload = grokTodosFromPayload(raw)
+        if (todoPayload && callId) {
+          events.push({
+            type: "transcript",
+            entry: timestamped({
+              kind: "tool_call",
+              tool: normalizeToolCall({
+                toolName: "TodoWrite",
+                toolId: callId,
+                input: { todos: todoPayload.todos, merge: todoPayload.merge },
+              }),
+            }),
+          })
+        }
+        const status = value.status
+        const hasContent = Array.isArray(value.content) ? value.content.length > 0 : value.content != null
+        if (status !== "completed" && status !== "failed" && status !== "error" && !hasContent && value.rawOutput == null) {
+          return events
+        }
+        if (!callId) return events
+        const isError = status === "failed" || status === "error"
         events.push({
           type: "transcript",
-          entry: timestamped({ kind: "context_window_updated", usage }),
+          entry: timestamped({
+            kind: "tool_result",
+            toolId: callId,
+            content: extractToolResultContent(raw),
+            isError,
+          }),
         })
-      }
-      const stopReason = asString(value.stopReason) ?? asString(value.stop_reason) ?? ""
-      const isError = /error|fail/i.test(stopReason) && stopReason !== "end_turn"
-      events.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "result",
-          subtype: isError ? "error" : "success",
-          isError,
-          durationMs: 0,
-          result: isError ? (asString(value.error) ?? stopReason) : "",
-        }),
-      })
-      return events
-    }
+        return events
+      },
 
-    default:
-      return []
-  }
+      usage: (value): HarnessEvent[] => {
+        const usage = normalizeGrokUsage(value.usage)
+        if (!usage) return []
+        return [{ type: "transcript", entry: timestamped({ kind: "context_window_updated", usage }) }]
+      },
+
+      end: (value): HarnessEvent[] => {
+        const events: HarnessEvent[] = []
+        const sessionId = value.sessionId ?? value.session_id
+        if (sessionId) events.push({ type: "session_token", sessionToken: sessionId })
+        const usage = normalizeGrokUsage(value.usage)
+        if (usage) {
+          events.push({
+            type: "transcript",
+            entry: timestamped({ kind: "context_window_updated", usage }),
+          })
+        }
+        const stopReason = value.stopReason ?? value.stop_reason ?? ""
+        const isError = /error|fail/i.test(stopReason) && stopReason !== "end_turn"
+        events.push({
+          type: "transcript",
+          entry: timestamped({
+            kind: "result",
+            subtype: isError ? "error" : "success",
+            isError,
+            durationMs: 0,
+            result: isError ? (value.error ?? stopReason) : "",
+          }),
+        })
+        return events
+      },
+    }),
+  )
 }
 
 /** Coalesce streaming text deltas into one assistant_text entry at a time. */
@@ -628,25 +681,28 @@ export class GrokStreamCoalescer {
   }
 }
 
+// `grok inspect --json`, decoded conservatively: a skill that isn't an object
+// or has no string name is skipped; other fields are optional.
+const GrokInspectSkill = Schema.Struct({
+  name: Schema.String,
+  description: lenient(Schema.String),
+  source: lenient(Schema.Struct({ path: lenient(Schema.String) })),
+})
+const decodeGrokInspect = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({
+  skills: lenient(Schema.Array(Schema.Unknown)),
+})))
+const decodeGrokInspectSkill = Schema.decodeUnknownOption(GrokInspectSkill)
+
 export function parseGrokInspectSkills(output: string): HarnessSkill[] {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(output)
-  } catch {
-    return []
-  }
-  const record = asRecord(parsed)
-  const skills = Array.isArray(record?.skills) ? record.skills : []
+  const parsed = decodeGrokInspect(output)
+  const skills = Option.isSome(parsed) ? parsed.value.skills ?? [] : []
   const result: HarnessSkill[] = []
-  for (const skill of skills) {
-    const skillRecord = asRecord(skill)
-    const name = asString(skillRecord?.name)
-    if (!name || name.startsWith("._")) continue
-    const source = asRecord(skillRecord?.source)
-    const skillPath = asString(source?.path)
+  for (const skill of skills.flatMap((entry) => Option.toArray(decodeGrokInspectSkill(entry)))) {
+    if (!skill.name || skill.name.startsWith("._")) continue
+    const skillPath = skill.source?.path
     result.push({
-      name,
-      description: asString(skillRecord?.description) ?? "",
+      name: skill.name,
+      description: skill.description ?? "",
       source: "skill",
       ...(skillPath ? { path: skillPath } : {}),
     })
@@ -665,8 +721,8 @@ export function readGrokAuthTokenFromFile(payload: unknown): string | null {
   return null
 }
 
-export function grokProxyBaseUrl(): string {
-  const override = process.env.GROK_CLI_CHAT_PROXY_BASE_URL?.trim()
+export function grokProxyBaseUrl(env: Record<string, string | undefined>): string {
+  const override = env.GROK_CLI_CHAT_PROXY_BASE_URL?.trim()
   if (override) return override.replace(/\/$/, "")
   return GROK_CLI_CHAT_PROXY_BASE_URL
 }
@@ -701,81 +757,101 @@ export function grokProductUsageWindows(raw: GrokBillingRaw): Array<{ id: string
   return windows
 }
 
-export class GrokCliManager {
-  private readonly spawnProcess: SpawnGrokAgent
+export class GrokModelListError extends Schema.TaggedError<GrokModelListError>()(
+  "@kanna/server/grok-cli/GrokModelListError",
+  {
+    message: Schema.String,
+    exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+  },
+) {}
 
-  constructor(args: { spawnProcess?: SpawnGrokAgent } = {}) {
-    this.spawnProcess =
-      args.spawnProcess ??
-      (({ cwd, argv }) =>
-        spawn("grok", argv, {
-          cwd,
-          stdio: ["pipe", "pipe", "pipe"],
-          env: process.env,
-        }) as unknown as GrokChildProcess)
-  }
+export class GrokPromptFileError extends Schema.TaggedError<GrokPromptFileError>()(
+  "@kanna/server/grok-cli/GrokPromptFileError",
+  {
+    operation: Schema.Literals(["make-directory", "write"]),
+    cwd: Schema.String,
+    filePath: Schema.optional(Schema.String),
+    cause: Schema.Defect(),
+  },
+) {}
 
-  async listModels(timeoutMs = 30_000): Promise<GrokModelListEntry[]> {
-    const child = this.spawnProcess({ cwd: homedir(), argv: ["models"] })
-    return await new Promise<GrokModelListEntry[]>((resolve, reject) => {
-      let stdout = ""
-      let stderr = ""
-      let settled = false
-      const settle = (complete: () => void) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeout)
-        complete()
-      }
-      const timeout = setTimeout(() => {
-        settle(() => reject(new Error(`grok models timed out after ${timeoutMs}ms`)))
-        try { child.kill() } catch { /* gone */ }
-      }, timeoutMs)
+export interface GrokCliOptions {
+  /** Default: the real `grok`. Tests pass a fake (`cli-process.fake.ts`). */
+  readonly spawnProcess?: SpawnCli
+}
 
-      child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString() })
-      child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString() })
-      child.once("error", (err) => settle(() => reject(err)))
-      child.once("close", (code) => settle(() => {
-        const models = parseGrokModelList(stdout)
-        if (code === 0 && models.length > 0) {
-          resolve(models)
-          return
-        }
-        reject(new Error(
-          stderr.trim() || `grok models exited with code ${code ?? "unknown"} without listing models`,
-        ))
-      }))
-      child.stdin?.end()
+/**
+ * The Grok Build CLI (`grok`): a headless process per turn, the account's
+ * model list, and the skills it would load for a project.
+ */
+export class GrokCli extends Context.Service<GrokCli, {
+  /**
+   * Spawns `grok` for one turn, in the caller's scope: closing the scope kills
+   * the process and removes the prompt file. The turn's events end after the
+   * process exits (or, in plan mode, once the user answers — see below); an
+   * exit without a result ends them with an error result carrying stderr.
+   */
+  readonly startTurn: (args: StartGrokTurnArgs) => Effect.Effect<HarnessTurnEffect, GrokPromptFileError, Scope.Scope>
+  /** `grok models`. Fails when grok is missing, signed out, or times out; callers keep the static catalog. */
+  readonly listModels: (timeoutMs?: number) => Effect.Effect<GrokModelListEntry[], GrokModelListError | CommandSpawnError>
+  /** `grok inspect --json`: the skills grok would load in `cwd`. Empty when grok can't say. */
+  readonly listSkills: (args?: { readonly cwd: string; readonly timeoutMs?: number }) => Effect.Effect<HarnessSkill[]>
+}>()("@kanna/server/GrokCli") {
+  static readonly layer = (options: GrokCliOptions = {}) => Layer.effect(this, makeGrokCli(options))
+}
+
+export const makeGrokCli = Effect.fn("GrokCli.make")(function* (options: GrokCliOptions = {}) {
+  const fs = yield* FileSystem.FileSystem
+  const spawnProcess = options.spawnProcess ?? (yield* spawnCli("grok"))
+  const machine = yield* Machine
+
+  const listModels = Effect.fn("GrokCli.listModels")(function* (timeoutMs = 30_000) {
+    const output = yield* spawnProcess({ cwd: machine.homeDirectory, argv: ["models"] }).pipe(
+      Effect.flatMap(collectCliOutput),
+      Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: timeoutMs,
+        orElse: () => Effect.fail(new GrokModelListError({ message: `grok models timed out after ${timeoutMs}ms` })),
+      }),
+    )
+    const models = parseGrokModelList(output.stdout)
+    if (output.exitCode === 0 && models.length > 0) return models
+    return yield* new GrokModelListError({
+      message: output.stderr.trim() || `grok models exited with code ${output.exitCode ?? "unknown"} without listing models`,
+      exitCode: output.exitCode,
     })
-  }
+  })
 
-  async listSkills(args: { cwd: string; timeoutMs?: number } = { cwd: process.cwd() }): Promise<HarnessSkill[]> {
-    const timeoutMs = args.timeoutMs ?? 20_000
-    const child = this.spawnProcess({ cwd: args.cwd, argv: ["inspect", "--json"] })
-    return await new Promise<HarnessSkill[]>((resolve) => {
-      let stdout = ""
-      let settled = false
-      const settle = (skills: HarnessSkill[]) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeout)
-        resolve(skills)
-      }
-      const timeout = setTimeout(() => {
-        try { child.kill() } catch { /* gone */ }
-        settle([])
-      }, timeoutMs)
-      child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString() })
-      child.once("error", () => settle([]))
-      child.once("close", () => settle(parseGrokInspectSkills(stdout)))
-      child.stdin?.end()
-    })
-  }
+  const listSkills = Effect.fn("GrokCli.listSkills")(function* (
+    args: { readonly cwd: string; readonly timeoutMs?: number } = { cwd: machine.workingDirectory },
+  ) {
+    return yield* spawnProcess({ cwd: args.cwd, argv: ["inspect", "--json"] }).pipe(
+      Effect.flatMap(collectCliOutput),
+      // Whatever it printed by the time it exited, whatever the code.
+      Effect.map((output) => parseGrokInspectSkills(output.stdout)),
+      Effect.scoped,
+      Effect.catchTag("@kanna/server/process-utils/CommandSpawnError", () => Effect.succeed<HarnessSkill[]>([])),
+      Effect.timeoutOrElse({ duration: args.timeoutMs ?? 20_000, orElse: () => Effect.succeed<HarnessSkill[]>([]) }),
+    )
+  })
 
-  async startTurn(args: StartGrokTurnArgs): Promise<HarnessTurn> {
-    const promptDir = await mkdtemp(path.join(tmpdir(), "kanna-grok-"))
+  const startTurn = Effect.fn("GrokCli.startTurn")(function* (args: StartGrokTurnArgs) {
+    yield* Effect.annotateCurrentSpan("model", args.model)
+    // A failed removal is left behind, as before: it is a temp directory.
+    const removePromptDir = (directory: string) =>
+      fs.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore)
+    const promptDir = yield* Effect.acquireRelease(
+      fs.makeTempDirectory({ prefix: "kanna-grok-" }).pipe(
+        Effect.catchTag("PlatformError", (cause) =>
+          Effect.fail(new GrokPromptFileError({ operation: "make-directory", cwd: args.cwd, cause }))),
+      ),
+      removePromptDir,
+    )
     const promptFile = path.join(promptDir, "prompt.txt")
-    await writeFile(promptFile, args.content, "utf8")
+    yield* fs.writeFileString(promptFile, args.content).pipe(
+      Effect.catchTag("PlatformError", (cause) =>
+        Effect.fail(new GrokPromptFileError({ operation: "write", cwd: args.cwd, filePath: promptFile, cause }))),
+    )
 
     const argv = [
       "--output-format", "streaming-json",
@@ -794,13 +870,12 @@ export class GrokCliManager {
       if (args.forkSession) argv.push("--fork-session")
     }
 
-    const child = this.spawnProcess({ cwd: args.cwd, argv })
-    const queue = new AsyncQueue<HarnessEvent>()
+    // Ends the events if the scope closes before the process does.
+    const queue = yield* Queue.unbounded<HarnessEvent, Cause.Done>()
+    yield* Effect.addFinalizer(() => Queue.end(queue))
     const coalescer = new GrokStreamCoalescer()
 
     let sawResult = false
-    let finished = false
-    let stderr = ""
 
     // Headless plan mode has no channel back to the CLI: stdin is closed, so
     // an ExitPlanMode or AskUserQuestion call can only be recorded, never
@@ -815,49 +890,40 @@ export class GrokCliManager {
     let awaitingUser: InteractiveTool | null = null
     let heldResult: HarnessEvent | null = null
 
-    const emit = (event: HarnessEvent) => {
+    const emit = (event: HarnessEvent) => Effect.suspend(() => {
       const entry = event.type === "transcript" ? event.entry : undefined
       if (deferToUser && entry) {
         if (entry.kind === "tool_call" && isInteractiveTool(entry.tool)) {
           awaitingUser = entry.tool
         } else if (entry.kind === "tool_result" && awaitingUser && entry.toolId === awaitingUser.toolId) {
-          return
+          return Effect.void
         } else if (entry.kind === "result" && awaitingUser && !entry.isError) {
           sawResult = true
           heldResult = event
-          return
+          return Effect.void
         }
       }
       if (entry?.kind === "result") sawResult = true
-      queue.push(event)
-    }
+      return Queue.offer(queue, event).pipe(Effect.asVoid)
+    })
+    const emitAll = (events: HarnessEvent[]) => Effect.forEach(events, emit, { discard: true })
 
-    const cleanupPrompt = () => {
-      void rm(promptDir, { recursive: true, force: true }).catch(() => undefined)
-    }
-
-    const finalize = (code: number | null) => {
-      if (finished) return
-      finished = true
-      cleanupPrompt()
-      for (const event of coalescer.finish()) emit(event)
-      if (deferToUser && awaitingUser && heldResult) {
-        const held = heldResult
-        // Resolves once the user answers. It rejects if the turn was already
+    const finalize = Effect.fn("GrokCli.finishTurn")(function* (exit: { readonly code: number | null; readonly stderr: string }) {
+      yield* removePromptDir(promptDir)
+      yield* emitAll(coalescer.finish())
+      const held = heldResult
+      if (deferToUser && awaitingUser && held) {
+        // Succeeds once the user answers. It fails if the turn was already
         // gone, and then the held result closes the turn the ordinary way.
-        void deferToUser({ tool: awaitingUser }).then(
-          () => queue.finish(),
-          () => {
-            queue.push(held)
-            queue.finish()
-          },
-        )
+        const answered = yield* Effect.exit(deferToUser({ tool: awaitingUser }))
+        if (Exit.isFailure(answered)) yield* Queue.offer(queue, held)
+        yield* Queue.end(queue)
         return
       }
-      if (heldResult) queue.push(heldResult)
+      if (held) yield* Queue.offer(queue, held)
       if (!sawResult) {
-        const detail = stderr.trim() || `grok exited with code ${code ?? "unknown"}`
-        queue.push({
+        const detail = exit.stderr.trim() || `grok exited with code ${exit.code ?? "unknown"}`
+        yield* Queue.offer(queue, {
           type: "transcript",
           entry: timestamped({
             kind: "result",
@@ -868,73 +934,95 @@ export class GrokCliManager {
           }),
         })
       }
-      queue.finish()
-    }
-
-    if (child.stdout) {
-      const rl = createInterface({ input: child.stdout })
-      rl.on("line", (line) => {
-        for (const event of coalescer.push(parseGrokLine(line, args.model))) emit(event)
-      })
-    }
-
-    if (child.stderr) {
-      child.stderr.on("data", (chunk: Buffer | string) => {
-        stderr += chunk.toString()
-      })
-    }
-
-    child.once("error", (err) => {
-      stderr += `\n${err.message}`
-      finalize(null)
+      yield* Queue.end(queue)
     })
-    child.once("close", (code) => finalize(code))
-    child.stdin?.end()
+
+    const proc = yield* pumpCliTurn({
+      spawn: spawnProcess({ cwd: args.cwd, argv }),
+      onLine: (line) => emitAll(coalescer.push(parseGrokLine(line, args.model))),
+      onExit: finalize,
+    })
 
     return {
       provider: "grok",
-      stream: queue,
-      interrupt: async () => {
-        try { child.kill("SIGINT") } catch { /* gone */ }
-      },
-      close: () => {
-        try { child.kill() } catch { /* gone */ }
-        cleanupPrompt()
-      },
-    }
-  }
-}
+      events: Stream.fromQueue(queue),
+      interrupt: Option.match(proc, { onNone: () => Effect.void, onSome: (child) => child.kill("SIGINT") }),
+    } satisfies HarnessTurnEffect
+  })
 
-export async function readGrokAuthToken(filePath = path.join(homedir(), ".grok", "auth.json")): Promise<string | null> {
-  try {
-    const text = await readFile(filePath, "utf8")
-    return readGrokAuthTokenFromFile(JSON.parse(text))
-  } catch {
-    return null
-  }
-}
+  return { startTurn, listModels, listSkills } satisfies GrokCli["Service"]
+})
 
-export async function fetchGrokAccountUsage(args: {
+export class GrokUsageError extends Schema.TaggedError<GrokUsageError>()(
+  "@kanna/server/grok-cli/GrokUsageError",
+  {
+    /** What the usage card shows after "Failed to read Grok usage: ". */
+    message: Schema.String,
+    url: Schema.String,
+    status: Schema.optional(Schema.Number),
+    cause: Schema.Defect(),
+  },
+) {}
+
+const decodeAuthFile = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))
+
+/** The grok CLI's sign-in token, or null when it is signed out or the file can't be read. */
+export const readGrokAuthToken = Effect.fn("GrokCli.readAuthToken")(function* (filePath?: string) {
+  const fs = yield* FileSystem.FileSystem
+  const authPath = filePath ?? path.join((yield* Machine).homeDirectory, ".grok", "auth.json")
+  return yield* fs.readFileString(authPath).pipe(
+    Effect.flatMap(decodeAuthFile),
+    Effect.map(readGrokAuthTokenFromFile),
+    Effect.catchTag("PlatformError", () => Effect.succeed(null)),
+    Effect.catchTag("SchemaError", () => Effect.succeed(null)),
+  )
+})
+
+const decodeGrokBilling = Schema.decodeUnknownEffect(GrokBilling)
+const decodeGrokUser = Schema.decodeUnknownEffect(GrokUser)
+
+const usageErrorMessage =(cause: unknown) => cause instanceof Error ? cause.message : String(cause)
+
+/**
+ * Grok Build billing and subscription from cli-chat-proxy, with the CLI's
+ * own token. Null when grok is signed out.
+ */
+export const fetchGrokAccountUsage = Effect.fn("GrokCli.fetchAccountUsage")(function* (args: {
   token?: string | null
   fetchFn?: typeof fetch
   baseUrl?: string
-} = {}): Promise<{ billing: GrokBillingRaw; user: GrokUserRaw } | null> {
-  const token = args.token ?? await readGrokAuthToken()
+} = {}) {
+  const token = args.token ?? (yield* readGrokAuthToken())
   if (!token) return null
   const fetchFn = args.fetchFn ?? fetch
-  const base = (args.baseUrl ?? grokProxyBaseUrl()).replace(/\/$/, "")
+  const base = (args.baseUrl ?? grokProxyBaseUrl((yield* Machine).env.snapshot())).replace(/\/$/, "")
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" }
-  const [billingResponse, userResponse] = await Promise.all([
-    fetchFn(`${base}/billing?format=credits`, { headers }),
-    fetchFn(`${base}/user?include=subscription`, { headers }),
-  ])
+
+  const get = (url: string) => Effect.tryPromise({
+    try: (signal) => fetchFn(url, { headers, signal }),
+    catch: (cause) => new GrokUsageError({ message: usageErrorMessage(cause), url, cause }),
+  })
+  const readBody = <A>(url: string, response: Response, decode: (body: unknown) => Effect.Effect<A, Schema.SchemaError>) =>
+    Effect.tryPromise({
+      try: (): Promise<unknown> => response.json(),
+      catch: (cause) => new GrokUsageError({ message: usageErrorMessage(cause), url, status: response.status, cause }),
+    }).pipe(
+      // The schemas fall back rather than fail; a failure here is a bug in them.
+      Effect.flatMap((body) => decode(body).pipe(Effect.orDie)),
+    )
+
+  const billingUrl = `${base}/billing?format=credits`
+  const userUrl = `${base}/user?include=subscription`
+  const [billingResponse, userResponse] = yield* Effect.all([get(billingUrl), get(userUrl)], { concurrency: 2 })
   if (!billingResponse.ok) {
-    throw new Error(`Grok billing request failed (${billingResponse.status}).`)
+    return yield* new GrokUsageError({
+      message: `Grok billing request failed (${billingResponse.status}).`,
+      url: billingUrl,
+      status: billingResponse.status,
+      cause: null,
+    })
   }
-  const billing = await billingResponse.json() as GrokBillingRaw
-  let user: GrokUserRaw = {}
-  if (userResponse.ok) {
-    user = await userResponse.json() as GrokUserRaw
-  }
-  return { billing, user }
-}
+  const billing = yield* readBody(billingUrl, billingResponse, decodeGrokBilling)
+  const user = userResponse.ok ? yield* readBody(userUrl, userResponse, decodeGrokUser) : {}
+  return { billing, user } satisfies { billing: GrokBillingRaw; user: GrokUserRaw }
+})

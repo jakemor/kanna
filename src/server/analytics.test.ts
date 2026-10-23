@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { KannaAnalyticsReporter, getLaunchAnalyticsProperties, isAnalyticsDisabledByEnv } from "./analytics"
+import { Effect, Layer } from "effect"
+import { LOG_PREFIX } from "../shared/branding"
+import { Analytics, getLaunchAnalyticsProperties, isAnalyticsDisabledByEnv, type AnalyticsOptions } from "./analytics"
+import { AppSettings } from "./app-settings"
+import { makeFakeAppSettings } from "./app-settings.fake"
+import { runTest } from "./effect/testing"
 
 const originalLogAnalytics = process.env.KANNA_LOG_ANALYTICS
 
@@ -9,6 +14,25 @@ function restoreAnalyticsLoggingEnv() {
     return
   }
   process.env.KANNA_LOG_ANALYTICS = originalLogAnalytics
+}
+
+/**
+ * Runs `body` with an `Analytics` whose settings say `analyticsEnabled` for
+ * user `anon_123`, then waits for every queued event to be sent.
+ */
+function withAnalytics(
+  options: AnalyticsOptions & { analyticsEnabled?: boolean },
+  body: (analytics: Analytics["Service"]) => Effect.Effect<void>,
+) {
+  const settings = makeFakeAppSettings(
+    { analyticsEnabled: options.analyticsEnabled ?? true },
+    { analyticsUserId: "anon_123" },
+  )
+  return runTest(Effect.gen(function* () {
+    const analytics = yield* Analytics
+    yield* body(analytics)
+    yield* analytics.flush
+  }).pipe(Effect.provide(Analytics.layer(options).pipe(Layer.provide(Layer.succeed(AppSettings, settings))))))
 }
 
 describe("getLaunchAnalyticsProperties", () => {
@@ -62,33 +86,22 @@ describe("isAnalyticsDisabledByEnv", () => {
   })
 })
 
-describe("KannaAnalyticsReporter", () => {
+describe("Analytics", () => {
   test("posts the userId, event name, and shared properties", async () => {
     const originalLog = console.log
     const calls: Array<{ url: string; init?: RequestInit }> = []
     console.log = () => {}
 
     try {
-      const reporter = new KannaAnalyticsReporter({
+      await withAnalytics({
         endpoint: "https://kanna.sh/api/t",
         currentVersion: "0.33.9",
         environment: "dev",
-        settings: {
-          getState: () => ({
-            analyticsEnabled: true,
-            analyticsUserId: "anon_123",
-            warning: null,
-            filePathDisplay: "~/.kanna/data/settings.json",
-          }),
-        },
         fetchImpl: async (url, init) => {
           calls.push({ url: String(url), init })
           return new Response(JSON.stringify({ ok: true }), { status: 200 })
         },
-      })
-
-      reporter.track("message_sent")
-      await (reporter as any).queue
+      }, (analytics) => analytics.track("message_sent"))
 
       expect(calls).toHaveLength(1)
       expect(calls[0]?.url).toBe("https://kanna.sh/api/t")
@@ -114,33 +127,22 @@ describe("KannaAnalyticsReporter", () => {
 
   test("posts app_launch with launch flags as properties", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = []
-    const reporter = new KannaAnalyticsReporter({
+    await withAnalytics({
       endpoint: "https://kanna.sh/api/t",
       currentVersion: "0.33.9",
       environment: "prod",
-      settings: {
-        getState: () => ({
-          analyticsEnabled: true,
-          analyticsUserId: "anon_123",
-          warning: null,
-          filePathDisplay: "~/.kanna/data/settings.json",
-        }),
-      },
       fetchImpl: async (url, init) => {
         calls.push({ url: String(url), init })
         return new Response(JSON.stringify({ ok: true }), { status: 200 })
       },
-    })
-
-    reporter.trackLaunch({
+    }, (analytics) => analytics.trackLaunch({
       port: 4000,
       host: "localhost",
       openBrowser: false,
       share: false,
       password: null,
       strictPort: true,
-    })
-    await (reporter as any).queue
+    }))
 
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
       userId: "anon_123",
@@ -164,27 +166,42 @@ describe("KannaAnalyticsReporter", () => {
     })
   })
 
-  test("skips requests when analytics is disabled", async () => {
-    let called = false
-    const reporter = new KannaAnalyticsReporter({
+  test("sends events one at a time, in the order they were tracked", async () => {
+    const order: string[] = []
+    let inFlight = 0
+    let maxInFlight = 0
+    await withAnalytics({
       currentVersion: "0.33.9",
       environment: "prod",
-      settings: {
-        getState: () => ({
-          analyticsEnabled: false,
-          analyticsUserId: "anon_123",
-          warning: null,
-          filePathDisplay: "~/.kanna/data/settings.json",
-        }),
+      fetchImpl: async (_url, init) => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await Bun.sleep(5)
+        order.push((JSON.parse(String(init?.body)) as { event: { name: string } }).event.name)
+        inFlight -= 1
+        return new Response(null, { status: 200 })
       },
+    }, (analytics) => Effect.gen(function* () {
+      yield* analytics.track("first")
+      yield* analytics.track("second")
+      yield* analytics.track("third")
+    }))
+
+    expect(order).toEqual(["first", "second", "third"])
+    expect(maxInFlight).toBe(1)
+  })
+
+  test("skips requests when analytics is disabled", async () => {
+    let called = false
+    await withAnalytics({
+      currentVersion: "0.33.9",
+      environment: "prod",
+      analyticsEnabled: false,
       fetchImpl: async () => {
         called = true
         return new Response(null, { status: 200 })
       },
-    })
-
-    reporter.track("message_sent")
-    await (reporter as any).queue
+    }, (analytics) => analytics.track("message_sent"))
 
     expect(called).toBe(false)
   })
@@ -198,23 +215,12 @@ describe("KannaAnalyticsReporter", () => {
     delete process.env.KANNA_LOG_ANALYTICS
 
     try {
-      const reporter = new KannaAnalyticsReporter({
+      await withAnalytics({
         endpoint: "https://kanna.sh/api/t",
         currentVersion: "0.33.9",
         environment: "dev",
-        settings: {
-          getState: () => ({
-            analyticsEnabled: true,
-            analyticsUserId: "anon_123",
-            warning: null,
-            filePathDisplay: "~/.kanna/data/settings.json",
-          }),
-        },
         fetchImpl: async () => new Response(JSON.stringify({ error: "bad request" }), { status: 400 }),
-      })
-
-      reporter.track("message_sent")
-      await (reporter as any).queue
+      }, (analytics) => analytics.track("message_sent"))
 
       expect(warnings).toHaveLength(0)
     } finally {
@@ -232,28 +238,51 @@ describe("KannaAnalyticsReporter", () => {
     process.env.KANNA_LOG_ANALYTICS = "1"
 
     try {
-      const reporter = new KannaAnalyticsReporter({
+      await withAnalytics({
         endpoint: "https://kanna.sh/api/t",
         currentVersion: "0.33.9",
         environment: "prod",
-        settings: {
-          getState: () => ({
-            analyticsEnabled: true,
-            analyticsUserId: "anon_123",
-            warning: null,
-            filePathDisplay: "~/.kanna/data/settings.json",
-          }),
-        },
         fetchImpl: async () => new Response(JSON.stringify({ error: "bad request" }), { status: 400 }),
-      })
-
-      reporter.track("message_sent")
-      await (reporter as any).queue
+      }, (analytics) => analytics.track("message_sent"))
 
       expect(warnings).toHaveLength(1)
-      expect(warnings[0]?.[0]).toBe("[kanna/analytics] Failed to send analytics event:")
-      expect(warnings[0]?.[1]).toBe("message_sent")
-      expect(warnings[0]?.[2]).toBeInstanceOf(Error)
+      expect(warnings[0]?.[0]).toBe(LOG_PREFIX)
+      expect(warnings[0]?.[1]).toBe("Failed to send analytics event:")
+      expect(warnings[0]?.[2]).toBe("message_sent")
+      expect(warnings[0]?.[3]).toBeInstanceOf(Error)
+      expect(warnings[0]?.[3]).toMatchObject({
+        _tag: "@kanna/server/analytics/AnalyticsRequestError",
+        eventName: "message_sent",
+        status: 400,
+      })
+    } finally {
+      console.warn = originalWarn
+      restoreAnalyticsLoggingEnv()
+    }
+  })
+
+  test("warns when the request cannot be made at all", async () => {
+    const originalWarn = console.warn
+    const warnings: unknown[][] = []
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args)
+    }
+    process.env.KANNA_LOG_ANALYTICS = "1"
+
+    try {
+      await withAnalytics({
+        currentVersion: "0.33.9",
+        environment: "prod",
+        fetchImpl: async () => {
+          throw new TypeError("fetch failed")
+        },
+      }, (analytics) => analytics.track("message_sent"))
+
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]?.[3]).toMatchObject({
+        _tag: "@kanna/server/analytics/AnalyticsRequestError",
+        status: null,
+      })
     } finally {
       console.warn = originalWarn
       restoreAnalyticsLoggingEnv()
@@ -269,27 +298,17 @@ describe("KannaAnalyticsReporter", () => {
     process.env.KANNA_LOG_ANALYTICS = "1"
 
     try {
-      const reporter = new KannaAnalyticsReporter({
+      await withAnalytics({
         endpoint: "https://kanna.sh/api/t",
         currentVersion: "0.33.9",
         environment: "dev",
-        settings: {
-          getState: () => ({
-            analyticsEnabled: true,
-            analyticsUserId: "anon_123",
-            warning: null,
-            filePathDisplay: "~/.kanna/data/settings.json",
-          }),
-        },
         fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
-      })
-
-      reporter.track("message_sent")
-      await (reporter as any).queue
+      }, (analytics) => analytics.track("message_sent"))
 
       expect(logs).toHaveLength(1)
       expect(logs[0]).toEqual([
-        "[kanna/analytics] Sent analytics event:",
+        LOG_PREFIX,
+        "Sent analytics event:",
         "message_sent",
         200,
       ])
@@ -308,23 +327,12 @@ describe("KannaAnalyticsReporter", () => {
     delete process.env.KANNA_LOG_ANALYTICS
 
     try {
-      const reporter = new KannaAnalyticsReporter({
+      await withAnalytics({
         endpoint: "https://kanna.sh/api/t",
         currentVersion: "0.33.9",
         environment: "prod",
-        settings: {
-          getState: () => ({
-            analyticsEnabled: true,
-            analyticsUserId: "anon_123",
-            warning: null,
-            filePathDisplay: "~/.kanna/data/settings.json",
-          }),
-        },
         fetchImpl: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
-      })
-
-      reporter.track("message_sent")
-      await (reporter as any).queue
+      }, (analytics) => analytics.track("message_sent"))
 
       expect(logs).toHaveLength(0)
     } finally {

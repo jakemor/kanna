@@ -1,14 +1,18 @@
+import { homedir } from "node:os"
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { Effect, Result } from "effect"
 import { DEFAULT_OPENAI_SDK_MODEL, DEFAULT_OPENROUTER_SDK_MODEL, DEFAULT_PI_FAVE_MODELS } from "../shared/types"
+import { runTest } from "./effect/testing"
 import {
   normalizeLlmProviderSnapshot,
   OPENAI_BASE_URL,
   OPENROUTER_BASE_URL,
   readLlmProviderSnapshot,
   resolveLlmProviderBaseUrl,
+  validateLlmProviderCredentials,
   writeLlmProviderSnapshot,
 } from "./llm-provider"
 
@@ -41,7 +45,7 @@ describe("normalizeLlmProviderSnapshot", () => {
       apiKey: "  test-key  ",
       model: "  gpt-test  ",
       baseUrl: " https://example.com/v1 ",
-    }, TEST_FILE_PATH)).toEqual({
+    }, TEST_FILE_PATH, homedir())).toEqual({
       provider: "custom",
       apiKey: "test-key",
       model: "gpt-test",
@@ -60,7 +64,7 @@ describe("normalizeLlmProviderSnapshot", () => {
       apiKey: "test-key",
       model: "gpt-test",
       baseUrl: "",
-    }, TEST_FILE_PATH)
+    }, TEST_FILE_PATH, homedir())
 
     expect(snapshot.enabled).toBe(false)
     expect(snapshot.warning).toContain("custom provider requires a baseUrl")
@@ -70,7 +74,7 @@ describe("normalizeLlmProviderSnapshot", () => {
 describe("readLlmProviderSnapshot", () => {
   test("returns defaults when the file does not exist", async () => {
     const filePath = await createTempFilePath()
-    expect(await readLlmProviderSnapshot(filePath)).toEqual({
+    expect(await runTest(readLlmProviderSnapshot(filePath))).toEqual({
       provider: "openai",
       apiKey: "",
       model: DEFAULT_OPENAI_SDK_MODEL,
@@ -87,7 +91,7 @@ describe("readLlmProviderSnapshot", () => {
     const filePath = await createTempFilePath()
     await writeFile(filePath, "{not-json", "utf8")
 
-    const snapshot = await readLlmProviderSnapshot(filePath)
+    const snapshot = await runTest(readLlmProviderSnapshot(filePath))
     expect(snapshot.enabled).toBe(false)
     expect(snapshot.warning).toContain("invalid JSON")
   })
@@ -100,21 +104,76 @@ describe("readLlmProviderSnapshot", () => {
       baseUrl: null,
     }), "utf8")
 
-    const snapshot = await readLlmProviderSnapshot(filePath)
+    const snapshot = await runTest(readLlmProviderSnapshot(filePath))
     expect(snapshot.model).toBe(DEFAULT_OPENROUTER_SDK_MODEL)
     expect(snapshot.enabled).toBe(true)
+  })
+
+  test("returns a warning when the file is empty", async () => {
+    const filePath = await createTempFilePath()
+    await writeFile(filePath, "\n", "utf8")
+
+    const snapshot = await runTest(readLlmProviderSnapshot(filePath))
+    expect(snapshot.enabled).toBe(false)
+    expect(snapshot.warning).toBe("LLM provider file was empty. Using defaults.")
+  })
+
+  test("fails with a read error when the path is not a readable file", async () => {
+    const filePath = await createTempFilePath()
+    await mkdir(filePath)
+
+    const result = await runTest(Effect.result(readLlmProviderSnapshot(filePath)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/llm-provider/LlmProviderFileError")
+      expect(result.failure.operation).toBe("read")
+    }
+  })
+})
+
+describe("validateLlmProviderCredentials", () => {
+  test("reports an incomplete config without making a request", async () => {
+    const result = await runTest(validateLlmProviderCredentials({
+      provider: "custom",
+      apiKey: "test-key",
+      model: "gpt-test",
+      baseUrl: "",
+    }))
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatchObject({ type: "config_error" })
+  })
+
+  test("returns the provider's error when the request is rejected", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => Response.json({ error: { message: "bad key", type: "invalid_request_error" } }, { status: 401 }),
+    })
+    try {
+      const result = await runTest(validateLlmProviderCredentials({
+        provider: "custom",
+        apiKey: "test-key",
+        model: "gpt-test",
+        baseUrl: `http://localhost:${server.port}/v1`,
+      }))
+
+      expect(result.ok).toBe(false)
+      expect(result.error).toMatchObject({ status: 401 })
+    } finally {
+      server.stop(true)
+    }
   })
 })
 
 describe("writeLlmProviderSnapshot", () => {
   test("writes normalized config to disk", async () => {
     const filePath = await createTempFilePath()
-    const snapshot = await writeLlmProviderSnapshot({
+    const snapshot = await runTest(writeLlmProviderSnapshot({
       provider: "openrouter",
       apiKey: " test-key ",
       model: " openrouter/model ",
       baseUrl: "ignored",
-    }, filePath)
+    }, filePath))
 
     expect(snapshot).toEqual({
       provider: "openrouter",
@@ -138,7 +197,7 @@ describe("writeLlmProviderSnapshot", () => {
 
   test("round-trips fave models", async () => {
     const filePath = await createTempFilePath()
-    const snapshot = await writeLlmProviderSnapshot({
+    const snapshot = await runTest(writeLlmProviderSnapshot({
       provider: "openrouter",
       apiKey: "test-key",
       model: "openrouter/model",
@@ -148,7 +207,7 @@ describe("writeLlmProviderSnapshot", () => {
         { label: "", id: "openai/gpt-5.5" },
         { label: "no id", id: "" },
       ],
-    }, filePath)
+    }, filePath))
 
     // Labels fall back to a name derived from the id; entries without an id are dropped.
     expect(snapshot.faveModels).toEqual([
@@ -156,7 +215,7 @@ describe("writeLlmProviderSnapshot", () => {
       { label: "GPT 5.5", id: "openai/gpt-5.5" },
     ])
 
-    const reread = await readLlmProviderSnapshot(filePath)
+    const reread = await runTest(readLlmProviderSnapshot(filePath))
     expect(reread.faveModels).toEqual(snapshot.faveModels)
   })
 })

@@ -1,158 +1,126 @@
+import { homedir } from "node:os"
 import { describe, expect, test } from "bun:test"
+import { Effect, Result } from "effect"
+import type { LlmProviderSnapshot } from "../shared/types"
+import { CodexRequestError } from "./codex-app-server"
+import { runTest } from "./effect/testing"
 import { fallbackTitleFromMessage, generateTitleForChatDetailed } from "./generate-title"
-import { getQuickResponseWorkspace, QuickResponseAdapter } from "./quick-response"
+import { LlmProviderFileError } from "./llm-provider"
+import {
+  getQuickResponseWorkspace,
+  QuickResponse,
+  QuickResponseRequestError,
+  type QuickResponseOptions,
+  type QuickResponseProvider,
+} from "./quick-response"
 
-describe("QuickResponseAdapter", () => {
+function llmProvider(overrides: Partial<LlmProviderSnapshot> = {}): Effect.Effect<LlmProviderSnapshot> {
+  return Effect.succeed({
+    provider: "openai",
+    apiKey: "",
+    model: "",
+    baseUrl: "",
+    resolvedBaseUrl: "https://api.openai.com/v1",
+    faveModels: [],
+    enabled: false,
+    warning: null,
+    filePathDisplay: "~/.kanna/llm-provider.json",
+    ...overrides,
+  })
+}
+
+const fails = (provider: QuickResponseProvider, message: string) =>
+  Effect.fail(new QuickResponseRequestError({ provider, message, cause: new Error(message) }))
+
+const TITLE_ARGS = {
+  cwd: "/tmp/project",
+  task: "title generation",
+  prompt: "Generate a title",
+  schema: {
+    type: "object" as const,
+    properties: {
+      title: { type: "string" },
+    },
+    required: ["title"],
+    additionalProperties: false,
+  },
+  parse: (value: unknown) => {
+    const output = value && typeof value === "object" ? value as { title?: unknown } : {}
+    return typeof output.title === "string" ? output.title : null
+  },
+}
+
+/** A title through `QuickResponse` built from `options`. */
+function generateTitle(options: QuickResponseOptions) {
+  return runTest(Effect.gen(function* () {
+    const quickResponse = yield* QuickResponse
+    return yield* quickResponse.generateStructured(TITLE_ARGS)
+  }).pipe(Effect.provide(QuickResponse.layer(options))))
+}
+
+function chatTitle(messageContent: string, options: QuickResponseOptions) {
+  return runTest(generateTitleForChatDetailed(messageContent, "/tmp/project").pipe(
+    Effect.provide(QuickResponse.layer(options)),
+  ))
+}
+
+describe("QuickResponse", () => {
   test("returns the SDK structured result when configured and it validates", async () => {
-    const adapter = new QuickResponseAdapter({
-      readLlmProvider: async () => ({
-        provider: "openai",
-        apiKey: "test-key",
-        model: "gpt-5-mini",
-        baseUrl: "",
-        resolvedBaseUrl: "https://api.openai.com/v1",
-        faveModels: [],
-        enabled: true,
-        warning: null,
-        filePathDisplay: "~/.kanna/llm-provider.json",
-      }),
-      runOpenAIStructured: async () => ({ title: "SDK title" }),
-      runClaudeStructured: async () => ({ title: "Claude title" }),
-      runCodexStructured: async () => ({ title: "Codex title" }),
-    })
-
-    const result = await adapter.generateStructured({
-      cwd: "/tmp/project",
-      task: "title generation",
-      prompt: "Generate a title",
-      schema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-        },
-        required: ["title"],
-        additionalProperties: false,
-      },
-      parse: (value) => {
-        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-        return typeof output.title === "string" ? output.title : null
-      },
+    const result = await generateTitle({
+      readLlmProvider: llmProvider({ apiKey: "test-key", model: "gpt-5-mini", enabled: true }),
+      runOpenAIStructured: () => Effect.succeed({ title: "SDK title" }),
+      runClaudeStructured: () => Effect.succeed({ title: "Claude title" }),
+      runCodexStructured: () => Effect.succeed({ title: "Codex title" }),
     })
 
     expect(result).toBe("SDK title")
   })
 
   test("returns the Claude structured result when it validates", async () => {
-    const adapter = new QuickResponseAdapter({
-      readLlmProvider: async () => ({
-        provider: "openai",
-        apiKey: "",
-        model: "",
-        baseUrl: "",
-        resolvedBaseUrl: "https://api.openai.com/v1",
-        faveModels: [],
-        enabled: false,
-        warning: null,
-        filePathDisplay: "~/.kanna/llm-provider.json",
-      }),
-      runClaudeStructured: async () => ({ title: "Claude title" }),
-      runCodexStructured: async () => ({ title: "Codex title" }),
-    })
-
-    const result = await adapter.generateStructured({
-      cwd: "/tmp/project",
-      task: "title generation",
-      prompt: "Generate a title",
-      schema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-        },
-        required: ["title"],
-        additionalProperties: false,
-      },
-      parse: (value) => {
-        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-        return typeof output.title === "string" ? output.title : null
-      },
+    const result = await generateTitle({
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => Effect.succeed({ title: "Claude title" }),
+      runCodexStructured: () => Effect.succeed({ title: "Codex title" }),
     })
 
     expect(result).toBe("Claude title")
   })
 
   test("falls back to Codex when Claude fails validation", async () => {
-    const adapter = new QuickResponseAdapter({
-      readLlmProvider: async () => ({
-        provider: "openai",
-        apiKey: "",
-        model: "",
-        baseUrl: "",
-        resolvedBaseUrl: "https://api.openai.com/v1",
-        faveModels: [],
-        enabled: false,
-        warning: null,
-        filePathDisplay: "~/.kanna/llm-provider.json",
-      }),
-      runClaudeStructured: async () => ({ bad: true }),
-      runCodexStructured: async () => ({ title: "Codex title" }),
-    })
-
-    const result = await adapter.generateStructured({
-      cwd: "/tmp/project",
-      task: "title generation",
-      prompt: "Generate a title",
-      schema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-        },
-        required: ["title"],
-        additionalProperties: false,
-      },
-      parse: (value) => {
-        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-        return typeof output.title === "string" ? output.title : null
-      },
+    const result = await generateTitle({
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => Effect.succeed({ bad: true }),
+      runCodexStructured: () => Effect.succeed({ title: "Codex title" }),
     })
 
     expect(result).toBe("Codex title")
   })
 
-  test("falls back to Codex when Claude throws", async () => {
-    const adapter = new QuickResponseAdapter({
-      readLlmProvider: async () => ({
-        provider: "openai",
-        apiKey: "",
-        model: "",
-        baseUrl: "",
-        resolvedBaseUrl: "https://api.openai.com/v1",
-        faveModels: [],
-        enabled: false,
-        warning: null,
-        filePathDisplay: "~/.kanna/llm-provider.json",
-      }),
-      runClaudeStructured: async () => {
-        throw new Error("Not authenticated")
-      },
-      runCodexStructured: async () => ({ title: "Codex title" }),
-    })
-
-    const result = await adapter.generateStructured({
-      cwd: "/tmp/project",
-      task: "title generation",
-      prompt: "Generate a title",
-      schema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
+  test("falls back when the caller's parser throws", async () => {
+    const result = await runTest(Effect.gen(function* () {
+      const quickResponse = yield* QuickResponse
+      return yield* quickResponse.generateStructuredWithDiagnostics({
+        ...TITLE_ARGS,
+        parse: (value) => {
+          if (value && typeof value === "object" && "bad" in value) throw new Error("invalid title")
+          return TITLE_ARGS.parse(value)
         },
-        required: ["title"],
-        additionalProperties: false,
-      },
-      parse: (value) => {
-        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-        return typeof output.title === "string" ? output.title : null
-      },
+      })
+    }).pipe(Effect.provide(QuickResponse.layer({
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => Effect.succeed({ bad: true }),
+      runCodexStructured: () => Effect.succeed({ title: "Codex title" }),
+    }))))
+
+    expect(result.value).toBe("Codex title")
+    expect(result.failures).toEqual([{ provider: "claude", reason: "claude returned invalid structured output for title generation" }])
+  })
+
+  test("falls back to Codex when Claude throws", async () => {
+    const result = await generateTitle({
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => fails("claude", "Not authenticated"),
+      runCodexStructured: () => Effect.succeed({ title: "Codex title" }),
     })
 
     expect(result).toBe("Codex title")
@@ -164,43 +132,15 @@ describe("QuickResponseAdapter", () => {
 
     try {
       let claudeCwd = ""
-      const adapter = new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna-dev/llm-provider.json",
-        }),
-        runClaudeStructured: async (args) => {
+      await generateTitle({
+        readLlmProvider: llmProvider({ filePathDisplay: "~/.kanna-dev/llm-provider.json" }),
+        runClaudeStructured: (args) => Effect.sync(() => {
           claudeCwd = args.cwd
           return { title: "Claude title" }
-        },
+        }),
       })
 
-      await adapter.generateStructured({
-        cwd: "/tmp/project",
-        task: "title generation",
-        prompt: "Generate a title",
-        schema: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-          },
-          required: ["title"],
-          additionalProperties: false,
-        },
-        parse: (value) => {
-          const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-          return typeof output.title === "string" ? output.title : null
-        },
-      })
-
-      expect(claudeCwd).toBe(getQuickResponseWorkspace(process.env))
+      expect(claudeCwd).toBe(getQuickResponseWorkspace(process.env, homedir()))
       expect(claudeCwd.endsWith("/.kanna-dev")).toBe(true)
     } finally {
       if (previousProfile === undefined) {
@@ -213,43 +153,15 @@ describe("QuickResponseAdapter", () => {
 
   test("uses gpt-5.4-mini for Codex title generation fallback", async () => {
     const requests: Array<{ cwd: string; prompt: string; model?: string }> = []
-    const adapter = new QuickResponseAdapter({
-      readLlmProvider: async () => ({
-        provider: "openai",
-        apiKey: "",
-        model: "",
-        baseUrl: "",
-        resolvedBaseUrl: "https://api.openai.com/v1",
-        faveModels: [],
-        enabled: false,
-        warning: null,
-        filePathDisplay: "~/.kanna/llm-provider.json",
-      }),
+    const result = await generateTitle({
+      readLlmProvider: llmProvider(),
       codexManager: {
-        async generateStructured(args: { cwd: string; prompt: string; model?: string }) {
+        generateStructured: (args) => Effect.sync(() => {
           requests.push(args)
           return "{\"title\":\"Codex title\"}"
-        },
-      } as never,
-      runClaudeStructured: async () => null,
-    })
-
-    const result = await adapter.generateStructured({
-      cwd: "/tmp/project",
-      task: "title generation",
-      prompt: "Generate a title",
-      schema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-        },
-        required: ["title"],
-        additionalProperties: false,
+        }),
       },
-      parse: (value) => {
-        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-        return typeof output.title === "string" ? output.title : null
-      },
+      runClaudeStructured: () => Effect.succeed(null),
     })
 
     expect(result).toBe("Codex title")
@@ -257,148 +169,117 @@ describe("QuickResponseAdapter", () => {
     expect(requests[0]?.model).toBe("gpt-5.4-mini")
   })
 
-  test("falls through to Claude when the SDK is not configured", async () => {
-    let openAICalls = 0
-    const adapter = new QuickResponseAdapter({
-      readLlmProvider: async () => ({
-        provider: "openai",
-        apiKey: "",
-        model: "",
-        baseUrl: "",
-        resolvedBaseUrl: "https://api.openai.com/v1",
-        faveModels: [],
-        enabled: false,
-        warning: null,
-        filePathDisplay: "~/.kanna/llm-provider.json",
-      }),
-      runOpenAIStructured: async () => {
-        openAICalls += 1
-        return { title: "SDK title" }
+  test("reads Codex's answer out of a fenced JSON block", async () => {
+    const result = await generateTitle({
+      readLlmProvider: llmProvider(),
+      codexManager: {
+        generateStructured: () => Effect.succeed("Here you go:\n```json\n{\"title\":\"Fenced title\"}\n```"),
       },
-      runClaudeStructured: async () => ({ title: "Claude title" }),
+      runClaudeStructured: () => Effect.succeed(null),
     })
 
-    const result = await adapter.generateStructured({
-      cwd: "/tmp/project",
-      task: "title generation",
-      prompt: "Generate a title",
-      schema: {
-        type: "object",
-        properties: {
-          title: { type: "string" },
-        },
-        required: ["title"],
-        additionalProperties: false,
+    expect(result).toBe("Fenced title")
+  })
+
+  test("a Codex app-server that throws is a failure, not a crash", async () => {
+    const result = await runTest(Effect.gen(function* () {
+      const quickResponse = yield* QuickResponse
+      return yield* quickResponse.generateStructuredWithDiagnostics(TITLE_ARGS)
+    }).pipe(Effect.provide(QuickResponse.layer({
+      readLlmProvider: llmProvider(),
+      codexManager: {
+        generateStructured: () =>
+          Effect.fail(new CodexRequestError({ chatId: "quick-1", method: "turn/start", message: "app-server exited" })),
       },
-      parse: (value) => {
-        const output = value && typeof value === "object" ? value as { title?: unknown } : {}
-        return typeof output.title === "string" ? output.title : null
-      },
+      runClaudeStructured: () => Effect.succeed(null),
+    }))))
+
+    expect(result).toEqual({
+      value: null,
+      failures: [
+        { provider: "claude", reason: "claude returned no result for title generation" },
+        { provider: "codex", reason: "codex failed title generation: app-server exited" },
+      ],
+    })
+  })
+
+  test("falls through to Claude when the SDK is not configured", async () => {
+    let openAICalls = 0
+    const result = await generateTitle({
+      readLlmProvider: llmProvider(),
+      runOpenAIStructured: () => Effect.sync(() => {
+        openAICalls += 1
+        return { title: "SDK title" }
+      }),
+      runClaudeStructured: () => Effect.succeed({ title: "Claude title" }),
     })
 
     expect(result).toBe("Claude title")
     expect(openAICalls).toBe(0)
   })
+
+  test("a later provider never runs once one has answered", async () => {
+    let codexCalls = 0
+    await generateTitle({
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => Effect.succeed({ title: "Claude title" }),
+      runCodexStructured: () => Effect.sync(() => {
+        codexCalls += 1
+        return { title: "Codex title" }
+      }),
+    })
+
+    expect(codexCalls).toBe(0)
+  })
+
+  test("an unreadable provider file fails the request", async () => {
+    const result = await runTest(Effect.result(Effect.gen(function* () {
+      const quickResponse = yield* QuickResponse
+      return yield* quickResponse.generateStructured(TITLE_ARGS)
+    }).pipe(Effect.provide(QuickResponse.layer({
+      readLlmProvider: Effect.fail(new LlmProviderFileError({ operation: "read", filePath: "/tmp/llm.json", cause: null })),
+    })))))
+
+    expect(Result.isFailure(result) && result.failure._tag).toBe("@kanna/server/llm-provider/LlmProviderFileError")
+  })
 })
 
 describe("generateTitleForChat", () => {
   test("sanitizes generated titles", async () => {
-    const { title } = await generateTitleForChatDetailed(
-      "hello",
-      "/tmp/project",
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runClaudeStructured: async () => ({ title: "   Example\nTitle   " }),
-      })
-    )
+    const { title } = await chatTitle("hello", {
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => Effect.succeed({ title: "   Example\nTitle   " }),
+    })
 
     expect(title).toBe("Example Title")
   })
 
   test("rejects invalid generated titles", async () => {
-    const { title } = await generateTitleForChatDetailed(
-      "hello",
-      "/tmp/project",
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runClaudeStructured: async () => ({ title: "   " }),
-        runCodexStructured: async () => ({ title: "New Chat" }),
-      })
-    )
+    const { title } = await chatTitle("hello", {
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => Effect.succeed({ title: "   " }),
+      runCodexStructured: () => Effect.succeed({ title: "New Chat" }),
+    })
 
     expect(title).toBe("hello")
   })
 
   test("falls back to the first 35 characters of the message with ellipsis", async () => {
-    const { title } = await generateTitleForChatDetailed(
-      "This message is definitely longer than thirty five characters",
-      "/tmp/project",
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runClaudeStructured: async () => {
-          throw new Error("Not authenticated")
-        },
-        runCodexStructured: async () => null,
-      })
-    )
+    const { title } = await chatTitle("This message is definitely longer than thirty five characters", {
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => fails("claude", "Not authenticated"),
+      runCodexStructured: () => Effect.succeed(null),
+    })
 
     expect(title).toBe("This message is definitely longer t...")
   })
 
   test("returns fallback metadata when providers fail", async () => {
-    const result = await generateTitleForChatDetailed(
-      "hello there",
-      "/tmp/project",
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runClaudeStructured: async () => {
-          throw new Error("Not authenticated")
-        },
-        runCodexStructured: async () => {
-          throw new Error("Codex unavailable")
-        },
-      })
-    )
+    const result = await chatTitle("hello there", {
+      readLlmProvider: llmProvider(),
+      runClaudeStructured: () => fails("claude", "Not authenticated"),
+      runCodexStructured: () => fails("codex", "Codex unavailable"),
+    })
 
     expect(result).toEqual({
       title: "hello there",
@@ -408,32 +289,12 @@ describe("generateTitleForChat", () => {
   })
 
   test("includes SDK failure details before Claude and Codex", async () => {
-    const result = await generateTitleForChatDetailed(
-      "hello there",
-      "/tmp/project",
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "test-key",
-          model: "gpt-5-mini",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: true,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runOpenAIStructured: async () => {
-          throw new Error("SDK unavailable")
-        },
-        runClaudeStructured: async () => {
-          throw new Error("Not authenticated")
-        },
-        runCodexStructured: async () => {
-          throw new Error("Codex unavailable")
-        },
-      })
-    )
+    const result = await chatTitle("hello there", {
+      readLlmProvider: llmProvider({ apiKey: "test-key", model: "gpt-5-mini", enabled: true }),
+      runOpenAIStructured: () => fails("openai", "SDK unavailable"),
+      runClaudeStructured: () => fails("claude", "Not authenticated"),
+      runCodexStructured: () => fails("codex", "Codex unavailable"),
+    })
 
     expect(result.failureMessage).toBe(
       "openai failed conversation title generation: SDK unavailable; claude failed conversation title generation: Not authenticated; codex failed conversation title generation: Codex unavailable"

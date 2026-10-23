@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto"
-import { existsSync } from "node:fs"
-import { homedir } from "node:os"
 import path from "node:path"
+import { Effect, FileSystem, Match } from "effect"
 
 import type { AgentProvider } from "../shared/types"
 import { grokSessionDir } from "./grok-cli"
+import { Machine } from "./platform/machine"
 
 /**
  * Whether a provider's native session artifact for a chat still exists on disk.
@@ -21,7 +21,7 @@ export type SessionArtifactStatus = "present" | "missing" | "unknown"
 export interface SessionArtifactQuery {
   cwd: string
   sessionToken: string | null | undefined
-  /** Injectable home directory; defaults to the real one. Tests pass a temp dir. */
+  /** Injectable home directory; defaults to the machine's. Tests pass a temp dir. */
   home?: string
 }
 
@@ -54,35 +54,41 @@ function cursorChatsDir(home: string, cwd: string) {
  * `unknown` rather than `missing` — this guards against restore-loops if a
  * future CLI version relocates its sessions.
  */
-function statusFor(parentDir: string, artifactPath: string): SessionArtifactStatus {
-  if (existsSync(artifactPath)) return "present"
-  if (!existsSync(parentDir)) return "unknown"
+const statusFor = Effect.fn("SessionArtifacts.statusFor")(function* (parentDir: string, artifactPath: string) {
+  const fs = yield* FileSystem.FileSystem
+  // A path that cannot be checked counts as absent, as `existsSync` had it.
+  const exists = (filePath: string) =>
+    fs.exists(filePath).pipe(Effect.catchTag("PlatformError", () => Effect.succeed(false)))
+  if (yield* exists(artifactPath)) return "present"
+  if (!(yield* exists(parentDir))) return "unknown"
   return "missing"
-}
+})
 
-export function checkSessionArtifact(
+export const checkSessionArtifact = Effect.fn("SessionArtifacts.check")(function* (
   provider: AgentProvider,
-  query: SessionArtifactQuery
-): SessionArtifactStatus {
-  if (!isSafeToken(query.sessionToken)) return "unknown"
-  const home = query.home ?? homedir()
+  query: SessionArtifactQuery,
+) {
+  yield* Effect.annotateCurrentSpan("provider", provider)
+  const sessionToken = query.sessionToken
+  if (!isSafeToken(sessionToken)) return "unknown" satisfies SessionArtifactStatus
+  const home = query.home ?? (yield* Machine).homeDirectory
 
-  switch (provider) {
-    case "claude": {
+  return yield* Match.value(provider).pipe(
+    Match.when("claude", () => {
       const parent = claudeProjectDir(home, query.cwd)
-      return statusFor(parent, path.join(parent, `${query.sessionToken}.jsonl`))
-    }
-    case "cursor": {
+      return statusFor(parent, path.join(parent, `${sessionToken}.jsonl`))
+    }),
+    Match.when("cursor", () => {
       const parent = cursorChatsDir(home, query.cwd)
-      return statusFor(parent, path.join(parent, query.sessionToken))
-    }
-    case "grok": {
+      return statusFor(parent, path.join(parent, sessionToken))
+    }),
+    Match.when("grok", () => {
       const parent = grokSessionDir(home, query.cwd)
-      return statusFor(parent, path.join(parent, query.sessionToken))
-    }
+      return statusFor(parent, path.join(parent, sessionToken))
+    }),
     // codex surfaces its own resume failure (isRecoverableResumeError); pi is
     // out of scope. Neither is checked on disk.
-    default:
-      return "unknown"
-  }
-}
+    Match.whenOr("codex", "pi", () => Effect.succeed<SessionArtifactStatus>("unknown")),
+    Match.exhaustive,
+  )
+})

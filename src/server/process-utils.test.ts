@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { mergePathLists, parseShellPathOutput, resolveCommandPath, spawnDetached } from "./process-utils"
+import { Effect, Option, Result } from "effect"
+import { runTest } from "./effect/testing"
+import {
+  commandExists,
+  hasCommand,
+  mergePathLists,
+  parseShellPathOutput,
+  resolveCommandPath,
+  runCommand,
+  spawnDetached,
+} from "./process-utils"
 
 let fakeHome: string | null = null
 
@@ -12,7 +22,7 @@ afterEach(() => {
 })
 
 describe("resolveCommandPath", () => {
-  test("finds binaries the login-shell PATH misses in well-known user bin dirs", () => {
+  test("finds binaries the login-shell PATH misses in well-known user bin dirs", async () => {
     // e.g. the native Claude Code installer's ~/.local/bin, whose PATH line
     // goes to the interactive shell rc that `sh -lc` never reads on macOS.
     fakeHome = mkdtempSync(path.join(tmpdir(), "kanna-home-"))
@@ -22,13 +32,13 @@ describe("resolveCommandPath", () => {
     writeFileSync(binary, "#!/bin/sh\nexit 0\n")
     chmodSync(binary, 0o755)
 
-    expect(resolveCommandPath("kanna-fake-cli", fakeHome)).toBe(binary)
-    expect(resolveCommandPath("kanna-missing-cli", fakeHome)).toBeNull()
+    expect(await runTest(resolveCommandPath("kanna-fake-cli", fakeHome))).toBe(binary)
+    expect(await runTest(resolveCommandPath("kanna-missing-cli", fakeHome))).toBeNull()
   })
 
-  test("login-shell resolution still wins when it succeeds", () => {
+  test("login-shell resolution still wins when it succeeds", async () => {
     fakeHome = mkdtempSync(path.join(tmpdir(), "kanna-home-"))
-    expect(resolveCommandPath("sh", fakeHome)).toMatch(/\/sh$/)
+    expect(await runTest(resolveCommandPath("sh", fakeHome))).toMatch(/\/sh$/)
   })
 })
 
@@ -57,11 +67,47 @@ describe("parseShellPathOutput", () => {
 })
 
 describe("spawnDetached", () => {
-  test("rejects when the command does not exist", async () => {
-    await expect(spawnDetached("definitely-not-a-real-command-kanna", [])).rejects.toThrow("Command not found")
+  test("fails when the command does not exist", async () => {
+    const result = await runTest(Effect.result(spawnDetached("definitely-not-a-real-command-kanna", [])))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/process-utils/CommandSpawnError")
+      expect(result.failure.message).toBe("Command not found: definitely-not-a-real-command-kanna")
+    }
   })
 
-  test("resolves when the process starts successfully", async () => {
-    await expect(spawnDetached("sh", ["-c", "exit 0"])).resolves.toBeUndefined()
+  test("succeeds when the process starts successfully", async () => {
+    expect(await runTest(spawnDetached("sh", ["-c", "exit 0"]))).toBeUndefined()
+  })
+})
+
+describe("runCommand", () => {
+  test("collects the exit code and the streams asked for", async () => {
+    const output = await runTest(runCommand(["sh", "-c", "echo out; echo err >&2; exit 3"], { stdout: true, stderr: true }))
+    expect(output).toEqual({ exitCode: 3, stdout: "out\n", stderr: "err\n" })
+  })
+
+  test("fails with CommandSpawnError when the command does not exist", async () => {
+    const result = await runTest(Effect.result(runCommand(["definitely-not-a-real-command-kanna"])))
+    expect(Result.isFailure(result) && result.failure._tag).toBe("@kanna/server/process-utils/CommandSpawnError")
+  })
+
+  test("kills the process when interrupted", async () => {
+    const marker = path.join(tmpdir(), `kanna-run-command-${process.pid}-${Date.now()}`)
+    const timedOut = await runTest(
+      runCommand(["sh", "-c", `sleep 1; touch ${marker}`]).pipe(Effect.timeoutOption("50 millis")),
+    )
+    expect(Option.isNone(timedOut)).toBe(true)
+    await Bun.sleep(1_300)
+    expect(existsSync(marker)).toBe(false)
+  })
+})
+
+describe("command probes", () => {
+  test("find what is installed and miss what is not", async () => {
+    expect(await runTest(commandExists("sh"))).toBe(true)
+    expect(await runTest(commandExists("definitely-not-a-real-command-kanna"))).toBe(false)
+    expect(await runTest(hasCommand("sh"))).toBe(true)
+    expect(await runTest(hasCommand("definitely-not-a-real-command-kanna"))).toBe(false)
   })
 })

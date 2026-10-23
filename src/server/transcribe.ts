@@ -1,3 +1,4 @@
+import { Effect, Option, Schema } from "effect"
 import type { LlmProviderSnapshot } from "../shared/types"
 
 // Speech to text for the composer's voice input. The clients POST the raw
@@ -13,21 +14,30 @@ export const TRANSCRIPTION_MODEL = "openai/gpt-transcribe"
 // memory; a minute of 16 kHz AAC is well under 1 MB, so this is generous.
 export const MAX_TRANSCRIBE_BYTES = 25_000_000
 
-export class TranscriptionError extends Error {
-  constructor(
-    message: string,
-    readonly code:
-      | "method_not_allowed"
-      | "missing_openrouter_key"
-      | "empty_audio"
-      | "request_too_large"
-      | "transcription_failed",
-    readonly status: number,
-  ) {
-    super(message)
-    this.name = "TranscriptionError"
-  }
-}
+/** A failure the client is told about, as `{ error: { code, message } }` with `status`. */
+export class TranscriptionError extends Schema.TaggedError<TranscriptionError>()(
+  "@kanna/server/transcribe/TranscriptionError",
+  {
+    message: Schema.String,
+    code: Schema.Literals([
+      "method_not_allowed",
+      "missing_openrouter_key",
+      "empty_audio",
+      "request_too_large",
+      "transcription_failed",
+    ]),
+    status: Schema.Number,
+  },
+) {}
+
+/** The request to OpenRouter, or reading the upload, failed outright. Becomes a 500, as before. */
+export class TranscriptionRequestError extends Schema.TaggedError<TranscriptionRequestError>()(
+  "@kanna/server/transcribe/TranscriptionRequestError",
+  {
+    operation: Schema.Literals(["read upload", "fetch", "read response"]),
+    cause: Schema.Defect(),
+  },
+) {}
 
 /** The `format` OpenRouter expects for a recorded Content-Type. */
 export function audioFormat(contentType: string): string {
@@ -55,84 +65,109 @@ export function audioFormat(contentType: string): string {
 
 type Fetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
-export async function transcribeAudioBytes(
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
+/** `value[key]` when `value` is an object, as JSON property access reads it. */
+function field(value: unknown, key: string): unknown {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined
+}
+
+export const transcribeAudioBytes = Effect.fn("Transcribe.transcribeAudioBytes")(function* (
   audio: ArrayBuffer | Uint8Array,
   contentType: string,
   registry: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "resolvedBaseUrl">,
   fetchImpl: Fetch = fetch,
-): Promise<string> {
+) {
   if (registry.provider !== "openrouter" || !registry.apiKey.trim()) {
-    throw new TranscriptionError(
-      "Voice input needs an OpenRouter API key. Set one under Settings › Providers › Model Registry.",
-      "missing_openrouter_key",
-      400,
-    )
+    return yield* new TranscriptionError({
+      message: "Voice input needs an OpenRouter API key. Set one under Settings › Providers › Model Registry.",
+      code: "missing_openrouter_key",
+      status: 400,
+    })
   }
   const bytes = audio instanceof Uint8Array ? audio : new Uint8Array(audio)
   if (bytes.byteLength === 0) {
-    throw new TranscriptionError("The recording was empty.", "empty_audio", 400)
+    return yield* new TranscriptionError({ message: "The recording was empty.", code: "empty_audio", status: 400 })
   }
   if (bytes.byteLength > MAX_TRANSCRIBE_BYTES) {
-    throw new TranscriptionError("The recording is too large to transcribe.", "request_too_large", 413)
+    return yield* new TranscriptionError({ message: "The recording is too large to transcribe.", code: "request_too_large", status: 413 })
   }
 
   const baseUrl = registry.resolvedBaseUrl.replace(/\/+$/, "")
-  const response = await fetchImpl(`${baseUrl}/audio/transcriptions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${registry.apiKey}`,
-      "Content-Type": "application/json",
-      "X-Title": "Kanna",
-    },
-    body: JSON.stringify({
-      model: TRANSCRIPTION_MODEL,
-      input_audio: {
-        data: Buffer.from(bytes).toString("base64"),
-        format: audioFormat(contentType),
+  const response = yield* Effect.tryPromise({
+    try: (signal) => fetchImpl(`${baseUrl}/audio/transcriptions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${registry.apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "Kanna",
       },
+      body: JSON.stringify({
+        model: TRANSCRIPTION_MODEL,
+        input_audio: {
+          data: Buffer.from(bytes).toString("base64"),
+          format: audioFormat(contentType),
+        },
+      }),
+      signal,
     }),
+    catch: (cause) => new TranscriptionRequestError({ operation: "fetch", cause }),
   })
 
-  const body = await response.text()
+  const body = yield* Effect.tryPromise({
+    try: () => response.text(),
+    catch: (cause) => new TranscriptionRequestError({ operation: "read response", cause }),
+  })
   if (!response.ok) {
-    throw new TranscriptionError(
-      `Transcription failed (${response.status}): ${upstreamMessage(body) || response.statusText}`,
-      "transcription_failed",
+    return yield* new TranscriptionError({
+      message: `Transcription failed (${response.status}): ${upstreamMessage(body) || response.statusText}`,
+      code: "transcription_failed",
       // A bad key stays a 401 instead of turning into a 500.
-      response.status >= 400 && response.status <= 599 ? response.status : 502,
-    )
+      status: response.status >= 400 && response.status <= 599 ? response.status : 502,
+    })
   }
 
-  let payload: { text?: unknown; error?: { message?: string } }
-  try {
-    payload = JSON.parse(body)
-  } catch {
-    throw new TranscriptionError("Transcription returned invalid JSON.", "transcription_failed", 502)
+  // `{ text }`, or a 200 with `{ error }` when the provider declines.
+  const payload = decodeJson(body)
+  if (Option.isNone(payload)) {
+    return yield* new TranscriptionError({ message: "Transcription returned invalid JSON.", code: "transcription_failed", status: 502 })
   }
-  // A 200 with an `error` and no text is how the provider declines.
-  if (payload.error) {
-    throw new TranscriptionError(`Transcription failed: ${payload.error.message || "unknown error"}`, "transcription_failed", 502)
+  const error = field(payload.value, "error")
+  const text = field(payload.value, "text")
+  if (error) {
+    return yield* new TranscriptionError({
+      message: `Transcription failed: ${field(error, "message") || "unknown error"}`,
+      code: "transcription_failed",
+      status: 502,
+    })
   }
-  return typeof payload.text === "string" ? payload.text : ""
-}
+  return typeof text === "string" ? text : ""
+})
 
+/** The provider's own words from an error body, else the start of the body. */
 function upstreamMessage(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } | string }
-    if (typeof parsed.error === "string") return parsed.error
-    return parsed.error?.message ?? ""
-  } catch {
-    return body.slice(0, 200)
-  }
+  return Option.match(decodeJson(body), {
+    onNone: () => body.slice(0, 200),
+    onSome: (parsed) => {
+      const error = field(parsed, "error")
+      if (typeof error === "string") return error
+      const message = field(error, "message")
+      return typeof message === "string" ? message : ""
+    },
+  })
 }
 
-/** POST /api/transcribe. Returns null for any other path so the router falls through. */
-export async function handleTranscribe(
+/**
+ * POST /api/transcribe. Succeeds with null for any other path so the router
+ * falls through. `readRegistry` reads the Model Registry; its failures, and
+ * a failed request to OpenRouter, are left to the caller (a 500).
+ */
+export const handleTranscribe = Effect.fn("Transcribe.handleTranscribe")(function* <E>(
   req: Request,
   url: URL,
-  readRegistry: () => Promise<LlmProviderSnapshot>,
+  readRegistry: Effect.Effect<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "resolvedBaseUrl">, E>,
   fetchImpl: Fetch = fetch,
-): Promise<Response | null> {
+) {
   if (url.pathname !== "/api/transcribe") {
     return null
   }
@@ -145,21 +180,17 @@ export async function handleTranscribe(
   if (contentLength > MAX_TRANSCRIBE_BYTES) {
     return errorEnvelope("request_too_large", "The recording is too large to transcribe.", 413)
   }
-  try {
-    const text = await transcribeAudioBytes(
-      await req.arrayBuffer(),
-      req.headers.get("content-type") ?? "audio/mp4",
-      await readRegistry(),
-      fetchImpl,
-    )
-    return Response.json({ text }, { headers: { "Cache-Control": "no-store" } })
-  } catch (error) {
-    if (error instanceof TranscriptionError) {
-      return errorEnvelope(error.code, error.message, error.status)
-    }
-    throw error
-  }
-}
+  const audio = yield* Effect.tryPromise({
+    try: () => req.arrayBuffer(),
+    catch: (cause) => new TranscriptionRequestError({ operation: "read upload", cause }),
+  })
+  const registry = yield* readRegistry
+  return yield* transcribeAudioBytes(audio, req.headers.get("content-type") ?? "audio/mp4", registry, fetchImpl).pipe(
+    Effect.map((text) => Response.json({ text }, { headers: { "Cache-Control": "no-store" } })),
+    Effect.catchTag("@kanna/server/transcribe/TranscriptionError", (error) =>
+      Effect.succeed(errorEnvelope(error.code, error.message, error.status))),
+  )
+})
 
 function errorEnvelope(code: string, message: string, status: number) {
   return Response.json({ error: { code, message } }, { status })

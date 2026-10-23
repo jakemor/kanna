@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { runTest } from "./effect/testing"
 import {
   appendSystemMessageBlock,
   buildSkillSystemMessage,
@@ -127,7 +128,7 @@ describe("filesystem scanners", () => {
     return path.join(dir, "SKILL.md")
   }
 
-  test("replaces codex chronicle's block-scalar '|' description, and only that", () => {
+  test("replaces codex chronicle's block-scalar '|' description, and only that", async () => {
     const root = path.join(base, "codex-skills")
     // YAML block scalar: our single-line frontmatter reader captures the "|".
     const blockScalar = "---\nname: chronicle\ndescription: |\n  Multi-line text the naive parser misses.\n---\n"
@@ -136,7 +137,7 @@ describe("filesystem scanners", () => {
     mkdirSync(path.join(root, "other-skill"), { recursive: true })
     writeFileSync(path.join(root, "other-skill", "SKILL.md"), "---\nname: other-skill\ndescription: |\n  Also block scalar.\n---\n")
 
-    const byName = new Map(scanSkillsRoot(root).map((skill) => [skill.name, skill]))
+    const byName = new Map((await runTest(scanSkillsRoot(root))).map((skill) => [skill.name, skill]))
     expect(byName.get("chronicle")?.description).toContain("Chronicle is Codex’s local screen-context feature")
     // Only chronicle gets the hardcoded subtitle; other skills keep the raw artifact.
     expect(byName.get("other-skill")?.description).toBe("|")
@@ -144,22 +145,22 @@ describe("filesystem scanners", () => {
     expect(normalizeSkillDescription("chronicle", "Real description")).toBe("Real description")
   })
 
-  test("scanSkillsRoot reads SKILL.md dirs and skips non-skills", () => {
+  test("scanSkillsRoot reads SKILL.md dirs and skips non-skills", async () => {
     const root = path.join(base, "skills")
     const skillPath = writeSkill(root, "alpha")
     mkdirSync(path.join(root, "not-a-skill"), { recursive: true })
-    const skills = scanSkillsRoot(root)
+    const skills = await runTest(scanSkillsRoot(root))
     expect(skills).toEqual([
       { name: "alpha", description: "alpha description", source: "skill", path: skillPath },
     ])
   })
 
-  test("scanCommandsRoot reads *.md files with frontmatter metadata", () => {
+  test("scanCommandsRoot reads *.md files with frontmatter metadata", async () => {
     const root = path.join(base, "commands")
     mkdirSync(root, { recursive: true })
     writeFileSync(path.join(root, "deploy.md"), "---\ndescription: Ship it\nargument-hint: <env>\n---\nDeploy $1\n")
     writeFileSync(path.join(root, "notes.txt"), "not a command")
-    const commands = scanCommandsRoot(root)
+    const commands = await runTest(scanCommandsRoot(root))
     expect(commands).toEqual([
       {
         name: "deploy",
@@ -180,12 +181,12 @@ describe("filesystem scanners", () => {
     expect(deduped.map((skill) => skill.description)).toEqual(["project", ""])
   })
 
-  test("collectAncestorDirsToRepoRoot walks cwd up to the git root only", () => {
+  test("collectAncestorDirsToRepoRoot walks cwd up to the git root only", async () => {
     const repo = path.join(base, "repo")
     mkdirSync(path.join(repo, ".git"), { recursive: true })
     const nested = path.join(repo, "packages", "app")
     mkdirSync(nested, { recursive: true })
-    expect(collectAncestorDirsToRepoRoot(nested)).toEqual([
+    expect(await runTest(collectAncestorDirsToRepoRoot(nested))).toEqual([
       nested,
       path.join(repo, "packages"),
       repo,
@@ -193,21 +194,46 @@ describe("filesystem scanners", () => {
     // Outside a repo: just the cwd, never the whole filesystem.
     const loose = path.join(base, "loose")
     mkdirSync(loose, { recursive: true })
-    expect(collectAncestorDirsToRepoRoot(loose)).toEqual([loose])
+    expect(await runTest(collectAncestorDirsToRepoRoot(loose))).toEqual([loose])
   })
 
-  test("findNestedSkillRoots finds .cursor/.agents skill dirs and skips node_modules", () => {
+  test("findNestedSkillRoots finds .cursor/.agents skill dirs and skips node_modules", async () => {
     mkdirSync(path.join(base, ".cursor", "skills"), { recursive: true })
     mkdirSync(path.join(base, "packages", "web", ".agents", "skills"), { recursive: true })
     mkdirSync(path.join(base, "node_modules", "dep", ".cursor", "skills"), { recursive: true })
-    const roots = findNestedSkillRoots(base, [".cursor", ".agents"])
+    const roots = await runTest(findNestedSkillRoots(base, [".cursor", ".agents"]))
     expect(roots.sort()).toEqual([
       path.join(base, ".cursor", "skills"),
       path.join(base, "packages", "web", ".agents", "skills"),
     ].sort())
   })
 
-  test("scanClaudeSkills merges project + user skills and commands, project first", () => {
+  test("findNestedSkillRoots does not walk into symlinked directories", async () => {
+    const outside = path.join(base, "outside")
+    mkdirSync(path.join(outside, "pkg", ".cursor", "skills"), { recursive: true })
+    const repo = path.join(base, "repo")
+    mkdirSync(repo, { recursive: true })
+    symlinkSync(outside, path.join(repo, "linked"))
+    expect(await runTest(findNestedSkillRoots(repo, [".cursor"]))).toEqual([])
+  })
+
+  test("a root that is missing, or a file, has no skills", async () => {
+    const file = path.join(base, "file.txt")
+    writeFileSync(file, "x")
+    expect(await runTest(scanSkillsRoot(path.join(base, "missing")))).toEqual([])
+    expect(await runTest(scanSkillsRoot(file))).toEqual([])
+    expect(await runTest(scanCommandsRoot(path.join(base, "missing")))).toEqual([])
+    expect(await runTest(findNestedSkillRoots(path.join(base, "missing"), [".cursor"]))).toEqual([])
+  })
+
+  test("scanCommandsRoot skips a directory named like a command", async () => {
+    const root = path.join(base, "commands")
+    mkdirSync(path.join(root, "folder.md"), { recursive: true })
+    writeFileSync(path.join(root, "real.md"), "---\ndescription: Real\n---\n")
+    expect((await runTest(scanCommandsRoot(root))).map((command) => command.name)).toEqual(["real"])
+  })
+
+  test("scanClaudeSkills merges project + user skills and commands, project first", async () => {
     const cwd = path.join(base, "project")
     const home = path.join(base, "home")
     writeSkill(path.join(cwd, ".claude", "skills"), "shared", { description: "project copy" })
@@ -215,12 +241,12 @@ describe("filesystem scanners", () => {
     mkdirSync(path.join(home, ".claude", "commands"), { recursive: true })
     writeFileSync(path.join(home, ".claude", "commands", "release.md"), "---\ndescription: Cut a release\n---\nRelease\n")
 
-    const skills = scanClaudeSkills({ cwd, home })
+    const skills = await runTest(scanClaudeSkills({ cwd, home }))
     expect(skills.find((skill) => skill.name === "shared")?.description).toBe("project copy")
     expect(skills.find((skill) => skill.name === "release")?.source).toBe("command")
   })
 
-  test("scanCodexSkills reads repo .agents/skills up to the git root plus user dirs", () => {
+  test("scanCodexSkills reads repo .agents/skills up to the git root plus user dirs", async () => {
     const home = path.join(base, "home")
     const repo = path.join(base, "repo")
     mkdirSync(path.join(repo, ".git"), { recursive: true })
@@ -229,13 +255,13 @@ describe("filesystem scanners", () => {
     writeSkill(path.join(home, ".agents", "skills"), "user-agents-skill")
     writeSkill(path.join(home, ".codex", "skills"), "legacy-codex-skill")
 
-    const names = scanCodexSkills({ cwd: nested, home }).map((skill) => skill.name)
+    const names = (await runTest(scanCodexSkills({ cwd: nested, home }))).map((skill) => skill.name)
     expect(names).toContain("repo-skill")
     expect(names).toContain("user-agents-skill")
     expect(names).toContain("legacy-codex-skill")
   })
 
-  test("listGlobalSkills attributes each root to its harnesses and merges duplicates", () => {
+  test("listGlobalSkills attributes each root to its harnesses and merges duplicates", async () => {
     const home = path.join(base, "home")
     writeSkill(path.join(home, ".agents", "skills"), "universal-skill")
     writeSkill(path.join(home, ".claude", "skills"), "claude-only")
@@ -246,7 +272,7 @@ describe("filesystem scanners", () => {
     writeSkill(path.join(home, ".agents", "skills"), "everywhere")
     writeSkill(path.join(home, ".claude", "skills"), "everywhere")
 
-    const skills = listGlobalSkills({ home })
+    const skills = await runTest(listGlobalSkills({ home }))
     const byName = new Map(skills.map((skill) => [skill.name, skill]))
 
     expect(byName.get("universal-skill")?.providers).toEqual(["codex", "cursor", "grok", "pi"])
@@ -261,7 +287,7 @@ describe("filesystem scanners", () => {
     expect(skills.map((skill) => skill.name)).toEqual([...skills.map((skill) => skill.name)].sort())
   })
 
-  test("scanGrokSkills reads project .grok/.agents and user dirs", () => {
+  test("scanGrokSkills reads project .grok/.agents and user dirs", async () => {
     const home = path.join(base, "home")
     const repo = path.join(base, "repo")
     mkdirSync(path.join(repo, ".git"), { recursive: true })
@@ -269,20 +295,20 @@ describe("filesystem scanners", () => {
     writeSkill(path.join(home, ".grok", "skills"), "user-grok-skill")
     writeSkill(path.join(home, ".agents", "skills"), "shared-agents-skill")
 
-    const names = scanGrokSkills({ cwd: repo, home }).map((skill) => skill.name)
+    const names = (await runTest(scanGrokSkills({ cwd: repo, home }))).map((skill) => skill.name)
     expect(names).toContain("project-grok-skill")
     expect(names).toContain("user-grok-skill")
     expect(names).toContain("shared-agents-skill")
   })
 
-  test("scanCursorSkills reads nested .cursor/.agents roots and user dirs", () => {
+  test("scanCursorSkills reads nested .cursor/.agents roots and user dirs", async () => {
     const home = path.join(base, "home")
     const cwd = path.join(base, "workspace")
     writeSkill(path.join(cwd, "apps", "ios", ".cursor", "skills"), "nested-cursor-skill")
     writeSkill(path.join(cwd, ".agents", "skills"), "repo-agents-skill")
     writeSkill(path.join(home, ".cursor", "skills"), "user-cursor-skill")
 
-    const skills = scanCursorSkills({ cwd, home })
+    const skills = await runTest(scanCursorSkills({ cwd, home }))
     const names = skills.map((skill) => skill.name)
     expect(names).toContain("nested-cursor-skill")
     expect(names).toContain("repo-agents-skill")

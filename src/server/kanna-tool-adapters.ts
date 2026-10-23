@@ -17,14 +17,17 @@ import { kannaToolSpecs, type KannaToolHost } from "./kanna-tools"
  * broke. Here `kannaToolSpecs()` converts the schemas with our own zod, the
  * same way the HTTP server in `kanna-mcp.ts` does. `KannaToolRuntime.execute`
  * validates the input.
+ *
+ * Both adapters stay Promise code: each sits between an SDK's Promise
+ * callback and `KannaToolHost`, and only passes the call and its signal on.
  */
 export function createClaudeKannaTools(host: KannaToolHost): McpSdkServerConfigWithInstance {
   const server = new Server({ name: "kanna", version: "1.0.0" }, { capabilities: { tools: {} } })
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ListToolsRequestSchema, () => Promise.resolve({
     // Without this, Claude Code defers the tools behind tool search when the user has many MCP tools.
     tools: kannaToolSpecs().map((spec) => ({ ...spec, _meta: { "anthropic/alwaysLoad": true } })),
   }))
-  server.setRequestHandler(CallToolRequestSchema, async (call, extra) =>
+  server.setRequestHandler(CallToolRequestSchema, (call, extra) =>
     host.execute(call.params.name, call.params.arguments ?? {}, extra.signal))
   // The SDK only calls `instance.connect(transport)`, which the low-level server has too.
   return { type: "sdk", name: "kanna", instance: server as unknown as McpSdkServerConfigWithInstance["instance"] }
@@ -54,10 +57,10 @@ export function createPiKannaTools(host: KannaToolHost): ToolDefinition[] {
     description: definition.description,
     promptSnippet: definition.description,
     parameters: piSchema(definition.inputSchema) as TSchema,
-    async execute(_callId, input, signal) {
-      const result = await host.execute(definition.name, input, signal)
+    // Pi reports a tool failure by the rejection, so an error result is thrown with its text.
+    execute: (_callId, input, signal) => host.execute(definition.name, input, signal).then((result) => {
       if (result.isError) throw new Error(result.content.map((block) => block.text).join("\n"))
       return { content: result.content, details: result.structuredContent ?? {} }
-    },
+    }),
   }))
 }

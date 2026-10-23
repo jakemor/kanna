@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { PassThrough } from "node:stream"
+import { mkdtemp, rm } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
+import path from "node:path"
+import { Deferred, Effect, Exit, Fiber, Result, Scope, Stream } from "effect"
+import { makeFakeCli, scriptedCli, type FakeCli } from "./cli-process.fake"
+import { runTest } from "./effect/testing"
 import {
-  GrokCliManager,
+  fetchGrokAccountUsage,
+  makeGrokCli,
+  moneyVal,
+  readGrokAuthToken,
   GrokStreamCoalescer,
   GrokTodoTracker,
   grokModelLabel,
@@ -16,7 +24,6 @@ import {
   parseGrokModelList,
   parseGrokVersion,
   readGrokAuthTokenFromFile,
-  type GrokChildProcess,
 } from "./grok-cli"
 import type { HarnessEvent, HarnessToolRequest } from "./harness-types"
 
@@ -55,6 +62,27 @@ describe("parseGrokLine", () => {
 
   test("thoughts are dropped", () => {
     expect(parseGrokLine(`{"type":"thought","data":"hmm"}`, "grok-4.6")).toEqual([])
+  })
+
+  test("a newer grok's unknown event types and extra or retyped fields are tolerated", () => {
+    expect(parseGrokLine(`{"type":"plan_update","entries":[]}`, "grok-4.6")).toEqual([])
+    expect(parseGrokLine(`[{"type":"text","data":"x"}]`, "grok-4.6")).toEqual([])
+    expect(firstEntry(`{"type":"text","data":"PONG","index":3,"meta":{"a":1}}`)).toMatchObject({ kind: "assistant_text", text: "PONG" })
+    expect(parseGrokLine(`{"type":"text","data":{"text":"PONG"}}`, "grok-4.6")).toEqual([])
+    // A non-string id falls back to a generated one, as before; a non-string name to the title.
+    expect(firstEntry(`{"type":"tool_call","toolCallId":7,"toolName":null,"title":"grep","rawInput":{"pattern":"x"}}`))
+      .toMatchObject({ kind: "tool_call", tool: { toolKind: "grep", toolId: expect.any(String) } })
+    const events = parseGrokLine(`{"type":"end","stopReason":5,"sessionId":"s","usage":"n/a","durationMs":12}`, "grok-4.6")
+    expect(events[0]).toEqual({ type: "session_token", sessionToken: "s" })
+    expect(transcriptEntries(events)).toEqual([expect.objectContaining({ kind: "result", isError: false })])
+  })
+
+  test("a tool result with no text keeps the whole update as its content", () => {
+    const entry = firstEntry(`{"type":"tool_call_update","toolCallId":"c-1","status":"completed","extra":"kept"}`)
+    expect(entry).toMatchObject({
+      kind: "tool_result",
+      content: { type: "tool_call_update", toolCallId: "c-1", status: "completed", extra: "kept" },
+    })
   })
 
   test("grep tool call maps onto Grep", () => {
@@ -393,36 +421,12 @@ describe("inspect skills / auth token / billing windows", () => {
   })
 })
 
-describe("GrokCliManager.startTurn", () => {
-  test("spawns grok with streaming-json, prompt-file, model, and always-approve", async () => {
-    const argvCalls: string[][] = []
-    const manager = new GrokCliManager({
-      spawnProcess: ({ argv }) => {
-        argvCalls.push(argv)
-        const stdout = new PassThrough()
-        const stderr = new PassThrough()
-        const stdin = new PassThrough()
-        const listeners: Record<string, Array<(code: number | null) => void>> = { close: [], error: [] }
-        queueMicrotask(() => {
-          stdout.write(`{"type":"text","data":"hi"}\n`)
-          stdout.write(`{"type":"end","stopReason":"end_turn","sessionId":"sess-9"}\n`)
-          stdout.end()
-          for (const listener of listeners.close) listener(0)
-        })
-        return {
-          stdin,
-          stdout,
-          stderr,
-          kill: () => true,
-          once: (event: "close" | "error", listener: (code: number | null) => void) => {
-            listeners[event].push(listener)
-            return undefined
-          },
-        } as unknown as GrokChildProcess
-      },
-    })
+const grokWith = (fake: FakeCli) => makeGrokCli({ spawnProcess: fake.spawn })
 
-    const turn = await manager.startTurn({
+describe("GrokCli.startTurn", () => {
+  test("spawns grok with streaming-json, prompt-file, model, and always-approve", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli(`{"type":"text","data":"hi"}\n{"type":"end","stopReason":"end_turn","sessionId":"sess-9"}\n`)
+    const turn = yield* (yield* grokWith(fake)).startTurn({
       cwd: "/tmp/proj",
       content: "hello",
       model: "grok-4.6",
@@ -431,10 +435,13 @@ describe("GrokCliManager.startTurn", () => {
       sessionToken: "sess-old",
       forkSession: true,
     })
-    const events: HarnessEvent[] = []
-    for await (const event of turn.stream) events.push(event)
+    const argv = fake.spawns[0]?.argv ?? []
+    const promptFile = argv[argv.indexOf("--prompt-file") + 1]!
+    expect(yield* Effect.promise(() => Bun.file(promptFile).text())).toBe("hello")
+    const events = yield* Stream.runCollect(turn.events)
 
-    expect(argvCalls[0]).toEqual(expect.arrayContaining([
+    expect(fake.spawns[0]?.cwd).toBe("/tmp/proj")
+    expect(argv).toEqual(expect.arrayContaining([
       "--output-format", "streaming-json",
       "--prompt-file", expect.any(String),
       "--cwd", "/tmp/proj",
@@ -444,35 +451,16 @@ describe("GrokCliManager.startTurn", () => {
       "--resume", "sess-old",
       "--fork-session",
     ]))
-    expect(argvCalls[0]).not.toContain("--permission-mode")
+    expect(argv).not.toContain("--permission-mode")
     expect(events.some((event) => event.type === "session_token" && event.sessionToken === "sess-9")).toBe(true)
     expect(transcriptEntries(events).some((entry) => entry.kind === "assistant_text" && entry.text === "hi")).toBe(true)
-  })
+    // The prompt file goes once the process has exited.
+    expect(yield* Effect.promise(() => Bun.file(promptFile).exists())).toBe(false)
+  })))
 
-  test("plan mode uses --permission-mode plan instead of --always-approve", async () => {
-    let argv: string[] = []
-    const manager = new GrokCliManager({
-      spawnProcess: ({ argv: next }) => {
-        argv = next
-        const stdout = new PassThrough()
-        const stderr = new PassThrough()
-        queueMicrotask(() => {
-          stdout.write(`{"type":"end","stopReason":"end_turn","sessionId":"s"}\n`)
-          stdout.end()
-        })
-        return {
-          stdin: new PassThrough(),
-          stdout,
-          stderr,
-          kill: () => true,
-          once: (event: "close" | "error", listener: (code: number | null) => void) => {
-            if (event === "close") queueMicrotask(() => listener(0))
-            return undefined
-          },
-        } as unknown as GrokChildProcess
-      },
-    })
-    const turn = await manager.startTurn({
+  test("plan mode uses --permission-mode plan instead of --always-approve", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli(`{"type":"end","stopReason":"end_turn","sessionId":"s"}\n`)
+    const turn = yield* (yield* grokWith(fake)).startTurn({
       cwd: "/tmp",
       content: "plan this",
       model: "grok-4.6",
@@ -480,10 +468,63 @@ describe("GrokCliManager.startTurn", () => {
       sessionToken: null,
       forkSession: false,
     })
-    for await (const _event of turn.stream) { /* drain */ }
-    expect(argv).toEqual(expect.arrayContaining(["--permission-mode", "plan"]))
-    expect(argv).not.toContain("--always-approve")
-  })
+    yield* Stream.runDrain(turn.events)
+    expect(fake.spawns[0]?.argv).toEqual(expect.arrayContaining(["--permission-mode", "plan"]))
+    expect(fake.spawns[0]?.argv).not.toContain("--always-approve")
+  })))
+
+  test("coalesces text deltas into one assistant_text entry", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli([
+      `{"type":"text","data":"Hel"}`,
+      `{"type":"text","data":"lo"}`,
+      `{"type":"end","stopReason":"end_turn"}`,
+    ].join("\n"))
+    const turn = yield* (yield* grokWith(fake)).startTurn({
+      cwd: "/tmp", content: "hi", model: "grok-4.6", planMode: false, sessionToken: null, forkSession: false,
+    })
+    const entries = transcriptEntries(yield* Stream.runCollect(turn.events))
+    expect(entries.map((entry) => entry.kind)).toEqual(["assistant_text", "result"])
+    expect(entries[0]).toMatchObject({ text: "Hello" })
+  })))
+
+  test("an exit without a result ends the turn with stderr as an error result", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli("", 1, "Error: not logged in\n")
+    const turn = yield* (yield* grokWith(fake)).startTurn({
+      cwd: "/tmp", content: "hi", model: "grok-4.6", planMode: false, sessionToken: null, forkSession: false,
+    })
+    const entries = transcriptEntries(yield* Stream.runCollect(turn.events))
+    expect(entries).toEqual([expect.objectContaining({ kind: "result", isError: true, result: "Error: not logged in" })])
+  })))
+
+  test("a grok that can't start ends the turn with the spawn error", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli({ spawnError: `Executable not found in $PATH: "grok"` })
+    const turn = yield* (yield* grokWith(fake)).startTurn({
+      cwd: "/tmp", content: "hi", model: "grok-4.6", planMode: false, sessionToken: null, forkSession: false,
+    })
+    const entries = transcriptEntries(yield* Stream.runCollect(turn.events))
+    expect(entries).toEqual([expect.objectContaining({ kind: "result", isError: true, result: `Executable not found in $PATH: "grok"` })])
+    yield* turn.interrupt
+  })))
+
+  test("interrupt sends SIGINT; closing the scope kills grok and removes the prompt file", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const scope = yield* Scope.make()
+    const turn = yield* (yield* grokWith(fake)).startTurn({
+      cwd: "/tmp", content: "hi", model: "grok-4.6", planMode: false, sessionToken: null, forkSession: false,
+    }).pipe(Scope.provide(scope))
+    const argv = fake.spawns[0]?.argv ?? []
+    const promptFile = argv[argv.indexOf("--prompt-file") + 1]!
+    expect(yield* Effect.promise(() => Bun.file(promptFile).exists())).toBe(true)
+
+    yield* turn.interrupt
+    expect(fake.kills).toEqual(["SIGINT"])
+    const entries = transcriptEntries(yield* Stream.runCollect(turn.events))
+    expect(entries).toEqual([expect.objectContaining({ kind: "result", isError: true, result: "grok exited with code unknown" })])
+
+    yield* Scope.close(scope, Exit.void)
+    expect(fake.released()).toBe(true)
+    expect(yield* Effect.promise(() => Bun.file(promptFile).exists())).toBe(false)
+  })))
 
   describe("plan mode approval", () => {
     // ExitPlanMode as headless grok reports it: the call, its failed result
@@ -492,52 +533,28 @@ describe("GrokCliManager.startTurn", () => {
       `{"type":"tool_call","toolCallId":"plan-1","toolName":"ExitPlanMode","rawInput":{"plan":"1. Add README"},"status":"pending"}`,
       `{"type":"tool_call_update","toolCallId":"plan-1","status":"failed","content":"no user to approve"}`,
       `{"type":"end","stopReason":"end_turn","sessionId":"sess-plan"}`,
-    ]
-
-    function fakeGrok(lines: string[]) {
-      return new GrokCliManager({
-        spawnProcess: () => {
-          const stdout = new PassThrough()
-          const closeListeners: Array<(code: number | null) => void> = []
-          queueMicrotask(() => {
-            for (const line of lines) stdout.write(`${line}\n`)
-            stdout.end()
-            // Close after readline has delivered every line, as the real process does.
-            setTimeout(() => { for (const listener of closeListeners) listener(0) }, 10)
-          })
-          return {
-            stdin: new PassThrough(),
-            stdout,
-            stderr: new PassThrough(),
-            kill: () => true,
-            once: (event: "close" | "error", listener: (code: number | null) => void) => {
-              if (event === "close") closeListeners.push(listener)
-              return undefined
-            },
-          } as unknown as GrokChildProcess
-        },
-      })
-    }
+    ].map((line) => `${line}\n`).join("")
 
     const startArgs = { cwd: "/tmp", content: "plan this", model: "grok-4.6", sessionToken: null, forkSession: false }
 
-    test("parks on the plan: no CLI result for it and no end result until the user answers", async () => {
-      let answer: (value: unknown) => void = () => {}
-      const requested = Promise.withResolvers<HarnessToolRequest>()
-      const turn = await fakeGrok(PLAN_LINES).startTurn({
+    test("parks on the plan: no CLI result for it and no end result until the user answers", () => runTest(Effect.gen(function* () {
+      const answer = yield* Deferred.make<unknown>()
+      const requested = yield* Deferred.make<HarnessToolRequest>()
+      const fake = yield* scriptedCli(PLAN_LINES)
+      const turn = yield* (yield* grokWith(fake)).startTurn({
         ...startArgs,
         planMode: true,
-        onToolRequest: (request) => {
-          requested.resolve(request)
-          return new Promise((resolve) => { answer = resolve })
-        },
+        onToolRequest: (request) => Deferred.succeed(requested, request).pipe(Effect.andThen(Deferred.await(answer))),
       })
       const events: HarnessEvent[] = []
-      const drained = (async () => { for await (const event of turn.stream) events.push(event) })()
+      const drained = yield* Stream.runForEach(turn.events, (event) => Effect.sync(() => { events.push(event) })).pipe(
+        Effect.forkChild,
+      )
 
-      const request = await requested.promise
+      const request = yield* Deferred.await(requested)
       expect(request.tool.toolKind).toBe("exit_plan_mode")
       expect(request.tool.toolId).toBe("plan-1")
+      yield* Effect.yieldNow
       const entries = transcriptEntries(events)
       expect(entries.some((entry) => entry.kind === "tool_call" && entry.tool.toolKind === "exit_plan_mode")).toBe(true)
       expect(entries.some((entry) => entry.kind === "tool_result")).toBe(false)
@@ -545,35 +562,125 @@ describe("GrokCliManager.startTurn", () => {
       // The session id still lands, so the follow-up turn can resume it.
       expect(events.some((event) => event.type === "session_token" && event.sessionToken === "sess-plan")).toBe(true)
 
-      answer({ confirmed: true })
-      await drained
+      yield* Deferred.succeed(answer, { confirmed: true })
+      yield* Fiber.join(drained)
       expect(transcriptEntries(events).some((entry) => entry.kind === "result")).toBe(false)
-    })
+    })))
 
-    test("a rejected request (turn already gone) closes with the held result", async () => {
-      const turn = await fakeGrok(PLAN_LINES).startTurn({
+    test("a failed request (turn already gone) closes with the held result", () => runTest(Effect.gen(function* () {
+      const fake = yield* scriptedCli(PLAN_LINES)
+      const turn = yield* (yield* grokWith(fake)).startTurn({
         ...startArgs,
         planMode: true,
-        onToolRequest: async () => { throw new Error("Chat turn ended") },
+        onToolRequest: () => Effect.fail(new Error("Chat turn ended")),
       })
-      const events: HarnessEvent[] = []
-      for await (const event of turn.stream) events.push(event)
+      const events = yield* Stream.runCollect(turn.events)
       expect(transcriptEntries(events).filter((entry) => entry.kind === "result")).toHaveLength(1)
-    })
+    })))
 
-    test("outside plan mode the stream passes through untouched", async () => {
+    test("outside plan mode the stream passes through untouched", () => runTest(Effect.gen(function* () {
       let asked = false
-      const turn = await fakeGrok(PLAN_LINES).startTurn({
+      const fake = yield* scriptedCli(PLAN_LINES)
+      const turn = yield* (yield* grokWith(fake)).startTurn({
         ...startArgs,
         planMode: false,
-        onToolRequest: async () => { asked = true },
+        onToolRequest: () => Effect.sync(() => { asked = true }),
       })
-      const events: HarnessEvent[] = []
-      for await (const event of turn.stream) events.push(event)
+      const entries = transcriptEntries(yield* Stream.runCollect(turn.events))
       expect(asked).toBe(false)
-      const entries = transcriptEntries(events)
       expect(entries.some((entry) => entry.kind === "tool_result")).toBe(true)
       expect(entries.some((entry) => entry.kind === "result")).toBe(true)
-    })
+    })))
   })
+})
+
+describe("GrokCli.listModels", () => {
+  test("spawns `grok models` from HOME and parses the list", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli("You are logged in with grok.com.\nDefault model: grok-build\n  * grok-build (default)\n  - grok-4.6\n")
+    const models = yield* (yield* grokWith(fake)).listModels()
+    expect(fake.spawns[0]).toMatchObject({ argv: ["models"], cwd: homedir() })
+    expect(models.map((model) => model.id)).toEqual(["grok-build", "grok-4.6"])
+    expect(models[0]?.isDefault).toBe(true)
+  })))
+
+  test("fails with stderr when grok lists nothing", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli("", 1, "Not logged in. Run grok login.\n")
+    const result = yield* Effect.result((yield* grokWith(fake)).listModels())
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/grok-cli/GrokModelListError")
+      expect(result.failure.message).toBe("Not logged in. Run grok login.")
+    }
+  })))
+
+  test("times out, killing grok", () => runTest(Effect.gen(function* () {
+    const fake = yield* makeFakeCli()
+    const result = yield* Effect.result((yield* grokWith(fake)).listModels(10))
+    expect(Result.isFailure(result) && result.failure.message).toBe("grok models timed out after 10ms")
+    expect(fake.released()).toBe(true)
+  })))
+})
+
+describe("GrokCli.listSkills", () => {
+  test("parses `grok inspect --json` in the project", () => runTest(Effect.gen(function* () {
+    const fake = yield* scriptedCli(JSON.stringify({ skills: [{ name: "outpost", description: "Find creators" }] }))
+    const skills = yield* (yield* grokWith(fake)).listSkills({ cwd: "/repo" })
+    expect(fake.spawns[0]).toMatchObject({ argv: ["inspect", "--json"], cwd: "/repo" })
+    expect(skills).toEqual([{ name: "outpost", description: "Find creators", source: "skill" }])
+  })))
+
+  test("is empty when grok is missing or hangs", () => runTest(Effect.gen(function* () {
+    const missing = yield* makeFakeCli({ spawnError: "Executable not found" })
+    expect(yield* (yield* grokWith(missing)).listSkills({ cwd: "/repo" })).toEqual([])
+    const hung = yield* makeFakeCli()
+    expect(yield* (yield* grokWith(hung)).listSkills({ cwd: "/repo", timeoutMs: 10 })).toEqual([])
+    expect(hung.released()).toBe(true)
+  })))
+})
+
+describe("fetchGrokAccountUsage", () => {
+  const jsonResponse = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+  test("reads billing and user with the token, tolerating odd fields", () => runTest(Effect.gen(function* () {
+    const requests: Array<{ url: string; auth: string | null }> = []
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, auth: new Headers(init?.headers).get("authorization") })
+      return url.includes("/billing")
+        ? jsonResponse({ config: { creditUsagePercent: 6, productUsage: [{ product: "GrokBuild", usagePercent: 4 }, "junk"], onDemandCap: { val: 50 }, extra: true } })
+        : jsonResponse({ subscriptionTier: "SuperGrok", email: 7 })
+    }) as typeof fetch
+    const usage = yield* fetchGrokAccountUsage({ token: "tok", fetchFn, baseUrl: "https://proxy.test/v1/" })
+
+    expect(requests.map((request) => request.url).sort()).toEqual([
+      "https://proxy.test/v1/billing?format=credits",
+      "https://proxy.test/v1/user?include=subscription",
+    ])
+    expect(requests.every((request) => request.auth === "Bearer tok")).toBe(true)
+    expect(usage?.user).toEqual({ subscriptionTier: "SuperGrok" })
+    expect(grokProductUsageWindows(usage!.billing).map((window) => window.id)).toEqual(["credits", "GrokBuild"])
+    expect(moneyVal(usage!.billing.config?.onDemandCap)).toBe(50)
+  })))
+
+  test("fails with the status when billing is refused", () => runTest(Effect.gen(function* () {
+    const fetchFn = (async () => jsonResponse({}, 401)) as unknown as typeof fetch
+    const result = yield* Effect.result(fetchGrokAccountUsage({ token: "tok", fetchFn, baseUrl: "https://proxy.test" }))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/grok-cli/GrokUsageError")
+      expect(result.failure.message).toBe("Grok billing request failed (401).")
+      expect(result.failure.status).toBe(401)
+    }
+  })))
+
+  test("is null when grok has no saved sign-in", () => runTest(Effect.gen(function* () {
+    const dir = yield* Effect.promise(() => mkdtemp(path.join(tmpdir(), "kanna-grok-auth-")))
+    yield* Effect.addFinalizer(() => Effect.promise(() => rm(dir, { recursive: true, force: true })))
+    expect(yield* readGrokAuthToken(path.join(dir, "missing.json"))).toBeNull()
+    yield* Effect.promise(() => Bun.write(path.join(dir, "bad.json"), "{not json"))
+    expect(yield* readGrokAuthToken(path.join(dir, "bad.json"))).toBeNull()
+    yield* Effect.promise(() => Bun.write(path.join(dir, "auth.json"), JSON.stringify({ "https://auth.x.ai::a": { key: "tok-1" } })))
+    expect(yield* readGrokAuthToken(path.join(dir, "auth.json"))).toBe("tok-1")
+  })))
 })

@@ -1,10 +1,29 @@
 import { describe, expect, test } from "bun:test"
-import { QuickResponseAdapter } from "./quick-response"
+import { Effect } from "effect"
+import type { LlmProviderSnapshot } from "../shared/types"
+import { runTest } from "./effect/testing"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
+import { QuickResponse, QuickResponseRequestError, type QuickResponseOptions } from "./quick-response"
+
+const DISABLED_LLM_PROVIDER: LlmProviderSnapshot = {
+  provider: "openai",
+  apiKey: "",
+  model: "",
+  baseUrl: "",
+  resolvedBaseUrl: "https://api.openai.com/v1",
+  faveModels: [],
+  enabled: false,
+  warning: null,
+  filePathDisplay: "~/.kanna/llm-provider.json",
+}
+
+function commitMessage(args: Parameters<typeof generateCommitMessageDetailed>[0], options: QuickResponseOptions) {
+  return runTest(generateCommitMessageDetailed(args).pipe(Effect.provide(QuickResponse.layer(options))))
+}
 
 describe("generateCommitMessageDetailed", () => {
   test("returns sanitized generated subject and body", async () => {
-    const result = await generateCommitMessageDetailed(
+    const result = await commitMessage(
       {
         cwd: "/tmp/project",
         branchName: "feature/test",
@@ -14,23 +33,13 @@ describe("generateCommitMessageDetailed", () => {
           patch: "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@\n-old\n+new\n",
         }],
       },
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runClaudeStructured: async () => ({
+      {
+        readLlmProvider: Effect.succeed(DISABLED_LLM_PROVIDER),
+        runClaudeStructured: () => Effect.succeed({
           subject: "  Add login UI.\nextra line",
           body: "  - wire form\n- add validation  ",
         }),
-      })
+      }
     )
 
     expect(result).toEqual({
@@ -42,7 +51,7 @@ describe("generateCommitMessageDetailed", () => {
   })
 
   test("falls back when providers fail", async () => {
-    const result = await generateCommitMessageDetailed(
+    const result = await commitMessage(
       {
         cwd: "/tmp/project",
         branchName: "feature/test",
@@ -52,23 +61,12 @@ describe("generateCommitMessageDetailed", () => {
           patch: "diff --git a/src/feature.ts b/src/feature.ts\n",
         }],
       },
-      new QuickResponseAdapter({
-        readLlmProvider: async () => ({
-          provider: "openai",
-          apiKey: "",
-          model: "",
-          baseUrl: "",
-          resolvedBaseUrl: "https://api.openai.com/v1",
-          faveModels: [],
-          enabled: false,
-          warning: null,
-          filePathDisplay: "~/.kanna/llm-provider.json",
-        }),
-        runClaudeStructured: async () => {
-          throw new Error("Not authenticated")
-        },
-        runCodexStructured: async () => null,
-      })
+      {
+        readLlmProvider: Effect.succeed(DISABLED_LLM_PROVIDER),
+        runClaudeStructured: () =>
+          Effect.fail(new QuickResponseRequestError({ provider: "claude", message: "Not authenticated", cause: null })),
+        runCodexStructured: () => Effect.succeed(null),
+      }
     )
 
     expect(result).toEqual({

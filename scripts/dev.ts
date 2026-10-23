@@ -5,7 +5,10 @@ import { LOG_PREFIX } from "../src/shared/branding"
 import { parseDevArgs } from "../src/shared/dev-ports"
 import { isShareEnabled, isTokenShareMode } from "../src/shared/share"
 import { logShareDetails, startShareTunnel } from "../src/server/share"
-import { exitWithParent } from "../src/server/mac-app"
+import { Effect } from "effect"
+import { runKanna } from "../src/server/effect/bridge"
+import { ServerPlatform } from "../src/server/effect/runtime"
+import { awaitParentExit } from "../src/server/mac-app"
 
 const cwd = process.cwd()
 const forwardedArgs = process.argv.slice(2)
@@ -101,7 +104,7 @@ process.on("SIGTERM", () => {
 })
 
 // Started by the Mac app in Development mode, which then crashed.
-exitWithParent(() => shutdown(0))
+void runKanna(awaitParentExit().pipe(Effect.provide(ServerPlatform))).then(() => shutdown(0))
 
 console.log(`${LOG_PREFIX} dev client: http://localhost:${clientPort}`)
 console.log(`${LOG_PREFIX} dev server: http://localhost:${serverPort}`)
@@ -130,10 +133,10 @@ if (isShareEnabled(share)) {
 
   try {
     await waitForLocalUrl(localUrl)
-    const shareTunnel = await startShareTunnel(localUrl, share)
+    const shareTunnel = await runKanna(startShareTunnel(localUrl, share).pipe(Effect.provide(ServerPlatform)))
     shareTunnelStop = shareTunnel.stop
     if (shareTunnel.publicUrl) {
-      await logShareDetails(console.log, shareTunnel.publicUrl, localUrl)
+      logShareDetails(console.log, shareTunnel.publicUrl, localUrl)
     } else {
       console.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
       if (isTokenShareMode(share)) {

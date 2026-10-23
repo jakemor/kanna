@@ -1,4 +1,6 @@
-import type { ChatRecord, StoreState } from "./events"
+import { Cause, Effect, Exit, Result } from "effect"
+import type { ChatRecord } from "./events"
+import type { EventStore } from "./event-store"
 
 /**
  * Boot-time counterpart to `AgentCoordinator.interruptForShutdown`: pick back
@@ -10,13 +12,10 @@ import type { ChatRecord, StoreState } from "./events"
  * would make every chat ever killed with `kill -9`, including ones from months
  * ago, start running again on the next upgrade.
  */
-export interface ResumeInterruptedTurnsDeps {
-  store: {
-    state: StoreState
-    setTurnResumePending: (chatId: string, pending: boolean) => Promise<void>
-  }
+export interface ResumeInterruptedTurnsDeps<E> {
+  store: Pick<EventStore["Service"], "state" | "setTurnResumePending">
   agent: {
-    resumeInterruptedTurn: (chatId: string) => Promise<boolean>
+    resumeInterruptedTurnEffect: (chatId: string) => Effect.Effect<boolean, E>
   }
   onError?: (chatId: string, error: unknown) => void
 }
@@ -36,7 +35,7 @@ function isResumable(chat: ChatRecord) {
  * a machine that went down with six chats running should not try to bring six
  * of them up in the same instant as the rest of boot.
  */
-export async function resumeInterruptedTurns(deps: ResumeInterruptedTurnsDeps): Promise<string[]> {
+export const resumeInterruptedTurns = Effect.fn("ResumeTurns.resumeInterruptedTurns")(function* <E>(deps: ResumeInterruptedTurnsDeps<E>) {
   const pending = [...deps.store.state.chatsById.values()]
     .filter(isResumable)
     // Oldest interruption first, so the resumes go out in the order the turns
@@ -45,24 +44,23 @@ export async function resumeInterruptedTurns(deps: ResumeInterruptedTurnsDeps): 
 
   const resumed: string[] = []
   for (const chat of pending) {
-    // Cleared *before* the attempt: a chat that can't be resumed (no session
-    // to resume into, harness fails to start) must not be retried on every
-    // boot from here to eternity. One shutdown earns one resume attempt.
-    try {
-      await deps.store.setTurnResumePending(chat.id, false)
-    } catch (error) {
-      deps.onError?.(chat.id, error)
-      continue
-    }
-
-    try {
-      if (await deps.agent.resumeInterruptedTurn(chat.id)) {
-        resumed.push(chat.id)
+    const resumedOne = Effect.gen(function* () {
+      const cleared = yield* Effect.result(deps.store.setTurnResumePending(chat.id, false))
+      if (Result.isFailure(cleared)) {
+        deps.onError?.(chat.id, "cause" in cleared.failure ? cleared.failure.cause : cleared.failure)
+        return false
       }
-    } catch (error) {
-      deps.onError?.(chat.id, error)
-    }
+
+      // A crash resuming one chat is reported like a failure and the next
+      // chat still gets its turn, as the old per-chat try/catch did.
+      const attempt = yield* Effect.exit(deps.agent.resumeInterruptedTurnEffect(chat.id))
+      if (Exit.isSuccess(attempt)) return attempt.value
+      if (Cause.hasInterruptsOnly(attempt.cause)) return yield* Effect.interrupt
+      deps.onError?.(chat.id, Cause.squash(attempt.cause))
+      return false
+    }).pipe(Effect.onInterrupt(() => deps.store.setTurnResumePending(chat.id, true).pipe(Effect.orDie)))
+    if (yield* resumedOne) resumed.push(chat.id)
   }
 
   return resumed
-}
+})

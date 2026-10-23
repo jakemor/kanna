@@ -1,4 +1,5 @@
-import { getSharedQuickResponseAdapter } from "./quick-response"
+import { Effect } from "effect"
+import { QuickResponse } from "./quick-response"
 import { stripSystemMessages } from "../shared/message-preview"
 
 const TITLE_SCHEMA = {
@@ -41,12 +42,13 @@ function summarizeFailures(failures: Array<{ provider: "openai" | "claude" | "co
   return failures.map((failure) => failure.reason).join("; ")
 }
 
-export async function generateTitleForChatDetailed(
+/** A title for a chat's first message, or one cut from the message when no model answers. */
+export const generateTitleForChatDetailed = Effect.fn("GenerateTitle.forChat")(function* (
   messageContent: string,
   cwd: string,
-  adapter = getSharedQuickResponseAdapter()
-): Promise<GenerateChatTitleResult> {
-  const result = await adapter.generateStructuredWithDiagnostics<string>({
+) {
+  const quickResponse = yield* QuickResponse
+  const result = yield* quickResponse.generateStructuredWithDiagnostics<string>({
     cwd,
     task: "conversation title generation",
     prompt: `Generate a short, descriptive title (under 30 chars) for a conversation that starts with this message.\n\n${stripSystemMessages(messageContent)}`,
@@ -62,7 +64,7 @@ export async function generateTitleForChatDetailed(
       title: result.value,
       usedFallback: false,
       failureMessage: null,
-    }
+    } satisfies GenerateChatTitleResult
   }
 
   const fallbackTitle = fallbackTitleFromMessage(messageContent)
@@ -70,5 +72,5 @@ export async function generateTitleForChatDetailed(
     title: fallbackTitle,
     usedFallback: true,
     failureMessage: summarizeFailures(result.failures),
-  }
-}
+  } satisfies GenerateChatTitleResult
+})

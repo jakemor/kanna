@@ -8,29 +8,45 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { TranscriptEntry } from "../shared/types"
-import { KannaToolRuntime, KannaToolEventFilter, KANNA_TOOL_NAMES, kannaToolSpecs, type KannaToolDefinition } from "./kanna-tools"
+import { Deferred, Effect, Exit, Fiber, Schema } from "effect"
+import {
+  CANCELLED_TOOL_RESULT,
+  defineKannaTool,
+  KannaToolEmitError,
+  KannaToolEventFilter,
+  KannaToolRuntime,
+  KANNA_TOOL_NAMES,
+  kannaToolSpecs,
+  makeKannaToolExecutor,
+  runKannaToolCall,
+  type KannaTool,
+  type KannaToolDefinition,
+  type KannaToolSession,
+} from "./kanna-tools"
 import { createClaudeKannaTools, createPiKannaTools } from "./kanna-tool-adapters"
-import { createKannaMcpServer } from "./kanna-mcp"
+import { serveKannaMcp } from "./kanna-mcp"
+import { runTest } from "./effect/testing"
 import { parseTranscriptMediaUrl, getTranscriptMediaDir, retargetEntryMediaUrls } from "./transcript-media"
-import { EventStore } from "./event-store"
+import { openEventStore } from "./event-store-bridge"
 import { splitTranscriptEntry } from "./transcript-payloads"
+import { testPlatformContext } from "./platform/testing"
 
 const visualization = { title: "Sales", html: '<svg aria-label="Sales"><text>Jan: 10, Feb: 20</text></svg>' }
 let testDataDir: string
 beforeEach(async () => { testDataDir = await mkdtemp(path.join(tmpdir(), "kanna-tools-")) })
 afterEach(async () => { await rm(testDataDir, { recursive: true, force: true }) })
 const attachments = { attachments: [{ url: "https://example.com/chart.png" }, { url: "https://example.com/report.pdf" }] }
-const inputTool: KannaToolDefinition = {
-  name: "test_input", description: "Test input", schema: z.strictObject({}), waitsForUser: true,
-  async execute(_input, context) {
-    const value = await context.requestInput("Value")
-    return { content: [{ type: "text", text: value }], structuredContent: { answers: { value: [value] } } }
-  },
-}
-function setup(dataDir: string = testDataDir, definitions?: readonly KannaToolDefinition[]) {
+const inputTool = defineKannaTool({
+  name: "test_input", description: "Test input", parameters: Schema.Struct({}), waitsForUser: true,
+  execute: Effect.fn(function* (_args, context) {
+    const value = yield* context.requestInput("Value")
+    return { content: [{ type: "text" as const, text: value }], structuredContent: { answers: { value: [value] } } }
+  }),
+})
+function setup(dataDir: string = testDataDir, definitions?: readonly (KannaTool | KannaToolDefinition)[]) {
   const entries: TranscriptEntry[] = []
   const replies: Array<(value: unknown) => void> = []
-  const runtime = new KannaToolRuntime({ chatId: "chat-1", cwd: dataDir ?? "/project", dataDir,
+  const runtime = new KannaToolRuntime({ platform: testPlatformContext, chatId: "chat-1", cwd: dataDir ?? "/project", dataDir,
     emit: async entry => { entries.push(entry) },
     requestInput: async (_request, signal) => new Promise(resolve => {
       replies.push(resolve)
@@ -108,17 +124,16 @@ describe("shared Kanna display tools", () => {
   test("display payloads survive a store restart without extra fetches", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "kanna-display-store-"))
     try {
-      const store = new EventStore(dir)
-      await store.initialize()
+      const store = await openEventStore(dir)
       const project = await store.openProject(dir, "Display tools")
       const chat = await store.createChat(project.id)
-      const runtime = new KannaToolRuntime({ chatId: chat.id, cwd: dir, dataDir: dir,
+      const runtime = new KannaToolRuntime({ platform: testPlatformContext, chatId: chat.id, cwd: dir, dataDir: dir,
         emit: entry => store.appendMessage(chat.id, entry).then(() => {}), requestInput: async () => ({}),
       })
       await runtime.execute("show_visualization", visualization)
       await runtime.execute("send_attachments", attachments)
-      const reopened = new EventStore(dir)
-      await reopened.initialize()
+      const reopened = await openEventStore(dir)
+      await reopened.prepareTranscript(chat.id)
       const entries = reopened.getClientTranscript(chat.id).messages
       expect(entries[0]).toMatchObject({ tool: { toolKind: "display", input: { payload: { title: "Sales" } } } })
       expect(entries[3]).toMatchObject({ content: [{ type: "attachment", kind: "image" }, { type: "attachment", kind: "file" }] })
@@ -237,16 +252,134 @@ describe("shared Kanna display tools", () => {
   })
   test("HTTP MCP authenticates requests and isolates chats", async () => {
     const first = setup(), second = setup()
-    const servers = [createKannaMcpServer(first.runtime), createKannaMcpServer(second.runtime)]
     const client = new Client({ name: "test", version: "1" })
-    try {
-      expect((await fetch(servers[0]!.url)).status).toBe(401)
-      expect((await fetch(servers[0]!.url, { headers: servers[1]!.headers })).status).toBe(401)
-      await client.connect(new StreamableHTTPClientTransport(new URL(servers[0]!.url), { requestInit: { headers: servers[0]!.headers } }))
-      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(KANNA_TOOL_NAMES)
-      expect(await client.callTool({ name: "show_visualization", arguments: visualization })).toMatchObject({ structuredContent: { displayed: true } })
-      expect(first.entries).toHaveLength(2)
-      expect(second.entries).toHaveLength(0)
-    } finally { await client.close(); for (const server of servers) server.close() }
+    await runTest(Effect.gen(function* () {
+      const servers = [yield* serveKannaMcp(first.runtime), yield* serveKannaMcp(second.runtime)]
+      yield* Effect.promise(async () => {
+        expect((await fetch(servers[0]!.url)).status).toBe(401)
+        expect((await fetch(servers[0]!.url, { headers: servers[1]!.headers })).status).toBe(401)
+        expect((await fetch(servers[0]!.url.replace("/mcp", "/other"), { headers: servers[0]!.headers })).status).toBe(401)
+        expect((await fetch(servers[0]!.url, { headers: { ...servers[0]!.headers, Origin: "https://example.com" } })).status).toBe(403)
+        await client.connect(new StreamableHTTPClientTransport(new URL(servers[0]!.url), { requestInit: { headers: servers[0]!.headers } }))
+        expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(KANNA_TOOL_NAMES)
+        expect(await client.callTool({ name: "show_visualization", arguments: visualization })).toMatchObject({ structuredContent: { displayed: true } })
+        expect(first.entries).toHaveLength(2)
+        expect(second.entries).toHaveLength(0)
+        await client.close()
+      })
+    }))
+  })
+  test("HTTP MCP stops listening when its scope closes", async () => {
+    const { runtime } = setup()
+    const url = await runTest(serveKannaMcp(runtime).pipe(Effect.map(endpoint => endpoint.url)))
+    expect(await fetch(url).then(() => "answered", () => "refused")).toBe("refused")
+  })
+})
+
+describe("the Effect tool executor", () => {
+  const session = (entries: TranscriptEntry[], requestInput: KannaToolSession["requestInput"] = () => Effect.never): KannaToolSession => ({
+    chatId: "chat-1", cwd: testDataDir, dataDir: testDataDir,
+    emit: (entry) => Effect.sync(() => { entries.push(entry) }),
+    requestInput,
+  })
+
+  test("interrupting a started call records it as cancelled", async () => {
+    const entries: TranscriptEntry[] = []
+    const asked = Effect.runSync(Deferred.make<void>())
+    await runTest(Effect.gen(function* () {
+      const executor = yield* makeKannaToolExecutor(session(entries, () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Effect.never))), [inputTool])
+      const fiber = yield* Effect.forkChild(executor.execute("test_input", {}))
+      yield* Deferred.await(asked)
+      yield* Fiber.interrupt(fiber)
+    }))
+    expect(entries.map(entry => entry.kind)).toEqual(["tool_call", "tool_result"])
+    expect(entries[1]).toMatchObject({ kind: "tool_result", content: { discarded: true }, isError: true })
+  })
+
+  test("interrupting while the call is being recorded still records a result", async () => {
+    const entries: TranscriptEntry[] = []
+    await runTest(Effect.gen(function* () {
+      const callWritten = yield* Deferred.make<void>()
+      const releaseCall = yield* Deferred.make<void>()
+      const delayedSession: KannaToolSession = {
+        ...session(entries),
+        emit: (entry) => Effect.gen(function* () {
+          entries.push(entry)
+          if (entry.kind === "tool_call") {
+            yield* Deferred.succeed(callWritten, undefined)
+            yield* Deferred.await(releaseCall)
+          }
+        }),
+      }
+      const executor = yield* makeKannaToolExecutor(delayedSession, [inputTool])
+      const call = yield* Effect.forkChild(executor.execute("test_input", {}))
+      yield* Deferred.await(callWritten)
+      const interruption = yield* Effect.forkChild(Fiber.interrupt(call))
+      yield* Effect.sleep("10 millis")
+      yield* Deferred.succeed(releaseCall, undefined)
+      yield* Fiber.join(interruption)
+    }))
+    expect(entries.map(entry => entry.kind)).toEqual(["tool_call", "tool_result"])
+    expect(entries[1]).toMatchObject({ kind: "tool_result", content: { discarded: true }, isError: true })
+  })
+
+  test("a signal that aborts a call returns the cancelled result, and one already aborted records nothing", async () => {
+    const entries: TranscriptEntry[] = []
+    const executor = await runTest(makeKannaToolExecutor(session(entries), [inputTool]))
+    const controller = new AbortController()
+    const pending = runKannaToolCall(executor.execute("test_input", {}), controller.signal)
+    await until(() => entries.length === 1)
+    controller.abort()
+    expect(await pending).toEqual(CANCELLED_TOOL_RESULT)
+    expect(entries.map(entry => entry.kind)).toEqual(["tool_call", "tool_result"])
+
+    expect(await runKannaToolCall(executor.execute("test_input", {}), AbortSignal.abort())).toEqual(CANCELLED_TOOL_RESULT)
+    expect(entries).toHaveLength(2)
+  })
+
+  test("a failure to record the call is the call's error, and a bug in a tool is reported, not thrown", async () => {
+    const failing: KannaToolSession = {
+      ...session([]),
+      emit: () => Effect.fail(new KannaToolEmitError({ chatId: "chat-1", message: "disk full", cause: null })),
+    }
+    const buggy = defineKannaTool({
+      name: "buggy", description: "Throws", parameters: Schema.Struct({}),
+      execute: () => Effect.sync(() => { throw new TypeError("x is not a function") }),
+    })
+    const executor = await runTest(makeKannaToolExecutor(failing, [buggy]))
+    expect(await runKannaToolCall(executor.execute("buggy", {}))).toEqual({ content: [{ type: "text", text: "disk full" }], isError: true })
+    const entries: TranscriptEntry[] = []
+    const ok = await runTest(makeKannaToolExecutor(session(entries), [buggy]))
+    expect(await runKannaToolCall(ok.execute("buggy", {}))).toEqual({ content: [{ type: "text", text: "x is not a function" }], isError: true })
+    expect(entries.map(entry => entry.kind)).toEqual(["tool_call", "tool_result"])
+  })
+
+  test("a zod tool with a Promise body still runs, with zod's error text and the call's signal", async () => {
+    let seen: AbortSignal | undefined
+    const legacy: KannaToolDefinition = {
+      name: "legacy", description: "A zod tool", schema: z.strictObject({ count: z.number().int() }),
+      execute: (input, context) => {
+        seen = context.signal
+        return new Promise(resolve => context.signal.addEventListener("abort", () => resolve({ content: [{ type: "text", text: String(input.count) }] })))
+      },
+    }
+    const { runtime, entries } = setup(testDataDir, [legacy])
+    expect(kannaToolSpecs().some(spec => spec.name === "legacy")).toBe(false)
+    expect((await runtime.execute("legacy", { count: 1.5 })).content[0]!.text).toBe(z.strictObject({ count: z.number().int() }).safeParse({ count: 1.5 }).error!.message)
+    const pending = runtime.execute("legacy", { count: 2 })
+    await until(() => seen !== undefined)
+    runtime.abort()
+    expect(await pending).toEqual(CANCELLED_TOOL_RESULT)
+    expect(seen!.aborted).toBe(true)
+    expect(entries.at(-1)).toMatchObject({ kind: "tool_result", content: { discarded: true } })
+  })
+
+  test("a reply that does not answer the question is the call's error", async () => {
+    const executor = await runTest(makeKannaToolExecutor(session([], () => Effect.succeed({ answers: { value: [] } })), [inputTool]))
+    const result = await runKannaToolCall(executor.execute("test_input", {}))
+    expect(result.isError).toBe(true)
+    expect(result.content[0]!.text).toContain("Too small: expected array to have >=1 items")
+    const exit = await Effect.runPromiseExit(executor.execute("nope", {}))
+    expect(Exit.isSuccess(exit) && exit.value.content[0]!.text).toBe("Unknown Kanna tool: nope")
   })
 })

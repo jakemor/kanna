@@ -1,5 +1,62 @@
 import { describe, expect, test } from "bun:test"
-import { extractHtmlTitle, filterLocalHttpServers, isDescendantPid, isPathWithin, parseLsofCwdOutput, parseLsofListeningEntries } from "./local-http-servers"
+import { existsSync } from "node:fs"
+import { Effect, Result } from "effect"
+import { runTest } from "./effect/testing"
+import {
+  extractHtmlTitle,
+  filterLocalHttpServers,
+  isDescendantPid,
+  isPathWithin,
+  killLocalHttpServer,
+  listLocalHttpServers,
+  parseLsofCwdOutput,
+  parseLsofListeningEntries,
+} from "./local-http-servers"
+
+const hasLsof = Boolean(Bun.which("lsof")) || existsSync("/usr/sbin/lsof")
+
+describe("killLocalHttpServer", () => {
+  test("refuses an invalid port", async () => {
+    const result = await runTest(Effect.result(killLocalHttpServer(0)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/local-http-servers/InvalidPortError")
+      expect(result.failure.message).toBe("Port is invalid.")
+    }
+  })
+
+  test("fails when nothing listens on the port", async () => {
+    // Port 1 (tcpmux) is privileged and unused on a dev machine.
+    const result = await runTest(Effect.result(killLocalHttpServer(1)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/local-http-servers/NoListeningProcessError")
+      expect(result.failure.message).toBe("No listening process found on port 1.")
+    }
+  })
+})
+
+describe.skipIf(!hasLsof)("listLocalHttpServers", () => {
+  test("finds a page served from this project, with its title", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => new Response("<html><head><title>Kanna Probe</title></head></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+    })
+    try {
+      const servers = await runTest(listLocalHttpServers({ projectPath: process.cwd() }))
+      expect(servers.find((candidate) => candidate.port === server.port)).toMatchObject({
+        title: "Kanna Probe",
+        address: `http://localhost:${server.port}`,
+        status: 200,
+        sameProject: true,
+      })
+    } finally {
+      server.stop(true)
+    }
+  })
+})
 
 describe("local http servers", () => {
   test("extracts html titles", () => {

@@ -10,7 +10,9 @@ import {
   withVisualizationHeight,
   VISUALIZATION_MAX_HEIGHT,
 } from "../shared/visualization"
-import { handleVisualizationHeights, readStoredVisualizationHeights } from "./visualization-heights"
+import { Effect, Result } from "effect"
+import { runTest } from "./effect/testing"
+import { handleVisualizationHeights, readStoredVisualizationHeights, storeVisualizationHeight } from "./visualization-heights"
 
 describe("a visualization's measured heights", () => {
   test("a height belongs to the width it was measured at, and near widths share one", () => {
@@ -63,7 +65,7 @@ describe("the server keeps them beside the document", () => {
   const store = { resolveTranscriptMediaPath: (url: string) => url === documentUrl ? path.join(dir, "visualization-abc.html") : null }
   const request = (method: string, pathname: string, body?: unknown) => {
     const url = new URL(`http://localhost${pathname}`)
-    return handleVisualizationHeights(new Request(url, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), url, store)
+    return runTest(handleVisualizationHeights(new Request(url, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), url, store))
   }
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), "kanna-visualization-heights-"))
@@ -79,7 +81,7 @@ describe("the server keeps them beside the document", () => {
     const read = await request("GET", `${documentUrl}/heights`)
     expect(read!.headers.get("Cache-Control")).toBe("no-store")
     expect(await read!.json()).toEqual({ heights: [[400, 610], [736, 412]] })
-    expect(await readStoredVisualizationHeights(path.join(dir, "visualization-abc.html"))).toEqual([[400, 610], [736, 412]])
+    expect(await runTest(readStoredVisualizationHeights(path.join(dir, "visualization-abc.html")))).toEqual([[400, 610], [736, 412]])
   })
 
   test("it answers only for a document it has, and only with a width and a height", async () => {
@@ -93,5 +95,15 @@ describe("the server keeps them beside the document", () => {
     // A file cut short is nothing known, not an error.
     await writeFile(path.join(dir, "visualization-abc.html.heights.json"), "[[736,")
     expect(await (await request("GET", `${documentUrl}/heights`))!.json()).toEqual({ heights: [] })
+  })
+
+  test("a height that cannot be written fails as a write error, naming the file", async () => {
+    const documentPath = path.join(dir, "gone", "visualization-abc.html")
+    const result = await runTest(Effect.result(storeVisualizationHeight(documentPath, 728, 412)))
+    expect(Result.isFailure(result)).toBe(true)
+    if (Result.isFailure(result)) {
+      expect(result.failure._tag).toBe("@kanna/server/visualization-heights/VisualizationHeightsWriteError")
+      expect(result.failure.filePath).toBe(`${documentPath}.heights.json`)
+    }
   })
 })

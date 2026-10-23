@@ -1,18 +1,17 @@
-import { z } from "zod"
-import { constants } from "node:fs"
-import { mkdir, open, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { Effect, FileSystem, type PlatformError, Schema } from "effect"
 import { VISUALIZATION_MAX_BYTES, VISUALIZATION_MAX_HEIGHT, VISUALIZATION_TOOL_NAME, type VisualizationArtifact } from "../shared/visualization"
 import { buildTranscriptMediaUrl, getTranscriptMediaDir } from "./transcript-media"
+import { FileSystemExtras } from "./platform/file-system-extras"
 import { buildVisualizationDocument } from "./visualization-document"
 import { SHOW_VISUALIZATION_DESCRIPTION } from "./visualization-instructions"
-import type { KannaToolDefinition } from "./kanna-tools"
+import { defineKannaTool, failureText, KannaToolCallError, KannaToolRefusal, platformFailureText } from "./kanna-tool-definition"
 
-const schema = z.strictObject({
-  title: z.string().min(1).max(200).describe("Accessible name for the visualization. No title bar is added."),
-  html: z.string().min(1).max(VISUALIZATION_MAX_BYTES).optional().describe("Self-contained HTML fragment, including inline CSS and JavaScript. Supply html or path, not both."),
-  path: z.string().min(1).optional().describe("HTML file, absolute or relative to the project. Copied into this chat; source edits will not change the saved visualization."),
-  height: z.number().int().min(80).max(VISUALIZATION_MAX_HEIGHT).optional().describe("Initial height in CSS pixels, default 360. The frame then fits the content automatically."),
+const parameters = Schema.Struct({
+  title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)).annotate({ description: "Accessible name for the visualization. No title bar is added." }),
+  html: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(VISUALIZATION_MAX_BYTES)).annotate({ description: "Self-contained HTML fragment, including inline CSS and JavaScript. Supply html or path, not both." })),
+  path: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1)).annotate({ description: "HTML file, absolute or relative to the project. Copied into this chat; source edits will not change the saved visualization." })),
+  height: Schema.optionalKey(Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(80), Schema.isLessThanOrEqualTo(VISUALIZATION_MAX_HEIGHT)).annotate({ description: "Initial height in CSS pixels, default 360. The frame then fits the content automatically." })),
 })
 
 /**
@@ -30,46 +29,57 @@ export function externalResource(html: string): string | null {
   return image ? `an image from ${image[1]}` : null
 }
 
-export const SHOW_VISUALIZATION_TOOL: KannaToolDefinition = {
+const refuse = (message: string) => new KannaToolRefusal({ tool: VISUALIZATION_TOOL_NAME, message })
+const callError = (operation: string) => (cause: unknown) =>
+  new KannaToolCallError({ tool: VISUALIZATION_TOOL_NAME, operation, message: failureText(cause), cause })
+const platformError = (operation: string) => (cause: PlatformError.PlatformError) =>
+  Effect.fail(new KannaToolCallError({ tool: VISUALIZATION_TOOL_NAME, operation, message: platformFailureText(cause), cause }))
+
+/**
+ * The HTML in a file the agent named, opened `O_NONBLOCK` (`readFileHead`),
+ * as `storeLocalAttachment` does: a FIFO is refused instead of blocking the
+ * call, and the size checked is the opened file's. At most the size limit is
+ * read, so an oversized file is refused without reading it whole.
+ */
+const readHtmlFile = Effect.fn("KannaVisualizationTool.readHtmlFile")(function* (filePath: string) {
+  const files = yield* FileSystemExtras
+  const { info, head } = yield* files.readFileHead(filePath, VISUALIZATION_MAX_BYTES).pipe(
+    // The operation that failed (open, stat or read) and node's own error, as before.
+    Effect.catchTag("PlatformError", (error) => Effect.fail(callError(error.reason.method)(error.reason.cause ?? error))),
+  )
+  if (info.kind !== "File") return yield* refuse("The visualization path must be a file.")
+  if (info.size > VISUALIZATION_MAX_BYTES) return yield* refuse("Visualizations must be 2 MB or smaller.")
+  return Buffer.from(head.buffer, head.byteOffset, head.byteLength).toString("utf8")
+})
+
+export const SHOW_VISUALIZATION_TOOL = defineKannaTool({
   name: VISUALIZATION_TOOL_NAME,
   description: SHOW_VISUALIZATION_DESCRIPTION,
-  schema,
-  async execute(input, context) {
-    const args = schema.parse(input)
-    if (Boolean(args.html) === Boolean(args.path)) throw new Error("Provide exactly one of html or path.")
-    if (!context.dataDir) throw new Error("Chat media storage is unavailable.")
-    context.signal.throwIfAborted()
-    let html = args.html
-    if (args.path) {
-      const file = await open(path.resolve(context.cwd, args.path), constants.O_RDONLY | constants.O_NONBLOCK)
-      try {
-        const info = await file.stat()
-        if (!info.isFile()) throw new Error("The visualization path must be a file.")
-        if (info.size > VISUALIZATION_MAX_BYTES) throw new Error("Visualizations must be 2 MB or smaller.")
-        html = await file.readFile("utf8")
-      } finally { await file.close() }
-    }
-    if (!html?.trim()) throw new Error("The visualization HTML is empty.")
-    if (Buffer.byteLength(html) > VISUALIZATION_MAX_BYTES) throw new Error("Visualizations must be 2 MB or smaller.")
+  parameters,
+  execute: Effect.fn("KannaVisualizationTool.execute")(function* (args, context) {
+    yield* Effect.annotateCurrentSpan("chatId", context.chatId)
+    if (Boolean(args.html) === Boolean(args.path)) return yield* refuse("Provide exactly one of html or path.")
+    if (!context.dataDir) return yield* refuse("Chat media storage is unavailable.")
+    const html = args.path ? yield* readHtmlFile(path.resolve(context.cwd, args.path)) : args.html
+    if (!html?.trim()) return yield* refuse("The visualization HTML is empty.")
+    if (Buffer.byteLength(html) > VISUALIZATION_MAX_BYTES) return yield* refuse("Visualizations must be 2 MB or smaller.")
     const external = externalResource(html)
-    if (external) throw new Error(`The visualization loads ${external}, and nothing external loads in the frame. Inline the script, style, font or image (a data: URI works for images and fonts) and call the tool again.`)
+    if (external) return yield* refuse(`The visualization loads ${external}, and nothing external loads in the frame. Inline the script, style, font or image (a data: URI works for images and fonts) and call the tool again.`)
     const height = args.height ?? 360
     const name = `visualization-${crypto.randomUUID()}.html`
     const dir = getTranscriptMediaDir(context.dataDir, context.chatId)
-    await mkdir(dir, { recursive: true })
+    const fs = yield* FileSystem.FileSystem
+    yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.catchTag("PlatformError", platformError("mkdir")))
     const destination = path.join(dir, name)
-    try {
-      await writeFile(destination, buildVisualizationDocument(html, args.title, height), { flag: "wx" })
-      context.signal.throwIfAborted()
-    } catch (error) {
-      await rm(destination, { force: true })
-      throw error
-    }
+    yield* fs.writeFileString(destination, buildVisualizationDocument(html, args.title, height), { flag: "wx" }).pipe(
+      Effect.catchTag("PlatformError", platformError("write")),
+      Effect.onError(() => fs.remove(destination, { force: true }).pipe(Effect.ignore)),
+    )
     const artifact: VisualizationArtifact = { type: "visualization", version: 1, title: args.title, height, url: buildTranscriptMediaUrl(context.chatId, name) }
     return {
-      content: [{ type: "text", text: "Visualization displayed inline in Kanna. Do not repeat it as an image, file attachment, or visualization marker." }],
+      content: [{ type: "text" as const, text: "Visualization displayed inline in Kanna. Do not repeat it as an image, file attachment, or visualization marker." }],
       structuredContent: { displayed: true, visualization: artifact },
       transcriptContent: [artifact],
     }
-  },
-}
+  }),
+})

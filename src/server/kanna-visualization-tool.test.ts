@@ -7,6 +7,8 @@ import { externalResource } from "./kanna-visualization-tool"
 import { readVisualizationArtifact, visualizationHeight, visualizationLink } from "../shared/visualization"
 import { copyTranscriptMedia, getTranscriptMediaDir, parseTranscriptMediaUrl, retargetEntryMediaUrls } from "./transcript-media"
 import type { TranscriptEntry } from "../shared/types"
+import { runTest } from "./effect/testing"
+import { testPlatformContext } from "./platform/testing"
 let dir: string
 beforeEach(async () => { dir = await mkdtemp(path.join(tmpdir(), "kanna-visualization-")) })
 afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
@@ -15,7 +17,7 @@ test("snapshots local HTML and keeps forked visualizations after the source is r
   const source = path.join(dir, 'demo.html')
   await writeFile(source, '<button onclick="this.textContent=42">Calculate</button>')
   const entries: TranscriptEntry[] = []
-  const runtime = new KannaToolRuntime({ chatId: 'source', cwd: dir, dataDir: dir,
+  const runtime = new KannaToolRuntime({ platform: testPlatformContext, chatId: 'source', cwd: dir, dataDir: dir,
     emit: async entry => { entries.push(entry) }, requestInput: async () => ({}) })
   const result = await runtime.execute('show_visualization', { title: 'Calculator', path: 'demo.html' })
   expect(result.isError).not.toBe(true)
@@ -24,7 +26,7 @@ test("snapshots local HTML and keeps forked visualizations after the source is r
   const artifact = readVisualizationArtifact(entry.content)!
   expect(artifact.title).toBe('Calculator')
   await rm(source)
-  await copyTranscriptMedia(dir, 'source', 'fork')
+  await runTest(copyTranscriptMedia(dir, 'source', 'fork'))
   const forked = retargetEntryMediaUrls(entry, 'source', 'fork')
   if (forked.kind !== 'tool_result') throw Error('Expected result')
   const fork = readVisualizationArtifact(forked.content)!
@@ -36,7 +38,7 @@ test("snapshots local HTML and keeps forked visualizations after the source is r
 })
 
 test("refuses a document that loads something external, and says what to do instead", async () => {
-  const runtime = new KannaToolRuntime({ chatId: 's', cwd: dir, dataDir: dir, emit: async () => {}, requestInput: async () => ({}) })
+  const runtime = new KannaToolRuntime({ platform: testPlatformContext, chatId: 's', cwd: dir, dataDir: dir, emit: async () => {}, requestInput: async () => ({}) })
   const refused = await runtime.execute('show_visualization', { title: 'CDN', html: '<script src="https://cdn.jsdelivr.net/npm/d3@7"></script><svg></svg>' })
   expect(refused.isError).toBe(true)
   expect(refused.content[0]!.text).toContain("a script from https://cdn.jsdelivr.net/npm/d3@7")
@@ -49,7 +51,7 @@ test("refuses a document that loads something external, and says what to do inst
 })
 
 test("rejects oversized UTF-8 and directories", async () => {
-  const runtime = new KannaToolRuntime({ chatId: 's', cwd: dir, dataDir: dir, emit: async () => {}, requestInput: async () => ({}) })
+  const runtime = new KannaToolRuntime({ platform: testPlatformContext, chatId: 's', cwd: dir, dataDir: dir, emit: async () => {}, requestInput: async () => ({}) })
   expect((await runtime.execute('show_visualization', { title: 'Too big', html: '💜'.repeat(600000) })).isError).toBe(true)
   expect((await runtime.execute('show_visualization', { title: 'Directory', path: dir })).isError).toBe(true)
 })

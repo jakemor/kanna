@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import type { ChatSchedule } from "../shared/types"
-import { computeFirstRun, computeNextRun, MAX_RECORDED_RUNS, MIN_SCHEDULE_INTERVAL_MS, parseTimeOfDay, ScheduleRunner, type ScheduleFireResult } from "./schedules"
+import { Effect, Exit, Result, Scope } from "effect"
+import {
+  computeFirstRun,
+  computeNextRun,
+  makeScheduleRunner,
+  MAX_RECORDED_RUNS,
+  MIN_SCHEDULE_INTERVAL_MS,
+  parseTimeOfDay,
+  type ScheduleFireResult,
+} from "./schedules"
+import { runTest } from "./effect/testing"
 
 const HOUR = 60 * 60 * 1_000
 
@@ -26,10 +36,31 @@ function memoryStore(initial: ChatSchedule[]) {
     byId,
     listSchedules: () => [...byId.values()],
     getSchedule: (id: string) => byId.get(id) ?? null,
-    setSchedule: async (next: ChatSchedule) => {
+    setSchedule: (next: ChatSchedule) => Effect.sync(() => {
       byId.set(next.id, next)
       return next
-    },
+    }),
+  }
+}
+
+/**
+ * A runner in a scope of its own, driven from Promise test code. `fire`
+ * stays an async function, adapted the way the orchestrator adapts its own.
+ */
+function makeTestRunner(deps: {
+  store: ReturnType<typeof memoryStore>
+  now?: () => number
+  fire: (schedule: ChatSchedule) => Promise<ScheduleFireResult>
+  onError?: (schedule: ChatSchedule, error: unknown) => void
+}) {
+  const scope = Effect.runSync(Scope.make())
+  const runner = Effect.runSync(Scope.provide(makeScheduleRunner({
+    ...deps,
+    fire: (entry) => Effect.tryPromise({ try: () => deps.fire(entry), catch: (error) => error }),
+  }), scope))
+  return {
+    tick: () => Effect.runPromise(runner.tick),
+    dispose: () => Effect.runSync(Scope.close(scope, Exit.void)),
   }
 }
 
@@ -80,7 +111,7 @@ describe("ScheduleRunner", () => {
     const fired: string[] = []
     // Ten intervals late.
     const now = 1_000 + 10 * HOUR
-    const runner = new ScheduleRunner({
+    const runner = makeTestRunner({
       store,
       now: () => now,
       fire: async (entry) => {
@@ -97,7 +128,7 @@ describe("ScheduleRunner", () => {
 
   test("a one-shot turns itself off after it runs", async () => {
     const store = memoryStore([schedule({ trigger: { kind: "once", at: 1_000 } })])
-    const runner = new ScheduleRunner({ store, now: () => 2_000, fire: async () => ({ outcome: "sent", chatId: "chat-1" }) })
+    const runner = makeTestRunner({ store, now: () => 2_000, fire: async () => ({ outcome: "sent", chatId: "chat-1" }) })
     await runner.tick()
     runner.dispose()
     expect(store.byId.get("s1")).toMatchObject({ enabled: false, nextRunAt: null, runCount: 1 })
@@ -107,7 +138,7 @@ describe("ScheduleRunner", () => {
     const store = memoryStore([schedule({ maxRuns: 2 })])
     let now = 1_000
     const results: ScheduleFireResult[] = [{ outcome: "skipped" }, { outcome: "sent", chatId: "c" }, { outcome: "sent", chatId: "c" }]
-    const runner = new ScheduleRunner({ store, now: () => now, fire: async () => results.shift()! })
+    const runner = makeTestRunner({ store, now: () => now, fire: async () => results.shift()! })
     await runner.tick()
     expect(store.byId.get("s1")).toMatchObject({ runCount: 0, enabled: true })
     now += HOUR
@@ -127,7 +158,7 @@ describe("ScheduleRunner", () => {
       { outcome: "skipped" },
       new Error("provider missing"),
     ]
-    const runner = new ScheduleRunner({
+    const runner = makeTestRunner({
       store,
       now: () => now,
       fire: async () => {
@@ -160,7 +191,7 @@ describe("ScheduleRunner", () => {
 
   test("a schedule whose target is gone turns itself off", async () => {
     const store = memoryStore([schedule()])
-    const runner = new ScheduleRunner({ store, now: () => 5_000, fire: async () => ({ outcome: "gone" }) })
+    const runner = makeTestRunner({ store, now: () => 5_000, fire: async () => ({ outcome: "gone" }) })
     await runner.tick()
     runner.dispose()
     expect(store.byId.get("s1")).toMatchObject({ enabled: false, nextRunAt: null, runCount: 0 })
@@ -169,7 +200,7 @@ describe("ScheduleRunner", () => {
   test("a failed run still moves on to the next slot", async () => {
     const store = memoryStore([schedule()])
     const errors: unknown[] = []
-    const runner = new ScheduleRunner({
+    const runner = makeTestRunner({
       store,
       now: () => 5_000,
       fire: async () => { throw new Error("provider missing") },
@@ -187,7 +218,7 @@ describe("ScheduleRunner", () => {
       schedule({ id: "later", nextRunAt: 9_999_999 }),
     ])
     const fired: string[] = []
-    const runner = new ScheduleRunner({
+    const runner = makeTestRunner({
       store,
       now: () => 5_000,
       fire: async (entry) => {
@@ -198,5 +229,65 @@ describe("ScheduleRunner", () => {
     await runner.tick()
     runner.dispose()
     expect(fired).toEqual([])
+  })
+
+  test("onError gets the error the run threw", async () => {
+    const store = memoryStore([schedule()])
+    const thrown = new Error("provider missing")
+    const errors: unknown[] = []
+    const runner = makeTestRunner({ store, now: () => 5_000, fire: async () => { throw thrown }, onError: (_entry, error) => errors.push(error) })
+    await runner.tick()
+    runner.dispose()
+    expect(errors).toEqual([thrown])
+  })
+
+  test("the timer fires a due schedule once started, and not before", async () => {
+    const fired = await runTest(Effect.gen(function* () {
+      const store = memoryStore([schedule({ nextRunAt: 0 })])
+      const fired: string[] = []
+      const runner = yield* makeScheduleRunner({
+        store,
+        fire: (entry) => Effect.sync(() => {
+          fired.push(entry.id)
+          return { outcome: "sent", chatId: "c" } as const
+        }),
+      })
+      yield* Effect.sleep("30 millis")
+      expect(fired).toEqual([])
+      yield* runner.start
+      yield* Effect.sleep("30 millis")
+      return fired
+    }))
+    expect(fired).toEqual(["s1"])
+  })
+
+  test("closing the scope stops the timer", async () => {
+    const fired: string[] = []
+    await runTest(Effect.gen(function* () {
+      const store = memoryStore([schedule({ nextRunAt: Date.now() + 40 })])
+      const runner = yield* makeScheduleRunner({
+        store,
+        fire: (entry) => Effect.sync(() => {
+          fired.push(entry.id)
+          return { outcome: "sent", chatId: "c" } as const
+        }),
+      })
+      yield* runner.start
+    }))
+    await Bun.sleep(80)
+    expect(fired).toEqual([])
+  })
+
+  test("a schedule that cannot be written back fails the pass", async () => {
+    const result = await runTest(Effect.gen(function* () {
+      const store = memoryStore([schedule()])
+      const runner = yield* makeScheduleRunner({
+        store: { ...store, setSchedule: () => Effect.fail("disk full" as const) },
+        now: () => 5_000,
+        fire: () => Effect.succeed({ outcome: "skipped" } as const),
+      })
+      return yield* Effect.result(runner.tick)
+    }))
+    expect(Result.isFailure(result) && result.failure).toBe("disk full")
   })
 })

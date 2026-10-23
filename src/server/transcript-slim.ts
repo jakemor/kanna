@@ -1,6 +1,4 @@
-import { createReadStream } from "node:fs"
-import { rename, rm, stat, writeFile } from "node:fs/promises"
-import { createInterface } from "node:readline"
+import { Effect, FileSystem, Option, Predicate, Schema, Stream } from "effect"
 import type { TranscriptEntry } from "../shared/types"
 import { STRUCTURED_RESULT_TOOL_KINDS, readStructuredResult } from "./events"
 
@@ -57,55 +55,81 @@ export function slimTranscriptEntry(entry: TranscriptEntry, structuredToolIds: S
 
 /**
  * Rewrite one transcript file in place through a temp file and rename.
- * Unparseable lines are copied through untouched. When no line changes the
- * temp file is discarded and the original is left alone, mtime included.
+ * Unparseable lines, and `null` lines, are copied through untouched. When no line changes the temp file
+ * is never written and the original is left alone, mtime included.
  *
  * `transform` runs on every parsed entry after the slim, for rewrites that
  * need I/O of their own (moving inline images to disk). It must return the
- * same object when it changes nothing.
+ * same object when it changes nothing. Its failure fails the rewrite, and
+ * the file is left as it was.
  */
-export async function slimTranscriptFile(
+export const slimTranscriptFile = Effect.fn("TranscriptSlim.slimFile")(function* <E = never, R = never>(
   transcriptPath: string,
-  transform?: (entry: TranscriptEntry) => Promise<TranscriptEntry>
-): Promise<SlimTranscriptFileResult> {
-  const bytesBefore = (await stat(transcriptPath)).size
+  transform?: (entry: TranscriptEntry) => Effect.Effect<TranscriptEntry, E, R>,
+): Effect.fn.Return<SlimTranscriptFileResult, TranscriptSlimError | E, FileSystem.FileSystem | R> {
+  yield* Effect.annotateCurrentSpan("transcriptPath", transcriptPath)
+  const fs = yield* FileSystem.FileSystem
+  const fail = (cause: unknown) => Effect.fail(new TranscriptSlimError({ transcriptPath, cause }))
+  const bytesBefore = Number((yield* fs.stat(transcriptPath).pipe(Effect.catchTag("PlatformError", fail))).size)
   const tempPath = `${transcriptPath}.slim.tmp`
   const structuredToolIds = new Set<string>()
   const output: string[] = []
   let changed = false
 
-  const lines = createInterface({ input: createReadStream(transcriptPath, "utf8"), crlfDelay: Infinity })
-  for await (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line) continue
-    let entry: TranscriptEntry
-    try {
-      entry = JSON.parse(line) as TranscriptEntry
-    } catch {
-      output.push(rawLine)
-      continue
-    }
-    let slimmed = slimTranscriptEntry(entry, structuredToolIds)
-    if (transform) slimmed = await transform(slimmed)
-    if (slimmed === entry) {
-      output.push(line)
-      continue
-    }
-    changed = true
-    output.push(JSON.stringify(slimmed))
-  }
+  // Split as `readline` did: on \n, \r\n and a lone \r.
+  yield* fs.stream(transcriptPath).pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+    Stream.runForEach((rawLine) => {
+      const line = rawLine.trim()
+      if (!line) return Effect.void
+      const entry = Option.filter(decodeJsonLine(line), Predicate.isNotNull)
+      if (Option.isNone(entry)) {
+        output.push(rawLine)
+        return Effect.void
+      }
+      // TranscriptEntry has no Schema (shared/types.ts stays plain types).
+      // The slim reads only the fields it checks, and a line it does not
+      // recognise comes back as the same object and is copied through.
+      const parsed = entry.value as TranscriptEntry
+      const slimmed = slimTranscriptEntry(parsed, structuredToolIds)
+      const record = (next: TranscriptEntry) => {
+        if (next === parsed) {
+          output.push(line)
+          return
+        }
+        changed = true
+        output.push(JSON.stringify(next))
+      }
+      if (!transform) return Effect.sync(() => record(slimmed))
+      return transform(slimmed).pipe(Effect.map(record))
+    }),
+    Effect.catchTag("PlatformError", fail),
+  )
 
   if (!changed) {
     return { changed: false, bytesBefore, bytesAfter: bytesBefore }
   }
 
   const payload = output.length > 0 ? `${output.join("\n")}\n` : ""
-  try {
-    await writeFile(tempPath, payload, "utf8")
-    await rename(tempPath, transcriptPath)
-  } catch (error) {
-    await rm(tempPath, { force: true })
-    throw error
-  }
+  yield* fs.writeFileString(tempPath, payload).pipe(
+    Effect.andThen(fs.rename(tempPath, transcriptPath)),
+    Effect.catchTag("PlatformError", fail),
+    Effect.onError(() => fs.remove(tempPath, { force: true }).pipe(Effect.ignore)),
+  )
   return { changed: true, bytesBefore, bytesAfter: Buffer.byteLength(payload, "utf8") }
+})
+
+const decodeJsonLine = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+
+export class TranscriptSlimError extends Schema.TaggedError<TranscriptSlimError>()(
+  "@kanna/server/transcript-slim/TranscriptSlimError",
+  {
+    transcriptPath: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause)
+  }
 }

@@ -3,11 +3,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { readdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { LARGE_FILE_BYTES, TurnFileTracker, type TouchedFile } from "./worktree-snapshot"
+import { Effect, Layer, ManagedRuntime } from "effect"
+import { TestPlatform } from "./effect/testing"
+import { LARGE_FILE_BYTES, TurnFileRecordError, TurnFileTracker, type TouchedFile } from "./worktree-snapshot"
 
 const tempDirs: string[] = []
+const runtimes: Array<ManagedRuntime.ManagedRuntime<TurnFileTracker, never>> = []
 
 afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()))
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
@@ -42,12 +46,19 @@ async function createRepo() {
 /** A tracker over one repo, collecting what it records per chat. */
 function trackerFor(repoRoot: string | null) {
   const recordedFiles = new Map<string, TouchedFile[]>()
-  const tracker = new TurnFileTracker({
+  const runtime = ManagedRuntime.make(TurnFileTracker.layer({
     resolveChatPath: () => repoRoot,
-    recordFiles: async (chatId, files) => {
+    recordFiles: (chatId, files) => Effect.sync(() => {
       recordedFiles.set(chatId, [...(recordedFiles.get(chatId) ?? []), ...files])
-    },
-  })
+    }),
+  }).pipe(Layer.provide(TestPlatform)))
+  runtimes.push(runtime)
+  /** The tracker's calls, run to completion. */
+  const tracker = {
+    beginTurn: (chatId: string) => runtime.runPromise(Effect.flatMap(Effect.service(TurnFileTracker), (service) => service.beginTurn(chatId))),
+    endTurn: (chatId: string) => runtime.runPromise(Effect.flatMap(Effect.service(TurnFileTracker), (service) => service.endTurn(chatId))),
+    forget: (chatId: string) => runtime.runPromise(Effect.flatMap(Effect.service(TurnFileTracker), (service) => service.forget(chatId))),
+  }
   const pathsFor = (chatId: string) => (recordedFiles.get(chatId) ?? []).map((file) => file.path)
   /** One whole turn: snapshot, let `mutate` play the agent, snapshot and diff. */
   const runTurn = async (chatId: string, mutate: () => Promise<void>) => {
@@ -472,5 +483,41 @@ describe("TurnFileTracker", () => {
 
     expect(recorded.get("chat-a")?.map((file) => file.path)).toEqual(["a.txt"])
     expect(recorded.get("chat-b")?.map((file) => file.path)).toEqual(["b.txt"])
+  })
+
+  test("a turn ends cleanly when its files cannot be recorded", async () => {
+    // File tracking must never break a turn's completion path: the failure is
+    // logged, and the end of the turn still succeeds.
+    const repoRoot = await createRepo()
+    let attempts = 0
+    const runtime = ManagedRuntime.make(TurnFileTracker.layer({
+      resolveChatPath: () => repoRoot,
+      recordFiles: (chatId) => Effect.suspend(() => {
+        attempts += 1
+        return Effect.fail(new TurnFileRecordError({ chatId, cause: new Error("disk full") }))
+      }),
+    }).pipe(Layer.provide(TestPlatform)))
+    runtimes.push(runtime)
+
+    await runtime.runPromise(Effect.gen(function* () {
+      const tracker = yield* TurnFileTracker
+      yield* tracker.beginTurn("chat-1")
+      yield* Effect.promise(() => writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8"))
+      yield* tracker.endTurn("chat-1")
+    }))
+
+    expect(attempts).toBe(1)
+  })
+
+  test("a turn the tracker was told to forget records nothing", async () => {
+    const repoRoot = await createRepo()
+    const { tracker, recordedFiles: recorded } = trackerFor(repoRoot)
+
+    await tracker.beginTurn("chat-1")
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+    await tracker.forget("chat-1")
+    await tracker.endTurn("chat-1")
+
+    expect(recorded.has("chat-1")).toBe(false)
   })
 })

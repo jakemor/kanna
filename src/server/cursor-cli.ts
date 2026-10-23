@@ -1,15 +1,15 @@
-import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { homedir } from "node:os"
-import { createInterface } from "node:readline"
-import type { Readable, Writable } from "node:stream"
+import { Cause, Context, Effect, FileSystem, Layer, Match, Option, Queue, Schema, Stream, type Scope } from "effect"
 import type { ContextWindowUsageSnapshot } from "../shared/types"
 import { asNumber, asRecord, asString } from "../shared/json"
 import { normalizeToolCall } from "../shared/tools"
-import type { HarnessEvent, HarnessTurn } from "./harness-types"
-import { AsyncQueue } from "./async-queue"
+import { collectCliOutput, lenient, pumpCliTurn, spawnCli, type SpawnCli } from "./cli-process"
+import type { HarnessEvent, HarnessTurnEffect } from "./harness-types"
 import type { KannaToolHost } from "./kanna-tools"
-import { createCursorKannaTools } from "./cursor-kanna-tools"
+import { createCursorKannaTools, type CursorKannaToolsError } from "./cursor-kanna-tools"
+import { HttpHost } from "./platform/http-host"
+import { Machine } from "./platform/machine"
+import type { CommandSpawnError } from "./process-utils"
 import { timestamped } from "./transcript"
 
 /**
@@ -32,18 +32,6 @@ import { timestamped } from "./transcript"
  *   - { type: "tool_call", subtype: "started"|"completed", call_id, tool_call: { <name>ToolCall: {...} } }
  *   - { type: "result", subtype: "success", is_error, duration_ms, result, session_id, usage }
  */
-
-// Minimal child-process surface so tests can inject a fake without rebuilding ChildProcess.
-export interface CursorChildProcess {
-  readonly stdin: Writable | null
-  readonly stdout: Readable | null
-  readonly stderr: Readable | null
-  kill(signal?: NodeJS.Signals): boolean
-  once(event: "close", listener: (code: number | null) => void): unknown
-  once(event: "error", listener: (err: Error) => void): unknown
-}
-
-export type SpawnCursorAgent = (args: { cwd: string; argv: string[] }) => CursorChildProcess
 
 export interface StartCursorTurnArgs {
   customTools?: KannaToolHost
@@ -175,12 +163,45 @@ function extractCursorTool(toolCall: unknown): {
   return { rawName: "unknown", args: {} }
 }
 
-function extractAssistantText(message: unknown): string {
-  const content = asRecord(message)?.content
-  if (!Array.isArray(content)) return ""
-  return content
-    .filter((item): item is Record<string, unknown> => asRecord(item)?.type === "text")
-    .map((item) => asString(item.text) ?? "")
+// One stdout line of `cursor-agent`, decoded conservatively: the event types
+// Kanna reads, each with the fields it uses. Other types ("user" prompt echo,
+// "thinking") and fields a newer CLI adds are ignored, not rejected.
+const CursorTextBlock = Schema.Struct({ type: Schema.Literal("text"), text: lenient(Schema.String) })
+
+const CursorEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("system"),
+    subtype: lenient(Schema.String),
+    session_id: lenient(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assistant"),
+    message: lenient(Schema.Struct({ content: lenient(Schema.Array(Schema.Unknown)) })),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("tool_call"),
+    subtype: lenient(Schema.String),
+    call_id: lenient(Schema.String),
+    // Keyed by tool (`shellToolCall`, `readToolCall`, …): read by extractCursorTool.
+    tool_call: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("result"),
+    is_error: Schema.optional(Schema.Unknown),
+    duration_ms: lenient(Schema.Finite),
+    result: lenient(Schema.String),
+    usage: Schema.optional(Schema.Unknown),
+  }),
+])
+type CursorEvent = typeof CursorEvent.Type
+
+const decodeCursorEvent = Schema.decodeUnknownOption(Schema.fromJsonString(CursorEvent))
+const decodeTextBlock = Schema.decodeUnknownOption(CursorTextBlock)
+
+function extractAssistantText(content: ReadonlyArray<unknown> | undefined): string {
+  return (content ?? [])
+    .flatMap((item) => Option.toArray(decodeTextBlock(item)))
+    .map((block) => block.text ?? "")
     .join("")
 }
 
@@ -191,114 +212,91 @@ function extractAssistantText(message: unknown): string {
 export function parseCursorLine(line: string, configuredModel: string): HarnessEvent[] {
   const trimmed = line.trim()
   if (!trimmed) return []
+  const decoded = decodeCursorEvent(trimmed)
+  if (Option.isNone(decoded)) return []
+  return cursorEventToHarnessEvents(decoded.value, configuredModel, trimmed)
+}
 
-  let value: Record<string, unknown> | null
-  try {
-    value = asRecord(JSON.parse(trimmed))
-  } catch {
-    return []
-  }
-  if (!value) return []
+function cursorEventToHarnessEvents(event: CursorEvent, configuredModel: string, debugRaw: string): HarnessEvent[] {
+  return Match.value(event).pipe(
+    Match.discriminatorsExhaustive("type")({
+      system: (value): HarnessEvent[] => {
+        if (value.subtype !== "init") return []
+        const events: HarnessEvent[] = []
+        if (value.session_id) events.push({ type: "session_token", sessionToken: value.session_id })
+        events.push({
+          type: "transcript",
+          entry: timestamped({
+            kind: "system_init",
+            provider: "cursor",
+            model: configuredModel,
+            tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "TodoWrite"],
+            agents: [],
+            slashCommands: [],
+            mcpServers: [],
+            debugRaw,
+          }),
+        })
+        return events
+      },
 
-  const type = asString(value.type)
-  const debugRaw = trimmed
+      assistant: (value): HarnessEvent[] => {
+        const text = extractAssistantText(value.message?.content)
+        if (!text) return []
+        return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
+      },
 
-  switch (type) {
-    case "system": {
-      if (asString(value.subtype) !== "init") return []
-      const events: HarnessEvent[] = []
-      const sessionId = asString(value.session_id)
-      if (sessionId) events.push({ type: "session_token", sessionToken: sessionId })
-      events.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "system_init",
-          provider: "cursor",
-          model: configuredModel,
-          tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "TodoWrite"],
-          agents: [],
-          slashCommands: [],
-          mcpServers: [],
-          debugRaw,
-        }),
-      })
-      return events
-    }
+      tool_call: (value): HarnessEvent[] => {
+        const callId = value.call_id ?? randomUUID()
+        const { rawName, args, result } = extractCursorTool(value.tool_call)
 
-    case "assistant": {
-      const text = extractAssistantText(value.message)
-      if (!text) return []
-      return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
-    }
-
-    case "tool_call": {
-      const subtype = asString(value.subtype)
-      const callId = asString(value.call_id) ?? randomUUID()
-      const { rawName, args, result } = extractCursorTool(value.tool_call)
-
-      if (subtype === "started") {
-        const { toolName, input } = translateCursorTool(rawName, args)
-        return [
-          {
+        if (value.subtype === "started") {
+          const { toolName, input } = translateCursorTool(rawName, args)
+          return [{
             type: "transcript",
             entry: timestamped({
               kind: "tool_call",
               tool: normalizeToolCall({ toolName, toolId: callId, input }),
             }),
-          },
-        ]
-      }
+          }]
+        }
 
-      if (subtype === "completed") {
-        // Only flag an error when Cursor explicitly reports one. A missing/non-object
-        // result (e.g. a bare string) is treated as success rather than a false error.
-        const resultRecord = asRecord(result)
-        const isError = Boolean(resultRecord && ("error" in resultRecord || "failure" in resultRecord))
-        const content = resultRecord?.success ?? resultRecord?.error ?? resultRecord?.failure ?? result
-        return [
-          {
+        if (value.subtype === "completed") {
+          // Only flag an error when Cursor explicitly reports one. A missing/non-object
+          // result (e.g. a bare string) is treated as success rather than a false error.
+          const resultRecord = asRecord(result)
+          const isError = Boolean(resultRecord && ("error" in resultRecord || "failure" in resultRecord))
+          const content = resultRecord?.success ?? resultRecord?.error ?? resultRecord?.failure ?? result
+          return [{
             type: "transcript",
-            entry: timestamped({
-              kind: "tool_result",
-              toolId: callId,
-              content,
-              isError,
-            }),
-          },
-        ]
-      }
+            entry: timestamped({ kind: "tool_result", toolId: callId, content, isError }),
+          }]
+        }
 
-      return []
-    }
+        return []
+      },
 
-    case "result": {
-      const events: HarnessEvent[] = []
-      const usage = normalizeCursorUsage(value.usage)
-      if (usage) {
+      result: (value): HarnessEvent[] => {
+        const events: HarnessEvent[] = []
+        const usage = normalizeCursorUsage(value.usage)
+        if (usage) {
+          events.push({ type: "transcript", entry: timestamped({ kind: "context_window_updated", usage }) })
+        }
+        const isError = Boolean(value.is_error)
         events.push({
           type: "transcript",
-          entry: timestamped({ kind: "context_window_updated", usage }),
+          entry: timestamped({
+            kind: "result",
+            subtype: isError ? "error" : "success",
+            isError,
+            durationMs: value.duration_ms ?? 0,
+            result: value.result ?? "",
+          }),
         })
-      }
-      const isError = Boolean(value.is_error)
-      events.push({
-        type: "transcript",
-        entry: timestamped({
-          kind: "result",
-          subtype: isError ? "error" : "success",
-          isError,
-          durationMs: asNumber(value.duration_ms) ?? 0,
-          result: asString(value.result) ?? "",
-        }),
-      })
-      return events
-    }
-
-    // "user" (prompt echo), "thinking" (reasoning), and unknown types are dropped —
-    // Kanna already records the user prompt and has no reasoning transcript kind.
-    default:
-      return []
-  }
+        return events
+      },
+    }),
+  )
 }
 
 /**
@@ -311,71 +309,74 @@ export function clarifyCursorAuthError(detail: string): string {
   return detail.replace(/'(?:cursor-)?agent login'/, "'cursor-agent login' (or 'agent login')")
 }
 
-export class CursorCliManager {
-  private readonly spawnProcess: SpawnCursorAgent
+export class CursorModelListError extends Schema.TaggedError<CursorModelListError>()(
+  "@kanna/server/cursor-cli/CursorModelListError",
+  {
+    message: Schema.String,
+    exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+  },
+) {}
 
-  constructor(args: { spawnProcess?: SpawnCursorAgent } = {}) {
-    this.spawnProcess =
-      args.spawnProcess ??
-      (({ cwd, argv }) =>
-        spawn("cursor-agent", argv, {
-          cwd,
-          stdio: ["pipe", "pipe", "pipe"],
-          env: process.env,
-        }) as unknown as CursorChildProcess)
-  }
+export interface CursorCliOptions {
+  /** Default: the real `cursor-agent`. Tests pass a fake (`cli-process.fake.ts`). */
+  readonly spawnProcess?: SpawnCli
+}
 
+/**
+ * The Cursor CLI (`cursor-agent`): a headless process per turn, and the
+ * account's model list.
+ */
+export class CursorCli extends Context.Service<CursorCli, {
+  /**
+   * Spawns `cursor-agent` for one turn, in the caller's scope: closing the
+   * scope kills the process and stops Kanna's tools for it. The turn's events
+   * end after the process exits; an exit without a result (spawn failure,
+   * auth error, bad model) ends them with an error result carrying stderr.
+   */
+  readonly startTurn: (
+    args: StartCursorTurnArgs,
+  ) => Effect.Effect<HarnessTurnEffect, CursorKannaToolsError, Scope.Scope>
   /**
    * Ask the CLI which models the account can use (`cursor-agent --list-models`).
-   * Rejects when the binary is missing, unauthenticated, or times out — callers
+   * Fails when the binary is missing, unauthenticated, or times out — callers
    * are expected to fall back to the static catalog.
    */
-  async listModels(timeoutMs = 30_000): Promise<CursorModelListEntry[]> {
+  readonly listModels: (
+    timeoutMs?: number,
+  ) => Effect.Effect<CursorModelListEntry[], CursorModelListError | CommandSpawnError>
+}>()("@kanna/server/CursorCli") {
+  static readonly layer = (options: CursorCliOptions = {}) => Layer.effect(this, makeCursorCli(options))
+}
+
+export const makeCursorCli = Effect.fn("CursorCli.make")(function* (options: CursorCliOptions = {}) {
+  // Only these two: the whole context would carry the layer's Scope over the turn's.
+  const kannaToolsContext = Context.pick(FileSystem.FileSystem, HttpHost)(yield* Effect.context<FileSystem.FileSystem | HttpHost>())
+  const spawnProcess = options.spawnProcess ?? (yield* spawnCli("cursor-agent"))
+  const machine = yield* Machine
+
+  const listModels = Effect.fn("CursorCli.listModels")(function* (timeoutMs = 30_000) {
     // The model list is account-level, not workspace-level — spawn from HOME.
-    const child = this.spawnProcess({ cwd: homedir(), argv: ["--list-models"] })
-
-    return await new Promise<CursorModelListEntry[]>((resolve, reject) => {
-      let stdout = ""
-      let stderr = ""
-      let settled = false
-      const settle = (complete: () => void) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeout)
-        complete()
-      }
-      const timeout = setTimeout(() => {
-        settle(() => reject(new Error(`cursor-agent --list-models timed out after ${timeoutMs}ms`)))
-        try {
-          child.kill()
-        } catch {
-          // process already gone
-        }
-      }, timeoutMs)
-
-      child.stdout?.on("data", (chunk: Buffer | string) => {
-        stdout += chunk.toString()
-      })
-      child.stderr?.on("data", (chunk: Buffer | string) => {
-        stderr += chunk.toString()
-      })
-      child.once("error", (err) => settle(() => reject(err)))
-      child.once("close", (code) => settle(() => {
-        const models = parseCursorModelList(stdout)
-        if (code === 0 && models.length > 0) {
-          resolve(models)
-          return
-        }
-        reject(new Error(
-          clarifyCursorAuthError(stderr.trim())
-            || `cursor-agent --list-models exited with code ${code ?? "unknown"} without listing models`,
-        ))
-      }))
-      child.stdin?.end()
+    const output = yield* spawnProcess({ cwd: machine.homeDirectory, argv: ["--list-models"] }).pipe(
+      Effect.flatMap(collectCliOutput),
+      Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: timeoutMs,
+        orElse: () => Effect.fail(new CursorModelListError({
+          message: `cursor-agent --list-models timed out after ${timeoutMs}ms`,
+        })),
+      }),
+    )
+    const models = parseCursorModelList(output.stdout)
+    if (output.exitCode === 0 && models.length > 0) return models
+    return yield* new CursorModelListError({
+      message: clarifyCursorAuthError(output.stderr.trim())
+        || `cursor-agent --list-models exited with code ${output.exitCode ?? "unknown"} without listing models`,
+      exitCode: output.exitCode,
     })
-  }
+  })
 
-  async startTurn(args: StartCursorTurnArgs): Promise<HarnessTurn> {
+  const startTurn = Effect.fn("CursorCli.startTurn")(function* (args: StartCursorTurnArgs) {
+    yield* Effect.annotateCurrentSpan("model", args.model)
     const argv = [
       "-p",
       "--output-format",
@@ -388,89 +389,51 @@ export class CursorCliManager {
       argv.push("--resume", args.sessionToken)
     }
 
-    const customTools = args.customTools ? await createCursorKannaTools(args.customTools) : undefined
+    // Ends the events if the scope closes before the process does.
+    const queue = yield* Queue.unbounded<HarnessEvent, Cause.Done>()
+    yield* Effect.addFinalizer(() => Queue.end(queue))
+
+    const customTools = args.customTools
+      ? yield* createCursorKannaTools(args.customTools).pipe(Effect.provide(kannaToolsContext))
+      : undefined
     if (customTools) argv.push("--plugin-dir", customTools.directory, "--approve-mcps")
-    let child: CursorChildProcess
-    try {
-      child = this.spawnProcess({ cwd: args.cwd, argv })
-    } catch (error) {
-      customTools?.close()
-      throw error
-    }
-    const queue = new AsyncQueue<HarnessEvent>()
+    const closeTools = customTools?.close ?? Effect.void
 
     let sawResult = false
-    let finished = false
-    let stderr = ""
-
-    const finalize = (code: number | null) => {
-      if (finished) return
-      finished = true
-      customTools?.close()
-      if (!sawResult) {
-        const detail = clarifyCursorAuthError(stderr.trim()) || `cursor-agent exited with code ${code ?? "unknown"}`
-        queue.push({
-          type: "transcript",
-          entry: timestamped({
-            kind: "result",
-            subtype: "error",
-            isError: true,
-            durationMs: 0,
-            result: detail,
-          }),
-        })
-      }
-      queue.finish()
-    }
-
-    if (child.stdout) {
-      const rl = createInterface({ input: child.stdout })
-      rl.on("line", (line) => {
-        for (const event of parseCursorLine(line, args.model)) {
-          if (event.type === "transcript" && event.entry?.kind === "result") {
-            sawResult = true
-          }
-          queue.push(event)
+    const proc = yield* pumpCliTurn({
+      // The prompt goes over stdin, which is then closed so the agent starts.
+      spawn: spawnProcess({ cwd: args.cwd, argv, stdin: args.content }),
+      onLine: (line) => Effect.forEach(parseCursorLine(line, args.model), (event) => {
+        if (event.type === "transcript" && event.entry?.kind === "result") sawResult = true
+        return Queue.offer(queue, event)
+      }, { discard: true }),
+      onExit: ({ code, stderr }) => Effect.gen(function* () {
+        yield* closeTools
+        if (!sawResult) {
+          const detail = clarifyCursorAuthError(stderr.trim()) || `cursor-agent exited with code ${code ?? "unknown"}`
+          yield* Queue.offer(queue, {
+            type: "transcript",
+            entry: timestamped({
+              kind: "result",
+              subtype: "error",
+              isError: true,
+              durationMs: 0,
+              result: detail,
+            }),
+          })
         }
-      })
-    }
-
-    if (child.stderr) {
-      child.stderr.on("data", (chunk: Buffer | string) => {
-        stderr += chunk.toString()
-      })
-    }
-
-    child.once("error", (err) => {
-      stderr += `\n${err.message}`
-      finalize(null)
+        yield* Queue.end(queue)
+      }),
     })
-    child.once("close", (code) => finalize(code))
-
-    // Send the prompt over stdin and close it so the agent starts.
-    if (child.stdin) {
-      child.stdin.end(args.content)
-    }
 
     return {
       provider: "cursor",
-      stream: queue,
-      interrupt: async () => {
-        customTools?.close()
-        try {
-          child.kill("SIGINT")
-        } catch {
-          // process already gone
-        }
-      },
-      close: () => {
-        customTools?.close()
-        try {
-          child.kill()
-        } catch {
-          // process already gone
-        }
-      },
-    }
-  }
-}
+      events: Stream.fromQueue(queue),
+      interrupt: closeTools.pipe(
+        Effect.andThen(Option.match(proc, { onNone: () => Effect.void, onSome: (child) => child.kill("SIGINT") })),
+      ),
+    } satisfies HarnessTurnEffect
+  })
+
+  return { startTurn, listModels } satisfies CursorCli["Service"]
+})

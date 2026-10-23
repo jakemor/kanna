@@ -1,5 +1,3 @@
-import { statSync } from "node:fs"
-import process from "node:process"
 import type {
   ChatRuntime,
   ChatSnapshot,
@@ -17,6 +15,8 @@ import type { WorkingTreeProbe } from "./diff-store"
 import type { ProjectRepoLabel } from "./worktree-probe"
 import type { ChatRecord, StoreState, TouchedFile } from "./events"
 import { resolveLocalPath } from "./paths"
+import { Effect } from "effect"
+import type { FileSystemExtras } from "./platform/file-system-extras"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 import { isSubChat } from "../shared/sub-chat"
 import { buildTranscriptOutline } from "../shared/transcript-window"
@@ -25,12 +25,20 @@ import type { TranscriptOutlineEntry } from "../shared/types"
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
 
-function getFolderModifiedAt(localPath: string) {
-  try {
-    return statSync(resolveLocalPath(localPath)).mtimeMs
-  } catch {
-    return undefined
-  }
+/** A precise folder mtime, loaded before the synchronous snapshot derivation. */
+export const folderModifiedAtReader = (files: Pick<FileSystemExtras["Service"], "stat">, homeDir: string) => (localPath: string) =>
+  files.stat(resolveLocalPath(localPath, homeDir)).pipe(
+    Effect.map((info) => info.mtimeMs),
+    Effect.orElseSucceed(() => undefined),
+  )
+
+/** What the home page's machine row and "modified" sort need from the machine. */
+export interface LocalMachineFacts {
+  readonly displayName: string
+  readonly platform: NodeJS.Platform
+  /** Where `~` in a project path points. */
+  readonly homeDirectory: string
+  readonly folderModifiedAt: (localPath: string) => number | undefined
 }
 
 export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): KannaStatus {
@@ -387,17 +395,18 @@ export function isCodexScratchWorkspacePath(localPath: string) {
 export function deriveLocalProjectsSnapshot(
   state: StoreState,
   discoveredProjects: Array<{ localPath: string; title: string; modifiedAt: number }>,
-  machineName: string
+  machine: LocalMachineFacts,
 ): LocalProjectsSnapshot {
+  const { folderModifiedAt, homeDirectory } = machine
   const projects = new Map<string, LocalProjectsSnapshot["projects"][number]>()
   const hiddenPaths = new Set(
     [...state.projectsById.values()]
       .filter((project) => project.deletedAt)
-      .map((project) => resolveLocalPath(project.localPath))
+      .map((project) => resolveLocalPath(project.localPath, homeDirectory))
   )
 
   for (const project of discoveredProjects) {
-    const normalizedPath = resolveLocalPath(project.localPath)
+    const normalizedPath = resolveLocalPath(project.localPath, homeDirectory)
     // Discovery must not restore projects that the user hid.
     if (hiddenPaths.has(normalizedPath)) continue
     if (hasHiddenPathSegment(normalizedPath)) continue
@@ -407,7 +416,7 @@ export function deriveLocalProjectsSnapshot(
       title: project.title,
       source: "discovered",
       lastOpenedAt: project.modifiedAt,
-      folderModifiedAt: getFolderModifiedAt(normalizedPath),
+      folderModifiedAt: folderModifiedAt(normalizedPath),
       chatCount: 0,
     })
   }
@@ -425,7 +434,7 @@ export function deriveLocalProjectsSnapshot(
       source: "saved",
       ...(project.sidebarTitle ? { sidebarTitle: project.sidebarTitle } : {}),
       lastOpenedAt,
-      folderModifiedAt: getFolderModifiedAt(project.localPath),
+      folderModifiedAt: folderModifiedAt(project.localPath),
       chatCount: chats.length,
     })
   }
@@ -433,8 +442,8 @@ export function deriveLocalProjectsSnapshot(
   return {
     machine: {
       id: "local",
-      displayName: machineName,
-      platform: process.platform,
+      displayName: machine.displayName,
+      platform: machine.platform,
     },
     projects: [...projects.values()].sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0)),
   }

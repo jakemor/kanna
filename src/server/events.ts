@@ -1,3 +1,4 @@
+import { Option, Schema } from "effect"
 import type { AgentProvider, ChatSchedule, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
@@ -649,10 +650,14 @@ export function cloneTranscriptEntriesForClient(
  */
 export function readStructuredResult(debugRaw: string | undefined): unknown {
   if (debugRaw === undefined) return undefined
-  try {
-    return (JSON.parse(debugRaw) as { tool_use_result?: unknown }).tool_use_result
-  } catch {
-    // Corrupt debugRaw is not worth failing a transcript render over.
-    return undefined
-  }
+  // Corrupt debugRaw, or JSON that is not an object, is not worth failing a
+  // transcript render over: it reads as no result.
+  return Option.match(decodeRawProviderMessage(debugRaw), {
+    onNone: () => undefined,
+    onSome: (message) => message.tool_use_result,
+  })
 }
+
+const decodeRawProviderMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ tool_use_result: Schema.optionalKey(Schema.Unknown) })),
+)

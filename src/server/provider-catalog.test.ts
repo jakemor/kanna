@@ -12,6 +12,7 @@ import {
   normalizeCursorModelOptions,
   normalizeServerModel,
   resetServerProvidersForTests,
+  resolveCodexModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
 import { DEFAULT_PI_FAVE_MODELS, DEFAULT_PI_MODEL, resolveClaudeApiModelId } from "../shared/types"
@@ -307,6 +308,21 @@ describe("provider catalog normalization", () => {
       ["gpt-6-astra", "GPT-6 Astra", false],
       ["gpt-6-mini", "GPT 6 Mini", false],
     ])
+  })
+
+  test("resolveCodexModel replaces a stale saved id only after loading the live catalog", () => {
+    expect(resolveCodexModel("saved-model")).toEqual({ model: "saved-model" })
+
+    applyCodexModels([
+      { model: "current-default", isDefault: true },
+      { model: "current-other" },
+    ])
+
+    expect(resolveCodexModel("current-other")).toEqual({ model: "current-other" })
+    expect(resolveCodexModel("saved-model")).toEqual({
+      model: "current-default",
+      replaced: "saved-model",
+    })
   })
 
   test("applyCursorModels groups models by family and preserves CLI order within a group", () => {

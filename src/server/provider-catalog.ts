@@ -52,8 +52,13 @@ function createServerProviders(): ProviderCatalogEntry[] {
 
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
 
+// Only a catalog returned by Codex is authoritative enough to reject a saved
+// model id. The static catalog is a cold-start fallback, not an allowlist.
+let codexModelsAreLive = false
+
 export function resetServerProvidersForTests() {
   SERVER_PROVIDERS.splice(0, SERVER_PROVIDERS.length, ...createServerProviders())
+  codexModelsAreLive = false
 }
 
 /**
@@ -237,6 +242,7 @@ export function applyCodexModels(models: ReadonlyArray<CodexAppServerModelInfo>)
     })
   }
   if (nextModels.length === 0) return false
+  codexModelsAreLive = true
 
   // Keep Kanna's default when the account still has it; otherwise the
   // server-marked default, then the first listed model.
@@ -348,6 +354,15 @@ export function normalizeServerModel(provider: AgentProvider, model?: string): s
   // applyCodexModels / applyCursorModels) — the catalog is only a picker, so
   // unknown ids pass through for the provider to validate.
   return normalizeProviderModelId(provider, model, catalog.defaultModel)
+}
+
+/** Use the saved model when it is still live; otherwise use Codex's live default. */
+export function resolveCodexModel(model?: string): { model: string; replaced?: string } {
+  const normalized = normalizeServerModel("codex", model)
+  if (!codexModelsAreLive) return { model: normalized }
+  const catalog = getServerProviderCatalog("codex")
+  if (catalog.models.some((option) => option.id === normalized)) return { model: normalized }
+  return { model: catalog.defaultModel, replaced: normalized }
 }
 
 export function normalizeClaudeModelOptions(

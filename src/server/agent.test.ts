@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -21,6 +21,7 @@ import type { HarnessTurn } from "./harness-types"
 import type { SubagentActivityUpdate } from "./background-tasks"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
+import { applyCodexModels, resetServerProvidersForTests } from "./provider-catalog"
 import { timestamped } from "./transcript"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
@@ -375,6 +376,10 @@ describe("buildSteeredMessageContent", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
+  afterEach(() => {
+    resetServerProvidersForTests()
+  })
+
   test("generates a chat title in the background on the first user message", async () => {
     let releaseTitle!: () => void
     const titleGate = new Promise<void>((resolve) => {
@@ -746,6 +751,51 @@ describe("AgentCoordinator codex integration", () => {
 
     expect(sessionCalls).toEqual([{ chatId: "chat-1", sessionToken: null, serviceTier: "fast" }])
     expect(turnCalls).toEqual([{ effort: "xhigh", serviceTier: "fast" }])
+  })
+
+  test("uses the live default when a saved codex model is stale", async () => {
+    const sessionModels: string[] = []
+    const turnModels: string[] = []
+    const backgroundErrors: string[] = []
+    const fakeCodexManager = {
+      async startSession(args: { model: string }) {
+        sessionModels.push(args.model)
+      },
+      async startTurn(args: { model: string }): Promise<HarnessTurn> {
+        turnModels.push(args.model)
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "" }),
+          }
+        }
+        return { provider: "codex", stream: stream(), interrupt: async () => {}, close: () => {} }
+      },
+    }
+
+    applyCodexModels([{ model: "current-default", isDefault: true }])
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+    coordinator.setBackgroundErrorReporter((message) => backgroundErrors.push(message))
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "hello",
+      model: "saved-model",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(sessionModels).toEqual(["current-default"])
+    expect(turnModels).toEqual(["current-default"])
+    expect(backgroundErrors).toEqual([
+      "[codex-models] saved-model is not in this account's Codex model list; running current-default instead",
+    ])
   })
 
   test("approving synthetic codex ExitPlanMode starts a hidden follow-up turn and can clear context", async () => {

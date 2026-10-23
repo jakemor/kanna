@@ -77,6 +77,7 @@ import {
   normalizeGrokModelOptions,
   normalizePiModelOptions,
   normalizeServerModel,
+  resolveCodexModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
 import { resolveClaudeApiModelId } from "../shared/types"
@@ -1129,6 +1130,7 @@ export class AgentCoordinator {
   private cursorModelCatalogApplied = false
   private grokModelCatalogApplied = false
   private codexModelCatalogRefresh: Promise<void> | null = null
+  private readonly reportedCodexModelFallbacks = new Set<string>()
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   /**
@@ -1766,7 +1768,13 @@ export class AgentCoordinator {
       }
     }
 
-    const model = normalizeServerModel(provider, options.model)
+    const { model, replaced } = resolveCodexModel(options.model)
+    if (replaced && !this.reportedCodexModelFallbacks.has(replaced)) {
+      this.reportedCodexModelFallbacks.add(replaced)
+      this.reportBackgroundError?.(
+        `[codex-models] ${replaced} is not in this account's Codex model list; running ${model} instead`,
+      )
+    }
     const modelOptions = normalizeCodexModelOptions(model, options.modelOptions, options.effort)
     return {
       model,

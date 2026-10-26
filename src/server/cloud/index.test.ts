@@ -72,3 +72,50 @@ describe("createCloudRuntime direct mode", () => {
     expect(offlines).toBe(1)
   })
 })
+
+describe("createCloudRuntime tunnel mode", () => {
+  test("start() twice runs one supervisor with one connector; stop() stops it and marks offline", async () => {
+    let offlines = 0
+    const starts: number[] = []
+    const stops: number[] = []
+    const apiClient: CloudApiClient = {
+      controlUrl: DEFAULT_CLOUD_CONTROL_URL,
+      pair: async () => {
+        throw new Error("not used")
+      },
+      requestDeviceCode: async () => {
+        throw new Error("not used")
+      },
+      pollDeviceCode: async () => {
+        throw new Error("not used")
+      },
+      heartbeat: async () => {},
+      markOffline: async () => {
+        offlines += 1
+      },
+      removeMachine: async () => {},
+    }
+
+    const runtime = createCloudRuntime({ ...DIRECT_IDENTITY, mode: undefined, tunnelToken: "connector-token" }, {
+      apiClient,
+      supervisorDeps: {
+        startTunnelImpl: async () => {
+          const index = starts.length
+          starts.push(index)
+          return { publicUrl: null, stop: () => stops.push(index) }
+        },
+        sleepImpl: () => new Promise(() => {}),
+      },
+    })
+
+    runtime.start({ localUrl: "http://localhost:3210" })
+    runtime.start({ localUrl: "http://localhost:3210" })
+    await waitFor(() => starts.length === 1)
+    await Bun.sleep(10)
+    expect(starts).toEqual([0])
+
+    await runtime.stop()
+    expect(stops).toEqual([0])
+    expect(offlines).toBe(1)
+  })
+})

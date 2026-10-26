@@ -92,6 +92,49 @@ describe("cloud api client", () => {
     }
   })
 
+  test("a heartbeat the control plane never answers rejects at the request deadline", async () => {
+    const signals: AbortSignal[] = []
+    // Accepts the request and never responds; only an abort settles it.
+    const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal
+        signals.push(signal)
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      })) as typeof fetch
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud", requestTimeoutMs: 30 })
+
+    const started = Date.now()
+    await expect(client.heartbeat("token", { localUrl: "http://localhost:3210" })).rejects.toThrow(
+      "control plane /heartbeat timed out after 0.03s",
+    )
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(signals[0].aborted).toBe(true)
+  })
+
+  test("every request carries a deadline signal", async () => {
+    const { fetchImpl, calls } = fakeFetch(() => Response.json({ ok: true }))
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
+
+    await client.markOffline("token")
+    await client.removeMachine("token")
+    await client.heartbeat("token", { localUrl: "http://localhost:3210" })
+    expect(calls.map((call) => call.init.signal instanceof AbortSignal)).toEqual([true, true, true])
+  })
+
+  test("a caller's abort cancels the heartbeat and is reported as an abort, not a timeout", async () => {
+    const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+      })) as typeof fetch
+    const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })
+    const controller = new AbortController()
+
+    const pending = client.heartbeat("token", { localUrl: "http://localhost:3210" }, { signal: controller.signal })
+    controller.abort(new Error("supervisor stopped"))
+    await expect(pending).rejects.toThrow("supervisor stopped")
+  })
+
   test("markOffline posts with the bearer token", async () => {
     const { fetchImpl, calls } = fakeFetch(() => Response.json({ ok: true }))
     const client = createCloudApiClient({ fetchImpl, controlUrl: "http://cp/api/cloud" })

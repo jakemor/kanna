@@ -13,7 +13,7 @@
 import type { CloudApiClient } from "./api-client"
 import { CloudApiError } from "./api-client"
 import type { CloudIdentity } from "./identity"
-import { defaultSleep } from "./tunnel-supervisor"
+import { cloudLogStamp, defaultSleep } from "./tunnel-supervisor"
 
 /** Matches the supervisor's effective cadence (ping × every-4th ≈ 2 min). */
 const HEARTBEAT_INTERVAL_MS = 120_000
@@ -42,8 +42,10 @@ export interface HeartbeatLoopArgs {
 }
 
 export function startCloudHeartbeatLoop(args: HeartbeatLoopArgs): CloudHeartbeatLoop {
-  const log = args.log ?? (() => {})
-  const warn = args.warn ?? log
+  const rawLog = args.log ?? (() => {})
+  const rawWarn = args.warn ?? rawLog
+  const log = (message: string) => rawLog(`${cloudLogStamp()} ${message}`)
+  const warn = (message: string) => rawWarn(`${cloudLogStamp()} ${message}`)
   const sleepImpl = args.deps?.sleepImpl ?? defaultSleep
   const intervalMs = args.deps?.intervalMs ?? HEARTBEAT_INTERVAL_MS
   const retryIntervalMs = args.deps?.retryIntervalMs ?? RETRY_INTERVAL_MS
@@ -57,7 +59,11 @@ export function startCloudHeartbeatLoop(args: HeartbeatLoopArgs): CloudHeartbeat
 
     while (!stopped) {
       try {
-        await args.apiClient.heartbeat(args.identity.machineToken, { localUrl: args.localUrl })
+        // The client bounds the request (CONTROL_PLANE_REQUEST_TIMEOUT_MS);
+        // the signal cancels it on stop().
+        await args.apiClient.heartbeat(args.identity.machineToken, { localUrl: args.localUrl }, {
+          signal: abortController.signal,
+        })
         if (!hasEverConnected) {
           hasEverConnected = true
           log(`cloud: connected (${args.identity.appOrigin})`)
@@ -68,6 +74,7 @@ export function startCloudHeartbeatLoop(args: HeartbeatLoopArgs): CloudHeartbeat
         }
         failing = false
       } catch (error) {
+        if (stopped) return
         if (error instanceof CloudApiError && error.status === 401) {
           warn("cloud: this machine was revoked on kanna.sh — run `kanna pair` again (or `kanna pair --disable` to silence this)")
           return

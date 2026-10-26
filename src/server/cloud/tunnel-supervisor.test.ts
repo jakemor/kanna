@@ -170,7 +170,7 @@ describe("tunnel supervisor (named tunnel)", () => {
     expect(connectors.stopped).toEqual([0])
   })
 
-  test("heartbeats every Nth successful ping", async () => {
+  test("heartbeats every Nth ping round", async () => {
     const sleep = createManualSleep()
     const connectors = createFakeConnectors()
     const api = createFakeApi()

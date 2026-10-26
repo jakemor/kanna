@@ -26,9 +26,23 @@ export class CloudApiError extends Error {
   }
 }
 
+/**
+ * Every control-plane request gets this deadline. Bun's fetch has none of its
+ * own: a request to a server that accepts and never answers (or a pooled
+ * keep-alive socket that died across sleep/wake) stays pending forever, and
+ * on Oct 25 2026 one such `/heartbeat` left the machine offline for ~2h.
+ */
+export const CONTROL_PLANE_REQUEST_TIMEOUT_MS = 15_000
+
 export interface CloudApiClientDeps {
   fetchImpl?: typeof fetch
   controlUrl?: string
+  requestTimeoutMs?: number
+}
+
+export interface CloudRequestOptions {
+  /** Aborts the request early, e.g. when the supervisor stops or restarts. */
+  signal?: AbortSignal
 }
 
 export interface CloudApiClient {
@@ -45,7 +59,7 @@ export interface CloudApiClient {
    */
   pollDeviceCode(deviceToken: string): Promise<CloudDeviceCodePollResponse>
   /** Liveness + the local service the connector fronts (~every 2 min). */
-  heartbeat(machineToken: string, update: CloudHeartbeatRequest): Promise<void>
+  heartbeat(machineToken: string, update: CloudHeartbeatRequest, options?: CloudRequestOptions): Promise<void>
   /** Best-effort graceful shutdown signal — flips the machine offline immediately. */
   markOffline(machineToken: string): Promise<void>
   removeMachine(machineToken: string): Promise<void>
@@ -74,13 +88,25 @@ async function readErrorMessage(response: Response) {
 export function createCloudApiClient(deps: CloudApiClientDeps = {}): CloudApiClient {
   const fetchImpl = deps.fetchImpl ?? fetch
   const controlUrl = resolveControlUrl(deps.controlUrl)
+  const requestTimeoutMs = deps.requestTimeoutMs ?? CONTROL_PLANE_REQUEST_TIMEOUT_MS
 
-  async function request(path: string, init: RequestInit) {
-    const response = await fetchImpl(`${controlUrl}${path}`, init)
-    if (!response.ok) {
-      throw new CloudApiError(await readErrorMessage(response), response.status)
+  async function request(path: string, init: RequestInit, options: CloudRequestOptions = {}) {
+    const timeout = AbortSignal.timeout(requestTimeoutMs)
+    // The signal also covers reading the body, so an error response whose
+    // body stalls can't hang readErrorMessage either.
+    const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout
+    try {
+      const response = await fetchImpl(`${controlUrl}${path}`, { ...init, signal })
+      if (!response.ok) {
+        throw new CloudApiError(await readErrorMessage(response), response.status)
+      }
+      return response
+    } catch (error) {
+      if (timeout.aborted && !options.signal?.aborted) {
+        throw new Error(`control plane ${path} timed out after ${requestTimeoutMs / 1000}s`)
+      }
+      throw error
     }
-    return response
   }
 
   return {
@@ -133,7 +159,7 @@ export function createCloudApiClient(deps: CloudApiClientDeps = {}): CloudApiCli
       return payload
     },
 
-    async heartbeat(machineToken, update) {
+    async heartbeat(machineToken, update, options) {
       await request("/heartbeat", {
         method: "POST",
         headers: {
@@ -141,7 +167,7 @@ export function createCloudApiClient(deps: CloudApiClientDeps = {}): CloudApiCli
           Authorization: `Bearer ${machineToken}`,
         },
         body: JSON.stringify(update),
-      })
+      }, options)
     },
 
     async markOffline(machineToken) {

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events"
 import { describe, expect, test } from "bun:test"
 import { ensureCloudflaredInstalled, logShareDetails, renderTerminalQr, startShareTunnel } from "./share"
 
@@ -140,6 +141,135 @@ describe("startShareTunnel", () => {
     })
 
     expect(shareTunnel.publicUrl).toBe("https://app.example.com")
+  })
+})
+
+/** A cloudflared stand-in driven by the test: emit events, record signals. */
+function createFakeProcess() {
+  const emitter = new EventEmitter()
+  const signals: string[] = []
+  const fake = {
+    once(event: string, listener: (...args: any[]) => void) {
+      emitter.once(event, listener)
+      return fake
+    },
+    off(event: string, listener: (...args: any[]) => void) {
+      emitter.off(event, listener)
+      return fake
+    },
+    stop() {
+      signals.push("SIGINT")
+      return true
+    },
+    process: {
+      kill(signal?: NodeJS.Signals) {
+        signals.push(signal ?? "SIGTERM")
+        return true
+      },
+    },
+    emit(event: string, ...args: unknown[]) {
+      emitter.emit(event, ...args)
+    },
+    listenerCount(event: string) {
+      return emitter.listenerCount(event)
+    },
+  }
+  return { fake, signals }
+}
+
+/** Reports "connected" right after spawn, once startShareTunnel is listening. */
+function readyOnSpawn(fake: ReturnType<typeof createFakeProcess>["fake"]) {
+  queueMicrotask(() => fake.emit("connected"))
+  return fake as never
+}
+
+describe("startShareTunnel cancellation", () => {
+  const NAMED = { kind: "token", token: "secret-token" } as const
+
+  test("readiness that never arrives rejects when the signal aborts, and the process is stopped", async () => {
+    const { fake, signals } = createFakeProcess()
+    const started = Date.now()
+
+    await expect(startShareTunnel("http://localhost:3333", NAMED, {
+      existsSync: () => true,
+      createNamedTunnel: () => fake as never,
+    }, { signal: AbortSignal.timeout(30) })).rejects.toThrow()
+
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(signals).toEqual(["SIGINT"])
+  })
+
+  test("an already-aborted signal starts no process", async () => {
+    let created = 0
+    const controller = new AbortController()
+    controller.abort(new Error("supervisor stopped"))
+
+    await expect(startShareTunnel("http://localhost:3333", NAMED, {
+      existsSync: () => true,
+      createNamedTunnel: () => {
+        created += 1
+        return createFakeProcess().fake as never
+      },
+    }, { signal: controller.signal })).rejects.toThrow("supervisor stopped")
+    expect(created).toBe(0)
+  })
+
+  test("exited resolves when the connector dies after becoming ready", async () => {
+    const { fake } = createFakeProcess()
+    const tunnel = await startShareTunnel("http://localhost:3333", NAMED, {
+      existsSync: () => true,
+      createNamedTunnel: () => readyOnSpawn(fake),
+    })
+
+    let exited = false
+    void tunnel.exited?.then(() => {
+      exited = true
+    })
+    fake.emit("exit", 1, null)
+    await Bun.sleep(1)
+    expect(exited).toBe(true)
+  })
+
+  test("a late cloudflared error is logged, not thrown", async () => {
+    const { fake } = createFakeProcess()
+    const logs: string[] = []
+    await startShareTunnel("http://localhost:3333", NAMED, {
+      existsSync: () => true,
+      createNamedTunnel: () => readyOnSpawn(fake),
+      log: (message) => logs.push(message),
+    })
+
+    fake.emit("error", new Error("bad config line"))
+    fake.emit("error", new Error("another"))
+    expect(logs).toEqual(["cloudflared error: bad config line", "cloudflared error: another"])
+  })
+
+  test("stop() sends SIGINT once and escalates to SIGKILL if the connector outlives the grace period", async () => {
+    const { fake, signals } = createFakeProcess()
+    const tunnel = await startShareTunnel("http://localhost:3333", NAMED, {
+      existsSync: () => true,
+      createNamedTunnel: () => readyOnSpawn(fake),
+      stopGraceMs: 20,
+    })
+
+    tunnel.stop()
+    tunnel.stop()
+    await Bun.sleep(60)
+    expect(signals).toEqual(["SIGINT", "SIGKILL"])
+  })
+
+  test("stop() does not escalate once the connector has exited", async () => {
+    const { fake, signals } = createFakeProcess()
+    const tunnel = await startShareTunnel("http://localhost:3333", NAMED, {
+      existsSync: () => true,
+      createNamedTunnel: () => readyOnSpawn(fake),
+      stopGraceMs: 20,
+    })
+
+    tunnel.stop()
+    fake.emit("exit", 0, null)
+    await Bun.sleep(60)
+    expect(signals).toEqual(["SIGINT"])
   })
 })
 

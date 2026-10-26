@@ -1,6 +1,15 @@
+import { spawn, type ChildProcess } from "node:child_process"
+import { EventEmitter } from "node:events"
 import { existsSync } from "node:fs"
 import { renderANSI } from "uqr"
-import { ConfigHandler, Tunnel, bin as cloudflaredBin, install as installCloudflared } from "cloudflared"
+import {
+  ConfigHandler,
+  ConnectionHandler,
+  Tunnel,
+  bin as cloudflaredBin,
+  install as installCloudflared,
+  type OutputHandler,
+} from "cloudflared"
 import type { ShareMode } from "../shared/share"
 import { isTokenShareMode } from "../shared/share"
 
@@ -77,10 +86,60 @@ function normalizePublicUrl(url: string) {
   return /^https?:\/\//.test(url) ? url : `https://${url}`
 }
 
+export interface NamedTunnelSpawnDeps {
+  cloudflaredBin?: string
+  spawnImpl?: (command: string, args: string[], options: { stdio: ["ignore", "pipe", "pipe"]; env: NodeJS.ProcessEnv }) => ChildProcess
+}
+
+/**
+ * cloudflared running a token-authenticated tunnel. The library's
+ * Tunnel.withToken passes the token as `--token` in argv, where any local
+ * user can read it with `ps`. cloudflared also reads it from $TUNNEL_TOKEN,
+ * so this spawns the child with it there (that child's env only) and feeds
+ * the output to the library's own parsers for "connected" and hostname events.
+ */
+export class NamedTunnelProcess extends EventEmitter {
+  readonly process: ChildProcess
+  private readonly outputHandlers: OutputHandler[] = []
+
+  constructor(token: string, localUrl: string, deps: NamedTunnelSpawnDeps = {}) {
+    super()
+    // The parsers only call addHandler() and emit() on the tunnel they're given.
+    const asTunnel = this as unknown as Tunnel
+    new ConnectionHandler(asTunnel)
+    new ConfigHandler(asTunnel)
+    this.process = (deps.spawnImpl ?? spawn)(
+      deps.cloudflaredBin ?? cloudflaredBin,
+      ["tunnel", "run", "--url", localUrl],
+      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TUNNEL_TOKEN: token } },
+    )
+    this.process.on("error", (error) => this.emit("error", error))
+    this.process.on("exit", (code, signal) => this.emit("exit", code, signal))
+    this.process.stdout?.on("data", (data) => this.handleOutput(String(data)))
+    this.process.stderr?.on("data", (data) => this.handleOutput(String(data)))
+  }
+
+  addHandler(handler: OutputHandler) {
+    this.outputHandlers.push(handler)
+  }
+
+  stop() {
+    return this.process.kill("SIGINT")
+  }
+
+  private handleOutput(output: string) {
+    for (const handler of this.outputHandlers) {
+      try {
+        handler(output, this as unknown as Tunnel)
+      } catch (error) {
+        this.emit("error", error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+  }
+}
+
 function createNamedTunnel(token: string, localUrl: string) {
-  const tunnel = Tunnel.withToken(token, { "--url": localUrl })
-  new ConfigHandler(tunnel)
-  return tunnel
+  return new NamedTunnelProcess(token, localUrl)
 }
 
 async function awaitTunnelReady(

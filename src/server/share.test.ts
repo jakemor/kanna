@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events"
 import { describe, expect, test } from "bun:test"
-import { ensureCloudflaredInstalled, logShareDetails, renderTerminalQr, startShareTunnel } from "./share"
+import type { ChildProcess } from "node:child_process"
+import { ensureCloudflaredInstalled, logShareDetails, NamedTunnelProcess, renderTerminalQr, startShareTunnel } from "./share"
 
 describe("ensureCloudflaredInstalled", () => {
   test("returns immediately when the binary already exists", async () => {
@@ -270,6 +271,79 @@ describe("startShareTunnel cancellation", () => {
     fake.emit("exit", 0, null)
     await Bun.sleep(60)
     expect(signals).toEqual(["SIGINT"])
+  })
+})
+
+/** Records how cloudflared was spawned and lets the test write its output. */
+function createFakeSpawn() {
+  const spawned: Array<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> = []
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    killed: [] as Array<string | undefined>,
+    kill(signal?: NodeJS.Signals) {
+      child.killed.push(signal)
+      return true
+    },
+  })
+  const spawnImpl = (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+    spawned.push({ command, args, env: options.env })
+    return child as unknown as ChildProcess
+  }
+  return { spawnImpl, spawned, child }
+}
+
+const REGISTERED_LINE = "2026-10-26T01:10:41Z INF Registered tunnel connection connIndex=0 "
+  + "connection=1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d event=0 ip=198.41.192.7 location=ewr08 protocol=quic\n"
+
+describe("NamedTunnelProcess", () => {
+  test("passes the token in the child's TUNNEL_TOKEN, never in argv or this process's env", () => {
+    const { spawnImpl, spawned } = createFakeSpawn()
+    new NamedTunnelProcess("secret-token", "http://localhost:3210", { cloudflaredBin: "/tmp/cloudflared", spawnImpl })
+
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].command).toBe("/tmp/cloudflared")
+    expect(spawned[0].args).toEqual(["tunnel", "run", "--url", "http://localhost:3210"])
+    expect(spawned[0].args.some((arg) => arg.includes("secret-token"))).toBe(false)
+    expect(spawned[0].env.TUNNEL_TOKEN).toBe("secret-token")
+    expect(spawned[0].env.PATH).toBe(process.env.PATH)
+    expect(process.env.TUNNEL_TOKEN).toBeUndefined()
+  })
+
+  test("a registered-connection line makes startShareTunnel ready; stop() sends SIGINT", async () => {
+    const { spawnImpl, child } = createFakeSpawn()
+    const tunnel = await startShareTunnel("http://localhost:3210", { kind: "token", token: "secret-token" }, {
+      existsSync: () => true,
+      createNamedTunnel: (token, localUrl) => {
+        const named = new NamedTunnelProcess(token, localUrl, { spawnImpl })
+        queueMicrotask(() => child.stderr.emit("data", Buffer.from(REGISTERED_LINE)))
+        return named
+      },
+    })
+
+    expect(tunnel.publicUrl).toBeNull()
+    tunnel.stop()
+    expect(child.killed).toEqual(["SIGINT"])
+  })
+
+  test("the child's exit reaches exited", async () => {
+    const { spawnImpl, child } = createFakeSpawn()
+    const tunnel = await startShareTunnel("http://localhost:3210", { kind: "token", token: "secret-token" }, {
+      existsSync: () => true,
+      createNamedTunnel: (token, localUrl) => {
+        const named = new NamedTunnelProcess(token, localUrl, { spawnImpl })
+        queueMicrotask(() => child.stderr.emit("data", Buffer.from(REGISTERED_LINE)))
+        return named
+      },
+    })
+
+    let exited = false
+    void tunnel.exited?.then(() => {
+      exited = true
+    })
+    child.emit("exit", 1, null)
+    await Bun.sleep(1)
+    expect(exited).toBe(true)
   })
 })
 

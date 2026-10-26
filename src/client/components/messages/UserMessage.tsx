@@ -1,7 +1,6 @@
 import { useMemo, useRef } from "react"
 import type { ChatAttachment } from "../../../shared/types"
 import { stripSystemMessages } from "../../../shared/message-preview"
-import { CornerUpLeft } from "lucide-react"
 import { CLAMP_LINES, ClampedMessageText, FOLD_SURFACE_ATTRIBUTE } from "./ClampedMessageText"
 import { classifyAttachmentPreview } from "./attachmentPreview"
 import { AttachmentFileCard, AttachmentImageCard } from "./AttachmentCard"
@@ -12,7 +11,6 @@ import { cn } from "../../lib/utils"
 interface Props {
   content: string
   attachments?: ChatAttachment[]
-  steered?: boolean
   /**
    * Light the bubble — a jump just landed on this message.
    *
@@ -108,7 +106,7 @@ export function UserMessageAttachments({ attachments, align = "end" }: { attachm
  */
 export const USER_BUBBLE_CLASS = "min-w-0 rounded-2xl border border-border bg-muted text-primary prose prose-sm prose-invert"
 
-export function UserMessage({ content, attachments = [], steered = false, flash = false }: Props) {
+export function UserMessage({ content, attachments = [], flash = false }: Props) {
   const parsedContent = useMemo(() => parseSystemMessage(content), [content])
   const bubbleRef = useRef<HTMLDivElement | null>(null)
 
@@ -117,28 +115,16 @@ export function UserMessage({ content, attachments = [], steered = false, flash 
       <div className="flex flex-col items-end gap-2">
         <UserMessageAttachments attachments={attachments} />
         {(parsedContent.body || (!parsedContent.body && attachments.length === 0 && content && !parsedContent.systemMessage)) ? (
-          <div className="flex max-w-[85%] items-center gap-2 sm:max-w-[80%]">
-            {steered ? (
-              <span
-                aria-label="Sent mid-turn"
-                role="img"
-                title="Sent mid-turn"
-                className="shrink-0 text-muted-foreground"
-              >
-                <CornerUpLeft className="h-4 w-4" />
-              </span>
-            ) : null}
-            {/* The flash is a class on the bubble, not a layer inside it: a
-                sibling of the text's first block displaces the `:first-child`
-                margin reset onto itself, which grew the bubble by a
-                paragraph's top margin for the length of the flash. */}
-            <div ref={bubbleRef} {...{ [FOLD_SURFACE_ATTRIBUTE]: "" }} className={cn(
-              USER_BUBBLE_CLASS,
-              "flex-1 px-3.5 py-1.5",
-              flash && "kanna-jump-flash",
-            )}>
-              <ClampedMessageText text={parsedContent.body} lines={CLAMP_LINES.typed} scopeRef={bubbleRef} />
-            </div>
+          // The flash is a class on the bubble, not a layer inside it: a
+          // sibling of the text's first block displaces the `:first-child`
+          // margin reset onto itself, which grew the bubble by a paragraph's
+          // top margin for the length of the flash.
+          <div ref={bubbleRef} {...{ [FOLD_SURFACE_ATTRIBUTE]: "" }} className={cn(
+            USER_BUBBLE_CLASS,
+            "max-w-[85%] px-3.5 py-1.5 sm:max-w-[80%]",
+            flash && "kanna-jump-flash",
+          )}>
+            <ClampedMessageText text={parsedContent.body} lines={CLAMP_LINES.typed} scopeRef={bubbleRef} />
           </div>
         ) : null}
       </div>

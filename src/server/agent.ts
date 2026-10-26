@@ -2115,7 +2115,7 @@ export class AgentCoordinator {
 
     // Wire-only injections. The transcript above stores the user's typed text
     // verbatim; anything Kanna adds for the harness is applied here and never
-    // persisted (the `steered` flag on the entry drives the UI affordance).
+    // persisted (the entry records the steer in its `steered` flag instead).
     //
     // Steer: prefix the mid-turn <system-message> block — or suffix it when
     // the message is a slash invocation, since claude/pi only expand a message

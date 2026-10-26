@@ -161,12 +161,6 @@ describe("SourcedMessage", () => {
     expect(html.indexOf("Message from")).toBeLessThan(html.indexOf(">Another agent<"))
   })
 
-  test("the mid-turn mark stands beside the bubble, after the quote", () => {
-    const html = renderToStaticMarkup(<SourcedMessage content="hello" source={{ kind: "agent", chatId: "parent" }} steered />)
-    expect(html.indexOf('aria-label="Sent mid-turn"')).toBeGreaterThan(html.indexOf("rounded-2xl"))
-    expect(count(html, LINE)).toBe(1)
-  })
-
   test("only what a reader is shown becomes a bubble", () => {
     expect(sourcedSections("<system-message>for the agent</system-message>\n\nhello", { kind: "agent", chatId: "a" })).toEqual([{ chatId: null, body: "hello", status: null }])
     expect(sourcedSections("<system-message>for the agent</system-message>", { kind: "schedule", scheduleId: "s" })).toEqual([])

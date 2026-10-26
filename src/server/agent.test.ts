@@ -1984,7 +1984,7 @@ describe("AgentCoordinator claude integration", () => {
     expect(prompts[1]).toContain("<system-message>")
     expect(prompts[1]).toContain("</system-message>")
     // The steer block is wire-only: the transcript keeps the user's typed
-    // text verbatim, with the steered flag driving the UI affordance.
+    // text verbatim, with the steered flag recording the steer.
     const steeredEntry = store.messages.find(
       (entry) => entry.kind === "user_prompt" && entry.steered
     ) as Extract<TranscriptEntry, { kind: "user_prompt" }> | undefined

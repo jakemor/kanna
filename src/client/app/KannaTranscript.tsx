@@ -412,7 +412,6 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
     case "user_prompt":
       return left.content === (right.kind === "user_prompt" ? right.content : null)
         && right.kind === "user_prompt"
-        && left.steered === right.steered
         && sameAttachmentArray(left.attachments, right.attachments)
     case "system_init":
       return right.kind === "system_init"
@@ -604,8 +603,8 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
     const bubble = !promptHasBody(message)
       ? null
       : message.source
-        ? <SourcedMessage key={message.id} content={message.content} source={message.source} attachments={message.attachments} steered={message.steered} flash={flash} />
-        : <UserMessage key={message.id} content={message.content} attachments={message.attachments} steered={message.steered} flash={flash} />
+        ? <SourcedMessage key={message.id} content={message.content} source={message.source} attachments={message.attachments} flash={flash} />
+        : <UserMessage key={message.id} content={message.content} attachments={message.attachments} flash={flash} />
     rendered = showsOwnBoundary ? (
       // 20px apart, the gap two transcript rows sit at (see the row's padding
       // in ChatTranscriptViewport), so the boundary reads as the row above.

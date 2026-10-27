@@ -3,6 +3,7 @@ import type {
   ChatSchedule,
   KannaStatus,
   MessageSource,
+  ModelOptions,
   ScheduleTrigger,
   SubagentActivity,
   TranscriptEntry,
@@ -256,6 +257,20 @@ interface RunOptions {
 
 function chatLink(chatId: string) {
   return `/chat/${chatId}`
+}
+
+/**
+ * The options a chat last ran with (`ChatRecord.lastModelOptions`), for a turn
+ * that inherits its model. Only the provider's own entry carries over, and an
+ * effort the caller names wins: options outrank the bare `effort` when the
+ * agent resolves a turn's settings.
+ */
+function inheritModelOptions(options: ModelOptions | undefined, provider: AgentProvider, effort?: string): ModelOptions | undefined {
+  const own = options?.[provider]
+  if (!own) return undefined
+  if (!effort) return { [provider]: own }
+  const { reasoningEffort: _, ...rest } = own as { reasoningEffort?: unknown }
+  return { [provider]: rest }
 }
 
 function clip(text: string, limit: number) {
@@ -671,7 +686,7 @@ export class ChatOrchestrator {
   private resolveRun(
     actorChatId: string,
     requested: RunOptions,
-    defaults: { provider: AgentProvider | null; model?: string; planMode: boolean; autoPlan: boolean },
+    defaults: { provider: AgentProvider | null; model?: string; modelOptions?: ModelOptions; planMode: boolean; autoPlan: boolean },
   ) {
     const provider = requested.provider ?? defaults.provider ?? "claude"
     if (!SERVER_PROVIDERS.some((entry) => entry.id === provider)) {
@@ -690,6 +705,8 @@ export class ChatOrchestrator {
       provider,
       // A model belongs to its provider, so a default is not carried across a switch.
       model: requested.model ?? (sameProvider ? defaults.model : undefined),
+      // And its options go with it: a named model starts from that model's defaults.
+      modelOptions: !requested.model && sameProvider ? inheritModelOptions(defaults.modelOptions, provider, requested.effort) : undefined,
       effort: requested.effort,
       planMode: catalog.supportsPlanMode && (planning || (requested.planMode ?? defaults.planMode)),
       autoPlan: sameProvider && catalog.supportsAutoPlanMode ? defaults.autoPlan : false,
@@ -941,6 +958,7 @@ export class ChatOrchestrator {
     const run = this.resolveRun(actorChatId, input, {
       provider: caller.provider,
       model: caller.lastModel,
+      modelOptions: caller.lastModelOptions,
       planMode: false,
       autoPlan: false,
     })
@@ -983,6 +1001,7 @@ export class ChatOrchestrator {
       const run = this.resolveRun(actorChatId, input, {
         provider: chat.provider,
         model: source.lastModel,
+        modelOptions: source.lastModelOptions,
         planMode: chat.planMode,
         autoPlan: chat.autoPlan,
       })
@@ -1018,6 +1037,7 @@ export class ChatOrchestrator {
     const run = this.resolveRun(actorChatId, input, {
       provider: target.provider,
       model: target.lastModel,
+      modelOptions: target.lastModelOptions,
       planMode: target.planMode,
       autoPlan: target.autoPlan,
     })
@@ -1171,10 +1191,10 @@ export class ChatOrchestrator {
     if (options.report) await this.store.setReportOwed(target.id, true)
     try {
       if (options.steer) {
-        const { provider, model, effort, planMode, autoPlan } = run
+        const { provider, model, modelOptions, effort, planMode, autoPlan } = run
         // A steer either starts the message or throws, so nothing is left queued.
         await this.commands.enqueue(
-          { type: "message.enqueue", chatId: target.id, content, provider, model, planMode, autoPlan, steer: true },
+          { type: "message.enqueue", chatId: target.id, content, provider, model, modelOptions, planMode, autoPlan, steer: true },
           { source, effort },
         )
         return {}
@@ -1439,6 +1459,9 @@ export class ChatOrchestrator {
           content: schedule.content,
           provider,
           model: schedule.model ?? (provider === chat.provider ? chat.lastModel : undefined),
+          modelOptions: !schedule.model && provider && provider === chat.provider
+            ? inheritModelOptions(chat.lastModelOptions, provider, schedule.effort)
+            : undefined,
           effort: schedule.effort,
           planMode: schedule.planMode ?? chat.planMode,
           autoPlan: chat.autoPlan,
@@ -1931,9 +1954,10 @@ export class ChatOrchestrator {
       type: "chat.send",
       chatId: parent.id,
       content: appendReportSection(before, section),
-      // The parent carries on as it was running: same model and mode.
+      // The parent carries on as it was running: same model, options and mode.
       provider: parent.provider ?? undefined,
       model: parent.lastModel,
+      modelOptions: parent.lastModelOptions,
       planMode: parent.planMode,
       autoPlan: parent.autoPlan,
     }, { source: { kind: "report", chatIds } })

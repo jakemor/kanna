@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { AgentCoordinator } from "./agent"
+import { AgentCoordinator, claudeSessionEnv } from "./agent"
 import { NoopAnalyticsReporter } from "./analytics"
 import { AsyncQueue } from "./async-queue"
 import { createChatCommands } from "./chat-commands"
@@ -86,6 +86,43 @@ class FakeCodex {
   }
 }
 
+/**
+ * One Claude chat's sessions: each launch (what it was spawned with) and each
+ * in-place model switch. Turns end when the test says so.
+ */
+class FakeClaude {
+  readonly launches: Array<{ model: string; effort?: string; disable1m: boolean }> = []
+  readonly setModels: string[] = []
+  readonly prompts: string[] = []
+  private events: AsyncQueue<HarnessEvent> | null = null
+
+  start = async (args: { model: string; effort?: string }) => {
+    this.launches.push({
+      model: args.model,
+      effort: args.effort,
+      disable1m: claudeSessionEnv(args.model, {}).CLAUDE_CODE_DISABLE_1M_CONTEXT === "1",
+    })
+    const events = new AsyncQueue<HarnessEvent>()
+    this.events = events
+    return {
+      provider: "claude" as const,
+      stream: events,
+      getAccountInfo: async () => null,
+      interrupt: async () => {},
+      close: () => events.finish(),
+      setModel: async (model: string) => { this.setModels.push(model) },
+      setPermissionMode: async () => {},
+      sendPrompt: async (content: string) => { this.prompts.push(content) },
+    }
+  }
+
+  /** Ends the open turn, as the CLI's result does. */
+  finish(text: string) {
+    this.events!.push({ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) })
+    this.events!.push({ type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "" }) })
+  }
+}
+
 async function until(condition: () => boolean, label = "condition") {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     if (condition()) return
@@ -99,7 +136,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
 })
 
-async function setup(options?: { closeOutGraceMs?: number }) {
+async function setup(options?: { closeOutGraceMs?: number; claude?: FakeClaude }) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-orchestrator-data-"))
   const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-orchestrator-project-"))
   const store = new EventStore(dataDir)
@@ -110,6 +147,7 @@ async function setup(options?: { closeOutGraceMs?: number }) {
     store,
     onStateChange: () => {},
     codexManager: codex as never,
+    ...(options?.claude ? { startClaudeSession: options.claude.start as never } : {}),
     generateTitle: async () => ({ title: null, usedFallback: true, failureMessage: null }),
   })
   let clock: number | null = null
@@ -2484,5 +2522,85 @@ describe("sidebar visibility", () => {
     expect(store.getChat(created.chatId)?.hidden).toBe(true)
     expect(await call("send_message", { chatId: source, message: "hi", title: "x", showInSidebar: true })).toMatchObject({ error: expect.stringContaining("adopt") })
     runtime.abort()
+  })
+})
+
+describe("model options", () => {
+  // The user's own settings, as the composer sends them.
+  const userOptions = { claude: { contextWindow: "200k" as const, reasoningEffort: "medium" as const } }
+  const resolved = { claude: { contextWindow: "200k", reasoningEffort: "medium", fastMode: false } }
+
+  async function claudeParent() {
+    const claude = new FakeClaude()
+    const harness = await setup({ claude })
+    const root = (await harness.store.createChat(harness.project.id)).id
+    const userTurn = async (content: string) => {
+      const before = claude.prompts.length
+      await harness.agent.send({ type: "chat.send", chatId: root, provider: "claude", model: "opus", modelOptions: userOptions, content })
+      await until(() => claude.prompts.length === before + 1, "the user's turn")
+    }
+    const idle = () => until(() => !harness.agent.getActiveStatuses().has(root), "the parent at rest")
+    return { ...harness, claude, root, userTurn, idle }
+  }
+
+  test("a report runs the parent as the user last ran it: same window, effort and model id, and no restart", async () => {
+    const { orchestrator, codex, store, claude, root, userTurn, idle } = await claudeParent()
+    await userTurn("start the audit")
+    expect(claude.launches).toEqual([{ model: "opus", effort: "medium", disable1m: true }])
+    expect(store.getChat(root)).toMatchObject({ lastModel: "opus", lastModelOptions: resolved })
+
+    const child = await orchestrator.createChat(root, { message: "audit the parser", provider: "codex" })
+    claude.finish("Started the audit.")
+    await idle()
+
+    codex.finish(child.chatId, "Found two bugs.")
+    await until(() => claude.prompts.length === 2, "the report's turn")
+    expect(claude.prompts[1]).toContain("Found two bugs.")
+    claude.finish("Noted.")
+    await idle()
+
+    await userTurn("fix them")
+
+    // One session the whole way: no effort change to restart it, no "[1m]"
+    // model to switch it to.
+    expect(claude.launches).toHaveLength(1)
+    expect(claude.setModels).toEqual([])
+    expect(store.getChat(root)).toMatchObject({ lastModel: "opus", lastModelOptions: resolved })
+  })
+
+  test("a report queued behind the parent's turn carries the parent's options and runs the same way", async () => {
+    const { orchestrator, codex, store, claude, root, userTurn } = await claudeParent()
+    await userTurn("start the audit")
+
+    const child = await orchestrator.createChat(root, { message: "audit the parser", provider: "codex" })
+    codex.finish(child.chatId, "Found two bugs.")
+    await until(() => store.getQueuedMessages(root).length === 1, "the queued report")
+    expect(store.getQueuedMessages(root)[0]).toMatchObject({
+      source: { kind: "report", chatIds: [child.chatId] },
+      model: "opus",
+      modelOptions: resolved,
+    })
+
+    claude.finish("Started the audit.")
+    await until(() => claude.prompts.length === 2, "the report's turn")
+    expect(claude.prompts[1]).toContain("Found two bugs.")
+
+    expect(claude.launches).toEqual([{ model: "opus", effort: "medium", disable1m: true }])
+    expect(claude.setModels).toEqual([])
+    expect(store.getChat(root)).toMatchObject({ lastModel: "opus", lastModelOptions: resolved })
+  })
+
+  test("a message from another chat inherits the target's options, and an effort it names still wins", async () => {
+    const { orchestrator, store, claude, root, userTurn, idle, userChat } = await claudeParent()
+    await userTurn("start")
+    claude.finish("Done.")
+    await idle()
+    const other = await userChat()
+
+    await orchestrator.sendMessage(other, { chatId: root, message: "and the lexer", title: "x", effort: "low" })
+    await until(() => claude.prompts.length === 2, "the message's turn")
+    // The effort changed, so the session restarts at it; the window held.
+    expect(claude.launches.at(-1)).toEqual({ model: "opus", effort: "low", disable1m: true })
+    expect(store.getChat(root)?.lastModelOptions).toEqual({ claude: { contextWindow: "200k", reasoningEffort: "low", fastMode: false } })
   })
 })

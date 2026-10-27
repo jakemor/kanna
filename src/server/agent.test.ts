@@ -8,6 +8,7 @@ import {
   buildConcurrentAgentsNotice,
   buildPromptText,
   buildSteeredMessageContent,
+  claudeSessionEnv,
   claudeSystemPrompt,
   claudeToolset,
   formatQuestionAnswersFollowUp,
@@ -19,7 +20,7 @@ import {
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import type { SubagentActivityUpdate } from "./background-tasks"
-import type { ChatAttachment, TranscriptEntry } from "../shared/types"
+import type { ChatAttachment, ModelOptions, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
 
@@ -1802,6 +1803,84 @@ describe("AgentCoordinator claude integration", () => {
     queues.forEach((queue) => queue.close())
   })
 
+  test("a 200k Claude session spawns with the CLI's 1M window disabled", () => {
+    const base = { PATH: "/usr/bin", CLAUDECODE: "1" }
+    expect(claudeSessionEnv("opus", base)).toEqual({ PATH: "/usr/bin", CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" })
+    expect(claudeSessionEnv("sonnet", base)).toEqual({ PATH: "/usr/bin", CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" })
+    expect(claudeSessionEnv("opus[1m]", base)).toEqual({ PATH: "/usr/bin" })
+    // No 200k/1m choice on these, so nothing to enforce.
+    expect(claudeSessionEnv("haiku", base)).toEqual({ PATH: "/usr/bin" })
+    expect(claudeSessionEnv("fable", base)).toEqual({ PATH: "/usr/bin" })
+  })
+
+  test("switching the context window restarts the Claude session; switching model at the same window does not", async () => {
+    const queues: AsyncEventQueue<any>[] = []
+    const launches: Array<{ model: string; effort?: string; disable1m: boolean }> = []
+    const setModelCalls: string[] = []
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        launches.push({
+          model: args.model,
+          effort: args.effort,
+          disable1m: claudeSessionEnv(args.model, {}).CLAUDE_CODE_DISABLE_1M_CONTEXT === "1",
+        })
+        const events = new AsyncEventQueue<any>()
+        queues.push(events)
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => events.close(),
+          setModel: async (model: string) => {
+            setModelCalls.push(model)
+          },
+          setPermissionMode: async () => {},
+          sendPrompt: async () => {
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+            })
+          },
+        }
+      },
+    })
+
+    const send = async (model: string, contextWindow: "200k" | "1m") => {
+      await coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "go",
+        model,
+        modelOptions: { claude: { contextWindow, reasoningEffort: "medium" } },
+      })
+    }
+
+    await send("opus", "200k")
+    await waitFor(() => store.turnFinishedCount === 1)
+    // A real model change at the same window still reaches the session, in place.
+    await send("sonnet", "200k")
+    await waitFor(() => store.turnFinishedCount === 2)
+    // 200k → 1m changes the env the CLI was spawned with, so it restarts.
+    await send("sonnet", "1m")
+    await waitFor(() => store.turnFinishedCount === 3)
+    await send("sonnet", "1m")
+    await waitFor(() => store.turnFinishedCount === 4)
+
+    expect(launches).toEqual([
+      { model: "opus", effort: "medium", disable1m: true },
+      { model: "sonnet[1m]", effort: "medium", disable1m: false },
+    ])
+    expect(setModelCalls).toEqual(["sonnet"])
+
+    queues.forEach((queue) => queue.close())
+  })
+
   test("claudeToolset only offers EnterPlanMode in auto plan", () => {
     expect(claudeToolset(false)).not.toContain("EnterPlanMode")
     // ExitPlanMode stays available so a mid-session switch into plan mode
@@ -2922,6 +3001,39 @@ describe("AgentCoordinator restart resume", () => {
     expect(coordinator.activeTurns.has("chat-1")).toBe(true)
   })
 
+  test("a resumed turn runs with the options the chat last ran with", async () => {
+    const launches: Array<{ model: string; effort?: string }> = []
+    const store = createFakeStore()
+    store.chat.provider = "claude"
+    store.chat.sessionToken = "session-1"
+    store.chat.resumePending = true
+    store.chat.lastModel = "opus"
+    store.chat.lastModelOptions = { claude: { contextWindow: "200k", reasoningEffort: "medium", fastMode: false } }
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      checkSessionArtifact: () => "present" as SessionArtifactStatus,
+      startClaudeSession: async (args) => {
+        launches.push({ model: args.model, effort: args.effort })
+        return {
+          provider: "claude",
+          stream: new AsyncEventQueue<any>(),
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async () => {},
+        }
+      },
+    })
+
+    expect(await coordinator.resumeInterruptedTurn("chat-1")).toBe(true)
+    // Not the provider defaults (1m, high).
+    expect(launches).toEqual([{ model: "opus", effort: "medium" }])
+  })
+
   test("does not resume a chat with no session to resume into", async () => {
     const store = createFakeStore()
     store.chat.provider = "claude"
@@ -2953,6 +3065,7 @@ function createFakeChat(id: string, projectId: string, title = "New Chat") {
     pendingForkAt: null as string | null,
     resumePending: undefined as boolean | undefined,
     lastModel: undefined as string | undefined,
+    lastModelOptions: undefined as ModelOptions | undefined,
     deletedAt: undefined as number | undefined,
   }
 }

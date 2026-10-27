@@ -79,7 +79,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { resolveClaudeApiModelId } from "../shared/types"
+import { resolveClaudeApiModelId, shouldDisableClaude1mContext } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
@@ -368,6 +368,12 @@ interface StartTurnArgs {
   model: string
   effort?: string
   serviceTier?: "fast"
+  /**
+   * The provider's options, normalized, that `model`, `effort` and
+   * `serviceTier` were resolved from. Recorded with the turn so a turn the
+   * user did not send (a report, a resume) runs the same way.
+   */
+  modelOptions?: ModelOptions
   planMode: boolean
   autoPlan: boolean
   appendUserPrompt: boolean
@@ -912,6 +918,15 @@ function subagentHooks(
   }
 }
 
+/**
+ * The CLI's environment for a session on `model` (the resolved wire id). It is
+ * fixed at spawn, so a change to it restarts the session (startClaudeTurn).
+ */
+export function claudeSessionEnv(model: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const { CLAUDECODE: _, ...env } = base
+  return shouldDisableClaude1mContext(model) ? { ...env, CLAUDE_CODE_DISABLE_1M_CONTEXT: "1" } : env
+}
+
 async function startClaudeSession(args: {
   localPath: string
   model: string
@@ -1029,7 +1044,7 @@ async function startClaudeSession(args: {
       // enabling it while the UI shows "Standard".
       settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
+      env: claudeSessionEnv(args.model),
     },
   })
 
@@ -1730,6 +1745,7 @@ export class AgentCoordinator {
         serviceTier: serviceTierFromModelOptions(modelOptions),
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
         autoPlan: catalog.supportsAutoPlanMode ? Boolean(options.autoPlan) : false,
+        modelOptions: { claude: modelOptions },
       }
     }
 
@@ -1741,6 +1757,7 @@ export class AgentCoordinator {
         serviceTier: undefined,
         planMode: false,
         autoPlan: false,
+        modelOptions: { cursor: modelOptions },
       }
     }
 
@@ -1752,6 +1769,7 @@ export class AgentCoordinator {
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
         autoPlan: false,
+        modelOptions: { grok: modelOptions },
       }
     }
 
@@ -1763,6 +1781,7 @@ export class AgentCoordinator {
         serviceTier: undefined,
         planMode: false,
         autoPlan: false,
+        modelOptions: { pi: modelOptions },
       }
     }
 
@@ -1774,6 +1793,7 @@ export class AgentCoordinator {
       serviceTier: serviceTierFromModelOptions(modelOptions),
       planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
       autoPlan: catalog.supportsAutoPlanMode ? Boolean(options.autoPlan) : false,
+      modelOptions: { codex: modelOptions },
     }
   }
 
@@ -1811,6 +1831,7 @@ export class AgentCoordinator {
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
+      modelOptions: settings.modelOptions,
       planMode: settings.planMode,
       autoPlan: settings.autoPlan,
       appendUserPrompt: true,
@@ -2082,7 +2103,7 @@ export class AgentCoordinator {
       )
       await this.store.appendMessage(args.chatId, userPromptEntry)
     }
-    await this.store.recordTurnStarted(args.chatId, args.model)
+    await this.store.recordTurnStarted(args.chatId, args.model, args.modelOptions)
 
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
@@ -2371,13 +2392,16 @@ export class AgentCoordinator {
     // conversation carries over. The delegator instructions are part of the
     // system prompt, fixed at the same time, so a chat that became a
     // delegator or stopped being one restarts the same way, and the resumed
-    // session hears the new prompt (see claudeSystemPrompt).
+    // session hears the new prompt (see claudeSystemPrompt). A switch between
+    // 200k and 1m changes the session's env (claudeSessionEnv), so it
+    // restarts too rather than going through setModel.
     if (
       !session
       || session.localPath !== args.localPath
       || session.effort !== args.effort
       || session.autoPlan !== args.autoPlan
       || session.delegator !== args.delegator
+      || shouldDisableClaude1mContext(session.model) !== shouldDisableClaude1mContext(args.model)
       || args.forkSession
     ) {
       if (session) {
@@ -2504,6 +2528,7 @@ export class AgentCoordinator {
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
+      modelOptions: settings.modelOptions,
       planMode: settings.planMode,
       autoPlan: settings.autoPlan,
       appendUserPrompt: true,
@@ -2743,11 +2768,12 @@ export class AgentCoordinator {
     if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
 
     // Everything the chat record remembers about how the turn was running:
-    // the model it actually ran with plus the two persisted modes. Reasoning
-    // effort and fast mode are picked in the composer and never stored server
-    // side, so the resumed turn falls back to the provider defaults for those.
+    // the model and options it actually ran with plus the two persisted modes.
+    // A chat whose turns predate `lastModelOptions` falls back to the
+    // provider defaults for effort, context window and fast mode.
     const settings = this.getProviderSettings(chat.provider, {
       model: chat.lastModel,
+      modelOptions: chat.lastModelOptions,
       planMode: chat.planMode,
       autoPlan: chat.autoPlan,
     })
@@ -2759,6 +2785,7 @@ export class AgentCoordinator {
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
+      modelOptions: settings.modelOptions,
       planMode: settings.planMode,
       autoPlan: settings.autoPlan,
       appendUserPrompt: false,

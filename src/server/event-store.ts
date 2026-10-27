@@ -7,7 +7,7 @@ import { getDataDir, LOG_PREFIX } from "../shared/branding"
 import { toMessagePreview } from "../shared/message-preview"
 import { buildTranscriptOutline, findTranscriptWindowStart } from "../shared/transcript-window"
 import type { TranscriptOutlineEntry } from "../shared/types"
-import type { AgentProvider, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatSchedule, ModelOptions, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -1021,6 +1021,7 @@ export class EventStore {
         // Kept from the previous turn when this one didn't name a model, so a
         // resumed background turn doesn't blank what the chat last ran with.
         if (event.model) chat.lastModel = event.model
+        if (event.modelOptions) chat.lastModelOptions = event.modelOptions
         // A new turn means the user re-engaged, so the chat is no longer "done".
         delete chat.doneAt
         break
@@ -2298,8 +2299,8 @@ export class EventStore {
     await this.append(this.queuedMessagesLogPath, event)
   }
 
-  /** `model` is what this turn runs with; omitted where the caller has none to name. */
-  async recordTurnStarted(chatId: string, model?: string) {
+  /** `model` and `modelOptions` are what this turn runs with; omitted where the caller has none to name. */
+  async recordTurnStarted(chatId: string, model?: string, modelOptions?: ModelOptions) {
     this.requireChat(chatId)
     const event: TurnEvent = {
       v: STORE_VERSION,
@@ -2307,6 +2308,7 @@ export class EventStore {
       timestamp: Date.now(),
       chatId,
       ...(model ? { model } : {}),
+      ...(modelOptions ? { modelOptions } : {}),
     }
     await this.append(this.turnsLogPath, event)
     this.onTurnStarted?.(chatId)

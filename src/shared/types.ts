@@ -1019,6 +1019,16 @@ export function resolveClaudeApiModelId(modelId: string, contextWindow?: ClaudeC
   return resolveClaudeContextWindow(modelId, contextWindow) === "1m" ? `${modelId}[1m]` : modelId
 }
 
+// The CLI runs a model with a native 1M window at 1M whether or not the id
+// carries "[1m]", so leaving the suffix off does not pick 200k. For a model
+// that offers the 1m option, a resolved id without it (see
+// resolveClaudeApiModelId) means 200k was chosen, and only
+// CLAUDE_CODE_DISABLE_1M_CONTEXT makes that take effect.
+export function shouldDisableClaude1mContext(apiModelId: string): boolean {
+  return getClaudeContextWindowOptions(apiModelId).some((option) => option.id === "1m")
+    && !/\[1m\]$/i.test(apiModelId)
+}
+
 export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWindow): number {
   switch (contextWindow) {
     case "1m":

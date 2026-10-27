@@ -14,7 +14,7 @@ import {
   resetServerProvidersForTests,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { DEFAULT_PI_FAVE_MODELS, DEFAULT_PI_MODEL, resolveClaudeApiModelId } from "../shared/types"
+import { DEFAULT_PI_FAVE_MODELS, DEFAULT_PI_MODEL, resolveClaudeApiModelId, shouldDisableClaude1mContext } from "../shared/types"
 
 describe("provider catalog normalization", () => {
   afterEach(() => {
@@ -370,6 +370,21 @@ describe("provider catalog normalization", () => {
     // context window options — it's clamped at resolution time.
     expect(resolveClaudeApiModelId("fable", "1m")).toBe("fable")
     expect(resolveClaudeApiModelId("haiku", "1m")).toBe("haiku")
+  })
+
+  test("a 200k choice disables the CLI's 1M window for every model that offers 1m, and nothing else", () => {
+    // Read from the catalog, not a model list: any family with the 1m option
+    // that resolved without "[1m]" was set to 200k.
+    for (const model of ["opus", "sonnet", "claude-opus-4-8", "claude-opus-5-5"]) {
+      expect(shouldDisableClaude1mContext(resolveClaudeApiModelId(model, "200k"))).toBe(true)
+      expect(shouldDisableClaude1mContext(resolveClaudeApiModelId(model, "1m"))).toBe(false)
+    }
+    // No selector, no choice to enforce: fable keeps its fixed window and
+    // haiku its standard one, whatever the stored preference.
+    for (const model of ["fable", "haiku"]) {
+      expect(shouldDisableClaude1mContext(resolveClaudeApiModelId(model, "200k"))).toBe(false)
+      expect(shouldDisableClaude1mContext(resolveClaudeApiModelId(model, "1m"))).toBe(false)
+    }
   })
 
   test("rebuilds the Claude picker from the SDK model list, labeled by resolved model", () => {

@@ -57,6 +57,10 @@ import { getProjectUploadDir } from "./paths"
 import { inheritShellPath } from "./process-utils"
 
 const MAX_UPLOAD_FILES = 50
+// Lower than an agent's attachments (kanna-display-tools.ts) for two reasons.
+// Cloudflare rejects request bodies over 100 MB, and cloud and --share uploads
+// ride its tunnel. And `req.formData()` holds the whole body in memory, inside
+// Bun's default 128 MB `maxRequestBodySize`. Raising it means streaming the body.
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
 const STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS = 6 * 60 * 60 * 1000

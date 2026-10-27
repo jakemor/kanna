@@ -24,6 +24,14 @@ export function attachmentKind(mime: string): DisplayAttachment["kind"] {
 }
 
 /**
+ * The file never passes through memory: only an 8 KB header is read, the copy
+ * is file to file (an APFS clone on a Mac), and the media route streams it back.
+ * Downloads through the Cloudflare tunnel are not capped the way uploads are, so
+ * this is higher than the composer's upload limit in server.ts. It only guards disk.
+ */
+export const MAX_ATTACHMENT_BYTES = 1024 * 1024 * 1024
+
+/**
  * Copies a local file into the chat's media storage and describes it for the transcript.
  * Every tool that shows local files goes through here, so the files stay available
  * after the source changes and render through the same attachment card.
@@ -39,7 +47,7 @@ export async function storeLocalAttachment(
   try {
     const info = await handle.stat()
     if (!info.isFile()) throw new Error("Attachments must be files.")
-    if (info.size > 100 * 1024 * 1024) throw new Error("Attachments must be 100 MB or smaller.")
+    if (info.size > MAX_ATTACHMENT_BYTES) throw new Error(`Attachments must be ${MAX_ATTACHMENT_BYTES / 1024 ** 3} GB or smaller. "${path.basename(source)}" is ${(info.size / 1024 ** 3).toFixed(2)} GB.`)
     size = info.size
     const header = Buffer.alloc(Math.min(size, 8192))
     await handle.read(header, 0, header.length, 0)

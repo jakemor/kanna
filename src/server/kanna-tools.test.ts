@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
 import { validateToolArguments } from "@mariozechner/pi-ai"
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises"
+import { mkdtemp, writeFile, readFile, rm, truncate } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -14,6 +14,7 @@ import { createKannaMcpServer } from "./kanna-mcp"
 import { parseTranscriptMediaUrl, getTranscriptMediaDir, retargetEntryMediaUrls } from "./transcript-media"
 import { EventStore } from "./event-store"
 import { splitTranscriptEntry } from "./transcript-payloads"
+import { MAX_ATTACHMENT_BYTES } from "./kanna-display-tools"
 
 const visualization = { title: "Sales", html: '<svg aria-label="Sales"><text>Jan: 10, Feb: 20</text></svg>' }
 let testDataDir: string
@@ -104,6 +105,22 @@ describe("shared Kanna display tools", () => {
       await rm(path.join(dir, "report.txt"))
       expect(await readFile(path.join(getTranscriptMediaDir(dir, "chat-1"), parsed.name), "utf8")).toBe("Saved report")
       expect(retargetEntryMediaUrls(result, "chat-1", "fork")).toMatchObject({ content: [{ url: attachment!.url.replace("chat-1", "fork") }] })
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  test("copies attachments up to 1 GB and names the limit past it", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "kanna-attachments-size-"))
+    try {
+      // Sparse files: the size is real to stat, but no disk is written.
+      for (const [name, size] of [["Kanna.dmg", 134 * 1024 * 1024], ["huge.bin", MAX_ATTACHMENT_BYTES + 1]] as const) {
+        await writeFile(path.join(dir, name), "")
+        await truncate(path.join(dir, name), size)
+      }
+      const { runtime } = setup(dir)
+      expect(await runtime.execute("send_attachments", { attachments: [{ path: "Kanna.dmg" }] }))
+        .toMatchObject({ structuredContent: { attachments: [{ name: "Kanna.dmg", size: 134 * 1024 * 1024 }] } })
+      const rejected = await runtime.execute("send_attachments", { attachments: [{ path: "huge.bin" }] })
+      expect(rejected).toMatchObject({ isError: true })
+      expect(JSON.stringify(rejected.content)).toContain("Attachments must be 1 GB or smaller.")
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
   test("display payloads survive a store restart without extra fetches", async () => {

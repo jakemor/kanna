@@ -2590,6 +2590,38 @@ describe("model options", () => {
     expect(store.getChat(root)).toMatchObject({ lastModel: "opus", lastModelOptions: resolved })
   })
 
+  test("a queued report runs with the settings of the user turn queued ahead of it, not the ones it was queued under", async () => {
+    const { orchestrator, codex, agent, store, claude, root, userTurn } = await claudeParent()
+    await userTurn("start the audit")
+    const child = await orchestrator.createChat(root, { message: "audit the parser", provider: "codex" })
+
+    // While the 200k/medium turn runs, the user queues a 1m/low one, and then
+    // the sub-chat reports, so the report queues behind it.
+    await agent.send({
+      type: "chat.send",
+      chatId: root,
+      provider: "claude",
+      model: "opus",
+      modelOptions: { claude: { contextWindow: "1m", reasoningEffort: "low" } },
+      content: "use the big window",
+    })
+    codex.finish(child.chatId, "Found two bugs.")
+    await until(() => store.getQueuedMessages(root).length === 2, "the queued report")
+
+    claude.finish("Started the audit.")
+    await until(() => claude.prompts.length === 2, "the user's queued turn")
+    claude.finish("Switched.")
+    await until(() => claude.prompts.length === 3, "the report's turn")
+    expect(claude.prompts[2]).toContain("Found two bugs.")
+
+    // The user's switch restarted the session once; the report did not undo it.
+    expect(claude.launches).toEqual([
+      { model: "opus", effort: "medium", disable1m: true },
+      { model: "opus[1m]", effort: "low", disable1m: false },
+    ])
+    expect(claude.setModels).toEqual([])
+  })
+
   test("a message from another chat inherits the target's options, and an effort it names still wins", async () => {
     const { orchestrator, store, claude, root, userTurn, idle, userChat } = await claudeParent()
     await userTurn("start")

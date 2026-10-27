@@ -1821,8 +1821,22 @@ export class AgentCoordinator {
   private async dequeueAndStartQueuedMessage(chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean }) {
     await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     const chat = this.store.requireChat(chatId)
-    const provider = this.resolveProvider(queuedMessage, chat.provider)
-    const settings = this.getProviderSettings(provider, queuedMessage)
+    // A report carries on as the chat is running when it starts, not as it
+    // was when it was queued: a user turn queued ahead of it may have changed
+    // the model or its options since. These are the fields deliverReport fills
+    // from the chat.
+    const run = queuedMessage.source?.kind === "report"
+      ? {
+          ...queuedMessage,
+          provider: chat.provider ?? queuedMessage.provider,
+          model: chat.lastModel,
+          modelOptions: chat.lastModelOptions,
+          planMode: chat.planMode,
+          autoPlan: chat.autoPlan,
+        }
+      : queuedMessage
+    const provider = this.resolveProvider(run, chat.provider)
+    const settings = this.getProviderSettings(provider, run)
     await this.startTurnForChat({
       chatId,
       provider,

@@ -816,6 +816,27 @@ Please check the latest error first.`,
     expect(html.match(/data-provider-icon="claude"/g)).toHaveLength(1)
   })
 
+  test("does not count a context-window marker alone as a model change", () => {
+    const init = (id: string, model: string) => ({
+      id,
+      kind: "system_init" as const,
+      provider: "claude" as const,
+      model,
+      tools: [],
+      agents: [],
+      slashCommands: [],
+      mcpServers: [],
+      timestamp: new Date().toISOString(),
+    })
+    const html = renderTranscript([
+      init("system-1", "claude-opus-5-5"),
+      init("system-2", "claude-opus-5-5[1m]"),
+      init("system-3", "claude-opus-5-5"),
+    ])
+
+    expect(html).not.toContain("Model Changed")
+  })
+
   test("labels the session init after a handoff with only the destination harness", () => {
     const html = renderTranscript([
       {

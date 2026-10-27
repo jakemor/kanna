@@ -1117,6 +1117,11 @@ export interface SidebarChatRow {
    * hover card names the harness alone in that case.
    */
   model?: string
+  /**
+   * The options (effort, context window, fast mode) `model` ran with. The
+   * composer of a reloaded chat starts from these, not from Settings.
+   */
+  modelOptions?: ModelOptions
   lastMessageAt?: number
   /** When the most recent turn started; with `lastTurnEndedAt`, how long it took. */
   lastTurnStartedAt?: number

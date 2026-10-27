@@ -77,6 +77,11 @@ export interface ForkBoundaryMark {
   at: number
 }
 
+/** A model id without a trailing context-window marker such as "[1m]". */
+function baseModelId(model: string) {
+  return model.replace(/\[[^\]]*\]\s*$/, "")
+}
+
 function sameForkBoundary(left: ForkBoundaryMark | undefined, right: ForkBoundaryMark | undefined) {
   return left?.sourceChatId === right?.sourceChatId && left?.at === right?.at
 }
@@ -279,13 +284,16 @@ function buildTranscriptMessageRenderStates(
   }
 
   // Mark session inits whose model differs from the previous session's model.
+  // A context-window marker alone ("claude-opus-5-5" vs "claude-opus-5-5[1m]")
+  // is the same model, so it is not a change.
   const modelChanges = new Array<boolean>(messages.length).fill(false)
   let previousModel: string | undefined
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]!
     if (message.kind !== "system_init") continue
-    modelChanges[index] = previousModel !== undefined && message.model !== previousModel
-    previousModel = message.model
+    const model = baseModelId(message.model)
+    modelChanges[index] = previousModel !== undefined && model !== previousModel
+    previousModel = model
   }
 
   // Attach each handoff boundary to the next session init: the switch renders

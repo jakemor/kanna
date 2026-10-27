@@ -8,6 +8,7 @@ import {
   type CodexModelOptions,
   type CursorModelOptions,
   type DefaultProviderPreference,
+  type ModelOptions,
   type PiModelOptions,
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
@@ -102,14 +103,17 @@ function composerFromProviderDefaults(
 export interface ComposerSeed {
   provider: AgentProvider
   model?: string
+  modelOptions?: ModelOptions
 }
 
 function composerFromChatSeed(seed: ComposerSeed, providerDefaults: ChatProviderPreferences): ComposerState {
-  // Options (effort, context window…) aren't recorded per chat, so those still
-  // come from the provider's defaults; the model is the chat's own.
+  // The model and its options are the chat's own; a chat that predates
+  // recorded options takes them from the provider's defaults.
+  const defaults = providerDefaults[seed.provider]
   return composerStateForProvider(seed.provider, {
-    ...providerDefaults[seed.provider],
+    ...defaults,
     ...(seed.model ? { model: seed.model } : {}),
+    modelOptions: { ...defaults.modelOptions, ...seed.modelOptions?.[seed.provider] } as ProviderModelOptionsInput,
   })
 }
 
@@ -201,7 +205,11 @@ function seedForChat(chatId: string): ComposerSeed | null {
   if (chatId === NEW_CHAT_COMPOSER_ID) return null
   const row = findSidebarChat(chatId)
   if (!row?.provider) return null
-  return { provider: row.provider, ...(row.model ? { model: row.model } : {}) }
+  return {
+    provider: row.provider,
+    ...(row.model ? { model: row.model } : {}),
+    ...(row.modelOptions ? { modelOptions: row.modelOptions } : {}),
+  }
 }
 
 function getStoredComposerState(

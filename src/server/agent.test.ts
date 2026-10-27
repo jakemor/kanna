@@ -23,6 +23,7 @@ import type { SubagentActivityUpdate } from "./background-tasks"
 import type { ChatAttachment, ModelOptions, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+import { normalizeProviderDefaults } from "../shared/provider-preferences"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()
@@ -3031,6 +3032,43 @@ describe("AgentCoordinator restart resume", () => {
 
     expect(await coordinator.resumeInterruptedTurn("chat-1")).toBe(true)
     // Not the provider defaults (1m, high).
+    expect(launches).toEqual([{ model: "opus", effort: "medium" }])
+  })
+
+  test("a turn with no options for its provider runs with the saved Settings defaults", async () => {
+    // A chat that predates `lastModelOptions` (or an MCP send that named
+    // none) has nothing of its own to carry over.
+    const launches: Array<{ model: string; effort?: string }> = []
+    const store = createFakeStore()
+    store.chat.provider = "claude"
+    store.chat.sessionToken = "session-1"
+    store.chat.resumePending = true
+    store.chat.lastModel = "opus"
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      checkSessionArtifact: () => "present" as SessionArtifactStatus,
+      getProviderDefaults: () => normalizeProviderDefaults({
+        claude: { model: "opus", modelOptions: { reasoningEffort: "medium", contextWindow: "200k", fastMode: false } },
+      }),
+      startClaudeSession: async (args) => {
+        launches.push({ model: args.model, effort: args.effort })
+        return {
+          provider: "claude",
+          stream: new AsyncEventQueue<any>(),
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async () => {},
+        }
+      },
+    })
+
+    expect(await coordinator.resumeInterruptedTurn("chat-1")).toBe(true)
+    // "opus", not "opus[1m]": the saved 200k window, and the saved effort.
     expect(launches).toEqual([{ model: "opus", effort: "medium" }])
   })
 

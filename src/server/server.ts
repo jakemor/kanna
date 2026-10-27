@@ -267,6 +267,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     store,
     analytics,
     codexManager,
+    getProviderDefaults: () => appSettings.getSnapshot().providerDefaults,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {

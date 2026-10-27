@@ -610,7 +610,8 @@ describe("chat preference store", () => {
     expect(useChatPreferencesStore.getState().getComposerState("chat-a", { provider: "codex", model: "gpt-5.5" })).toEqual({
       provider: "codex",
       model: "gpt-5.5",
-      // Options aren't recorded per chat, so those are the provider's defaults.
+      // The seed names no options (a chat that predates them), so those are
+      // the provider's defaults.
       modelOptions: { reasoningEffort: "minimal", fastMode: true },
       planMode: true,
       autoPlan: false,
@@ -619,6 +620,20 @@ describe("chat preference store", () => {
     useChatPreferencesStore.getState().setChatComposerModel("chat-a", "gpt-5.3-codex-spark")
     expect(useChatPreferencesStore.getState().getComposerState("chat-a", { provider: "codex", model: "gpt-5.5" }).model)
       .toBe("gpt-5.3-codex-spark")
+  })
+
+  test("getComposerState seeds an existing chat's options from what it last ran with", () => {
+    // A reload empties this store before Settings arrive: the built-in
+    // defaults (1m, high) must not stand in for the chat's own 200k window.
+    useChatPreferencesStore.setState({ ...INITIAL_STATE, defaultProvider: "claude" })
+
+    const seeded = useChatPreferencesStore.getState().getComposerState("chat-a", {
+      provider: "claude",
+      model: "opus",
+      modelOptions: { claude: { reasoningEffort: "medium", contextWindow: "200k", fastMode: false } },
+    })
+    expect(seeded.provider).toBe("claude")
+    expect(seeded.modelOptions).toEqual({ reasoningEffort: "medium", contextWindow: "200k", fastMode: false })
   })
 
   test("syncProviderDefaults does not replace a changed new-chat state", () => {

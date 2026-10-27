@@ -79,7 +79,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { resolveClaudeApiModelId, shouldDisableClaude1mContext } from "../shared/types"
+import { resolveClaudeApiModelId, shouldDisableClaude1mContext, type ChatProviderPreferences } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
@@ -321,6 +321,12 @@ interface AgentCoordinatorArgs {
     provider: AgentProvider,
     query: { cwd: string; sessionToken: string | null | undefined }
   ) => SessionArtifactStatus
+  /**
+   * The user's saved per-provider defaults (Settings). A turn that arrives
+   * without options for its provider (a migrated chat, an MCP send that named
+   * none) runs with these rather than the built-in ones (1m, high effort).
+   */
+  getProviderDefaults?: () => ChatProviderPreferences
 }
 
 
@@ -1139,6 +1145,7 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
+  private readonly getProviderDefaults: AgentCoordinatorArgs["getProviderDefaults"]
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
@@ -1202,6 +1209,7 @@ export class AgentCoordinator {
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
+    this.getProviderDefaults = args.getProviderDefaults
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -1734,8 +1742,22 @@ export class AgentCoordinator {
     return options.provider ?? currentProvider ?? "claude"
   }
 
-  private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
+  /**
+   * Options missing for the turn's provider come from the user's saved
+   * defaults. A bare `effort` the caller named still wins over the saved one.
+   */
+  private withProviderDefaults(provider: AgentProvider, options: SendMessageOptions): SendMessageOptions {
+    if (options.modelOptions?.[provider]) return options
+    const saved = this.getProviderDefaults?.()[provider]?.modelOptions as Record<string, unknown> | undefined
+    if (!saved) return options
+    const { reasoningEffort: _, ...rest } = saved
+    const own = options.effort ? rest : saved
+    return { ...options, modelOptions: { ...options.modelOptions, [provider]: own } as ModelOptions }
+  }
+
+  private getProviderSettings(provider: AgentProvider, rawOptions: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
+    const options = this.withProviderDefaults(provider, rawOptions)
     if (provider === "claude") {
       const model = normalizeServerModel(provider, options.model)
       const modelOptions = normalizeClaudeModelOptions(model, options.modelOptions, options.effort)

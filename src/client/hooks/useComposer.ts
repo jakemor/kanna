@@ -33,9 +33,10 @@ function useChatComposerSeed(chatId: string | null): ComposerSeed | null {
   })
   const provider = row?.provider ?? null
   const model = row?.model
+  const modelOptions = row?.modelOptions
   return useMemo(
-    () => (provider ? { provider, ...(model ? { model } : {}) } : null),
-    [provider, model]
+    () => (provider ? { provider, ...(model ? { model } : {}), ...(modelOptions ? { modelOptions } : {}) } : null),
+    [provider, model, modelOptions]
   )
 }
 
@@ -84,9 +85,11 @@ export function useComposer(args: {
   const providerSwitchRequested = useChatPreferencesStore(
     (store) => Boolean(store.pendingProviderSwitches[composerChatId])
   )
+  // `providerDefaults` is a dependency so a chat seeded before Settings
+  // arrive (a reload) re-seeds from them instead of the built-in defaults.
   const composerState = useMemo(
     () => storedComposerState ?? useChatPreferencesStore.getState().getComposerState(composerChatId, seed),
-    [composerChatId, seed, storedComposerState]
+    [composerChatId, seed, storedComposerState, providerDefaults]
   )
 
   // Housekeeping: once the server confirms the switch (the chat's session

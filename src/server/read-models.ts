@@ -287,6 +287,7 @@ export function deriveSidebarData(
           localPath: project.localPath,
           provider: chat.provider,
           ...(chat.lastModel ? { model: chat.lastModel } : {}),
+          ...(chat.lastModelOptions ? { modelOptions: chat.lastModelOptions } : {}),
           lastMessageAt: chat.lastMessageAt,
           ...(chat.lastTurnStartedAt != null ? { lastTurnStartedAt: chat.lastTurnStartedAt } : {}),
           ...(chat.lastTurnEndedAt != null ? { lastTurnEndedAt: chat.lastTurnEndedAt } : {}),

@@ -1,0 +1,31 @@
+{
+  "currentPeriodUsage": {
+    "billingCycleStart": "1786118125000",
+    "billingCycleEnd": "1788796525000",
+    "planUsage": {
+      "totalSpend": 2500,
+      "includedSpend": 2000,
+      "limit": 2000,
+      "autoPercentUsed": 55,
+      "apiPercentUsed": 100,
+      "totalPercentUsed": 72
+    },
+    "spendLimitUsage": {
+      "limitType": "user",
+      "individualUsed": 1250,
+      "individualLimit": 5000
+    },
+    "enabled": true
+  },
+  "planInfo": {
+    "planInfo": {
+      "planName": "Pro",
+      "includedAmountCents": 2000,
+      "billingCycleEnd": "1788796525000"
+    }
+  },
+  "hardLimit": {
+    "noUsageBasedAllowed": false,
+    "hardLimit": 50
+  }
+}

@@ -573,7 +573,7 @@ export const STRUCTURED_RESULT_TOOL_KINDS: ReadonlySet<string> = new Set(["ask_u
  * travel with the transcript rather than being fetched when a row is opened —
  * there is no row to open. Superset of the structured-result kinds.
  */
-export const INLINE_TOOL_KINDS: ReadonlySet<string> = new Set([...STRUCTURED_RESULT_TOOL_KINDS, "todo_write", "display", "chat", "schedule"])
+export const INLINE_TOOL_KINDS: ReadonlySet<string> = new Set([...STRUCTURED_RESULT_TOOL_KINDS, "todo_write", "display", "chat", "schedule", "request_secrets"])
 
 /**
  * Tool call input fields that can grow without bound, by kind. The other

@@ -335,6 +335,19 @@ export type ClientCommand =
       attachmentMode: StandaloneTranscriptAttachmentMode
     }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
+  /**
+   * Answers a pending `request_secrets` call (`chat.respondTool` refuses one).
+   * `values` is keyed by field key; a key left out or empty is skipped, which
+   * only an optional field may be. `cancel` saves nothing. Acks with the
+   * call's `RequestSecretsToolResult`: names only. See shared/secrets.ts.
+   */
+  | { type: "secrets.submit"; chatId: string; toolUseId: string; values?: Record<string, string>; cancel?: boolean }
+  /** Acks with `SecretsListResult`. */
+  | { type: "secrets.list" }
+  /** Adds or replaces one secret from Settings. Acks with `SecretsListResult`. */
+  | { type: "secrets.set"; projectId: string; key: string; value: string }
+  /** Acks with `SecretsListResult`. */
+  | { type: "secrets.delete"; projectId: string; key: string }
   | {
       type: "message.enqueue"
       chatId: string

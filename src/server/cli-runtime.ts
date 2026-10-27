@@ -163,6 +163,9 @@ Usage:
   ${CLI_COMMAND} stop          Stop the ${CLI_COMMAND} running on this machine (a terminal's, or the Mac app's)
   ${CLI_COMMAND} slim-transcripts
                        Rewrite stored transcripts without raw tool payloads (stop ${CLI_COMMAND} first)
+  ${CLI_COMMAND} secret exec KEY [KEY...] -- <command>
+                       Run <command> with this folder's project secrets as environment variables
+  ${CLI_COMMAND} secret list   Name the secrets saved for this folder's project (never their values)
 
 Options:
   --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})

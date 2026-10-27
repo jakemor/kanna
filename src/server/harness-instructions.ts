@@ -23,6 +23,7 @@ export const KANNA_ORCHESTRATION_INSTRUCTIONS = [
   "- `set_schedule` sends a message later or on a repeat, into this chat by default. Use it to check on something in a while instead of sleeping.",
   "- `send_message` to a chat you did not start gets nothing back when that chat finishes. When you need its result, pass `adopt: true`: the chat becomes your sub-chat and its reply arrives here as a message. An adopted chat is still the user's, so it stays in their sidebar.",
   "- Stopping this chat stops the sub-chats it started, not ones it adopted. Stop one yourself with `cancel_chat` when it is no longer needed.",
+  "- When a task needs credentials (API keys, tokens, passwords), ask with `request_secrets`. Never ask the user to paste one into the chat or to run the security command themselves. You never see the values: use them by name with `kanna secret exec KEY -- <command>`.",
 ].join("\n")
 
 /**

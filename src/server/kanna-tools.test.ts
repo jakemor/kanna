@@ -62,6 +62,7 @@ describe("shared Kanna display tools", () => {
       "show_visualization", "send_attachments", "generate_images",
       "get_context", "list_chats", "read_chat", "create_chat", "fork_chat", "send_message",
       "cancel_chat", "update_chat", "update_queued_message", "set_schedule", "list_schedules", "delete_schedule",
+      "request_secrets", "list_secrets",
     ])
     const { runtime, entries } = setup()
     expect(await runtime.execute("show_visualization", visualization)).toMatchObject({ structuredContent: { displayed: true } })

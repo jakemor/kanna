@@ -21,6 +21,7 @@ import { cloneRepository, createDirectory, ensureProjectDirectory, initializePro
 import { listRecentGitHubRepos } from "./github"
 import { SERVER_PROVIDERS, applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
+import { buildSecretsList } from "./secrets"
 import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
@@ -1988,6 +1989,29 @@ export function createWsRouter({
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        // The values in these two arrive once and stop at the secret store.
+        // Never log or echo the command; acks carry names only.
+        case "secrets.submit": {
+          const result = await agent.submitSecrets(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "secrets.set": {
+          const project = store.getProject(command.projectId)
+          if (!project) throw new Error("Project not found")
+          await agent.secrets.set({ id: project.id, localPath: project.localPath }, command.key, command.value.trim())
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await buildSecretsList(agent.secrets, store) })
+          return
+        }
+        case "secrets.delete": {
+          await agent.secrets.delete(command.projectId, command.key)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await buildSecretsList(agent.secrets, store) })
+          return
+        }
+        case "secrets.list": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await buildSecretsList(agent.secrets, store) })
           return
         }
         case "message.enqueue": {

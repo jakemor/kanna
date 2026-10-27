@@ -9,7 +9,7 @@ export interface HarnessEvent {
 }
 
 export interface HarnessToolRequest {
-  tool: NormalizedToolCall & { toolKind: "ask_user_question" | "exit_plan_mode" }
+  tool: NormalizedToolCall & { toolKind: "ask_user_question" | "exit_plan_mode" | "request_secrets" }
   /** Shared tools write their own result after the user replies. */
   resultOwner?: "tool"
   validateResult?: (result: unknown) => void

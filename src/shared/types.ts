@@ -1,4 +1,5 @@
 import type { TerminalPreset } from "./terminal-presets"
+import type { RequestSecretsInput, RequestSecretsToolResult } from "./secrets"
 
 export type { TerminalPreset }
 export const STORE_VERSION = 2 as const
@@ -1850,6 +1851,13 @@ export interface AskUserQuestionToolCall
 export interface ExitPlanModeToolCall
   extends ToolCallBase<"exit_plan_mode", { plan?: string; summary?: string }> { }
 
+/**
+ * Kanna's `request_secrets`: a form for the user, whose values go to the
+ * keychain and never to the transcript. See shared/secrets.ts.
+ */
+export interface RequestSecretsToolCall
+  extends ToolCallBase<"request_secrets", RequestSecretsInput> { }
+
 export interface TodoWriteToolCall
   extends ToolCallBase<"todo_write", { todos: TodoItem[] }> { }
 
@@ -1917,6 +1925,7 @@ export interface ScheduleToolCall
 export type NormalizedToolCall =
   | AskUserQuestionToolCall
   | ExitPlanModeToolCall
+  | RequestSecretsToolCall
   | TodoWriteToolCall
   | SkillToolCall
   | GlobToolCall
@@ -2471,6 +2480,7 @@ export interface ExitPlanModeToolResult {
 interface HydratedToolResultOverrides {
   ask_user_question: AskUserQuestionToolResult
   exit_plan_mode: ExitPlanModeToolResult
+  request_secrets: RequestSecretsToolResult
   read_file: ReadFileToolResult | string
 }
 
@@ -2483,6 +2493,7 @@ export type HydratedToolCallOf<K extends NormalizedToolCall["toolKind"]> = Hydra
 
 export type HydratedAskUserQuestionToolCall = HydratedToolCallOf<"ask_user_question">
 export type HydratedExitPlanModeToolCall = HydratedToolCallOf<"exit_plan_mode">
+export type HydratedRequestSecretsToolCall = HydratedToolCallOf<"request_secrets">
 export type HydratedTodoWriteToolCall = HydratedToolCallOf<"todo_write">
 export type HydratedSkillToolCall = HydratedToolCallOf<"skill">
 export type HydratedGlobToolCall = HydratedToolCallOf<"glob">
@@ -2754,7 +2765,7 @@ export interface ResolvedChatReadAnchor {
 
 export interface PendingToolSnapshot {
   toolUseId: string
-  toolKind: "ask_user_question" | "exit_plan_mode"
+  toolKind: "ask_user_question" | "exit_plan_mode" | "request_secrets"
   /** One line of what the tool is asking; see `SidebarChatRow.pendingUserInputPreview`. */
   preview?: string
 }

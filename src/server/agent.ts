@@ -20,7 +20,6 @@ import type {
   ContextWindowUsageSnapshot,
   HarnessSkill,
   ModelOptions,
-  NormalizedToolCall,
   PendingToolSnapshot,
   KannaStatus,
   QueuedChatMessage,
@@ -31,9 +30,11 @@ import type {
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
+import type { RequestSecretsToolResult } from "../shared/secrets"
 import { AsyncQueue } from "./async-queue"
 import { resolveClaudeExecutable } from "./claude-executable"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
+import { SecretsService } from "./secrets"
 import type { ChatOrchestrator } from "./orchestrator"
 import { createClaudeKannaTools } from "./kanna-tool-adapters"
 import { EventStore } from "./event-store"
@@ -165,10 +166,12 @@ export function claudeSystemPrompt(model: string, delegator: boolean | undefined
 
 interface PendingToolRequest {
   toolUseId: string
-  tool: NormalizedToolCall & { toolKind: "ask_user_question" | "exit_plan_mode" }
+  tool: HarnessToolRequest["tool"]
   resolve: (result: unknown) => void
   resultOwner?: "tool"
   validateResult?: (result: unknown) => void
+  /** A `secrets.submit` is storing values for it; a second one waits its turn by being refused. */
+  submitting?: boolean
 }
 
 function normalizePreviewText(text: string) {
@@ -185,6 +188,11 @@ function getToolRequestPreview(tool: PendingToolRequest["tool"]) {
       .map((question) => normalizePreviewText(question.question))
       .filter(Boolean)
     if (questions.length > 0) return questions.join(" ")
+  }
+
+  if (tool.toolKind === "request_secrets") {
+    const reason = normalizePreviewText(tool.input.reason)
+    if (reason) return reason
   }
 
   if (tool.toolKind === "exit_plan_mode") {
@@ -288,6 +296,8 @@ interface ClaudeSessionState {
 
 interface AgentCoordinatorArgs {
   store: EventStore
+  /** Where `request_secrets` answers are stored. Defaults to this machine's keychain under the store's data dir. */
+  secrets?: SecretsService
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
@@ -484,7 +494,7 @@ export function formatQuestionAnswersFollowUp(questions: AskUserQuestionItem[], 
 }
 
 function discardedToolResult(
-  tool: NormalizedToolCall & { toolKind: "ask_user_question" | "exit_plan_mode" }
+  tool: HarnessToolRequest["tool"]
 ) {
   if (tool.toolKind === "ask_user_question") {
     return {
@@ -1124,6 +1134,7 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
+  private secretsService: SecretsService | null
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
@@ -1187,6 +1198,13 @@ export class AgentCoordinator {
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
+    this.secretsService = args.secrets ?? null
+  }
+
+  /** Made on first use, so a coordinator that never sees a secret never touches a keychain. */
+  get secrets(): SecretsService {
+    this.secretsService ??= new SecretsService({ dataDir: this.store.dataDir })
+    return this.secretsService
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -2108,6 +2126,8 @@ export class AgentCoordinator {
           },
           requestInput: (request, callSignal) => this.requestToolInput(args.chatId, request, callSignal),
           orchestration: this.orchestration ?? undefined,
+          projectId: project.id,
+          secrets: this.secrets,
         })
         return active.customTools.execute(name, input, signal)
       },
@@ -3320,6 +3340,47 @@ export class AgentCoordinator {
     })
   }
 
+  /**
+   * The user's answer to a `request_secrets` form. The values are stored
+   * here and go no further: the waiting tool is handed the names, which are
+   * all the agent and the transcript ever see.
+   */
+  async submitSecrets(command: Extract<ClientCommand, { type: "secrets.submit" }>): Promise<RequestSecretsToolResult> {
+    const active = this.activeTurns.get(command.chatId)
+    const pending = active?.pendingTool
+    if (!active || !pending) throw new Error("No pending tool request")
+    if (pending.toolUseId !== command.toolUseId || pending.tool.toolKind !== "request_secrets") {
+      throw new Error("Tool response does not match active request")
+    }
+    if (pending.submitting) throw new Error("These secrets are already being saved")
+    const chat = this.store.requireChat(command.chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error("Project not found")
+
+    pending.submitting = true
+    let result: RequestSecretsToolResult
+    try {
+      result = await this.secrets.submitRequest({
+        project: { id: project.id, localPath: project.localPath },
+        chatId: command.chatId,
+        fields: pending.tool.input.fields,
+        values: command.values,
+        cancel: command.cancel,
+      })
+    } finally {
+      pending.submitting = false
+    }
+
+    // Stopped while the values were being stored: they are saved, and the
+    // tool has already been told it was cancelled.
+    if (active.pendingTool !== pending) return result
+    active.pendingTool = null
+    active.status = "running"
+    pending.resolve(result)
+    this.emitStateChange(command.chatId)
+    return result
+  }
+
   async respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {
     const active = this.activeTurns.get(command.chatId)
     if (!active || !active.pendingTool) {
@@ -3329,6 +3390,9 @@ export class AgentCoordinator {
     const pending = active.pendingTool
     if (pending.toolUseId !== command.toolUseId) {
       throw new Error("Tool response does not match active request")
+    }
+    if (pending.tool.toolKind === "request_secrets") {
+      throw new Error("Answer request_secrets with secrets.submit")
     }
     pending.validateResult?.(command.result)
 

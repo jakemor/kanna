@@ -218,12 +218,9 @@ export const ChatNavbarTitle = memo(function ChatNavbarTitle({
   )
 
   return (
-    // 9px down on the web, where the bar to line up with is the sidebar's,
-    // whose search icon sits lower than this row's center (set by eye
-    // against it). In the Mac app both bars center on the traffic lights.
-    // With the sidebar collapsed there is no bar to line up with, so the row
-    // goes back to its own center, on the clock and curve the sidebar leaves by.
-    <div className="pointer-events-none hidden min-w-0 flex-1 translate-y-[9px] items-center md:flex mac-app:md:translate-y-0 transition-[translate] duration-300 ease-glide motion-reduce:transition-none group-data-[sidebar-collapsed]/navbar:translate-y-0">
+    // On the row's own center, which the sidebar's bar shares: 27px down on
+    // the web (KannaSidebar), the traffic lights' center in the Mac app.
+    <div className="pointer-events-none hidden min-w-0 flex-1 items-center md:flex">
       {thread ? (
         <ThreadRowMenu thread={thread} archived={thread.archived} editorLabel={editorLabel} {...actions}>
           {content}

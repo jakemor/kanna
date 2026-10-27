@@ -12,6 +12,7 @@ import {
   resolveChatBrowserNotificationPreferenceAfterPermission,
   resolveSettingsSectionId,
   setCachedChangelog,
+  SettingsSidebarHeading,
   shouldPreviewChatSoundChange,
   SkillsSection,
 } from "./SettingsPage"
@@ -248,6 +249,37 @@ describe("resolveChatBrowserNotificationPreferenceAfterPermission", () => {
 
   test("keeps never without requiring browser permission", () => {
     expect(resolveChatBrowserNotificationPreferenceAfterPermission("never", "denied")).toBe("never")
+  })
+})
+
+describe("SettingsSidebarHeading", () => {
+  const render = (sidebarCollapsed: boolean) => renderToStaticMarkup(
+    <SettingsSidebarHeading sidebarCollapsed={sidebarCollapsed} onExpandSidebar={() => {}} />
+  )
+
+  test("with the sidebar collapsed, puts the expand controls above the heading, in its flow", () => {
+    const html = render(true)
+    expect(html).toContain('title="Expand sidebar"')
+    expect(html.indexOf('title="Expand sidebar"')).toBeLessThan(html.indexOf(">Settings<"))
+  })
+
+  test("hides the expand controls in the Mac app, which pins its own toggle", () => {
+    const html = render(true)
+    const controls = html.slice(0, html.indexOf('title="Expand sidebar"'))
+    expect(controls).toContain("mac-app:hidden")
+  })
+
+  test("pulls the controls out of the column's padding onto the open sidebar's logo", () => {
+    const html = render(true)
+    const controls = html.slice(0, html.indexOf('title="Expand sidebar"'))
+    expect(controls).toContain("-mt-[17.5px]")
+    expect(controls).toContain("-ml-1")
+  })
+
+  test("with the sidebar open, shows only the heading", () => {
+    const html = render(false)
+    expect(html).not.toContain("Expand sidebar")
+    expect(html).toContain(">Settings<")
   })
 })
 

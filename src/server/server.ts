@@ -54,6 +54,7 @@ import { createWsRouter, type ClientState } from "./ws-router"
 import { instanceFingerprint } from "./instance"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
+import { zipPreviewResponse } from "./zip-preview"
 import { inheritShellPath } from "./process-utils"
 
 const MAX_UPLOAD_FILES = 50
@@ -995,6 +996,10 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
     return Response.json({ error: "Attachment not found" }, { status: 404 })
   }
 
+  // A zip's listing or one of its text files, past the same checks.
+  const zipResponse = await zipPreviewResponse(url, filePath)
+  if (zipResponse) return zipResponse
+
   return new Response(file, {
     headers: {
       "Content-Type": inferAttachmentContentType(storedName, file.type),
@@ -1031,6 +1036,10 @@ async function handleTranscriptMediaContent(req: Request, url: URL, store: Event
   } catch {
     return Response.json({ error: "Media not found" }, { status: 404 })
   }
+
+  // A zip's listing or one of its text files, past the same checks.
+  const zipResponse = await zipPreviewResponse(url, filePath)
+  if (zipResponse) return zipResponse
 
   // PDFs show inline too: the viewer draws one in an iframe, and with the
   // download headers that iframe stayed empty. Not sandboxed, because

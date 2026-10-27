@@ -198,13 +198,13 @@ describe("persistedChatViewers", () => {
 
   // A reload must never reopen something that downloads on mount.
   test("keeps an attachment the viewer shows, and drops one it would only download", () => {
-    const kept = persistedChatViewers({ shot: attachment("a.png", "image/png"), zip: attachment("a.zip", "application/zip") })
+    const kept = persistedChatViewers({ shot: attachment("a.png", "image/png"), zip: attachment("a.tar.gz", "application/gzip") })
     expect(Object.keys(kept)).toEqual(["shot"])
   })
 
   test("a dropped attachment falls back to what it was opened over", () => {
     const chat = { item: { kind: "chat" as const, chatId: "sub" }, expanded: false }
-    const kept = persistedChatViewers({ zip: { ...attachment("a.zip", "application/zip"), returnTo: chat } as never })
+    const kept = persistedChatViewers({ zip: { ...attachment("a.tar.gz", "application/gzip"), returnTo: chat } as never })
     expect(kept.zip?.item).toEqual(chat.item)
   })
 })

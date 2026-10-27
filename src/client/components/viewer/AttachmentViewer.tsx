@@ -18,6 +18,8 @@ import type { ViewerAttachment } from "../../stores/viewerStore"
 import { downloadAttachment, openAttachmentInNewTab, openInBrowserLabel, opensInBrowser } from "./attachmentActions"
 import { pdfPreviewUrl, servedInline } from "./attachmentOpenAction"
 import { ViewerIconButton, ViewerPanes, ViewerSurface, ViewerToggle } from "./ViewerSurface"
+import { isZipAttachment } from "../../../shared/zip-preview"
+import { ZipPreview } from "./ZipPreview"
 
 /** Rows and columns the table view reads: the viewer has the room, and a sort wants the rows. */
 const VIEWER_TABLE_LIMITS = { rows: 1_000, columns: 50 }
@@ -110,6 +112,9 @@ export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAt
   const kind = previewKind(attachment)
   const content = useTextContent(attachment, kind)
   const [view, setView] = useState<RenderView>("rendered")
+  // After the hooks, which read nothing for a zip, so their order holds when
+  // the viewer goes from a zip to another file.
+  if (isZipAttachment(attachment)) return <ZipPreview attachment={attachment} onClose={onClose} />
   const Icon = KIND_ICONS[kind]
   // What was left out leads the subtitle, before type and size, rather than
   // taking a row of the body: it's the part of the file's description that

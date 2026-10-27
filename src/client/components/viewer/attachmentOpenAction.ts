@@ -1,5 +1,6 @@
 import type { ViewerAttachment } from "../../stores/viewerStore"
 import { classifyAttachmentPreview, CODE_OR_CONFIG_EXTENSIONS, getFileExtension } from "../messages/attachmentPreview"
+import { isZipAttachment, servesZipListing } from "../../../shared/zip-preview"
 
 // Pure, with no store behind it, so the store that restores the viewer on
 // load can ask it too (`persistedChatViewers` in stores/rightSidebarStore.ts).
@@ -42,7 +43,10 @@ function canPreview(attachment: OpenableAttachment) {
     case "pdf":
       return isSameOrigin(attachment.url) && opensInBrowser(attachment)
     case "external":
-      return false
+      // A zip is listed by the server that stores it (`?zip=list`, see
+      // src/server/zip-preview.ts), so only one at an address of ours. A
+      // .tar.gz has no index to read without unpacking it, and downloads.
+      return isZipAttachment(attachment) && isSameOrigin(attachment.url) && servesZipListing(attachment.url)
     default:
       return isSameOrigin(attachment.url)
   }

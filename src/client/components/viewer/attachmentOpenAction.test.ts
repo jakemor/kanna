@@ -68,8 +68,17 @@ describe("attachmentOpenAction", () => {
     expect(attachmentOpenAction(remote("notes.txt", "text/plain"))).toBe("tab")
   })
 
+  // The server lists a zip it stores (src/server/zip-preview.ts); another site's has no listing.
+  test("the viewer for a zip this server has", () => {
+    expect(attachmentOpenAction(sent("demo-project.zip", "application/zip"))).toBe("preview")
+    expect(attachmentOpenAction(upload("design-eng-review.zip", "application/x-zip-compressed"))).toBe("preview")
+    expect(attachmentOpenAction(upload("bundle.zip", "application/octet-stream"))).toBe("preview")
+    expect(attachmentOpenAction(remote("a.zip", "application/zip"))).toBe("download")
+    expect(attachmentOpenAction({ url: "blob:http://localhost/1", name: "a.zip", mimeType: "application/zip", size: 1 })).toBe("download")
+  })
+
   test("a download for the rest", () => {
-    expect(attachmentOpenAction(sent("demo-project.zip", "application/zip"))).toBe("download")
+    expect(attachmentOpenAction(sent("demo-project.tar.gz", "application/gzip"))).toBe("download")
     expect(attachmentOpenAction(upload("plan.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))).toBe("download")
     expect(attachmentOpenAction(upload("photo.heic", "image/heic"))).toBe("download")
     expect(attachmentOpenAction(upload("movie.mkv", "video/x-matroska"))).toBe("download")

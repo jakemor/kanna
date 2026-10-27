@@ -21,7 +21,7 @@ import { useVoiceRecorder } from "../../hooks/useVoiceRecorder"
 import { RecordingWaveform } from "./RecordingWaveform"
 import { useShallow } from "zustand/react/shallow"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { ATTACH_FILES_EVENT, CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import { isEscapeClaimed, isViewerPaneOpen, resolveEscapePress } from "../../lib/escape-key"
 import { HoldToStopHint, HoldToStopRing, useHoldToStop } from "./HoldToStop"
@@ -343,13 +343,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return contextWindowSnapshot
     }
 
-    const claudeModelOptions = providerPrefs.modelOptions as Extract<ComposerState, { provider: "claude" }>["modelOptions"]
-    const stagedMaxTokens = resolveClaudeContextWindowMaxTokens(
-      providerPrefs.model,
-      claudeModelOptions.contextWindow,
-    )
-    return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
-  }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
+    return overrideContextWindowMaxTokens(contextWindowSnapshot, resolveClaudeContextWindowMaxTokens(providerPrefs.model))
+  }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.provider])
   // "/" skill menu derivations. The mention is non-null only while the caret
   // is inside a "/token" anywhere in the prompt ("$token" also opens it on
   // codex, whose native sigil is "$" — accepting still completes to the
@@ -1409,9 +1404,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 case "codexReasoningEffort":
                 case "piReasoningEffort":
                   composer.setReasoningEffort(change.effort)
-                  break
-                case "contextWindow":
-                  composer.setContextWindow(change.contextWindow)
                   break
                 case "fastMode":
                   composer.setFastMode(change.fastMode)

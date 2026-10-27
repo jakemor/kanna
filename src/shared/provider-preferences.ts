@@ -6,7 +6,6 @@ import {
   isCodexReasoningEffort,
   isGrokReasoningEffort,
   isPiReasoningEffort,
-  normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeClaudeModelId,
   normalizeCodexModelId,
@@ -39,7 +38,6 @@ import {
  */
 export type ProviderModelOptionsInput = {
   reasoningEffort?: unknown
-  contextWindow?: unknown
   fastMode?: unknown
 }
 
@@ -74,7 +72,6 @@ export function normalizeClaudePreference(value?: ProviderPreferenceInput): Prov
     model,
     modelOptions: {
       reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
-      contextWindow: normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow),
       fastMode: normalizeClaudeFastMode(model, value?.modelOptions?.fastMode),
     },
     planMode: value?.planMode === true,

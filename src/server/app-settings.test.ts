@@ -52,7 +52,6 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         model: "opus",
         modelOptions: {
           reasoningEffort: "high",
-          contextWindow: "1m",
           fastMode: false,
         },
         planMode: false,

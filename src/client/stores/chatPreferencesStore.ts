@@ -105,7 +105,7 @@ export interface ComposerSeed {
 }
 
 function composerFromChatSeed(seed: ComposerSeed, providerDefaults: ChatProviderPreferences): ComposerState {
-  // Options (effort, context window…) aren't recorded per chat, so those still
+  // Options (effort, fast mode) aren't recorded per chat, so those still
   // come from the provider's defaults; the model is the chat's own.
   return composerStateForProvider(seed.provider, {
     ...providerDefaults[seed.provider],

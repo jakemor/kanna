@@ -57,7 +57,6 @@ describe("provider catalog normalization", () => {
   test("maps legacy Claude effort into shared model options", () => {
     expect(normalizeClaudeModelOptions("claude-opus-4-8", undefined, "max")).toEqual({
       reasoningEffort: "max",
-      contextWindow: "1m",
       fastMode: false,
     })
   })
@@ -75,28 +74,6 @@ describe("provider catalog normalization", () => {
     }).fastMode).toBe(false)
 
     expect(serviceTierFromModelOptions(normalizeClaudeModelOptions("claude-opus-4-8", undefined))).toBeUndefined()
-  })
-
-  test("normalizes Claude context window only for supported models", () => {
-    expect(normalizeClaudeModelOptions("claude-sonnet-4-6", {
-      claude: {
-        reasoningEffort: "medium",
-        contextWindow: "1m",
-      },
-    })).toEqual({
-      reasoningEffort: "medium",
-      contextWindow: "1m",
-      fastMode: false,
-    })
-
-    expect(normalizeClaudeModelOptions("claude-haiku-4-5-20251001", {
-      claude: {
-        reasoningEffort: "medium",
-        contextWindow: "1m",
-      },
-    })).toMatchObject({
-      reasoningEffort: "medium",
-    })
   })
 
   test("normalizes Codex model options and fast mode defaults", () => {
@@ -359,17 +336,14 @@ describe("provider catalog normalization", () => {
     expect(normalizeServerModel("codex", "gpt-5.6")).toBe("gpt-5.6-sol")
   })
 
-  test("resolves Claude API model ids for 1m context window", () => {
-    expect(resolveClaudeApiModelId("opus", "1m")).toBe("opus[1m]")
-    expect(resolveClaudeApiModelId("fable", "200k")).toBe("fable")
-    expect(resolveClaudeApiModelId("sonnet", "200k")).toBe("sonnet")
-    // Version-pinned ids still resolve their window via the family alias.
-    expect(resolveClaudeApiModelId("claude-opus-4-8", "1m")).toBe("claude-opus-4-8[1m]")
-
-    // A stored "1m" preference never leaks a [1m] suffix onto models without
-    // context window options — it's clamped at resolution time.
-    expect(resolveClaudeApiModelId("fable", "1m")).toBe("fable")
-    expect(resolveClaudeApiModelId("haiku", "1m")).toBe("haiku")
+  test("runs Claude families with an opt-in 1M window at 1M", () => {
+    expect(resolveClaudeApiModelId("opus")).toBe("opus[1m]")
+    expect(resolveClaudeApiModelId("sonnet")).toBe("sonnet[1m]")
+    // Version-pinned ids resolve their window via the family alias.
+    expect(resolveClaudeApiModelId("claude-opus-4-8")).toBe("claude-opus-4-8[1m]")
+    // Fable is 1M without the suffix; haiku has no 1M window.
+    expect(resolveClaudeApiModelId("fable")).toBe("fable")
+    expect(resolveClaudeApiModelId("haiku")).toBe("haiku")
   })
 
   test("rebuilds the Claude picker from the SDK model list, labeled by resolved model", () => {
@@ -398,8 +372,9 @@ describe("provider catalog normalization", () => {
     const opus = claude?.models.find((model) => model.id === "opus")
     expect(opus?.supportsMaxReasoningEffort).toBe(true)
     expect(opus?.supportsFastMode).toBe(true)
-    expect(opus?.contextWindowOptions?.map((option) => option.id)).toEqual(["1m", "200k"])
-    expect(claude?.models.find((model) => model.id === "haiku")?.contextWindowOptions).toBeUndefined()
+    expect(opus?.contextWindowTokens).toBe(1_000_000)
+    expect(opus?.apiModelSuffix).toBe("[1m]")
+    expect(claude?.models.find((model) => model.id === "haiku")?.apiModelSuffix).toBeUndefined()
   })
 
   test("Claude rebuild keeps fable's fixed window, folds [1m] rows, and admits new families", () => {
@@ -417,11 +392,11 @@ describe("provider catalog normalization", () => {
       ["sonnet", "Sonnet 5"],
       ["nova", "Nova 2"],
     ])
-    // Fable keeps its pinned fixed window; the [1m] variant row collapses
-    // into sonnet's context window selector rather than its own entry.
+    // Fable keeps its pinned 1M window; the [1m] variant row folds into
+    // sonnet, which then runs at 1M, rather than getting its own entry.
     expect(claude?.models.find((model) => model.id === "fable")?.contextWindowTokens).toBe(1_000_000)
-    expect(claude?.models.find((model) => model.id === "sonnet")?.contextWindowOptions?.map((option) => option.id))
-      .toEqual(["1m", "200k"])
+    expect(claude?.models.find((model) => model.id === "fable")?.apiModelSuffix).toBeUndefined()
+    expect(claude?.models.find((model) => model.id === "sonnet")?.apiModelSuffix).toBe("[1m]")
     // No "default" row → the default model is left alone.
     expect(claude?.defaultModel).toBe("sonnet")
 

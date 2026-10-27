@@ -1737,13 +1737,23 @@ export class AgentCoordinator {
     return options.provider ?? currentProvider ?? "claude"
   }
 
-  private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
+  /** `chatId` names the chat whose live session a turn without options carries on. */
+  private getProviderSettings(provider: AgentProvider, options: SendMessageOptions, chatId?: string) {
     const catalog = getServerProviderCatalog(provider)
     if (provider === "claude") {
       const model = normalizeServerModel(provider, options.model)
-      const modelOptions = normalizeClaudeModelOptions(model, options.modelOptions, options.effort)
+      // A turn nobody picked options for (a report, a message from another
+      // chat, a schedule) keeps the live session's effort and fast mode.
+      // Falling back to the defaults instead would restart a session that runs
+      // at another effort, and switch back on the user's next turn.
+      const live = options.modelOptions?.claude || !chatId ? undefined : this.claudeSessions.get(chatId)
+      const modelOptions = normalizeClaudeModelOptions(
+        model,
+        live ? { claude: { fastMode: live.serviceTier === "fast" } } : options.modelOptions,
+        options.effort ?? live?.effort,
+      )
       return {
-        model: resolveClaudeApiModelId(model, modelOptions.contextWindow),
+        model: resolveClaudeApiModelId(model),
         effort: modelOptions.reasoningEffort,
         serviceTier: serviceTierFromModelOptions(modelOptions),
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
@@ -1820,7 +1830,7 @@ export class AgentCoordinator {
     await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
-    const settings = this.getProviderSettings(provider, queuedMessage)
+    const settings = this.getProviderSettings(provider, queuedMessage, chatId)
     await this.startTurnForChat({
       chatId,
       provider,
@@ -2513,7 +2523,7 @@ export class AgentCoordinator {
     }
 
     const provider = this.resolveProvider(command, chat.provider)
-    const settings = this.getProviderSettings(provider, command)
+    const settings = this.getProviderSettings(provider, command, chatId)
     // The count is of messages people send.
     if (!extras?.source) this.analytics.track("message_sent")
     await this.startTurnForChat({

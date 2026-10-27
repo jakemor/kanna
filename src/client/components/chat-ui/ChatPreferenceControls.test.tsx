@@ -67,7 +67,7 @@ describe("ChatPreferenceControls", () => {
         availableProviders={PROVIDERS}
         selectedProvider="claude"
         model="opus"
-        modelOptions={{ reasoningEffort: "max", contextWindow: "1m" }}
+        modelOptions={{ reasoningEffort: "max" }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
@@ -81,17 +81,16 @@ describe("ChatPreferenceControls", () => {
     expect(html).not.toContain("Claude Code")
     expect(html).toContain("Opus")
     expect(html).toContain("Max")
-    expect(html).toContain("1M")
     expect(html).toContain("Plan Mode")
   })
 
-  test("hideDefaults drops the context window and mode pills at 1M / Full Access", () => {
-    const render = (contextWindow: "1m" | "200k", mode: "full-access" | "plan") => renderToStaticMarkup(
+  test("hideDefaults drops the mode pill at Full Access", () => {
+    const render = (mode: "full-access" | "plan") => renderToStaticMarkup(
       <ChatPreferenceControls
         availableProviders={PROVIDERS}
         selectedProvider="claude"
         model="opus"
-        modelOptions={{ reasoningEffort: "high", contextWindow }}
+        modelOptions={{ reasoningEffort: "high" }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
@@ -102,14 +101,9 @@ describe("ChatPreferenceControls", () => {
       />
     )
 
-    const atDefaults = render("1m", "full-access")
-    expect(atDefaults).not.toContain("1M")
-    expect(atDefaults).not.toContain("Full Access")
-
+    expect(render("full-access")).not.toContain("Full Access")
     // Off the default, the pill is back so the state is never invisible.
-    const offDefaults = render("200k", "plan")
-    expect(offDefaults).toContain("200k")
-    expect(offDefaults).toContain("Plan Mode")
+    expect(render("plan")).toContain("Plan Mode")
   })
 
   test("renders Fable as a Claude model option", () => {
@@ -118,7 +112,7 @@ describe("ChatPreferenceControls", () => {
         availableProviders={PROVIDERS}
         selectedProvider="claude"
         model="fable"
-        modelOptions={{ reasoningEffort: "high", contextWindow: "1m" }}
+        modelOptions={{ reasoningEffort: "high" }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}

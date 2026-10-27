@@ -1,9 +1,7 @@
 import {
   chatModeFromFlags,
-  CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   getCodexReasoningOptions,
-  normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
@@ -13,7 +11,6 @@ import {
   type AgentProvider,
   type ChatMode,
   type ChatProviderPreferences,
-  type ClaudeContextWindow,
   type ProviderCatalogEntry,
   type ProviderModelOption,
 } from "../../shared/types"
@@ -35,8 +32,8 @@ import { NEW_CHAT_COMPOSER_ID, type ComposerState } from "../stores/chatPreferen
  * - Models must come from the selected provider's catalog entry (which
  *   includes runtime-discovered models, e.g. Cursor's CLI catalog).
  * - Plan mode is only available when the provider supports it.
- * - Changing model normalizes dependent options (Claude context window /
- *   fast mode, Codex reasoning effort).
+ * - Changing model normalizes dependent options (Claude fast mode, Codex
+ *   reasoning effort).
  */
 
 /**
@@ -71,7 +68,6 @@ export function applyModelToComposerState(
     model,
     modelOptions: {
       ...state.modelOptions,
-      contextWindow: normalizeClaudeContextWindow(model, state.modelOptions.contextWindow),
       fastMode: normalizeClaudeFastMode(model, state.modelOptions.fastMode),
     },
   }
@@ -217,8 +213,6 @@ export interface ComposerOptionChoice {
 export interface ComposerOptionControls {
   /** Reasoning-effort selector, or null when the provider has none (e.g. cursor). */
   reasoning: { options: ComposerOptionChoice[]; selectedId: string | undefined } | null
-  /** Claude context-window selector, or null when the model has a single window. */
-  contextWindow: { options: ComposerOptionChoice[]; selectedId: ClaudeContextWindow } | null
   /** Fast-mode toggle, or null when the selected model doesn't support it. */
   fastMode: { enabled: boolean } | null
   /**
@@ -249,7 +243,6 @@ export function deriveComposerOptionControls(
   const selectedModelOption = providerConfig?.models.find((candidate) => candidate.id === state.model)
   const modelOptions = state.modelOptions as {
     reasoningEffort?: string
-    contextWindow?: ClaudeContextWindow
     fastMode?: boolean
   }
 
@@ -271,16 +264,6 @@ export function deriveComposerOptionControls(
       selectedId: modelOptions.reasoningEffort,
     }
 
-  const contextWindowOptions = state.provider === "claude"
-    ? (selectedModelOption?.contextWindowOptions ?? [])
-    : []
-  const contextWindow = contextWindowOptions.length > 1
-    ? {
-      options: contextWindowOptions.map((option) => ({ ...option }) as ComposerOptionChoice),
-      selectedId: modelOptions.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id,
-    }
-    : null
-
   const fastMode = selectedModelOption?.supportsFastMode
     ? { enabled: Boolean(modelOptions.fastMode) }
     : null
@@ -299,5 +282,5 @@ export function deriveComposerOptionControls(
     }
     : null
 
-  return { reasoning, contextWindow, fastMode, mode }
+  return { reasoning, fastMode, mode }
 }

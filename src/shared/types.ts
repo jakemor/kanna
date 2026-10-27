@@ -274,14 +274,13 @@ export interface ProviderModelOption {
   supportedReasoningEfforts?: readonly CodexReasoningEffortOption[]
   defaultReasoningEffort?: CodexReasoningEffort
   supportsFastMode?: boolean
-  contextWindowOptions?: readonly ProviderContextWindowOption[]
-  /**
-   * Fixed context window (in tokens) for models that expose a single,
-   * non-selectable window. Drives the input-footer meter directly, bypassing
-   * the 200k/1m selector machinery. When set, `contextWindowOptions` should be
-   * omitted (no picker).
-   */
+  /** The model's context window in tokens. Drives the input-footer meter. */
   contextWindowTokens?: number
+  /**
+   * Appended to the model id when spawning, for a family whose 1M window is
+   * opt-in on the wire ("opus" → "opus[1m]"). See resolveClaudeApiModelId.
+   */
+  apiModelSuffix?: string
   supportsMaxReasoningEffort?: boolean
 }
 
@@ -321,11 +320,6 @@ const CODEX_REASONING_EFFORT_LABELS: Record<string, string> = {
 /** Picker label for an effort id the app-server reports ("xhigh" → "Extra High"). */
 export function codexReasoningEffortLabel(effort: string): string {
   return CODEX_REASONING_EFFORT_LABELS[effort] ?? titleCaseWord(effort)
-}
-
-export interface ProviderContextWindowOption {
-  id: ClaudeContextWindow
-  label: string
 }
 
 export const CLAUDE_REASONING_OPTIONS = [
@@ -369,12 +363,10 @@ export type PiReasoningEffort = (typeof PI_REASONING_OPTIONS)[number]["id"]
 export type GrokReasoningEffort = (typeof GROK_REASONING_OPTIONS)[number]["id"]
 
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
-export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
 
 export interface ClaudeModelOptions {
   reasoningEffort: ClaudeReasoningEffort
-  contextWindow: ClaudeContextWindow
   fastMode: boolean
 }
 
@@ -461,7 +453,6 @@ export type ModelOptions = Partial<{
 
 export const DEFAULT_CLAUDE_MODEL_OPTIONS = {
   reasoningEffort: "high",
-  contextWindow: "1m",
   fastMode: false,
 } as const satisfies ClaudeModelOptions
 
@@ -532,10 +523,8 @@ const LEGACY_CODEX_REASONING_OPTIONS = [
 const GPT_5_6_REASONING_OPTIONS = [...CODEX_REASONING_OPTIONS]
 const GPT_5_6_LUNA_REASONING_OPTIONS = CODEX_REASONING_OPTIONS.filter((option) => option.id !== "ultra")
 
-export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
-  { id: "1m", label: "1M" },
-  { id: "200k", label: "200k" },
-] as const satisfies readonly ProviderContextWindowOption[]
+/** Catalog fields for a family that runs at 1M through the "[1m]" model id. */
+export const CLAUDE_1M_CONTEXT = { contextWindowTokens: 1_000_000, apiModelSuffix: "[1m]" } as const
 
 function titleCaseWord(value: string) {
   return value.length === 0 ? value : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`
@@ -680,15 +669,15 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "fable",
         label: deriveModelLabel("fable"),
         supportsEffort: true,
-        // Fable runs a fixed 1M window (no 200k/1m selector). The SDK reports a
-        // 2M window for it, so pin the meter to the real 1M ceiling here.
+        // Fable runs at 1M without the "[1m]" id. The SDK reports a 2M window
+        // for it, so pin the meter to the real 1M ceiling here.
         contextWindowTokens: 1_000_000,
       },
       {
         id: "opus",
         label: deriveModelLabel("opus"),
         supportsEffort: true,
-        contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
+        ...CLAUDE_1M_CONTEXT,
         supportsMaxReasoningEffort: true,
         // Fast mode is available on the Opus family. The SDK confirms this at
         // runtime via supportedModels() (see applyClaudeSdkModels).
@@ -698,7 +687,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "sonnet",
         label: deriveModelLabel("sonnet"),
         supportsEffort: true,
-        contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
+        ...CLAUDE_1M_CONTEXT,
       },
       {
         id: "haiku",
@@ -992,50 +981,15 @@ export function normalizeClaudeFastMode(modelId: string, fastMode?: unknown): bo
   return supportsClaudeFastMode(modelId) && fastMode === true
 }
 
-export function getClaudeContextWindowOptions(modelId: string): readonly ProviderContextWindowOption[] {
-  return getClaudeModelOption(modelId)?.contextWindowOptions ?? []
+// A Claude model with a 1M window always runs at it.
+export function resolveClaudeApiModelId(modelId: string): string {
+  return `${modelId}${getClaudeModelOption(modelId)?.apiModelSuffix ?? ""}`
 }
 
-// Preference normalization: models without a context window selector keep the
-// default *preference* instead of a clamped value, so switching to a model
-// that does support selection starts from the default rather than a stale
-// clamp. The effective window is resolved at usage time below.
-export function normalizeClaudeContextWindow(modelId: string, contextWindow?: unknown): ClaudeContextWindow {
-  const options = getClaudeContextWindowOptions(modelId)
-  if (options.length === 0) return DEFAULT_CLAUDE_MODEL_OPTIONS.contextWindow
-  return options.some((option) => option.id === contextWindow)
-    ? contextWindow as ClaudeContextWindow
-    : DEFAULT_CLAUDE_MODEL_OPTIONS.contextWindow
-}
-
-// Usage-time resolution: models without a 1m option always run at the
-// standard window regardless of the stored preference.
-export function resolveClaudeContextWindow(modelId: string, contextWindow?: unknown): ClaudeContextWindow {
-  const options = getClaudeContextWindowOptions(modelId)
-  if (!options.some((option) => option.id === "1m")) return "200k"
-  return normalizeClaudeContextWindow(modelId, contextWindow)
-}
-
-export function resolveClaudeApiModelId(modelId: string, contextWindow?: ClaudeContextWindow): string {
-  return resolveClaudeContextWindow(modelId, contextWindow) === "1m" ? `${modelId}[1m]` : modelId
-}
-
-export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWindow): number {
-  switch (contextWindow) {
-    case "1m":
-      return 1_000_000
-    case "200k":
-    default:
-      return 200_000
-  }
-}
-
-// Effective context window (in tokens) for the input-footer meter. Models with
-// a fixed window (e.g. fable) short-circuit the 200k/1m selector.
-export function resolveClaudeContextWindowMaxTokens(modelId: string, contextWindow?: unknown): number {
-  const fixed = getClaudeModelOption(modelId)?.contextWindowTokens
-  if (typeof fixed === "number" && fixed > 0) return fixed
-  return resolveClaudeContextWindowTokens(resolveClaudeContextWindow(modelId, contextWindow))
+// Context window (in tokens) for the input-footer meter. A model the catalog
+// gives no window runs at the standard 200k.
+export function resolveClaudeContextWindowMaxTokens(modelId: string): number {
+  return getClaudeModelOption(modelId)?.contextWindowTokens ?? 200_000
 }
 
 /** Version strings stamped by nightly builds ("0.56.7-nightly.abc1234"). */

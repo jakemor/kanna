@@ -36,12 +36,11 @@ import {
   Settings2,
   Share2,
   Sparkles,
-  SquareMenu,
   SquarePen,
   SquareTerminal,
   Terminal,
 } from "lucide-react"
-import type { ChatMode, ClaudeContextWindow, FsListResult, GitHubRecentReposResult, SidebarData } from "../../../shared/types"
+import type { ChatMode, FsListResult, GitHubRecentReposResult, SidebarData } from "../../../shared/types"
 import { DEFAULT_NEW_PROJECTS_DIRECTORY } from "../../../shared/types"
 import { REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import type { KannaState } from "../../app/useKannaState"
@@ -1007,7 +1006,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
       // Option controls come from the same central availability registry
       // (lib/composer.ts deriveComposerOptionControls) that drives the chat
       // input's ChatPreferenceControls — nothing unavailable is ever offered.
-      const { mode, fastMode, reasoning, contextWindow } = composer.optionControls
+      const { mode, fastMode, reasoning } = composer.optionControls
       if (mode) {
         for (const option of mode.options) {
           if (option === mode.selected) continue
@@ -1061,23 +1060,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
             run: () => {
               close()
               composer.setReasoningEffort(option.id)
-            },
-          })
-        }
-      }
-      if (contextWindow) {
-        for (const option of contextWindow.options) {
-          const isCurrent = contextWindow.selectedId === option.id
-          list.push({
-            id: `set-context-${option.id}`,
-            title: `Context Window: ${option.label}`,
-            keywords: ["context window", "context length", "tokens", option.id],
-            icon: <SquareMenu className={ICON_CLASS} />,
-            hint: isCurrent ? "Current window" : "Context window",
-            searchOnly: true,
-            run: () => {
-              close()
-              composer.setContextWindow(option.id as ClaudeContextWindow)
             },
           })
         }

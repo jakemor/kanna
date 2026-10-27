@@ -1802,6 +1802,68 @@ describe("AgentCoordinator claude integration", () => {
     queues.forEach((queue) => queue.close())
   })
 
+  test("a turn that names no Claude options keeps the live session's effort and fast mode", async () => {
+    const queues: AsyncEventQueue<any>[] = []
+    const startSessionCalls: Array<{ model: string; effort?: string; serviceTier?: string }> = []
+    const fastModeCalls: boolean[] = []
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        startSessionCalls.push({ model: args.model, effort: args.effort, serviceTier: args.serviceTier })
+        const events = new AsyncEventQueue<any>()
+        queues.push(events)
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => events.close(),
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          setFastMode: async (fastMode: boolean) => {
+            fastModeCalls.push(fastMode)
+          },
+          sendPrompt: async () => {
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+            })
+          },
+        }
+      },
+    })
+
+    // The user's turn, at medium in fast mode.
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "go",
+      model: "opus",
+      modelOptions: { claude: { reasoningEffort: "medium", fastMode: true } },
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    // A report names only the model: no restart, no fast-mode flip.
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "report", model: "opus" })
+    await waitFor(() => store.turnFinishedCount === 2)
+
+    // An effort the caller names still wins.
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "go", model: "opus", effort: "low" })
+    await waitFor(() => store.turnFinishedCount === 3)
+
+    expect(startSessionCalls).toEqual([
+      { model: "opus[1m]", effort: "medium", serviceTier: "fast" },
+      { model: "opus[1m]", effort: "low", serviceTier: "fast" },
+    ])
+    expect(fastModeCalls).toEqual([])
+
+    queues.forEach((queue) => queue.close())
+  })
+
   test("claudeToolset only offers EnterPlanMode in auto plan", () => {
     expect(claudeToolset(false)).not.toContain("EnterPlanMode")
     // ExitPlanMode stays available so a mid-session switch into plan mode

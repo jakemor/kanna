@@ -8,6 +8,7 @@ import { AccountInfoMessage } from "../components/messages/AccountInfoMessage"
 import { TextMessage } from "../components/messages/TextMessage"
 import { AskUserQuestionMessage } from "../components/messages/AskUserQuestionMessage"
 import { ExitPlanModeMessage } from "../components/messages/ExitPlanModeMessage"
+import { RequestSecretsMessage } from "../components/messages/RequestSecretsMessage"
 import { TodoWriteMessage } from "../components/messages/TodoWriteMessage"
 import { ToolCallMessage } from "../components/messages/ToolCallMessage"
 import { formatPromptBoundary, promptOriginLabel, ResultMessage, TimeBoundary } from "../components/messages/ResultMessage"
@@ -138,7 +139,7 @@ function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
   if (message.kind !== "tool") return false
   // A chat's card or a schedule's stands on its own like a chart does: folded
   // into "3 tool calls" it would hide the one thing it is there to show.
-  if (message.toolKind === "ask_user_question" || message.toolKind === "display") return false
+  if (message.toolKind === "ask_user_question" || message.toolKind === "display" || message.toolKind === "request_secrets") return false
   if (isChatToolCall(message) || isScheduleToolCall(message)) return false
   const toolName = (message as ProcessedToolCall).toolName
   return !SPECIAL_TOOL_NAME_SET.has(toolName)
@@ -659,6 +660,11 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
               isLatest={isLatestExitPlanMode}
             />
           )
+          break
+        }
+        if (message.toolKind === "request_secrets") {
+          // `isLoading` is "no result yet and the chat is still working": the form is live.
+          rendered = <RequestSecretsMessage key={message.id} message={message} isWaiting={isLoading} />
           break
         }
         if (message.toolKind === "todo_write") {

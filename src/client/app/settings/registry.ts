@@ -1,4 +1,4 @@
-import { BookText, Command, FlaskConical, Gauge, LaptopMinimal, MessageSquareQuote, ScrollText, Settings2, type LucideIcon } from "lucide-react"
+import { BookText, Command, FlaskConical, Gauge, KeyRound, LaptopMinimal, MessageSquareQuote, ScrollText, Settings2, type LucideIcon } from "lucide-react"
 import { macSetupAvailable } from "../../lib/macApp"
 
 /**
@@ -35,6 +35,12 @@ export const SETTINGS_SECTIONS = [
     label: "Skills",
     icon: BookText as LucideIcon,
     subtitle: "Global agent skills from the active skill lock file.",
+  },
+  {
+    id: "secrets",
+    label: "Secrets",
+    icon: KeyRound as LucideIcon,
+    subtitle: "API keys and tokens agents asked you for, by project. Kept in this machine's keychain; agents never see the values.",
   },
   {
     id: "keybindings",
@@ -281,6 +287,14 @@ export const SETTINGS_ROWS = defineRows({
     title: "Full Disk Access",
     description: "Lets agents work on projects anywhere in your home folder without macOS asking about each protected folder.",
     keywords: ["privacy", "permission", "tcc", "desktop", "documents", "downloads", "icloud"],
+  },
+
+  // Secrets
+  savedSecrets: {
+    sectionId: "secrets",
+    title: "Saved Secrets",
+    description: "Replace or delete the API keys and tokens agents asked for, by project.",
+    keywords: ["secrets", "api key", "token", "password", "credentials", "keychain", "request_secrets", "env", "environment"],
   },
 
   // Labs

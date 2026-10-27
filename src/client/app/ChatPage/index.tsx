@@ -53,7 +53,9 @@ import type { KannaState } from "../useKannaState"
 import { ChatInputDock } from "./ChatInputDock"
 import { DefaultModelsDialog } from "../../components/DefaultModelsDialog"
 import { ChatTranscriptViewport, type TranscriptScrollHandle } from "./ChatTranscriptViewport"
-import { TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
+import { TranscriptRenderOptionsProvider, type SubmitSecrets } from "../../components/messages/render-context"
+import type { RequestSecretsToolResult, SecretsListResult } from "../../../shared/secrets"
+import { loadSecretBackend } from "../../lib/secret-storage"
 import { ToolPayloadProvider } from "../../components/messages/tool-payload-context"
 import { createToolPayloadStore } from "./toolPayloadStore"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -1042,7 +1044,16 @@ export function ChatPage() {
     [state.socket, state.activeChatId]
   )
 
-  const transcriptRenderOptions = useMemo(() => ({ loadEntryDebugRaw }), [loadEntryDebugRaw])
+  const secretsSocket = state.socket
+  const submitSecrets = useCallback<SubmitSecrets>(async (toolUseId, answer) => {
+    if (!activeChatId) throw new Error("No chat is open")
+    return await secretsSocket.command<RequestSecretsToolResult>({ type: "secrets.submit", chatId: activeChatId, toolUseId, ...answer })
+  }, [activeChatId, secretsSocket])
+  const loadBackend = useCallback(() => loadSecretBackend(secretsSocket, (command) => secretsSocket.command<SecretsListResult>(command)), [secretsSocket])
+  const transcriptRenderOptions = useMemo(
+    () => ({ loadEntryDebugRaw, submitSecrets, loadSecretBackend: loadBackend }),
+    [loadEntryDebugRaw, submitSecrets, loadBackend],
+  )
 
   // One cache per chat: entry ids are chat-scoped, and leaving a chat should
   // not keep its payloads resident.

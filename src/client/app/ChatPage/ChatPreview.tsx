@@ -12,7 +12,9 @@ import {
 } from "../../components/chat-ui/chat-reference"
 import { renderChatStatusDot } from "../../components/chat-ui/ThreadRowContent"
 import { scheduleEditPrompt } from "../../components/chat-ui/widgets/SchedulesWidget"
-import { TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
+import { TranscriptRenderOptionsProvider, type SubmitSecrets } from "../../components/messages/render-context"
+import type { RequestSecretsToolResult, SecretsListResult } from "../../../shared/secrets"
+import { loadSecretBackend } from "../../lib/secret-storage"
 import { ToolPayloadProvider } from "../../components/messages/tool-payload-context"
 import { useViewerMotion, ViewerIconButton, ViewerSurface } from "../../components/viewer/ViewerSurface"
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow"
@@ -248,7 +250,15 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
     async (entryId: string) => await socket.command<string | null>({ type: "chat.getEntryDebugRaw", chatId, entryId }),
     [chatId, socket],
   )
-  const transcriptRenderOptions = useMemo(() => ({ loadEntryDebugRaw }), [loadEntryDebugRaw])
+  const submitSecrets = useCallback<SubmitSecrets>(
+    async (toolUseId, answer) => await socket.command<RequestSecretsToolResult>({ type: "secrets.submit", chatId, toolUseId, ...answer }),
+    [chatId, socket],
+  )
+  const loadBackend = useCallback(() => loadSecretBackend(socket, (command) => socket.command<SecretsListResult>(command)), [socket])
+  const transcriptRenderOptions = useMemo(
+    () => ({ loadEntryDebugRaw, submitSecrets, loadSecretBackend: loadBackend }),
+    [loadEntryDebugRaw, submitSecrets, loadBackend],
+  )
   const toolPayloadStore = useMemo(
     () => createToolPayloadStore(async (entryIds) => (
       await socket.command<TranscriptEntry[]>({ type: "chat.getToolEntries", chatId, entryIds }) ?? []

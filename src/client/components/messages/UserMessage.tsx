@@ -2,9 +2,9 @@ import { useMemo, useRef } from "react"
 import type { ChatAttachment } from "../../../shared/types"
 import { stripSystemMessages } from "../../../shared/message-preview"
 import { CLAMP_LINES, ClampedMessageText, FOLD_SURFACE_ATTRIBUTE } from "./ClampedMessageText"
-import { classifyAttachmentPreview } from "./attachmentPreview"
 import { AttachmentFileCard, AttachmentImageCard } from "./AttachmentCard"
-import { openViewer, viewerAttachmentFromChat } from "../../stores/viewerStore"
+import { viewerAttachmentFromChat } from "../../stores/viewerStore"
+import { activateAttachment, attachmentOpenAction } from "../viewer/attachmentActions"
 import { useTranscriptRenderOptions } from "./render-context"
 import { cn } from "../../lib/utils"
 
@@ -61,15 +61,12 @@ export function UserMessageAttachments({ attachments, align = "end" }: { attachm
       return
     }
 
-    const target = classifyAttachmentPreview(attachment)
-    if (target.openInNewTab) {
-      if (typeof window !== "undefined") {
-        window.open(new URL(attachment.contentUrl, document.baseURI || window.location.href).toString(), "_blank", "noopener,noreferrer")
-      }
-      return
-    }
+    activateAttachment(viewerAttachmentFromChat(attachment))
+  }
 
-    openViewer({ kind: "attachment", attachment: viewerAttachmentFromChat(attachment) })
+  function downloads(attachment: ChatAttachment) {
+    return canInteractWithAttachments && Boolean(attachment.contentUrl)
+      && attachmentOpenAction(viewerAttachmentFromChat(attachment)) === "download"
   }
 
   return (
@@ -91,6 +88,7 @@ export function UserMessageAttachments({ attachments, align = "end" }: { attachm
             <AttachmentFileCard
               key={attachment.id}
               attachment={attachment}
+              downloads={downloads(attachment)}
               onClick={canInteractWithAttachments ? () => handleAttachmentClick(attachment) : undefined}
             />
           ))}

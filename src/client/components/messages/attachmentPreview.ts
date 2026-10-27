@@ -5,7 +5,7 @@ export const JSON_PREVIEW_LIMIT_BYTES = 256 * 1024
 export const TABLE_PREVIEW_ROW_LIMIT = 200
 export const TABLE_PREVIEW_COLUMN_LIMIT = 20
 
-const CODE_OR_CONFIG_EXTENSIONS = new Set([
+export const CODE_OR_CONFIG_EXTENSIONS = new Set([
   ".c", ".cc", ".cfg", ".conf", ".cpp", ".cs", ".css", ".env", ".go", ".graphql", ".h", ".hpp", ".html",
   ".ini", ".java", ".js", ".jsonc", ".jsx", ".kt", ".lua", ".mjs", ".php", ".pl", ".properties", ".py",
   ".rb", ".rs", ".scss", ".sh", ".sql", ".swift", ".toml", ".ts", ".tsx", ".txt", ".vue", ".xml", ".yaml",
@@ -215,7 +215,7 @@ export function parseDelimitedPreview(
   }
 }
 
-function getFileExtension(fileName: string) {
+export function getFileExtension(fileName: string) {
   const index = fileName.lastIndexOf(".")
   return index >= 0 ? fileName.slice(index).toLowerCase() : ""
 }

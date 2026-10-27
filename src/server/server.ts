@@ -1032,11 +1032,17 @@ async function handleTranscriptMediaContent(req: Request, url: URL, store: Event
     return Response.json({ error: "Media not found" }, { status: 404 })
   }
 
+  // PDFs show inline too: the viewer draws one in an iframe, and with the
+  // download headers that iframe stayed empty. Not sandboxed, because
+  // Chrome's PDF viewer won't load in a sandboxed document; a PDF's own
+  // script runs in the viewer's engine, not in this origin. Uploads serve
+  // PDFs the same way. The client's copy of this list is
+  // `TRANSCRIPT_MEDIA_INLINE` in src/client/components/viewer/attachmentActions.ts.
   return new Response(file, {
     headers: {
       "Content-Type": file.type || "application/octet-stream",
       "X-Content-Type-Options": "nosniff",
-      ...(!/^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|quicktime|ogg))$/.test(file.type)
+      ...(!/^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|quicktime|ogg)|application\/pdf)$/.test(file.type)
         ? { "Content-Disposition": "attachment", "Content-Security-Policy": "sandbox; default-src 'none'" } : {}),
       "Cache-Control": "private, max-age=31536000, immutable",
     },

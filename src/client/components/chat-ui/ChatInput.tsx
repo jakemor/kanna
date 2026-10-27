@@ -35,8 +35,8 @@ import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
-import { classifyAttachmentPreview } from "../messages/attachmentPreview"
-import { getChatViewer, openViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
+import { getChatViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
+import { activateAttachment } from "../viewer/attachmentActions"
 import { overrideContextWindowMaxTokens, type ContextWindowSnapshot } from "../../lib/contextWindow"
 import {
   applySkillCompletion,
@@ -1077,15 +1077,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }
 
   function handleAttachmentPreview(attachment: ComposerAttachment) {
-    const target = classifyAttachmentPreview(attachment)
-    if (target.openInNewTab) {
-      if (typeof window !== "undefined") {
-        window.open(new URL(attachment.contentUrl, window.location.origin).toString(), "_blank", "noopener,noreferrer")
-      }
-      return
-    }
-
-    openViewer({ kind: "attachment", attachment: viewerAttachmentFromChat(attachment) })
+    activateAttachment(viewerAttachmentFromChat(attachment))
   }
 
   function removeAttachment(attachment: ComposerAttachment) {

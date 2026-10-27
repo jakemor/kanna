@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, File, FileImage, FileJson, FileText, FileVideo, Link2, Sheet } from "lucide-react"
+import { ArrowDown, ArrowUp, ChevronsUpDown, Download, ExternalLink, File, FileImage, FileJson, FileText, FileVideo, Link2, Sheet } from "lucide-react"
 import { memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { cn } from "../../lib/utils"
 import { formatAttachmentSize } from "../messages/AttachmentCard"
@@ -15,6 +15,8 @@ import { FileContentView } from "../messages/FileContentView"
 import { TranscriptMarkdown } from "../messages/shared"
 import { Skeleton } from "../ui/skeleton"
 import type { ViewerAttachment } from "../../stores/viewerStore"
+import { downloadAttachment, openAttachmentInNewTab, openInBrowserLabel, opensInBrowser } from "./attachmentActions"
+import { pdfPreviewUrl, servedInline } from "./attachmentOpenAction"
 import { ViewerIconButton, ViewerPanes, ViewerSurface, ViewerToggle } from "./ViewerSurface"
 
 /** Rows and columns the table view reads: the viewer has the room, and a sort wants the rows. */
@@ -135,7 +137,11 @@ export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAt
       toolbar={(
         <>
           <ViewerIconButton label="Copy link" onClick={() => void navigator.clipboard?.writeText(absoluteUrl(attachment.url))}><Link2 /></ViewerIconButton>
-          <ViewerIconButton label="Open in new tab" onClick={() => window.open(absoluteUrl(attachment.url), "_blank", "noopener,noreferrer")}><ExternalLink /></ViewerIconButton>
+          {/* No "open" for a file whose tab would only download it. */}
+          {opensInBrowser(attachment) ? (
+            <ViewerIconButton label={openInBrowserLabel()} onClick={() => openAttachmentInNewTab(kind === "pdf" ? { url: pdfPreviewUrl(attachment.url) } : attachment)}><ExternalLink /></ViewerIconButton>
+          ) : null}
+          <ViewerIconButton label="Download" onClick={() => downloadAttachment(attachment)}><Download /></ViewerIconButton>
         </>
       )}
       bodyClassName={kind === "image" || kind === "video" ? "bg-muted/30" : undefined}
@@ -193,24 +199,9 @@ function AttachmentBody({ attachment, kind, content, view }: {
       </div>
     )
   }
-  if (kind === "pdf") {
-    return <iframe src={attachment.url} title={attachment.name} className="size-full border-0" />
-  }
-  if (kind === "external") {
-    return (
-      <div className="flex min-h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <File className="size-8 text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">No preview for this kind of file.</p>
-        <button
-          type="button"
-          onClick={() => window.open(absoluteUrl(attachment.url), "_blank", "noopener,noreferrer")}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
-        >
-          <ExternalLink className="size-3.5" /> Open in new tab
-        </button>
-      </div>
-    )
-  }
+  if (kind === "pdf") return <PdfFrame attachment={attachment} />
+  // Never opened for these: `activateAttachment` sends them to a tab or a download.
+  if (kind === "external") return null
   if (!content || content.status === "loading") return kind === "table" && view === "rendered" ? <TableSkeleton /> : <TextSkeleton />
   if (content.status === "error") {
     return <div className="flex min-h-full items-center justify-center p-6 text-sm text-destructive">{content.message}</div>
@@ -233,6 +224,46 @@ function AttachmentBody({ attachment, kind, content, view }: {
   return (
     <div className="p-4">
       <FileContentView content={content.content} />
+    </div>
+  )
+}
+
+/**
+ * A PDF in an iframe, mounted only once the server has said it shows it.
+ * An iframe on a URL served as `attachment` (an older server sent agents'
+ * PDFs that way) is a download: the frame stays blank, and the file is
+ * saved again each time the frame mounts, which a viewer restored on reload
+ * does with no click. A fetch never downloads, and the check stops at the
+ * headers. It skips the cache, which may hold an answer from before the
+ * server changed (`pdfPreviewUrl`), and so clears it for the frame.
+ */
+function PdfFrame({ attachment }: { attachment: ViewerAttachment }) {
+  const url = pdfPreviewUrl(attachment.url)
+  const [state, setState] = useState<{ url: string; inline: boolean } | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch(url, { signal: controller.signal, cache: "reload" })
+      .then((response) => {
+        setState({ url, inline: response.ok && servedInline(response.headers, "application/pdf") })
+        controller.abort()
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setState({ url, inline: false })
+      })
+    return () => controller.abort()
+  }, [url])
+  if (state?.url !== url) return null
+  if (state.inline) return <iframe src={url} title={attachment.name} className="size-full border-0" />
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm text-muted-foreground">This PDF can't be shown here.</p>
+      <button
+        type="button"
+        onClick={() => downloadAttachment(attachment)}
+        className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+      >
+        <Download className="size-3.5" /> Download
+      </button>
     </div>
   )
 }

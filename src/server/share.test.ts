@@ -10,6 +10,7 @@ describe("ensureCloudflaredInstalled", () => {
     const result = await ensureCloudflaredInstalled({
       cloudflaredBin: "/tmp/cloudflared",
       existsSync: () => true,
+      ensureMinimum: async () => null,
       installCloudflared: async (to) => {
         installCalls.push(to)
         return to
@@ -125,6 +126,7 @@ describe("startShareTunnel", () => {
     const shareTunnel = await startShareTunnel("http://localhost:3333", { kind: "token", token: "secret-token" }, {
       cloudflaredBin: "/tmp/cloudflared",
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => ({
         once(event: "url" | "connected" | "error" | "exit", listener: ((url: string) => void) | (() => void) | ((error: Error) => void) | ((code: number | null, signal: NodeJS.Signals | null) => void)) {
           if (event === "url") {
@@ -193,6 +195,7 @@ describe("startShareTunnel cancellation", () => {
 
     await expect(startShareTunnel("http://localhost:3333", NAMED, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => fake as never,
     }, { signal: AbortSignal.timeout(30) })).rejects.toThrow()
 
@@ -207,6 +210,7 @@ describe("startShareTunnel cancellation", () => {
 
     await expect(startShareTunnel("http://localhost:3333", NAMED, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => {
         created += 1
         return createFakeProcess().fake as never
@@ -219,6 +223,7 @@ describe("startShareTunnel cancellation", () => {
     const { fake } = createFakeProcess()
     const tunnel = await startShareTunnel("http://localhost:3333", NAMED, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => readyOnSpawn(fake),
     })
 
@@ -236,6 +241,7 @@ describe("startShareTunnel cancellation", () => {
     const logs: string[] = []
     await startShareTunnel("http://localhost:3333", NAMED, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => readyOnSpawn(fake),
       log: (message) => logs.push(message),
     })
@@ -249,6 +255,7 @@ describe("startShareTunnel cancellation", () => {
     const { fake, signals } = createFakeProcess()
     const tunnel = await startShareTunnel("http://localhost:3333", NAMED, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => readyOnSpawn(fake),
       stopGraceMs: 20,
     })
@@ -263,6 +270,7 @@ describe("startShareTunnel cancellation", () => {
     const { fake, signals } = createFakeProcess()
     const tunnel = await startShareTunnel("http://localhost:3333", NAMED, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: () => readyOnSpawn(fake),
       stopGraceMs: 20,
     })
@@ -314,6 +322,7 @@ describe("NamedTunnelProcess", () => {
     const { spawnImpl, child } = createFakeSpawn()
     const tunnel = await startShareTunnel("http://localhost:3210", { kind: "token", token: "secret-token" }, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: (token, localUrl) => {
         const named = new NamedTunnelProcess(token, localUrl, { spawnImpl })
         queueMicrotask(() => child.stderr.emit("data", Buffer.from(REGISTERED_LINE)))
@@ -330,6 +339,7 @@ describe("NamedTunnelProcess", () => {
     const { spawnImpl, child } = createFakeSpawn()
     const tunnel = await startShareTunnel("http://localhost:3210", { kind: "token", token: "secret-token" }, {
       existsSync: () => true,
+      ensureMinimum: async () => null,
       createNamedTunnel: (token, localUrl) => {
         const named = new NamedTunnelProcess(token, localUrl, { spawnImpl })
         queueMicrotask(() => child.stderr.emit("data", Buffer.from(REGISTERED_LINE)))
@@ -380,5 +390,30 @@ describe("renderTerminalQr", () => {
     expect(result).toContain("\x1b[47m")
     expect(result).toContain("\n")
     expect(result.length).toBeGreaterThan(0)
+  })
+})
+
+describe("startShareTunnel and the cloudflared security minimum", () => {
+  test("an existing binary goes through the minimum check before the connector starts", async () => {
+    const order: string[] = []
+    const { fake } = createFakeProcess()
+
+    const tunnel = await startShareTunnel("http://localhost:3333", { kind: "token", token: "secret-token" }, {
+      cloudflaredBin: "/tmp/cloudflared",
+      existsSync: () => true,
+      ensureMinimum: async (bin) => {
+        order.push(`ensureMinimum ${bin}`)
+        await Bun.sleep(5)
+        return "2026.10.4"
+      },
+      createNamedTunnel: () => {
+        order.push("spawn")
+        return readyOnSpawn(fake)
+      },
+    })
+
+    expect(order).toEqual(["ensureMinimum /tmp/cloudflared", "spawn"])
+    expect(tunnel.binaryVersion).toBe("2026.10.4")
+    tunnel.stop()
   })
 })

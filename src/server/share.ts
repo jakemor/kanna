@@ -12,12 +12,15 @@ import {
 } from "cloudflared"
 import type { ShareMode } from "../shared/share"
 import { isTokenShareMode } from "../shared/share"
+import { ensureCloudflaredMinimum } from "./cloudflared-updater"
 
 export interface StartedShareTunnel {
   publicUrl: string | null
   stop: () => void
   /** Resolves when the cloudflared process exits, for any reason. */
   exited?: Promise<void>
+  /** The cloudflared version this connector started from, when known. */
+  binaryVersion?: string | null
 }
 
 export interface ShareTunnelProcess {
@@ -55,6 +58,11 @@ export interface ShareTunnelDeps {
   installCloudflared?: (to: string) => Promise<string>
   createQuickTunnel?: (localUrl: string) => ShareTunnelProcess
   createNamedTunnel?: (token: string, localUrl: string) => ShareTunnelProcess
+  /**
+   * Replaces a binary below the security minimum and returns the version the
+   * tunnel will run (cloudflared-updater.ts).
+   */
+  ensureMinimum?: (bin: string) => Promise<string | null>
   log?: (message: string) => void
   stopGraceMs?: number
 }
@@ -69,17 +77,28 @@ export async function renderTerminalQr(url: string) {
 export async function ensureCloudflaredInstalled(
   deps: ShareTunnelDeps = {},
 ) {
+  return (await prepareCloudflared(deps)).bin
+}
+
+/**
+ * The binary to run and its version. A missing one is downloaded fresh (the
+ * latest release, so it clears the minimum). An existing one used to be kept
+ * forever; now one below the security minimum is replaced first.
+ */
+async function prepareCloudflared(deps: ShareTunnelDeps) {
   const resolvedBin = deps.cloudflaredBin ?? cloudflaredBin
   const fileExists = deps.existsSync ?? existsSync
   const installBinary = deps.installCloudflared ?? installCloudflared
 
   if (fileExists(resolvedBin)) {
-    return resolvedBin
+    const ensureMinimum = deps.ensureMinimum
+      ?? ((bin: string) => ensureCloudflaredMinimum(bin, { deps: { log: deps.log, warn: deps.log } }))
+    return { bin: resolvedBin, version: await ensureMinimum(resolvedBin) }
   }
 
   deps.log?.("installing cloudflared binary")
   await installBinary(resolvedBin)
-  return resolvedBin
+  return { bin: resolvedBin, version: null }
 }
 
 function normalizePublicUrl(url: string) {
@@ -206,7 +225,7 @@ export async function startShareTunnel(
   deps: ShareTunnelDeps = {},
   options: StartShareTunnelOptions = {},
 ): Promise<StartedShareTunnel> {
-  await ensureCloudflaredInstalled(deps)
+  const { version: binaryVersion } = await prepareCloudflared(deps)
   options.signal?.throwIfAborted()
   const namedTunnel = isTokenShareMode(shareMode)
   const tunnel = namedTunnel
@@ -255,6 +274,7 @@ export async function startShareTunnel(
     publicUrl,
     stop,
     exited,
+    binaryVersion,
   }
 }
 

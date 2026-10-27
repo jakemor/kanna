@@ -144,6 +144,8 @@ export interface StartKannaServerOptions {
     fetchLatestVersion: (packageName: string) => Promise<string>
     installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
     installNightly?: () => Promise<NightlyInstallResult>
+    /** Fire-and-forget cloudflared update, run next to each update check. */
+    checkCloudflared?: () => void
   }
 }
 
@@ -260,6 +262,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       installNightly: options.update.installNightly,
       devMode: runtimeProfile === "dev",
       trackEvent: analytics.track.bind(analytics),
+      onCheck: options.update.checkCloudflared,
     })
     : null
   const codexManager = new CodexAppServerManager()

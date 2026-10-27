@@ -15,6 +15,11 @@ export interface UpdateManagerDeps {
   installNightly?: () => Promise<NightlyInstallResult>
   devMode?: boolean
   trackEvent?: (eventName: string, properties?: Record<string, unknown>) => void
+  /**
+   * Runs next to each check without being awaited: the cloudflared updater
+   * rides along here (cloudflared-updater.ts) and adds no time to the check.
+   */
+  onCheck?: () => void
 }
 
 export class UpdateManager {
@@ -79,6 +84,9 @@ export class UpdateManager {
       } : undefined,
     })
 
+    try {
+      this.deps.onCheck?.()
+    } catch {}
     const checkPromise = this.runCheck()
     this.checkPromise = checkPromise
 

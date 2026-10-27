@@ -47,6 +47,8 @@ export interface CliUpdateOptions {
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   /** Build main from source and install it globally (see server/nightly.ts). */
   installNightly?: () => Promise<NightlyInstallResult>
+  /** Fire-and-forget cloudflared update, run next to each update check. */
+  checkCloudflared?: () => void
   argv: string[]
   command: string
 }
@@ -83,6 +85,12 @@ export interface CliRuntimeDeps {
   fetchLatestVersion: (packageName: string, options?: { timeoutMs?: number }) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   installNightly?: () => Promise<NightlyInstallResult>
+  /**
+   * Starts a background cloudflared update and returns at once
+   * (cloudflared-updater.ts). Fired beside the startup update check and
+   * passed on to the server's periodic one; never awaited.
+   */
+  startCloudflaredUpdate?: () => void
   openUrl: (url: string) => void
   /** Show the local URL in the Mac app; false when it isn't installed (see mac-app.ts). */
   openInMacApp?: (localUrl: string) => Promise<boolean>
@@ -449,6 +457,10 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 1 }
   }
 
+  // Runs in parallel with the self-update check below and is not awaited. If
+  // that check restarts Kanna mid-download, the temp copy is abandoned and the
+  // new process tries again; the binary itself is never half-written.
+  deps.startCloudflaredUpdate?.()
   const shouldRestart = await maybeSelfUpdate(argv, deps)
   if (shouldRestart !== null) {
     return { kind: "restarting", reason: shouldRestart }
@@ -520,6 +532,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       fetchLatestVersion: deps.fetchLatestVersion,
       installVersion: deps.installVersion,
       installNightly: deps.installNightly,
+      checkCloudflared: deps.startCloudflaredUpdate,
       argv,
       command: CLI_COMMAND,
     },

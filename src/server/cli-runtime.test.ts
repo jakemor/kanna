@@ -942,3 +942,38 @@ describe("runCli with the Mac app", () => {
   })
 })
 
+
+describe("runCli and the cloudflared updater", () => {
+  test("starts the updater beside the startup update check without waiting on it, and hands it to the server's checks", async () => {
+    const order: string[] = []
+    let backgroundFinished = false
+    let checkCloudflared: (() => void) | undefined
+    const { deps } = createDeps({
+      startCloudflaredUpdate: () => {
+        order.push("cloudflared update started")
+        // A slow download that outlives startup.
+        void Bun.sleep(500).then(() => {
+          backgroundFinished = true
+        })
+      },
+      fetchLatestVersion: async () => {
+        order.push("startup update check")
+        return "0.3.0"
+      },
+      startServer: async (options) => {
+        order.push("server started")
+        checkCloudflared = options.update.checkCloudflared
+        return { port: options.port, stop: async () => {} }
+      },
+    })
+
+    const startedAt = performance.now()
+    const result = await runCli(["--no-open"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(performance.now() - startedAt).toBeLessThan(300)
+    expect(backgroundFinished).toBe(false)
+    expect(order).toEqual(["cloudflared update started", "startup update check", "server started"])
+    expect(checkCloudflared).toBe(deps.startCloudflaredUpdate)
+  })
+})

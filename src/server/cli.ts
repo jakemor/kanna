@@ -1,4 +1,5 @@
 import process from "node:process"
+import { bin as cloudflaredBin } from "cloudflared"
 import { LOG_PREFIX } from "../shared/branding"
 import {
   fetchLatestPackageVersion,
@@ -9,6 +10,7 @@ import {
 import { CLI_STARTUP_UPDATE_RESTART_EXIT_CODE, CLI_UI_UPDATE_RESTART_EXIT_CODE } from "./restart"
 import { installNightlyBuild } from "./nightly"
 import { startKannaServer } from "./server"
+import { startCloudflaredBackgroundUpdate } from "./cloudflared-updater"
 import { exitWithParent, openInMacApp } from "./mac-app"
 
 // Read version from package.json at the package root
@@ -42,6 +44,14 @@ const result = await runCli(argv, {
   fetchLatestVersion: fetchLatestPackageVersion,
   installVersion: installPackageVersion,
   installNightly: () => installNightlyBuild({ log: console.log }),
+  startCloudflaredUpdate: () => {
+    void startCloudflaredBackgroundUpdate(cloudflaredBin, {
+      deps: {
+        log: (message) => console.log(`${LOG_PREFIX} ${message}`),
+        warn: (message) => console.warn(`${LOG_PREFIX} ${message}`),
+      },
+    })
+  },
   openUrl,
   openInMacApp,
   log: console.log,

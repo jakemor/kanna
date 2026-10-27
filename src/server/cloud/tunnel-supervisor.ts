@@ -16,6 +16,12 @@
  * Fully DI'd (tunnel, fetch, sleep) so tests drive it deterministically.
  */
 
+import {
+  isBelowCloudflaredMinimum,
+  minimumCloudflaredVersion,
+  onCloudflaredInstalled,
+  type CloudflaredInstalledEvent,
+} from "../cloudflared-updater"
 import { startShareTunnel, type StartedShareTunnel } from "../share"
 import type { CloudApiClient } from "./api-client"
 import { CloudApiError, CONTROL_PLANE_REQUEST_TIMEOUT_MS } from "./api-client"
@@ -72,6 +78,9 @@ export interface TunnelSupervisorDeps {
   heartbeatTimeoutMs?: number
   tunnelReadyTimeoutMs?: number
   watchdogMs?: number
+  /** Where verified cloudflared installs are announced (cloudflared-updater.ts). */
+  subscribeCloudflaredInstalls?: (listener: (event: CloudflaredInstalledEvent) => void) => () => void
+  platform?: NodeJS.Platform
 }
 
 export interface TunnelSupervisorArgs {
@@ -194,6 +203,27 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
   let failureStreakStartedAt: number | null = null
   let failuresPastFastWindow = 0
   const stopController = new AbortController()
+  /** The live connector's cloudflared version and a way to end its attempt. */
+  let activeConnector: { version: string | null; restart: (reason: Error) => void } | null = null
+  const platform = args.deps?.platform ?? process.platform
+
+  // The background updater swaps the binary on disk and the connector keeps
+  // running the old one until its next natural start; an upgrade alone is
+  // never worth dropping the machine's tunnel. The one exception is a
+  // connector below the security minimum (it trusts the compromised eMudhra
+  // intermediates). That one is restarted, but only after the updater has
+  // verified and swapped in a patched binary, so the restart can't land on a
+  // broken download. It costs a few seconds: the attempt ends, and the fast
+  // retry window brings the connector back in about a second, with the
+  // bounded start and watchdog above guarding against a restart that stalls.
+  const unsubscribeInstalls = (args.deps?.subscribeCloudflaredInstalls ?? onCloudflaredInstalled)((event) => {
+    const active = activeConnector
+    if (!active || stopped) return
+    if (!isBelowCloudflaredMinimum(active.version, platform)) return
+    if (isBelowCloudflaredMinimum(event.version, platform)) return
+    warn(`cloud: connector runs cloudflared ${active.version}, below the security minimum ${minimumCloudflaredVersion(platform)}; restarting it on the verified ${event.version}`)
+    active.restart(new Error(`restarting onto patched cloudflared ${event.version}`))
+  })
 
   function lastOkAge() {
     return lastHeartbeatOkAt === null ? "never" : `${formatDuration(nowImpl() - lastHeartbeatOkAt)} ago`
@@ -278,6 +308,7 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
       tunnel = await startConnector(attempt)
       stopActiveConnector = stopConnector
       if (stopped) return
+      activeConnector = { version: tunnel.binaryVersion ?? null, restart: (reason) => attempt.abort(reason) }
       void tunnel.exited?.then(() => {
         if (!connectorStopped) attempt.abort(new Error("connector exited"))
       })
@@ -342,6 +373,7 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
       }
     } finally {
       phase = "idle"
+      activeConnector = null
       clearWatchdog()
       stopController.signal.removeEventListener("abort", onStop)
       if (stopActiveConnector === stopConnector) stopActiveConnector = null
@@ -377,6 +409,7 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
       if (stopped) return
       stopped = true
       clearWatchdog()
+      unsubscribeInstalls()
       // Aborts the attempt (and with it any pending start, heartbeat or ping).
       stopController.abort()
       stopActiveConnector?.()

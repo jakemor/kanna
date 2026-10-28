@@ -4,6 +4,7 @@ import path from "node:path"
 import { stat } from "node:fs/promises"
 import { APP_NAME, getDataDir, getRuntimeProfile, LOG_PREFIX } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
+import { DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES } from "../shared/types"
 import type { ShareMode } from "../shared/share"
 import {
   CLOUD_BROWSER_PATH_PREFIX,
@@ -275,6 +276,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     store,
     analytics,
     codexManager,
+    getIdleSessionTimeoutMinutes: () => appSettings.getSnapshot().idleSessionTimeoutMinutes ?? DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {

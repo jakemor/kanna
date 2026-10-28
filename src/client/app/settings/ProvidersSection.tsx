@@ -3,8 +3,11 @@ import { History, Loader2 } from "lucide-react"
 import {
   chatModeFromFlags,
   chatModeToFlags,
+  DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
+  MAX_IDLE_SESSION_TIMEOUT_MINUTES,
+  MIN_IDLE_SESSION_TIMEOUT_MINUTES,
   PROVIDERS,
   type AgentProvider,
   type ChatMode,
@@ -21,14 +24,17 @@ import { Input } from "../../components/ui/input"
 import { SelectItem } from "../../components/ui/select"
 import { applyModelToComposerState } from "../../lib/composer"
 import { cn } from "../../lib/utils"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { useChatPreferencesStore, type ComposerState } from "../../stores/chatPreferencesStore"
 import { useProviderAuthStore } from "../../stores/providerAuthStore"
 import type { KannaState } from "../useKannaState"
 import {
   handleSettingsInputKeyDown,
   SETTINGS_CONTROL_CLASS,
+  SETTINGS_NUMBER_INPUT_CLASS,
   SettingsActionButton,
   SettingsErrorBanner,
+  SettingsField,
   SettingsGroup,
   SettingsGroups,
   SettingsNotice,
@@ -78,6 +84,9 @@ export function ProvidersSection({
   const setProviderDefaultMode = useChatPreferencesStore((store) => store.setProviderDefaultMode)
 
   const [providersError, setProvidersError] = useState<string | null>(null)
+  const idleSessionTimeout = useAppSettingsStore((store) => store.settings?.idleSessionTimeoutMinutes)
+    ?? DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES
+  const [idleSessionTimeoutDraft, setIdleSessionTimeoutDraft] = useState(String(idleSessionTimeout))
   const [llmProviderDraft, setLlmProviderDraft] = useState({
     provider: "openai" as LlmProviderKind,
     apiKey: "",
@@ -110,6 +119,21 @@ export function ProvidersSection({
     setLlmValidationStatus("idle")
     setLlmValidationError(null)
   }, [llmProviderDraft.provider, llmProviderDraft.apiKey, llmProviderDraft.model, llmProviderDraft.baseUrl])
+
+  useEffect(() => {
+    setIdleSessionTimeoutDraft(String(idleSessionTimeout))
+  }, [idleSessionTimeout])
+
+  function commitIdleSessionTimeout() {
+    const nextValue = Math.round(Number(idleSessionTimeoutDraft))
+    if (idleSessionTimeoutDraft.trim() === "" || !Number.isFinite(nextValue)) {
+      setIdleSessionTimeoutDraft(String(idleSessionTimeout))
+      return
+    }
+    void handleWriteAppSettings({ idleSessionTimeoutMinutes: nextValue }).catch((error) => {
+      setProvidersError(error instanceof Error ? error.message : "Unable to save session settings.")
+    })
+  }
 
   function handleDefaultProviderChange(nextValue: "last_used" | AgentProvider) {
     setDefaultProvider(nextValue)
@@ -376,6 +400,26 @@ export function ProvidersSection({
               mode={chatModeFromFlags(providerDefaults.pi.planMode, providerDefaults.pi.autoPlan)}
               className="justify-start flex-wrap"
             />
+          </SettingsRow>
+        </SettingsGroup>
+
+        <SettingsGroup title="Sessions">
+          <SettingsRow def={SETTINGS_ROWS.idleSessionTimeout} wideControl>
+            <SettingsField
+              hint={`Minutes, ${MIN_IDLE_SESSION_TIMEOUT_MINUTES}–${MAX_IDLE_SESSION_TIMEOUT_MINUTES}. 0 closes at once${idleSessionTimeout === DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES ? " (default 5)" : ""}`}
+            >
+              <Input
+                type="number"
+                min={MIN_IDLE_SESSION_TIMEOUT_MINUTES}
+                max={MAX_IDLE_SESSION_TIMEOUT_MINUTES}
+                step={1}
+                value={idleSessionTimeoutDraft}
+                onChange={(event) => setIdleSessionTimeoutDraft(event.target.value)}
+                onBlur={commitIdleSessionTimeout}
+                onKeyDown={(event) => handleSettingsInputKeyDown(event, commitIdleSessionTimeout)}
+                className={SETTINGS_NUMBER_INPUT_CLASS}
+              />
+            </SettingsField>
           </SettingsRow>
         </SettingsGroup>
 

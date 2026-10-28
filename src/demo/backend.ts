@@ -931,6 +931,7 @@ export function createDemoAppSettings(theme: AppThemePreference): AppSettingsSna
     transcript: { windowAssistantMessages: DEFAULT_TRANSCRIPT_WINDOW_ASSISTANT_MESSAGES },
     defaultProvider: "claude",
     submitWhileRunning: "queue",
+    idleSessionTimeoutMinutes: 5,
     paneVisibility: { widgets: "chat", terminal: "chat" },
     providerDefaults: createDefaultProviderDefaults(),
     newSidebarEnabled: true,

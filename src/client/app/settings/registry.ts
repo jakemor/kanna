@@ -244,6 +244,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Defaults for new Pi chats. Pi connects through the Model Registry.",
     keywords: ["model"],
   },
+  idleSessionTimeout: {
+    sectionId: "providers",
+    title: "Close Idle Sessions After",
+    description: "Close a chat's Claude Code or Codex process once it has sat idle this long, to free its memory. The next message resumes the session. Chats with work still running in them stay open.",
+    keywords: ["memory", "idle", "timeout", "process", "session", "ram", "resume", "close"],
+  },
   modelRegistry: {
     sectionId: "providers",
     title: "Model Registry",

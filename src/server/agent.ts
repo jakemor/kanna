@@ -80,7 +80,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { resolveClaudeApiModelId } from "../shared/types"
+import { DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES, resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
@@ -270,6 +270,17 @@ interface ClaudeSessionState {
   /** Baked into the system-prompt append, like `promptAgentId`. */
   delegator: boolean
   sessionToken: string | null
+  /**
+   * When a ScheduleWakeup the model set is due, plus a margin. The CLI keeps
+   * that timer itself, so closing the process before then would drop it.
+   */
+  wakeupDueAt?: number
+  /** CronCreate calls not matched by a CronDelete: jobs only the process holds. */
+  cronJobs?: number
+  /** Closed by `closeIdleSession`; its stream's end is not the chat settling. */
+  idleClosed?: boolean
+  /** Called once this session's stream has ended and its cleanup is done. */
+  onStreamEnd?: () => void
   accountInfoLoaded: boolean
   nextPromptSeq: number
   /** Prompts sent and not yet answered, oldest first. */
@@ -331,6 +342,12 @@ interface AgentCoordinatorArgs {
     provider: AgentProvider,
     query: { cwd: string; sessionToken: string | null | undefined }
   ) => SessionArtifactStatus
+  /**
+   * Settings' idle timeout, read each time a chat settles: minutes before an
+   * idle chat's agent process is closed (`scheduleIdleClose`). Absent means
+   * the built-in default.
+   */
+  getIdleSessionTimeoutMinutes?: () => number
 }
 
 
@@ -344,6 +361,15 @@ function tracksSubagentsFromTranscript(provider: AgentProvider) {
 
 function isClaudeSteerLoggingEnabled() {
   return process.env.KANNA_LOG_CLAUDE_STEER === "1"
+}
+
+/** How long a new turn waits for an idle-closed `claude` to exit before resuming anyway. */
+const IDLE_CLOSE_WAIT_MS = 5_000
+/** Slack past a ScheduleWakeup's due time, for the CLI to fire it and start its turn. */
+const WAKEUP_MARGIN_MS = 2 * 60_000
+
+function logIdleClose(stage: "closed" | "skipped", details: Record<string, unknown>) {
+  console.log("[kanna/idle-close]", JSON.stringify({ stage, ...details }))
 }
 
 function logClaudeSteer(stage: string, details?: Record<string, unknown>) {
@@ -1171,6 +1197,15 @@ export class AgentCoordinator {
    * those, and a chat read as idle inside one would be reported finished.
    */
   private readonly startingTurns = new Map<string, number>()
+  /** Per chat: the timer that closes its agent process once it has sat idle. */
+  private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * Per chat: an idle close whose Claude stream has not ended yet. A turn that
+   * arrives meanwhile waits on it, so the resumed process never overlaps the
+   * one that is exiting.
+   */
+  private readonly idleClosing = new Map<string, Promise<void>>()
+  private readonly getIdleSessionTimeoutMinutes: () => number
   private shuttingDown = false
   /**
    * Chats, schedules and the links between them. Set after construction,
@@ -1201,6 +1236,7 @@ export class AgentCoordinator {
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
     this.secretsService = args.secrets ?? null
+    this.getIdleSessionTimeoutMinutes = args.getIdleSessionTimeoutMinutes ?? (() => DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES)
   }
 
   /** Made on first use, so a coordinator that never sees a secret never touches a keychain. */
@@ -1287,6 +1323,8 @@ export class AgentCoordinator {
   }
 
   dispose() {
+    for (const timer of this.idleCloseTimers.values()) clearTimeout(timer)
+    this.idleCloseTimers.clear()
     for (const session of this.claudeSessions.values()) session.session.close()
     this.claudeSessions.clear()
     for (const stream of this.drainingStreams.values()) stream.turn.close()
@@ -1430,6 +1468,7 @@ export class AgentCoordinator {
   }
 
   private markStarting(chatId: string) {
+    this.cancelIdleClose(chatId)
     this.startingTurns.set(chatId, (this.startingTurns.get(chatId) ?? 0) + 1)
   }
 
@@ -1441,7 +1480,155 @@ export class AgentCoordinator {
 
   private notifySettled(chatId: string) {
     if (this.shuttingDown || this.isBusy(chatId)) return
+    this.scheduleIdleClose(chatId)
     this.onChatSettled?.(chatId)
+  }
+
+  // ── Idle sessions ──────────────────────────────────────────────────────
+  //
+  // A chat's agent process (Claude's `claude`, Codex's `codex app-server`)
+  // outlives its turn so the next message skips the startup. Each holds a few
+  // hundred MB, so one left idle is closed after the Settings timeout. The
+  // next turn resumes it by `sessionToken`, the same way every chat comes
+  // back after Kanna restarts. Cursor and Grok spawn a process per turn and
+  // Pi runs in this process, so they have nothing to close.
+
+  /** Whether the chat has an agent process this can close. */
+  private hasIdleClosableSession(chatId: string) {
+    return this.claudeSessions.has(chatId) || (this.codexManager.getSessionPids().has(chatId) ?? false)
+  }
+
+  /**
+   * (Re)starts the chat's idle timer. Called whenever the chat settles; any
+   * new activity cancels it (`cancelIdleClose`) or restarts it.
+   */
+  private scheduleIdleClose(chatId: string, delayMs?: number) {
+    this.cancelIdleClose(chatId)
+    if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return
+    const minutes = this.getIdleSessionTimeoutMinutes()
+    const delay = delayMs ?? Math.max(0, minutes) * 60_000
+    const timer = setTimeout(() => {
+      if (this.idleCloseTimers.get(chatId) !== timer) return
+      this.idleCloseTimers.delete(chatId)
+      void this.closeIdleSession(chatId, "idle")
+    }, delay)
+    timer.unref?.()
+    this.idleCloseTimers.set(chatId, timer)
+  }
+
+  private cancelIdleClose(chatId: string) {
+    const timer = this.idleCloseTimers.get(chatId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.idleCloseTimers.delete(chatId)
+  }
+
+  /** Activity on a settled chat's session: start its idle wait over. */
+  private touchIdleClose(chatId: string) {
+    if (this.idleCloseTimers.has(chatId)) this.scheduleIdleClose(chatId)
+  }
+
+  /**
+   * Why the chat's process must stay up, or null when it may close. Each is
+   * something only the live process holds, or a turn that is using it.
+   */
+  private idleCloseBlocker(chatId: string): string | null {
+    if (this.isBusy(chatId)) return "turn running"
+    if (this.drainingStreams.has(chatId)) return "stream draining"
+    const claude = this.claudeSessions.get(chatId)
+    if (claude?.pendingPrompts.length) return "prompts pending"
+    if (typeof this.store.getQueuedMessages === "function" && this.store.getQueuedMessages(chatId).length > 0) {
+      return "messages queued"
+    }
+    // Subagents and workflows, and the shells and monitors left running: all
+    // live in the process and die with it.
+    for (const activity of this.subagents.get(chatId)?.values() ?? []) {
+      if (activity.status === "running") return `${activity.type} running`
+    }
+    if (this.foregroundTasks.get(chatId)?.size) return "shell running"
+    // waiting_on_subagent / waiting_on_subchats, and anything else in flight.
+    const status = this.getChatStatuses().get(chatId)
+    if (status) return status
+    if (claude?.cronJobs) return "cron job scheduled"
+    if (claude?.wakeupDueAt && claude.wakeupDueAt > Date.now()) return "wakeup scheduled"
+    return null
+  }
+
+  /**
+   * Closes the chat's agent process if nothing needs it. `idle` is the timer;
+   * `archived` and `done` close at once and do not retry. A busy chat on the
+   * timer is checked again after another timeout, which also catches a wait
+   * that ends without the chat settling (a sub-chat finishing).
+   */
+  async closeIdleSession(chatId: string, reason: "idle" | "archived" | "done") {
+    this.cancelIdleClose(chatId)
+    if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return false
+    const blocker = this.idleCloseBlocker(chatId)
+    if (blocker) {
+      if (reason === "idle") {
+        this.scheduleIdleClose(chatId, Math.max(60_000, this.getIdleSessionTimeoutMinutes() * 60_000))
+      } else {
+        logIdleClose("skipped", { chatId, reason, blocker })
+      }
+      return false
+    }
+
+    const claude = this.claudeSessions.get(chatId)
+    if (claude) {
+      // Out of the map before close(), so a turn arriving now starts a fresh
+      // session instead of reusing this one; it waits on `idleClosing` first.
+      this.claudeSessions.delete(chatId)
+      claude.idleClosed = true
+      const ended = new Promise<void>((resolve) => {
+        claude.onStreamEnd = resolve
+      })
+      const tracked = ended.finally(() => {
+        if (this.idleClosing.get(chatId) === tracked) this.idleClosing.delete(chatId)
+      })
+      this.idleClosing.set(chatId, tracked)
+      claude.session.close()
+      logIdleClose("closed", { chatId, provider: "claude", reason, sessionToken: claude.sessionToken })
+    }
+    const codexPid = this.codexManager.getSessionPids().get(chatId)
+    if (codexPid !== undefined) {
+      this.codexManager.stopSession(chatId)
+      logIdleClose("closed", { chatId, provider: "codex", reason, pid: codexPid })
+    }
+    this.emitStateChange(chatId)
+    return true
+  }
+
+  /** A turn about to start a Claude session waits out an idle close still exiting. */
+  private async awaitIdleClosing(chatId: string) {
+    const closing = this.idleClosing.get(chatId)
+    if (!closing) return
+    await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, IDLE_CLOSE_WAIT_MS).unref?.())])
+  }
+
+  /**
+   * Keeps track of the timers the CLI holds for the model: ScheduleWakeup
+   * and CronCreate. Kanna's own schedules arrive as ordinary messages, which
+   * resume a closed session; these would be lost with the process.
+   */
+  private noteClaudeTimers(session: ClaudeSessionState, entry: TranscriptEntry) {
+    if (entry.kind !== "tool_call") return
+    const tool = entry.tool
+    const input = (tool.rawInput
+      ?? (tool.input as { payload?: Record<string, unknown> } | undefined)?.payload
+      ?? tool.input) as Record<string, unknown> | undefined
+    if (tool.toolName === "ScheduleWakeup") {
+      if (input?.stop === true) {
+        session.wakeupDueAt = undefined
+        return
+      }
+      const delaySeconds = Number(input?.delaySeconds)
+      const seconds = Number.isFinite(delaySeconds) ? Math.min(3600, Math.max(60, delaySeconds)) : 3600
+      session.wakeupDueAt = Date.now() + seconds * 1000 + WAKEUP_MARGIN_MS
+    } else if (tool.toolName === "CronCreate") {
+      session.cronJobs = (session.cronJobs ?? 0) + 1
+    } else if (tool.toolName === "CronDelete") {
+      session.cronJobs = Math.max(0, (session.cronJobs ?? 0) - 1)
+    }
   }
 
   /**
@@ -2403,6 +2590,8 @@ export class AgentCoordinator {
     customTools?: KannaToolHost
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }): Promise<HarnessTurn> {
+    this.cancelIdleClose(args.chatId)
+    await this.awaitIdleClosing(args.chatId)
     let session = this.claudeSessions.get(args.chatId)
 
     // autoPlan changes the SDK's `tools` allowlist, which is fixed at query()
@@ -2868,6 +3057,7 @@ export class AgentCoordinator {
    * normal completion path in runClaudeSession.
    */
   private async resumeBackgroundTurn(session: ClaudeSessionState) {
+    this.cancelIdleClose(session.chatId)
     const active: ActiveTurn = {
       chatId: session.chatId,
       provider: "claude",
@@ -2910,6 +3100,8 @@ export class AgentCoordinator {
         }
 
         if (!event.entry || customToolEvents.skip(event.entry)) continue
+        this.noteClaudeTimers(session, event.entry)
+        this.touchIdleClose(session.chatId)
 
         const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
           ? this.takeAnsweredClaudePrompts(session, event.promptIds, event.entry.kind === "interrupted" || event.entry.isError)
@@ -3057,8 +3249,11 @@ export class AgentCoordinator {
         this.foregroundTasks.delete(session.chatId)
       }
       session.session.close()
+      session.onStreamEnd?.()
       this.emitStateChange(session.chatId)
-      this.notifySettled(session.chatId)
+      // An idle close ends a chat that had already settled; telling the
+      // orchestrator again would read as a new turn's end.
+      if (!session.idleClosed) this.notifySettled(session.chatId)
     }
   }
 

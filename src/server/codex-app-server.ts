@@ -78,6 +78,8 @@ interface CodexAppServerProcess {
   stdin: Writable
   stdout: Readable
   stderr: Readable
+  /** Absent on test doubles. */
+  pid?: number
   killed?: boolean
   kill(signal?: NodeJS.Signals | number): void
   on(event: "close", listener: (code: number | null) => void): this
@@ -1961,6 +1963,20 @@ export class CodexAppServerManager {
     } catch {
       // ignore kill failures
     }
+  }
+
+  /**
+   * Each chat's own app-server pid. Every session spawns its own process
+   * (`startSession`), so a pid here is that chat's alone; the short-lived
+   * probes `readAccountRateLimits` spawns are not sessions and are not listed.
+   */
+  getSessionPids(): Map<string, number> {
+    const pids = new Map<string, number>()
+    for (const [chatId, context] of this.sessions) {
+      if (context.closed || context.child.killed || typeof context.child.pid !== "number") continue
+      pids.set(chatId, context.child.pid)
+    }
+    return pids
   }
 
   getResourceCounts() {

@@ -17,7 +17,10 @@ import {
   type ProviderPreferenceInput,
 } from "../shared/provider-preferences"
 import {
+  DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
   DEFAULT_NEW_PROJECTS_DIRECTORY,
+  MAX_IDLE_SESSION_TIMEOUT_MINUTES,
+  MIN_IDLE_SESSION_TIMEOUT_MINUTES,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
@@ -40,6 +43,7 @@ interface AppSettingsFile {
   chatSoundId?: unknown
   chatBrowserNotificationPreference?: unknown
   submitWhileRunning?: unknown
+  idleSessionTimeoutMinutes?: unknown
   terminal?: {
     scrollbackLines?: unknown
     minColumnWidth?: unknown
@@ -183,6 +187,7 @@ function toFilePayload(state: AppSettingsState) {
     chatSoundId: state.chatSoundId,
     chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
     submitWhileRunning: state.submitWhileRunning,
+    idleSessionTimeoutMinutes: state.idleSessionTimeoutMinutes,
     terminal: state.terminal,
     editor: state.editor,
     transcript: state.transcript,
@@ -215,6 +220,7 @@ function toSnapshot(
     chatSoundId: state.chatSoundId,
     chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
     submitWhileRunning: state.submitWhileRunning,
+    idleSessionTimeoutMinutes: state.idleSessionTimeoutMinutes,
     terminal: state.terminal,
     editor: state.editor,
     transcript: state.transcript,
@@ -287,6 +293,12 @@ function normalizeAppSettings(
     chatSoundId: normalizeChatSoundId(source?.chatSoundId),
     chatBrowserNotificationPreference: normalizeChatBrowserNotificationPreference(source?.chatBrowserNotificationPreference),
     submitWhileRunning: normalizeSubmitWhileRunning(source?.submitWhileRunning),
+    idleSessionTimeoutMinutes: clampNumber(
+      source?.idleSessionTimeoutMinutes,
+      DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
+      MIN_IDLE_SESSION_TIMEOUT_MINUTES,
+      MAX_IDLE_SESSION_TIMEOUT_MINUTES
+    ),
     terminal: {
       scrollbackLines: clampNumber(source?.terminal?.scrollbackLines, DEFAULT_TERMINAL_SCROLLBACK, MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK),
       minColumnWidth: clampNumber(source?.terminal?.minColumnWidth, DEFAULT_TERMINAL_MIN_COLUMN_WIDTH, MIN_TERMINAL_MIN_COLUMN_WIDTH, MAX_TERMINAL_MIN_COLUMN_WIDTH),
@@ -346,6 +358,7 @@ function toComparablePayload(source: AppSettingsFile) {
     chatSoundId: source.chatSoundId,
     chatBrowserNotificationPreference: source.chatBrowserNotificationPreference,
     submitWhileRunning: source.submitWhileRunning,
+    idleSessionTimeoutMinutes: source.idleSessionTimeoutMinutes,
     terminal: source.terminal,
     editor: source.editor,
     transcript: source.transcript,

@@ -58,6 +58,7 @@ interface ChatCommandsDeps {
     | "setChatDoneState"
   >
   agent: Pick<AgentCoordinator, "send" | "enqueue" | "steer" | "dequeue" | "cancel" | "closeChat" | "forkChat">
+    & Partial<Pick<AgentCoordinator, "closeIdleSession">>
   analytics: AnalyticsReporter
 }
 
@@ -120,6 +121,9 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
         await store.deleteChat(chatId)
       } else {
         await store.archiveChat(chatId)
+        // Put away: free its agent process now rather than at the idle
+        // timeout, unless something is still running in it.
+        await agent.closeIdleSession?.(chatId, "archived")
       }
       return {
         result: undefined,
@@ -160,6 +164,7 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
 
     async setDone(chatId: string, done: boolean): Promise<ChatCommandOutcome> {
       await store.setChatDoneState(chatId, done)
+      if (done) await agent.closeIdleSession?.(chatId, "done")
       return { result: undefined, changed: chatAndSidebar(chatId) }
     },
 

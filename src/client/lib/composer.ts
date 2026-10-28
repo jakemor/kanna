@@ -233,8 +233,8 @@ export const CHAT_MODE_LABELS: Record<ChatMode, { label: string; description: st
 /**
  * Which per-model/provider option controls are available for a composer state
  * and what their current values are. This is the single availability registry
- * consumed by ChatPreferenceControls (chat input + provider defaults in
- * settings) and the command palette.
+ * consumed by the composer's harness menu, ChatPreferenceControls (provider
+ * defaults in settings) and the command palette.
  */
 export function deriveComposerOptionControls(
   state: ComposerState,

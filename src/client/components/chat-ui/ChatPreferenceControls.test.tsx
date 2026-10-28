@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { PROVIDERS } from "../../../shared/types"
-import { ChatPreferenceControls } from "./ChatPreferenceControls"
+import { ChatModePicker, ChatPreferenceControls } from "./ChatPreferenceControls"
 
 describe("ChatPreferenceControls", () => {
   test("renders codex-specific controls and can omit plan mode", () => {
@@ -84,26 +84,14 @@ describe("ChatPreferenceControls", () => {
     expect(html).toContain("Plan Mode")
   })
 
-  test("hideDefaults drops the mode pill at Full Access", () => {
-    const render = (mode: "full-access" | "plan") => renderToStaticMarkup(
-      <ChatPreferenceControls
-        availableProviders={PROVIDERS}
-        selectedProvider="claude"
-        model="opus"
-        modelOptions={{ reasoningEffort: "high" }}
-        onProviderChange={() => {}}
-        onModelChange={() => {}}
-        onModelOptionChange={() => {}}
-        mode={mode}
-        onModeChange={() => {}}
-        includeMode
-        hideDefaults
-      />
+  test("the mode picker says the mode it is in and offers the provider's modes", () => {
+    const html = renderToStaticMarkup(
+      <ChatModePicker mode="auto-plan" options={["full-access", "plan", "auto-plan"]} onModeChange={() => {}} />
     )
 
-    expect(render("full-access")).not.toContain("Full Access")
-    // Off the default, the pill is back so the state is never invisible.
-    expect(render("plan")).toContain("Plan Mode")
+    expect(html).toContain("Auto Plan")
+    // Closed, it is only the pill.
+    expect(html).not.toContain("Full Access")
   })
 
   test("renders Fable as a Claude model option", () => {

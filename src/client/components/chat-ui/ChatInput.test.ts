@@ -124,7 +124,7 @@ describe("trimTrailingPastedNewlines", () => {
 })
 
 describe("ChatInput", () => {
-  test("renders the mobile attachment trigger as a native file input target in the controls row", () => {
+  test("renders + as a native file input target after the field, on every width", () => {
     const html = renderToStaticMarkup(createElement(ChatInput, {
       onSubmit: async () => undefined,
       disabled: false,
@@ -136,7 +136,11 @@ describe("ChatInput", () => {
     expect(html).toContain('aria-label="Add attachment"')
     expect(html).toContain('type="file"')
     expect(html).toContain("absolute inset-0 h-full w-full cursor-pointer opacity-0")
-    expect(html.indexOf('aria-label="Add attachment"')).toBeGreaterThan(html.indexOf('placeholder="Build something..."'))
+    expect(html.indexOf('aria-label="Add attachment"')).toBeGreaterThan(html.indexOf("Build something...\""))
+    // No longer a phone-only control.
+    expect(html).not.toContain("md:hidden")
+    // + only attaches: it opens no menu of its own.
+    expect(html).not.toMatch(/aria-label="Add attachment"[^>]*aria-haspopup/)
     expect(html).not.toContain('type="file" multiple="" class="hidden"')
   })
 
@@ -163,17 +167,67 @@ describe("ChatInput", () => {
     useChatPreferencesStore.getState().setChatComposerModel("deleg-1", chosen.id)
     const second = renderToStaticMarkup(createElement(ChatInput, { ...props, draftKey: "second:deleg-1" }))
     const chat = renderToStaticMarkup(createElement(ChatInput, props))
-    expect(second).toContain(`>${chosen.label}<`)
-    expect(chat).toContain(`>${chosen.label}<`)
+    // On one line the model is named in the placeholder.
+    expect(second).toContain(`placeholder="${chosen.label} · `)
+    expect(chat).toContain(`placeholder="${chosen.label} · `)
     // A chat with no setting of its own shows its default, not this one.
-    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, chatId: "another-chat" }))).not.toContain(`>${chosen.label}<`)
-    // The options row is there, with Attach where it always is.
-    expect(second).toContain("<span>Attach</span>")
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, chatId: "another-chat" }))).not.toContain(`placeholder="${chosen.label} · `)
 
     // And the other way round: what the chat's composer sets, the second shows.
     const back = claude.models.find((model) => model.id !== chosen.id)!
     useChatPreferencesStore.getState().setChatComposerModel("deleg-1", back.id)
-    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, draftKey: "second:deleg-1" }))).toContain(`>${back.label}<`)
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, draftKey: "second:deleg-1" }))).toContain(`placeholder="${back.label} · `)
     expect(useChatPreferencesStore.getState().getComposerState("deleg-1").model).toBe(back.id)
+  })
+
+  test("the composer is the harness button, the field, + and mic: the row of pills under it is gone", () => {
+    const html = renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: "claude",
+      availableProviders: PROVIDERS,
+      chatId: "pills-1",
+    }))
+
+    expect(html).toContain("Harness and model")
+    expect(html).toContain('title="Record voice message"')
+    // Effort and speed live in the harness menu now.
+    expect(html).not.toContain("Standard")
+    expect(html).not.toContain('aria-label="Effort"')
+    // And Full Access, the default mode, says nothing.
+    expect(html).not.toContain("Full Access")
+    expect(html).not.toContain("Plan Mode")
+  })
+
+  test("the plan tag shows only while plan mode is on", () => {
+    const store = useChatPreferencesStore.getState()
+    const props = { onSubmit: async () => undefined, disabled: false, activeProvider: "claude" as const, availableProviders: PROVIDERS, chatId: "plan-1" }
+    store.setComposerState("plan-1", { ...store.getComposerState("plan-1"), planMode: true, autoPlan: false })
+
+    expect(renderToStaticMarkup(createElement(ChatInput, props))).toContain("Plan Mode")
+
+    store.setComposerState("plan-1", { ...store.getComposerState("plan-1"), planMode: false, autoPlan: false })
+    expect(renderToStaticMarkup(createElement(ChatInput, props))).not.toContain("Plan Mode")
+  })
+
+  test("from 90% of the context window the harness button carries the warning", () => {
+    const render = (usedPercentage: number) => renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: "codex",
+      availableProviders: PROVIDERS,
+      chatId: "context-1",
+      contextWindowSnapshot: {
+        usedTokens: usedPercentage * 1000,
+        maxTokens: 100_000,
+        usedPercentage,
+        remainingTokens: (100 - usedPercentage) * 1000,
+        remainingPercentage: 100 - usedPercentage,
+        updatedAt: new Date(0).toISOString(),
+      },
+    }))
+
+    expect(render(90)).toContain("context nearly full")
+    expect(render(89)).not.toContain("context nearly full")
   })
 })

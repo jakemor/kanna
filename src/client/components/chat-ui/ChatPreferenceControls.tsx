@@ -188,6 +188,101 @@ function ModelPickerList({
   )
 }
 
+/**
+ * A harness's models as menu rows, with the selected one marked. Shared by the
+ * settings pill and the composer's harness menu, so both label Luna's Ultra
+ * and offer pi's "Add models…" the same way.
+ */
+export function ProviderModelList({
+  provider,
+  providerConfig,
+  model,
+  modelOptions,
+  onSelect,
+  onEditModels,
+}: {
+  provider: AgentProvider
+  providerConfig: ProviderCatalogEntry
+  model: string
+  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
+  onSelect: (modelId: string) => void
+  /** Opens the Default Models dialog from pi's "Add models…" row. */
+  onEditModels?: () => void
+}) {
+  const codexModelOptions = provider === "codex" ? modelOptions as CodexModelOptions : null
+  return (
+    <ModelPickerList
+      models={providerConfig.models}
+      selectedModel={model}
+      onSelect={onSelect}
+      renderLabel={(candidate) =>
+        candidate.id === "gpt-5.6-luna" && codexModelOptions?.reasoningEffort === "ultra" ? (
+          <>
+            {candidate.label}{" "}
+            <span className="text-xs font-normal text-muted-foreground">Ultra → Max</span>
+          </>
+        ) : (
+          candidate.label
+        )
+      }
+      footer={provider === "pi" && onEditModels ? (
+        <PopoverMenuItem
+          onClick={onEditModels}
+          selected={false}
+          icon={<Plus className="h-4 w-4 text-muted-foreground" />}
+          label="Add models…"
+        />
+      ) : null}
+    />
+  )
+}
+
+/**
+ * The mode picker: a pill saying the current mode that opens the list. The
+ * composer shows it only while a mode other than Full Access is on, so the
+ * way back is one click on the thing that says you left it; the way in is
+ * Shift+Tab and the command palette.
+ */
+export function ChatModePicker({
+  mode,
+  options,
+  onModeChange,
+}: {
+  mode: ChatMode
+  options: ChatMode[]
+  onModeChange: (mode: ChatMode) => void
+}) {
+  const TriggerIcon = MODE_ICONS[mode]
+  return (
+    <InputPopover
+      trigger={(
+        <>
+          <TriggerIcon className="h-3.5 w-3.5" />
+          <span>{CHAT_MODE_LABELS[mode].label}</span>
+        </>
+      )}
+      triggerClassName={mode === "plan" ? "text-blue-400 dark:text-blue-300" : undefined}
+    >
+      {(close) => options.map((option) => {
+        const Icon = MODE_ICONS[option]
+        return (
+          <PopoverMenuItem
+            key={option}
+            onClick={() => {
+              onModeChange(option)
+              close()
+            }}
+            selected={mode === option}
+            icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+            label={CHAT_MODE_LABELS[option].label}
+            description={CHAT_MODE_LABELS[option].description}
+          />
+        )
+      })}
+    </InputPopover>
+  )
+}
+
 interface ChatPreferenceControlsProps {
   availableProviders: ProviderCatalogEntry[]
   selectedProvider: AgentProvider
@@ -205,15 +300,6 @@ interface ChatPreferenceControlsProps {
   mode?: ChatMode
   onModeChange?: (mode: ChatMode) => void
   includeMode?: boolean
-  /**
-   * Retires the context-window and mode pills from the chat composer: each one
-   * renders only while its value is off the factory default (1M, Full Access).
-   * A pill that shows is still the full picker, so the way back to the default
-   * is one click on the thing that says you left it. The way in is the command
-   * palette (and Shift+Tab for modes). Settings leaves this off, since a
-   * default has to be settable from somewhere.
-   */
-  hideDefaults?: boolean
   className?: string
 }
 
@@ -238,7 +324,6 @@ export function ChatPreferenceControls({
   mode = "full-access",
   onModeChange,
   includeMode = true,
-  hideDefaults = false,
   className,
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
@@ -257,7 +342,6 @@ export function ChatPreferenceControls({
     : providerConfig?.label ?? selectedProvider
   const ProviderIcon = PROVIDER_ICONS[selectedProvider]
   const ModelIcon = Box
-  const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   // Central availability registry (shared with the command palette): which
   // option controls exist for this provider/model and their current values.
   // Only `provider` and `model`/`modelOptions` feed the non-mode controls; the
@@ -272,9 +356,7 @@ export function ChatPreferenceControls({
     } as ComposerState,
     providerConfig
   )
-  const modeControl = includeMode && onModeChange && !(hideDefaults && controls.mode?.selected === "full-access")
-    ? controls.mode
-    : null
+  const modeControl = includeMode && onModeChange ? controls.mode : null
   const reasoningChangeFor = (effortId: string): ModelOptionChange =>
     selectedProvider === "claude"
       ? { type: "claudeReasoningEffort", effort: effortId as ClaudeReasoningEffort }
@@ -328,34 +410,19 @@ export function ChatPreferenceControls({
         )}
       >
         {(close) => (
-          <ModelPickerList
-            models={providerConfig.models}
-            selectedModel={model}
+          <ProviderModelList
+            provider={selectedProvider}
+            providerConfig={providerConfig}
+            model={model}
+            modelOptions={modelOptions}
             onSelect={(modelId) => {
               onModelChange(selectedProvider, modelId)
               close()
             }}
-            renderLabel={(candidate) =>
-              candidate.id === "gpt-5.6-luna" && codexModelOptions?.reasoningEffort === "ultra" ? (
-                <>
-                  {candidate.label}{" "}
-                  <span className="text-xs font-normal text-muted-foreground">Ultra → Max</span>
-                </>
-              ) : (
-                candidate.label
-              )
-            }
-            footer={selectedProvider === "pi" && onEditModels ? (
-              <PopoverMenuItem
-                onClick={() => {
-                  close()
-                  onEditModels()
-                }}
-                selected={false}
-                icon={<Plus className="h-4 w-4 text-muted-foreground" />}
-                label="Add models…"
-              />
-            ) : null}
+            onEditModels={onEditModels ? () => {
+              close()
+              onEditModels()
+            } : undefined}
           />
         )}
       </InputPopover>
@@ -431,37 +498,9 @@ export function ChatPreferenceControls({
         )
       })() : null}
 
-      {modeControl ? (() => {
-        const TriggerIcon = MODE_ICONS[modeControl.selected]
-        return (
-          <InputPopover
-            trigger={(
-              <>
-                <TriggerIcon className="h-3.5 w-3.5" />
-                <span>{CHAT_MODE_LABELS[modeControl.selected].label}</span>
-              </>
-            )}
-            triggerClassName={modeControl.selected === "plan" ? "text-blue-400 dark:text-blue-300" : undefined}
-          >
-            {(close) => modeControl.options.map((option) => {
-              const Icon = MODE_ICONS[option]
-              return (
-                <PopoverMenuItem
-                  key={option}
-                  onClick={() => {
-                    onModeChange?.(option)
-                    close()
-                  }}
-                  selected={modeControl.selected === option}
-                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-                  label={CHAT_MODE_LABELS[option].label}
-                  description={CHAT_MODE_LABELS[option].description}
-                />
-              )
-            })}
-          </InputPopover>
-        )
-      })() : null}
+      {modeControl && onModeChange ? (
+        <ChatModePicker mode={modeControl.selected} options={modeControl.options} onModeChange={onModeChange} />
+      ) : null}
     </div>
   )
 }

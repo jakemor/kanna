@@ -13,6 +13,7 @@ import { getThreadDetailLabel } from "../../lib/thread-detail-label"
 import { flattenSidebarThreads, listedThreads, type SidebarThread } from "../../lib/thread-sections"
 import { cn } from "../../lib/utils"
 import { useChatHasDraft } from "../../stores/chatInputStore"
+import { useChatCpu } from "../../stores/chatCpuStore"
 import { useSidebarStore } from "../../stores/sidebarStore"
 
 const RECENT_CHAT_LIMIT = 12
@@ -233,6 +234,7 @@ function ProjectChatRow({ thread, nowMs, onSelect, delegatorMark }: {
   delegatorMark: boolean
 }) {
   const hasDraft = useChatHasDraft(thread.chatId)
+  const cpuPercent = useChatCpu(thread.row.chatId)
   return (
     <button
       type="button"
@@ -247,6 +249,7 @@ function ProjectChatRow({ thread, nowMs, onSelect, delegatorMark }: {
         hasDraft={hasDraft}
         delegatorMark={delegatorMark}
         detailLabel={getThreadDetailLabel(thread, "project-scoped", nowMs)}
+        cpuPercent={cpuPercent}
       />
     </button>
   )

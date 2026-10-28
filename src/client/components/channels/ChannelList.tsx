@@ -8,6 +8,7 @@ import { isBackgroundOpenClick } from "../../lib/background-open"
 import { getPathBasename } from "../../lib/formatters"
 import { cn, normalizeChatId } from "../../lib/utils"
 import { useChatHasDraft, useDraftStartTimes } from "../../stores/chatInputStore"
+import { useChatCpu } from "../../stores/chatCpuStore"
 import { usePendingSendTimes } from "../../stores/pendingSendStore"
 import { useSectionOverrides } from "../../stores/sidebarSectionStore"
 import { renderChatStatusDot, ThreadRowContent } from "../chat-ui/ThreadRowContent"
@@ -50,6 +51,7 @@ function PeekChatContent({ thread, nowMs, delegatorMark }: {
   delegatorMark: boolean
 }) {
   const hasDraft = useChatHasDraft(thread.chatId)
+  const cpuPercent = useChatCpu(thread.row.chatId)
   return (
     <ThreadRowContent
       thread={thread}
@@ -58,6 +60,7 @@ function PeekChatContent({ thread, nowMs, delegatorMark }: {
       hasDraft={hasDraft}
       delegatorMark={delegatorMark}
       detailLabel={getThreadDetailLabel(thread, "project-scoped", nowMs)}
+      cpuPercent={cpuPercent}
     />
   )
 }

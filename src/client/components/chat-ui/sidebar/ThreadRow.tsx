@@ -5,6 +5,7 @@ import type { SidebarThread } from "../../../lib/thread-sections"
 import { cn, normalizeChatId } from "../../../lib/utils"
 import { Button } from "../../ui/button"
 import { useChatHasDraft, useChatInputStore } from "../../../stores/chatInputStore"
+import { useChatCpu } from "../../../stores/chatCpuStore"
 import { ThreadRowContent } from "../ThreadRowContent"
 import { useChatMenuCommands } from "../chat-menu-commands"
 import { ChatRowMenu } from "./Menus"
@@ -91,6 +92,8 @@ export function ThreadRowBody({
   // re-rendered this row on every keystroke in the composer. The card reads the
   // text itself, from inside its own open subtree.
   const hasDraft = useChatHasDraft(thread.row.chatId)
+  // Its own chat's figure only, so a CPU push re-renders just the rows it moved.
+  const cpuPercent = useChatCpu(thread.row.chatId)
   const detailLabel = detailLabelOverride ?? getThreadDetailLabel(thread, detailScope, nowMs)
   const hoverActions = archived ? (
     <Button
@@ -170,6 +173,7 @@ export function ThreadRowBody({
         delegatorMark={delegatorMark}
         detailLabel={detailLabel}
         hoverActions={hoverActions}
+        cpuPercent={archived ? null : cpuPercent}
       />
     </div>
   )

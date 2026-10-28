@@ -18,6 +18,7 @@ import type {
   StandaloneTranscriptExportResult,
   UpdateSnapshot,
   UsageLimitsSnapshot,
+  ChatCpuSnapshot,
   EditorPreset,
   TerminalPreset,
 } from "./types"
@@ -62,6 +63,8 @@ export type SubscriptionTopic =
   | { type: "keybindings" }
   | { type: "app-settings" }
   | { type: "usage-limits" }
+  /** Per-chat CPU, sampled only while someone holds this subscription. */
+  | { type: "chat-cpu" }
   | { type: "provider-auth" }
   | {
     type: "chat"
@@ -399,6 +402,7 @@ export type ServerSnapshot =
   | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "app-settings"; data: AppSettingsSnapshot }
   | { type: "usage-limits"; data: UsageLimitsSnapshot }
+  | { type: "chat-cpu"; data: ChatCpuSnapshot }
   | { type: "provider-auth"; data: ProviderAuthSnapshot }
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }

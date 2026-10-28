@@ -32,6 +32,7 @@ import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
 import type { RequestSecretsToolResult } from "../shared/secrets"
 import { AsyncQueue } from "./async-queue"
+import { KANNA_PROCESS_TAG_ENV } from "./chat-cpu"
 import { resolveClaudeExecutable } from "./claude-executable"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
 import { SecretsService } from "./secrets"
@@ -248,6 +249,32 @@ interface ClaudeSessionHandle {
   setFastMode?: (fastMode: boolean) => Promise<void>
   supportedModels?: () => Promise<ClaudeSdkModelInfo[]>
   supportedCommands?: () => Promise<SlashCommand[]>
+  /** The `claude` process's pid while it runs; null when unknown or exited. */
+  getPid?: () => number | null
+  /**
+   * A token in the `claude` process's environment (`KANNA_PROCESS_TAG`), so
+   * the CPU monitor can find its pid when `getPid` cannot (see
+   * `readClaudeQueryPid`).
+   */
+  processTag?: string
+}
+
+/**
+ * The pid of the `claude` process behind a query, when the SDK lets it show.
+ * SDK 0.3.x keeps the ChildProcess in a closure and hands the query a wrapper
+ * without `pid` (`query.transport.process` is `{stdin, stdout, exitCode, …}`),
+ * so today this is null and the CPU monitor finds the process by its
+ * `KANNA_PROCESS_TAG` instead. Taking over the spawn with
+ * `spawnClaudeCodeProcess` would hand us the pid officially, but the SDK then
+ * skips its own stderr capture, which is what its exit errors quote.
+ */
+export function readClaudeQueryPid(q: unknown): number | null {
+  const child = (q as { transport?: { process?: { pid?: unknown; exitCode?: unknown; signalCode?: unknown } } } | null)
+    ?.transport?.process
+  if (!child || typeof child.pid !== "number") return null
+  if (child.exitCode !== null && child.exitCode !== undefined) return null
+  if (child.signalCode !== null && child.signalCode !== undefined) return null
+  return child.pid
 }
 
 interface ClaudeSessionState {
@@ -1011,6 +1038,7 @@ async function startClaudeSession(args: {
   if (!claudeExecutable.ok) throw new Error(claudeExecutable.message)
   const promptQueue = new AsyncQueue<SDKUserMessage>()
   let promptQueueClosed = false
+  const processTag = crypto.randomUUID()
 
   const q = query({
     prompt: promptQueue,
@@ -1041,7 +1069,10 @@ async function startClaudeSession(args: {
       // enabling it while the UI shows "Standard".
       settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
+      env: (() => {
+        const { CLAUDECODE: _, ...env } = process.env
+        return { ...env, [KANNA_PROCESS_TAG_ENV]: processTag }
+      })(),
     },
   })
 
@@ -1116,6 +1147,8 @@ async function startClaudeSession(args: {
     },
     supportedModels: async () => await q.supportedModels(),
     supportedCommands: async () => commandsRef.current ?? await q.supportedCommands(),
+    getPid: () => readClaudeQueryPid(q),
+    processTag,
     close: () => {
       promptQueueClosed = true
       promptQueue.finish()
@@ -1274,6 +1307,26 @@ export class AgentCoordinator {
 
   getCodexManager() {
     return this.codexManager
+  }
+
+  /**
+   * Each live chat's agent process for the CPU monitor: a pid where one is
+   * known (Codex's per-chat `codex app-server`), else the `KANNA_PROCESS_TAG`
+   * its `claude` process carries. Cursor, Grok and Pi are not listed, so
+   * their chats show no CPU.
+   */
+  getChatProcesses(): { pids: Map<string, number>; tags: Map<string, string> } {
+    const pids = new Map<string, number>()
+    const tags = new Map<string, string>()
+    for (const [chatId, state] of this.claudeSessions) {
+      const pid = state.session.getPid?.()
+      if (pid) pids.set(chatId, pid)
+      else if (state.session.processTag) tags.set(chatId, state.session.processTag)
+    }
+    for (const [chatId, pid] of this.codexManager.getSessionPids?.() ?? []) {
+      if (!pids.has(chatId) && !tags.has(chatId)) pids.set(chatId, pid)
+    }
+    return { pids, tags }
   }
 
   getResourceCounts() {

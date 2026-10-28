@@ -384,6 +384,8 @@ interface StartTurnArgs {
   steered?: boolean
   /** Who sent the prompt, when not the user. Stamped on the transcript entry. */
   source?: MessageSource
+  /** When a queued message was sent. Absent for one that starts as it is sent. */
+  sentAt?: number
 }
 
 interface SendMessageOptions {
@@ -1844,6 +1846,7 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       steered: options?.steered,
       source: queuedMessage.source,
+      sentAt: queuedMessage.createdAt,
     })
   }
 
@@ -2044,6 +2047,13 @@ export class AgentCoordinator {
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
     await this.store.setAutoPlan(args.chatId, args.autoPlan)
+    // Staged settings were for the first message sent after them, which is
+    // this one. A message queued before they were set ran with its own, and
+    // leaves them for the next; a tie counts as before, since one queued
+    // after them was sent with them and leaving them changes nothing.
+    if (chat.nextRun && (args.sentAt === undefined || args.sentAt > chat.nextRun.setAt)) {
+      await this.store.setChatNextRun(args.chatId, null)
+    }
 
     // Lazy: `getMessages` reads the whole payload sidecar (its own docstring
     // says it is "for export, handoff and fork, not for anything that runs per

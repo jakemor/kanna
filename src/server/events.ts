@@ -1,4 +1,4 @@
-import type { AgentProvider, ChatSchedule, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatNextRun, ChatSchedule, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
   sidebarTitle?: string
@@ -180,6 +180,8 @@ export interface ChatRecord {
    * becomes its sub-chat (`ChatOrchestrator`). Otherwise an ordinary chat.
    */
   delegator?: true
+  /** Settings an agent staged for the next turn (`update_chat`). See `ChatNextRun`. */
+  nextRun?: ChatNextRun
   /** The chat this one was forked from. */
   forkedFromChatId?: string
   /**
@@ -322,6 +324,14 @@ export type ChatEvent =
       timestamp: number
       chatId: string
       hidden: boolean
+    }
+  | {
+      v: 2
+      /** Stages run settings for the chat's next turn, or clears them (`null`). See `ChatNextRun`. */
+      type: "chat_next_run_set"
+      timestamp: number
+      chatId: string
+      nextRun: ChatNextRun | null
     }
   | {
       v: 2

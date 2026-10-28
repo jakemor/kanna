@@ -1,5 +1,6 @@
 import type {
   AgentProvider,
+  ChatNextRun,
   ChatSchedule,
   KannaStatus,
   MessageSource,
@@ -8,12 +9,13 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import { stripSystemMessages } from "../shared/message-preview"
+import { getCodexReasoningOptions } from "../shared/types"
 import { buildAgentToAgentNote, type AgentToAgentTurn } from "./agent-to-agent"
 import type { ChatChange, ChatCommands } from "./chat-commands"
 import type { EventStore } from "./event-store"
 import type { ChatRecord } from "./events"
 import { renderToolResultContent } from "./handoff"
-import { getServerProviderCatalog, SERVER_PROVIDERS } from "./provider-catalog"
+import { getServerProviderCatalog, normalizeServerModel, SERVER_PROVIDERS } from "./provider-catalog"
 import {
   computeFirstRun,
   MIN_SCHEDULE_INTERVAL_MS,
@@ -171,6 +173,8 @@ export interface AgentChatSummary {
   hidden?: true
   /** It hands work to the chats under it instead of doing it. See `ChatRecord.delegator`. */
   delegator?: true
+  /** Settings staged for its next turn (`update_chat`). See `ChatNextRun`. */
+  nextRun?: { provider: AgentProvider; model?: string; effort?: string; planMode: boolean }
   forkedFromChatId?: string
   createdByChatId?: string
   lastMessageAt?: string
@@ -252,6 +256,52 @@ interface RunOptions {
   model?: string
   effort?: string
   planMode?: boolean
+}
+
+/** What a run falls back to for each setting a message leaves out. */
+interface RunDefaults {
+  provider: AgentProvider | null
+  model?: string
+  effort?: string
+  planMode: boolean
+  autoPlan: boolean
+}
+
+/**
+ * A model the provider lists. Pi's are open-ended (any OpenRouter id), so any
+ * id goes there. The others' lists are the live ones their harness reported.
+ */
+function checkModel(provider: AgentProvider, model: string) {
+  if (provider === "pi") return
+  const catalog = getServerProviderCatalog(provider)
+  const id = normalizeServerModel(provider, model)
+  if (!catalog.models.some((option) => option.id === id || option.aliases?.includes(model))) {
+    throw new Error(`${catalog.label} has no model "${model}". get_context lists each provider's models.`)
+  }
+}
+
+/** An effort the provider offers, and the model takes. With no model, the provider's default model. */
+function checkEffort(provider: AgentProvider, model: string | undefined, effort: string) {
+  const catalog = getServerProviderCatalog(provider)
+  if (catalog.efforts.length === 0) throw new Error(`${catalog.label} has no reasoning effort to set.`)
+  const modelId = normalizeServerModel(provider, model)
+  const option = catalog.models.find((candidate) => candidate.id === modelId)
+  if (option && !option.supportsEffort) throw new Error(`${option.label} takes no reasoning effort.`)
+  const offered = provider === "codex"
+    ? getCodexReasoningOptions(modelId, catalog.models).map((entry) => entry.id)
+    : catalog.efforts.map((entry) => entry.id).filter((id) => provider !== "claude" || id !== "max" || option?.supportsMaxReasoningEffort)
+  if (!offered.includes(effort)) {
+    throw new Error(`${option?.label ?? modelId} has no "${effort}" effort. It takes: ${offered.join(", ")}.`)
+  }
+}
+
+function summarizeNextRun(run: ChatNextRun): NonNullable<AgentChatSummary["nextRun"]> {
+  return {
+    provider: run.provider,
+    ...(run.model ? { model: run.model } : {}),
+    ...(run.effort ? { effort: run.effort } : {}),
+    planMode: run.planMode,
+  }
 }
 
 function chatLink(chatId: string) {
@@ -541,6 +591,7 @@ export class ChatOrchestrator {
       ...(chat.adopted ? { adopted: true as const } : {}),
       ...(chat.hidden ? { hidden: true as const } : {}),
       ...(chat.delegator ? { delegator: true as const } : {}),
+      ...(chat.nextRun ? { nextRun: summarizeNextRun(chat.nextRun) } : {}),
       ...(chat.forkedFromChatId ? { forkedFromChatId: chat.forkedFromChatId } : {}),
       ...(chat.createdByChatId ? { createdByChatId: chat.createdByChatId } : {}),
       ...(chat.lastMessageAt ? { lastMessageAt: iso(chat.lastMessageAt) } : {}),
@@ -671,7 +722,7 @@ export class ChatOrchestrator {
   private resolveRun(
     actorChatId: string,
     requested: RunOptions,
-    defaults: { provider: AgentProvider | null; model?: string; planMode: boolean; autoPlan: boolean },
+    defaults: RunDefaults,
   ) {
     const provider = requested.provider ?? defaults.provider ?? "claude"
     if (!SERVER_PROVIDERS.some((entry) => entry.id === provider)) {
@@ -686,13 +737,31 @@ export class ChatOrchestrator {
     if (planning && requested.planMode === false) {
       throw new Error("This chat is in plan mode, so a chat it starts or messages must be in plan mode too.")
     }
+    // A model belongs to its provider, so a default is not carried across a
+    // switch. Nor is an effort across a change of model: it was for that one.
+    const model = requested.model ?? (sameProvider ? defaults.model : undefined)
+    const effort = requested.effort ?? (sameProvider && requested.model === undefined ? defaults.effort : undefined)
+    if (requested.model !== undefined) checkModel(provider, requested.model)
+    if (requested.effort !== undefined) checkEffort(provider, model, requested.effort)
     return {
       provider,
-      // A model belongs to its provider, so a default is not carried across a switch.
-      model: requested.model ?? (sameProvider ? defaults.model : undefined),
-      effort: requested.effort,
+      model,
+      effort,
       planMode: catalog.supportsPlanMode && (planning || (requested.planMode ?? defaults.planMode)),
       autoPlan: sameProvider && catalog.supportsAutoPlanMode ? defaults.autoPlan : false,
+    }
+  }
+
+  /**
+   * What a chat runs with when a message to it names nothing: what an agent
+   * staged for it with `update_chat`, or else what its last turn ran with.
+   */
+  private ownRun(chat: ChatRecord): RunDefaults {
+    return chat.nextRun ?? {
+      provider: chat.provider,
+      model: chat.lastModel,
+      planMode: chat.planMode,
+      autoPlan: chat.autoPlan,
     }
   }
 
@@ -1015,12 +1084,7 @@ export class ChatOrchestrator {
       throw new Error("A chat cannot message itself. Use set_schedule to send this chat a message later.")
     }
     const target = this.requireChat(input.chatId)
-    const run = this.resolveRun(actorChatId, input, {
-      provider: target.provider,
-      model: target.lastModel,
-      planMode: target.planMode,
-      autoPlan: target.autoPlan,
-    })
+    const run = this.resolveRun(actorChatId, input, this.ownRun(target))
     // Before the send: the turn it starts is told who its parent is, and the
     // report it earns is addressed by the link.
     const delegating = this.isDelegating(this.requireChat(actorChatId))
@@ -1200,16 +1264,35 @@ export class ChatOrchestrator {
     return this.summarize(this.requireChat(target.id))
   }
 
-  async updateChat(actorChatId: string, input: {
+  /**
+   * A chat's settings, changed without a message. Run settings are staged for
+   * its next turn (`ChatNextRun`) rather than written to the chat: the turn
+   * that runs them is what switches a provider, with its handoff, and what
+   * records the model it ran with.
+   */
+  async updateChat(actorChatId: string, input: RunOptions & {
     chatId?: string
     title?: string
     pinned?: boolean
     done?: boolean
     archived?: boolean
+    /** As on `sendMessage`, for a sub-chat of this one, without the message. */
+    showInSidebar?: boolean
   }) {
     const chat = this.requireChat(input.chatId ?? actorChatId)
     if (input.title !== undefined && !input.title.trim()) throw new Error("The title cannot be empty.")
+    // Checked before anything is done, so a refusal leaves nothing behind.
+    if (input.showInSidebar !== undefined && chat.parentChatId !== actorChatId) {
+      throw new Error("showInSidebar is only for a sub-chat of this chat: one it started or adopted. Adopt it with send_message (adopt: true) first.")
+    }
+    const staging = input.provider !== undefined || input.model !== undefined || input.effort !== undefined || input.planMode !== undefined
+    // The rules a message's settings follow, the plan-mode ceiling among them:
+    // a chat in plan mode cannot stage its way out of it, its own next turn included.
+    const run = staging ? this.resolveRun(actorChatId, input, this.ownRun(chat)) : null
     const changes: Array<ChatChange | null> = []
+    // Compared with queued messages' `createdAt`, so on the store's clock.
+    if (run) await this.store.setChatNextRun(chat.id, { ...run, setAt: Date.now() })
+    if (input.showInSidebar !== undefined) await this.store.setChatHidden(chat.id, !input.showInSidebar)
     if (input.title !== undefined) changes.push((await this.commands.rename(chat.id, input.title)).changed)
     if (input.archived === false && chat.archivedAt) changes.push((await this.commands.unarchive(chat.id)).changed)
     if (input.pinned !== undefined) changes.push((await this.commands.setPinned(chat.id, input.pinned)).changed)
@@ -1428,7 +1511,9 @@ export class ChatOrchestrator {
       const pending = this.store.getQueuedMessages(chat.id)
         .some((message) => message.source?.kind === "schedule" && message.source.scheduleId === schedule.id)
       if (pending) return { outcome: "skipped" }
-      const provider = schedule.provider ?? chat.provider ?? undefined
+      const own = this.ownRun(chat)
+      const provider = schedule.provider ?? own.provider ?? undefined
+      const sameProvider = provider === own.provider
       // Before the turn starts, like a parent's own message (`send`).
       const arms = Boolean(schedule.reportsToParent && chat.parentChatId && !chat.reportOwed)
       if (arms) await this.store.setReportOwed(chat.id, true)
@@ -1438,10 +1523,10 @@ export class ChatOrchestrator {
           chatId: chat.id,
           content: schedule.content,
           provider,
-          model: schedule.model ?? (provider === chat.provider ? chat.lastModel : undefined),
-          effort: schedule.effort,
-          planMode: schedule.planMode ?? chat.planMode,
-          autoPlan: chat.autoPlan,
+          model: schedule.model ?? (sameProvider ? own.model : undefined),
+          effort: schedule.effort ?? (sameProvider && !schedule.model ? own.effort : undefined),
+          planMode: schedule.planMode ?? own.planMode,
+          autoPlan: own.autoPlan,
         }, { source })
       } catch (error) {
         if (arms) await this.store.setReportOwed(chat.id, false).catch(() => {})
@@ -1927,15 +2012,18 @@ export class ChatOrchestrator {
         before = waiting.content
       }, () => {})
     }
+    // The parent carries on as it was running, same model and mode, unless
+    // settings were staged for its next turn.
+    const own = this.ownRun(parent)
     await this.commands.send({
       type: "chat.send",
       chatId: parent.id,
       content: appendReportSection(before, section),
-      // The parent carries on as it was running: same model and mode.
-      provider: parent.provider ?? undefined,
-      model: parent.lastModel,
-      planMode: parent.planMode,
-      autoPlan: parent.autoPlan,
+      provider: own.provider ?? undefined,
+      model: own.model,
+      effort: own.effort,
+      planMode: own.planMode,
+      autoPlan: own.autoPlan,
     }, { source: { kind: "report", chatIds } })
     this.push({ sidebar: true, chatIds: [parent.id] })
   }

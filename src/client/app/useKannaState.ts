@@ -72,6 +72,7 @@ import { useBackgroundChatSubscriptions } from "./useBackgroundChatSubscriptions
 import { useChatCommands } from "./useChatCommands"
 import { useChatReadAnchor, type ChatReadAnchorState, type ReadAnchorLayoutSource } from "./useChatReadAnchor"
 import { useSendMessage } from "./useSendMessage"
+import { useTakeUpNextRun } from "../hooks/useComposer"
 import { useShareExport } from "./useShareExport"
 import { useUpdateRestart } from "./useUpdateRestart"
 import type { EditorOpenSettings, OpenExternalAction, TerminalPreset } from "../../shared/protocol"
@@ -788,6 +789,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const previousPrompt = useMemo(() => getPreviousPrompt(messages), [messages])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
   const runtime = activeChatSnapshot?.runtime ?? null
+  useTakeUpNextRun(runtime)
   const forkBoundary = useMemo(
     () => (activeChatSnapshot
       ? resolveForkBoundary(activeChatSnapshot.runtime.forkedFrom, activeChatSnapshot.messages, activeChatSnapshot.startIndex, messages)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from "react"
-import type { AgentProvider, ChatMode, ProviderCatalogEntry } from "../../shared/types"
+import type { AgentProvider, ChatMode, ChatRuntime, ProviderCatalogEntry } from "../../shared/types"
 import {
   applyModelToComposerState,
   deriveComposerOptionControls,
@@ -37,6 +37,21 @@ function useChatComposerSeed(chatId: string | null): ComposerSeed | null {
     () => (provider ? { provider, ...(model ? { model } : {}) } : null),
     [provider, model]
   )
+}
+
+/**
+ * Puts settings an agent staged for the chat's next turn (`update_chat`) in
+ * its composer, so the user's next send carries them, as an agent's message
+ * to the chat would. Called where a chat's snapshot is read, so it happens
+ * whether or not the composer is on screen.
+ */
+export function useTakeUpNextRun(runtime: ChatRuntime | null) {
+  const chatId = runtime?.chatId
+  const nextRun = runtime?.nextRun
+  const activeProvider = runtime?.provider ?? null
+  useEffect(() => {
+    if (chatId && nextRun) useChatPreferencesStore.getState().applyNextRun(chatId, nextRun, activeProvider)
+  }, [activeProvider, chatId, nextRun])
 }
 
 export interface ComposerController extends ComposerView {

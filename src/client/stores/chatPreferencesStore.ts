@@ -3,6 +3,7 @@ import {
   chatModeToFlags,
   type AgentProvider,
   type ChatMode,
+  type ChatNextRun,
   type ChatProviderPreferences,
   type ClaudeModelOptions,
   type CodexModelOptions,
@@ -249,6 +250,8 @@ interface ChatPreferencesState {
    * defaults must never read as an intentional switch.
    */
   pendingProviderSwitches: Record<string, true>
+  /** The `setAt` of the staged settings each chat's composer has taken up. See `applyNextRun`. */
+  appliedNextRuns: Record<string, number>
   legacyComposerState: ComposerState | null
   setDefaultProvider: (provider: DefaultProviderPreference) => void
   syncProviderDefaults: (defaultProvider: DefaultProviderPreference, providerDefaults: ChatProviderPreferences) => void
@@ -278,6 +281,13 @@ interface ChatPreferencesState {
   resetChatComposerFromProvider: (chatId: string, provider: AgentProvider) => void
   markPendingProviderSwitch: (chatId: string) => void
   clearPendingProviderSwitch: (chatId: string) => void
+  /**
+   * Takes up settings an agent staged for the chat's next turn
+   * (`ChatRuntime.nextRun`) as if the user had picked them: the composer shows
+   * them, and a provider other than the session's is a staged switch. Once per
+   * staging, so a pick the user makes afterwards stands.
+   */
+  applyNextRun: (chatId: string, nextRun: ChatNextRun, activeProvider: AgentProvider | null) => void
 }
 
 export function migrateChatPreferencesState(
@@ -311,6 +321,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     providerDefaults: createDefaultProviderDefaults(),
     chatStates: {},
     pendingProviderSwitches: {},
+    appliedNextRuns: {},
     legacyComposerState: null,
     setDefaultProvider: (defaultProvider) => set({ defaultProvider }),
     syncProviderDefaults: (defaultProvider, providerDefaults) =>
@@ -433,6 +444,32 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             [chatId]: composerFromProviderDefaults(provider, state.providerDefaults),
           },
         })),
+      applyNextRun: (chatId, nextRun, activeProvider) =>
+        set((state) => {
+          if (state.appliedNextRuns[chatId] === nextRun.setAt) return state
+          const current = getStoredComposerState(state, chatId)
+          const base = current.provider === nextRun.provider
+            ? current
+            : composerFromProviderDefaults(nextRun.provider, state.providerDefaults)
+          const composerState = composerStateForProvider(nextRun.provider, {
+            ...base,
+            ...(nextRun.model ? { model: nextRun.model } : {}),
+            modelOptions: {
+              ...base.modelOptions,
+              ...(nextRun.effort ? { reasoningEffort: nextRun.effort } : {}),
+            } as ProviderModelOptionsInput,
+            planMode: nextRun.planMode,
+            autoPlan: nextRun.autoPlan,
+          })
+          const { [chatId]: _cleared, ...otherSwitches } = state.pendingProviderSwitches
+          return {
+            chatStates: { ...state.chatStates, [chatId]: composerState },
+            pendingProviderSwitches: activeProvider !== null && nextRun.provider !== activeProvider
+              ? { ...state.pendingProviderSwitches, [chatId]: true }
+              : otherSwitches,
+            appliedNextRuns: { ...state.appliedNextRuns, [chatId]: nextRun.setAt },
+          }
+        }),
       markPendingProviderSwitch: (chatId) =>
         set((state) => (
           state.pendingProviderSwitches[chatId]

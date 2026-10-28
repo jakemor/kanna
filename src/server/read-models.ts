@@ -482,6 +482,7 @@ export function deriveChatSnapshot(
     ...(chat.parentChatId && chat.adopted ? { adopted: true as const } : {}),
     ...(chat.hidden ? { hidden: true as const } : {}),
     ...(chat.delegator ? { delegator: true as const } : {}),
+    ...(chat.nextRun ? { nextRun: chat.nextRun } : {}),
     ...(subagents?.length ? { subagents: [...subagents] } : {}),
     ...(schedules.length ? { schedules } : {}),
   }

@@ -117,6 +117,11 @@ const updateChat = z.strictObject({
   pinned: z.boolean().optional(),
   done: z.boolean().optional().describe("Mark the chat done, or not done."),
   archived: z.boolean().optional().describe("true puts the chat away; it does not stop a running turn. false brings it back."),
+  showInSidebar: z.boolean().optional().describe("Lists the chat in the user's sidebar (true) or takes it out (false). Only for a sub-chat of this one: one it started or adopted. Pass it only when the user asks to see the chat in their sidebar, or to put it away there. It stays a sub-chat either way."),
+  provider: z.string().optional().describe("claude, codex, cursor, grok or pi, for the chat's next turn. get_context lists them."),
+  model: z.string().optional().describe("A model id from get_context, for the chat's next turn. Defaults to the chat's own when the provider is unchanged."),
+  effort: z.string().optional().describe("Reasoning effort for the chat's next turn, one the model offers. get_context lists each provider's."),
+  planMode: z.boolean().optional().describe("Run the chat's next turn read-only, to plan without editing. Always on when this chat is in plan mode."),
 })
 
 const updateQueuedMessage = z.strictObject({
@@ -196,7 +201,7 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
   },
   {
     name: "send_message",
-    description: "Send a message to another chat, as the user would: a follow-up on the work it is doing, with its title (required: unchanged, or sharpened). New work goes to a new chat (create_chat), or, when it needs a chat's context, to a fork of it (fork_chat): prefer that to reusing the chat under a new title. It starts a turn if the chat is idle and queues behind the current turn otherwise. A chat this one did not start sends nothing back when it finishes, unless this chat adopts it (adopt).",
+    description: "Send a message to another chat, as the user would: a follow-up on the work it is doing, with its title (required: unchanged, or sharpened). New work goes to a new chat (create_chat), or, when it needs a chat's context, to a fork of it (fork_chat): prefer that to reusing the chat under a new title. It starts a turn if the chat is idle and queues behind the current turn otherwise. A chat this one did not start sends nothing back when it finishes, unless this chat adopts it (adopt). To change a chat's settings without a message, use update_chat.",
     schema: sendMessage,
     async execute(input, context) {
       const { chatId, message, title, delivery, adopt, showInSidebar, ...run } = sendMessage.parse(input)
@@ -213,10 +218,11 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
   },
   {
     name: "update_chat",
-    description: "Rename a chat, pin it, mark it done, or archive it.",
+    description: "Change a chat's settings without sending it a message: rename it, pin it, mark it done, archive it, show it in the sidebar or take it out, or set the provider, model, effort and plan mode its next turn runs with. These apply to the next turn and do not start one; the result lists them as nextRun until it starts. A message already in its queue keeps the settings it was sent with. send_message, create_chat and fork_chat take the same settings with a message.",
     schema: updateChat,
     async execute(input, context) {
-      return reply(await orchestration(context).updateChat(context.chatId, updateChat.parse(input)))
+      const parsed = updateChat.parse(input)
+      return reply(await orchestration(context).updateChat(context.chatId, { ...parsed, provider: parsed.provider as AgentProvider | undefined }))
     },
   },
   {

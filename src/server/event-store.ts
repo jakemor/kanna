@@ -7,7 +7,7 @@ import { getDataDir, LOG_PREFIX } from "../shared/branding"
 import { toMessagePreview } from "../shared/message-preview"
 import { buildTranscriptOutline, findTranscriptWindowStart } from "../shared/transcript-window"
 import type { TranscriptOutlineEntry } from "../shared/types"
-import type { AgentProvider, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatNextRun, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -316,6 +316,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "chat_parent_set":
     case "chat_hidden_set":
     case "chat_delegator_set":
+    case "chat_next_run_set":
       return 9
     case "chat_pin_set":
     case "chat_deleted":
@@ -826,6 +827,14 @@ export class EventStore {
         // Where the chat is shown, not activity in it: `updatedAt` stays put.
         if (event.hidden) chat.hidden = true
         else delete chat.hidden
+        break
+      }
+      case "chat_next_run_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        // A setting, not activity: `updatedAt` stays put so the sidebar does not reorder.
+        if (event.nextRun) chat.nextRun = event.nextRun
+        else delete chat.nextRun
         break
       }
       case "chat_delegator_set": {
@@ -2002,6 +2011,20 @@ export class EventStore {
       timestamp: Date.now(),
       chatId,
       hidden,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
+  /** Stages run settings for a chat's next turn, or clears them. See `ChatNextRun`. */
+  async setChatNextRun(chatId: string, nextRun: ChatNextRun | null) {
+    const chat = this.requireChat(chatId)
+    if (!chat.nextRun && !nextRun) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_next_run_set",
+      timestamp: Date.now(),
+      chatId,
+      nextRun,
     }
     await this.append(this.chatsLogPath, event)
   }

@@ -2590,6 +2590,23 @@ export interface WorkflowAgent {
   cached?: boolean
 }
 
+/**
+ * Run settings an agent chose for a chat's next turn without sending it a
+ * message (`update_chat`). The orchestrator's own messages to the chat use
+ * them, and the composer takes them up the way it does the user's own pick,
+ * so the user's next send carries them too. Cleared by the next turn that
+ * starts from a message sent after they were set.
+ */
+export interface ChatNextRun {
+  provider: AgentProvider
+  model?: string
+  effort?: string
+  planMode: boolean
+  autoPlan: boolean
+  /** When they were set. A message sent before it runs with its own settings. */
+  setAt: number
+}
+
 export interface ChatRuntime {
   chatId: string
   projectId: string
@@ -2625,6 +2642,8 @@ export interface ChatRuntime {
   hidden?: true
   /** Set on a delegator. The same value as `SidebarChatRow.delegator`. */
   delegator?: true
+  /** Settings staged for the next turn. See `ChatNextRun`. */
+  nextRun?: ChatNextRun
   /** With `status: "waiting_on_subagent"`, and only then. The same value as `SidebarChatRow.waitingOn`. */
   waitingOn?: WaitingOn
   /**

@@ -642,3 +642,35 @@ describe("chat preference store", () => {
     })
   })
 })
+
+describe("applyNextRun", () => {
+  test("puts settings an agent staged in the composer, once, staging a provider switch", () => {
+    const store = useChatPreferencesStore.getState()
+    store.setComposerState("chat-1", {
+      provider: "claude",
+      model: "opus",
+      modelOptions: { reasoningEffort: "high", fastMode: false },
+      planMode: false,
+      autoPlan: false,
+    })
+
+    store.applyNextRun("chat-1", { provider: "codex", model: "gpt-5.5", effort: "minimal", planMode: true, autoPlan: false, setAt: 100 }, "claude")
+    expect(useChatPreferencesStore.getState().chatStates["chat-1"]).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.5",
+      modelOptions: { reasoningEffort: "minimal" },
+      planMode: true,
+    })
+    expect(useChatPreferencesStore.getState().pendingProviderSwitches["chat-1"]).toBe(true)
+
+    // A pick the user makes afterwards stands against the same staging.
+    store.setChatComposerModel("chat-1", "gpt-5.4")
+    store.applyNextRun("chat-1", { provider: "codex", model: "gpt-5.5", effort: "minimal", planMode: true, autoPlan: false, setAt: 100 }, "claude")
+    expect(useChatPreferencesStore.getState().chatStates["chat-1"]?.model).toBe("gpt-5.4")
+
+    // A new staging on the session's own provider is no switch.
+    store.applyNextRun("chat-1", { provider: "claude", effort: "low", planMode: false, autoPlan: false, setAt: 200 }, "claude")
+    expect(useChatPreferencesStore.getState().chatStates["chat-1"]).toMatchObject({ provider: "claude", modelOptions: { reasoningEffort: "low" } })
+    expect(useChatPreferencesStore.getState().pendingProviderSwitches["chat-1"]).toBeUndefined()
+  })
+})

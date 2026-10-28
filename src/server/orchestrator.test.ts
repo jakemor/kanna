@@ -31,6 +31,7 @@ interface FakeTurn {
   planMode: boolean
   delegator?: boolean
   model?: string
+  effort?: string
   skipPlanApproval?: boolean
   events: AsyncQueue<HarnessEvent>
   open: boolean
@@ -44,8 +45,8 @@ class FakeCodex {
   stopAll() {}
   getResourceCounts() { return {} }
 
-  async startTurn(args: { chatId: string; content: string; model?: string; planMode: boolean; delegator?: boolean; skipPlanApproval?: boolean }): Promise<HarnessTurn> {
-    const turn: FakeTurn = { chatId: args.chatId, content: args.content, model: args.model, planMode: args.planMode, delegator: args.delegator, skipPlanApproval: args.skipPlanApproval, events: new AsyncQueue(), open: true }
+  async startTurn(args: { chatId: string; content: string; model?: string; effort?: string; planMode: boolean; delegator?: boolean; skipPlanApproval?: boolean }): Promise<HarnessTurn> {
+    const turn: FakeTurn = { chatId: args.chatId, content: args.content, model: args.model, effort: args.effort, planMode: args.planMode, delegator: args.delegator, skipPlanApproval: args.skipPlanApproval, events: new AsyncQueue(), open: true }
     this.turns.push(turn)
     const end = () => {
       turn.open = false
@@ -2483,6 +2484,152 @@ describe("sidebar visibility", () => {
     await call("send_message", { chatId: created.chatId, message: "more", title: "Audit", showInSidebar: false })
     expect(store.getChat(created.chatId)?.hidden).toBe(true)
     expect(await call("send_message", { chatId: source, message: "hi", title: "x", showInSidebar: true })).toMatchObject({ error: expect.stringContaining("adopt") })
+    runtime.abort()
+  })
+})
+
+describe("update_chat settings", () => {
+  /** A sub-chat of `parent` whose first turn has ended. */
+  async function idleSubchat(context: Awaited<ReturnType<typeof setup>>, parent: string) {
+    const { orchestrator, codex } = context
+    const child = await orchestrator.createChat(parent, { message: "audit the parser", title: "Parser audit" })
+    codex.finish(child.chatId, "done")
+    await until(() => orchestrator.readChat({ chatId: child.chatId }).chat.status === "completed", "the sub-chat's turn")
+    return child.chatId
+  }
+
+  test("showInSidebar lists or hides the caller's own sub-chats, without a turn", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat, prompts, pushes } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+    expect(store.getChat(child)?.hidden).toBe(true)
+    const turns = codex.turnsFor(child).length
+    const sent = prompts(child).length
+
+    pushes.length = 0
+    expect(await orchestrator.updateChat(root, { chatId: child, showInSidebar: true })).not.toHaveProperty("hidden")
+    expect(store.getChat(child)).not.toHaveProperty("hidden")
+    expect(pushes).toContainEqual(expect.objectContaining({ sidebar: true, chatIds: [child] }))
+    await orchestrator.updateChat(root, { chatId: child, showInSidebar: false })
+    expect(store.getChat(child)?.hidden).toBe(true)
+    // Still the root's, and nothing was sent.
+    expect(store.getChat(child)).toMatchObject({ parentChatId: root })
+    expect(codex.turnsFor(child)).toHaveLength(turns)
+    expect(prompts(child)).toHaveLength(sent)
+    expect(orchestrator.readChat({ chatId: child }).chat.status).toBe("completed")
+  })
+
+  test("showInSidebar is refused for a chat that is not the caller's, before anything changes", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat, codex } = context
+    const root = await userChat()
+    const other = await userChat("the user's own")
+    codex.finish(other, "done")
+    await until(() => orchestrator.readChat({ chatId: other }).chat.status === "completed", "the user's turn")
+    // Another chat's sub-chat is no more the caller's than the user's own chat is.
+    const elsewhere = await userChat("a third thing")
+    const theirs = await idleSubchat(context, elsewhere)
+
+    await expect(orchestrator.updateChat(root, { chatId: other, title: "Renamed", showInSidebar: false })).rejects.toThrow("only for a sub-chat of this chat")
+    expect(store.getChat(other)).not.toHaveProperty("hidden")
+    expect(store.getChat(other)?.title).not.toBe("Renamed")
+    await expect(orchestrator.updateChat(root, { chatId: theirs, showInSidebar: true })).rejects.toThrow("only for a sub-chat of this chat")
+    expect(store.getChat(theirs)?.hidden).toBe(true)
+
+    // Adopted, it is the caller's.
+    await orchestrator.sendMessage(root, { chatId: other, message: "rebase", title: "Rebase", adopt: true })
+    codex.finish(other, "rebased")
+    await until(() => orchestrator.readChat({ chatId: other }).chat.status === "completed", "the adopted turn")
+    await orchestrator.updateChat(root, { chatId: other, showInSidebar: false })
+    expect(store.getChat(other)?.hidden).toBe(true)
+  })
+
+  test("run settings are staged for the next turn without starting one", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat, prompts } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+    const turns = codex.turnsFor(child).length
+
+    const updated = await orchestrator.updateChat(root, { chatId: child, model: "gpt-5.5", effort: "minimal", planMode: true })
+    expect(updated).toMatchObject({ nextRun: { provider: "codex", model: "gpt-5.5", effort: "minimal", planMode: true } })
+    expect(codex.turnsFor(child)).toHaveLength(turns)
+    expect(prompts(child)).toHaveLength(1)
+    // Staging again changes what is staged, keeping the rest.
+    await orchestrator.updateChat(root, { chatId: child, planMode: false })
+    expect(store.getChat(child)?.nextRun).toMatchObject({ model: "gpt-5.5", effort: "minimal", planMode: false })
+
+    // A message that names nothing runs with them, and uses them up.
+    await orchestrator.sendMessage(root, { chatId: child, message: "carry on", title: "Parser audit" })
+    await until(() => codex.turnsFor(child).length === turns + 1, "the next turn")
+    expect(codex.turn(child)).toMatchObject({ model: "gpt-5.5", effort: "minimal", planMode: false })
+    expect(store.getChat(child)).not.toHaveProperty("nextRun")
+  })
+
+  test("a message queued before the settings were staged keeps its own, and leaves them for the next", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat } = context
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "audit the parser", title: "Parser audit" })
+    const queued = await orchestrator.sendMessage(root, { chatId: child.chatId, message: "and the lexer", title: "Parser audit" })
+    expect(queued).toMatchObject({ started: false })
+    await orchestrator.updateChat(root, { chatId: child.chatId, model: "gpt-5.4" })
+
+    codex.finish(child.chatId, "parser done")
+    await until(() => codex.turnsFor(child.chatId).length === 2, "the queued turn")
+    expect(codex.turn(child.chatId).model).not.toBe("gpt-5.4")
+    expect(store.getChat(child.chatId)?.nextRun).toMatchObject({ model: "gpt-5.4" })
+
+    codex.finish(child.chatId, "lexer done")
+    await until(() => orchestrator.readChat({ chatId: child.chatId }).chat.status === "completed", "the queued turn's end")
+    await orchestrator.sendMessage(root, { chatId: child.chatId, message: "now the tests", title: "Parser audit" })
+    await until(() => codex.turnsFor(child.chatId).length === 3, "the turn after")
+    expect(codex.turn(child.chatId).model).toBe("gpt-5.4")
+    expect(store.getChat(child.chatId)).not.toHaveProperty("nextRun")
+  })
+
+  test("invalid settings are refused and stage nothing", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+
+    await expect(orchestrator.updateChat(root, { chatId: child, provider: "gemini" as never })).rejects.toThrow("Unknown provider")
+    await expect(orchestrator.updateChat(root, { chatId: child, model: "gpt-9" })).rejects.toThrow("has no model \"gpt-9\"")
+    await expect(orchestrator.updateChat(root, { chatId: child, model: "gpt-5.5", effort: "ultra" })).rejects.toThrow("has no \"ultra\" effort")
+    await expect(orchestrator.updateChat(root, { chatId: child, provider: "cursor", effort: "high" })).rejects.toThrow("no reasoning effort")
+    // The same rules hold on a message.
+    await expect(orchestrator.sendMessage(root, { chatId: child, message: "x", title: "Parser audit", model: "gpt-9" })).rejects.toThrow("has no model")
+    expect(store.getChat(child)).not.toHaveProperty("nextRun")
+
+    // A chat in plan mode keeps the chats it reaches in plan mode.
+    const planner = await userChat("plan it", { planMode: true })
+    const planned = await orchestrator.createChat(planner, { message: "look around", title: "Survey" })
+    await expect(orchestrator.updateChat(planner, { chatId: planned.chatId, planMode: false })).rejects.toThrow("plan mode")
+    expect(store.getChat(planned.chatId)).not.toHaveProperty("nextRun")
+  })
+
+  test("the update_chat tool takes showInSidebar and run settings", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+    const runtime = new KannaToolRuntime({
+      chatId: root,
+      cwd: "/tmp",
+      emit: async () => {},
+      requestInput: async () => ({}),
+      orchestration: orchestrator,
+    })
+    const call = async (name: string, input: unknown) => {
+      const result = await runtime.execute(name, input)
+      return result.isError ? { error: result.content[0]!.text } : JSON.parse(result.content[0]!.text)
+    }
+    expect(await call("update_chat", { chatId: child, showInSidebar: true, model: "gpt-5.4", effort: "high" }))
+      .toMatchObject({ chatId: child, nextRun: { provider: "codex", model: "gpt-5.4", effort: "high" } })
+    expect(store.getChat(child)).not.toHaveProperty("hidden")
+    expect(await call("update_chat", { chatId: child, effort: "turbo" })).toMatchObject({ error: expect.stringContaining("turbo") })
     runtime.abort()
   })
 })

@@ -30,6 +30,7 @@ import type { KannaSocket } from "./socket"
 import { useChatCommands } from "./useChatCommands"
 import { useChatReadAnchor } from "./useChatReadAnchor"
 import { useSendMessage } from "./useSendMessage"
+import { useTakeUpNextRun } from "../hooks/useComposer"
 
 const EMPTY_TRANSCRIPT_ENTRIES: TranscriptEntry[] = []
 const EMPTY_OUTLINE: TranscriptOutlineEntry[] = []
@@ -204,6 +205,7 @@ export function useChatSession({ socket, chatId, fallbackProviders }: {
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
 
   const runtime = snapshot?.runtime ?? null
+  useTakeUpNextRun(runtime)
   const forkBoundary = useMemo(
     () => (snapshot ? resolveForkBoundary(snapshot.runtime.forkedFrom, snapshot.messages, snapshot.startIndex, messages) : null),
     [snapshot, messages],

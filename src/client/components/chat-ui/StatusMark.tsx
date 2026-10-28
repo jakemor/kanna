@@ -27,11 +27,14 @@ export const TEXT_LINE_SLOT_CLASS = "flex h-[1lh] shrink-0 items-center"
 /**
  * The sidebar's status marks, one per thing a row can want: the brand spinner
  * while working, a grey one while waiting on work handed off, a blue ping
- * when waiting on the user, a green ping when unread. A chat's row draws them
+ * when waiting on the user, a still green dot when unread. A chat's row draws them
  * (`renderChatStatusDot`), and anything else that marks a chat's state
  * draws the same ones, so they say the same thing the same way.
  *
  * `enters` grows a ping in, for one that has just appeared.
+ *
+ * Unread is a plain dot, with no ping and no entrance: a finished chat has
+ * nothing urgent to say, and a list of them pulsing read as alarm.
  */
 export type StatusMarkKind = "working" | "waiting_on_subagent" | "waiting" | "unread"
 
@@ -43,11 +46,17 @@ export function StatusMark({ kind, label, enters = false }: { kind: StatusMarkKi
       </span>
     )
   }
-  const blue = kind === "waiting"
+  if (kind === "unread") {
+    return (
+      <div role={label ? "img" : undefined} aria-label={label} className={STATUS_MARK_SLOT_CLASS}>
+        <div className="size-2.5 rounded-full bg-emerald-400 ring-2 ring-muted/20 dark:ring-muted/50" />
+      </div>
+    )
+  }
   return (
     <div role={label ? "img" : undefined} aria-label={label} className={cn("relative", STATUS_MARK_SLOT_CLASS, enters && "kanna-mark-enter")}>
-      <div className={cn("absolute size-2.5 rounded-full kanna-ping", blue ? "bg-blue-400/80" : "bg-emerald-400/80")} />
-      <div className={cn("size-2.5 rounded-full ring-2 ring-muted/20 dark:ring-muted/50", blue ? "bg-blue-400" : "bg-emerald-400")} />
+      <div className="absolute size-2.5 rounded-full kanna-ping bg-blue-400/80" />
+      <div className="size-2.5 rounded-full ring-2 ring-muted/20 dark:ring-muted/50 bg-blue-400" />
     </div>
   )
 }

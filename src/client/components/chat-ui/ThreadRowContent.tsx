@@ -25,7 +25,7 @@ function statusDotClass(archived: boolean) {
 /**
  * Status glyph mirroring the sidebar chat rows: spinner while running, the
  * same spinner in grey while waiting on a subagent, a blue ping when waiting
- * on the user, a green ping when unread. Returns null for
+ * on the user, a still green dot when unread. Returns null for
  * idle chats so callers can fall back to a default icon — `uncommittedWork` is
  * carried by title contrast, not by this slot, so it only ever holds things
  * that want your attention.
@@ -33,7 +33,7 @@ function statusDotClass(archived: boolean) {
 export function renderChatStatusDot(chat: SidebarChatRow): ReactNode | null {
   if (chat.status === "starting" || chat.status === "running") return <StatusMark kind="working" />
   // Still going, but not in this chat: the grey a running task gets in the
-  // Tasks widget, which is where the work is. Ahead of the unread ping,
+  // Tasks widget, which is where the work is. Ahead of the unread dot,
   // because the reply it would flag is not the chat's last word.
   if (chat.status === "waiting_on_subagent") return <StatusMark kind="waiting_on_subagent" label={waitingOnLabel(chat.waitingOn)} />
   if (chat.status === "waiting_for_user") return <StatusMark kind="waiting" />

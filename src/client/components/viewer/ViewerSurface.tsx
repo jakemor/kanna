@@ -202,6 +202,7 @@ export function ViewerSurface({
   title,
   subtitle,
   toolbar,
+  windowActions,
   navigation,
   onClose,
   children,
@@ -228,6 +229,11 @@ export function ViewerSurface({
   subtitle?: ReactNode
   /** The view's own controls (diff mode, copy link), before close on the right. */
   toolbar?: ReactNode
+  /**
+   * Controls on the whole list, not on a choice inside it: in the group with
+   * Expand and Close, directly before Expand (Mark all as read).
+   */
+  windowActions?: ReactNode
   /** A control that switches what the body shows (Preview / Original), dead centre in the header. */
   center?: ReactNode
   navigation?: ViewerNavigation
@@ -391,6 +397,7 @@ export function ViewerSurface({
             </>
           ) : null}
           <ViewerDivider />
+          {windowActions}
           {placement ? (
             <ViewerIconButton label={placement.expanded ? "Show chat" : "Expand"} onClick={placement.onToggleExpanded}>
               {placement.expanded ? <Minimize2 /> : <Maximize2 />}

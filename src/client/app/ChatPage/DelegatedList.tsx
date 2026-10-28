@@ -1,12 +1,15 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react"
+import { CheckCheck } from "lucide-react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useOutletContext } from "react-router-dom"
 import { useChatReferenceActions, useSidebarThread } from "../../components/chat-ui/chat-reference"
 import { SidebarChatHoverCard } from "../../components/chat-ui/sidebar/ChatHoverCard"
 import { ThreadSections } from "../../components/chat-ui/sidebar/ThreadSections"
-import { VIEWER_END_PAD_CLASS, ViewerSurface } from "../../components/viewer/ViewerSurface"
+import { VIEWER_END_PAD_CLASS, ViewerIconButton, ViewerSurface } from "../../components/viewer/ViewerSurface"
 import { delegatedListTitle, delegatedThreads, isUnnamedDelegator } from "../../lib/delegators"
 import { cn } from "../../lib/utils"
 import { useSidebarStore } from "../../stores/sidebarStore"
 import { useViewerStore, type ViewerItem } from "../../stores/viewerStore"
+import type { KannaState } from "../useKannaState"
 import { useOpenChat } from "../useOpenChat"
 import { useStableSidebarThreads } from "../useStableSidebarThreads"
 
@@ -45,6 +48,14 @@ export const DelegatedList = memo(function DelegatedList({ item, onClose }: {
   const allThreads = useStableSidebarThreads(data)
   const threads = useMemo(() => delegatedThreads(allThreads, item.chatId), [allThreads, item.chatId])
 
+  // Mark all as read: the same command opening a chat sends, once for each
+  // row with the green dot. Only there while one has it.
+  const { socket } = useOutletContext<KannaState>()
+  const unreadChatIds = useMemo(() => threads.filter((thread) => thread.row.unread).map((thread) => thread.row.chatId), [threads])
+  const markAllRead = useCallback(() => {
+    for (const chatId of unreadChatIds) void socket.command({ type: "chat.markRead", chatId }).catch(noop)
+  }, [socket, unreadChatIds])
+
   const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), AGE_TICK_MS)
@@ -80,6 +91,9 @@ export const DelegatedList = memo(function DelegatedList({ item, onClose }: {
       label={named ? `Delegated chats, ${title}` : "Delegated chats"}
       title={title}
       onClose={onClose}
+      windowActions={unreadChatIds.length > 0 ? (
+        <ViewerIconButton label="Mark all as read" onClick={markAllRead}><CheckCheck /></ViewerIconButton>
+      ) : null}
       // Back from a chat is a new card: it opens where the list was left.
       scrollMemoryKey={`delegated:${item.chatId}`}
       // There when a delegator's page opens, without having been asked for.

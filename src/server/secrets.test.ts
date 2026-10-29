@@ -57,6 +57,7 @@ async function harness(store = new MemorySecretStore()) {
   let host: KannaToolHost | undefined
   let closeStream!: () => void
   const manager = {
+    getSessionPids: () => new Map<string, number>(),
     async startSession(args: { customTools?: KannaToolHost }) { host ??= args.customTools },
     async startTurn(args: { customTools?: KannaToolHost }): Promise<HarnessTurn> {
       host ??= args.customTools

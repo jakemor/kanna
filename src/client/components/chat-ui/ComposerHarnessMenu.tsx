@@ -23,8 +23,8 @@ import { Switch } from "../ui/switch"
 
 /**
  * The context meter lives in the menu's footer; from this share of the
- * window on, an amber dot on the harness icon and an amber ring in the
- * footer say it is worth a look. The same line as iOS.
+ * window on, the harness button also wears it as a ring badge. The same
+ * line as iOS.
  */
 export const CONTEXT_WARNING_PERCENT = 90
 
@@ -32,13 +32,16 @@ export function isContextNearlyFull(usage: ContextWindowSnapshot | null | undefi
   return (usage?.usedPercentage ?? 0) >= CONTEXT_WARNING_PERCENT
 }
 
-/** The footer's small ring: how much of the window is used. */
-function ContextRing({ percent, warn }: { percent: number; warn: boolean }) {
+/**
+ * How much of the window is used, in Kanna's colour at every level: the
+ * badge appearing at all is the warning, so the ring does not change colour.
+ */
+function ContextRing({ percent, className }: { percent: number; className?: string }) {
   const radius = 6
   const circumference = 2 * Math.PI * radius
   const clamped = Math.max(0, Math.min(100, percent))
   return (
-    <svg aria-hidden viewBox="0 0 16 16" className={cn("h-4 w-4 shrink-0 -rotate-90", warn ? "text-amber-500" : "text-muted-foreground")}>
+    <svg aria-hidden viewBox="0 0 16 16" className={cn("shrink-0 -rotate-90 text-logo", className)}>
       <circle cx="8" cy="8" r={radius} fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2" />
       <circle
         cx="8"
@@ -114,6 +117,50 @@ function MenuSelectRow({
 
 /** The "Add models…" entry in pi's model picker; not a model id. */
 const ADD_MODELS_VALUE = "__kanna_add_models__"
+
+/**
+ * The harness icon with its status badges. Context nearly full: a ring badge
+ * showing how full, top right. A staged change (a harness switch waiting for
+ * the next send): an amber dot, top right, or top left when the ring holds
+ * that corner. The mark itself is never tinted.
+ */
+export function HarnessStatusMarks({
+  provider,
+  contextPercent,
+  staged,
+}: {
+  provider: AgentProvider
+  /** Shown as a badge only from CONTEXT_WARNING_PERCENT. */
+  contextPercent: number | null
+  staged: boolean
+}) {
+  const Icon = PROVIDER_ICONS[provider]
+  const ring = contextPercent !== null && contextPercent >= CONTEXT_WARNING_PERCENT
+  return (
+    <span className="relative flex">
+      <Icon className="h-4 w-4 text-foreground" />
+      {ring ? (
+        <span
+          aria-hidden
+          data-badge="context"
+          className="absolute -right-1.5 -top-1.5 flex rounded-full bg-background dark:bg-card"
+        >
+          <ContextRing percent={contextPercent} className="h-3 w-3" />
+        </span>
+      ) : null}
+      {staged ? (
+        <span
+          aria-hidden
+          data-badge="staged"
+          className={cn(
+            "absolute -top-1 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background dark:ring-card",
+            ring ? "-left-1" : "-right-1",
+          )}
+        />
+      ) : null}
+    </span>
+  )
+}
 
 type ModelOptionsOf = ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
 
@@ -212,7 +259,6 @@ export function HarnessMenuBody({
                   <Icon
                     className={cn(
                       "h-4 w-4",
-                      selected && providerSwitchPending && "text-amber-500 dark:text-amber-400",
                       signedOut && !selected && "opacity-40",
                     )}
                   />
@@ -284,7 +330,7 @@ export function HarnessMenuBody({
       {contextWindow ? (
         <div className="flex items-center justify-between gap-3 border-t border-border/60 py-2.5 pl-3 pr-2.5 text-xs text-muted-foreground">
           <span className="min-w-0 truncate">{describeContextUsage(contextWindow)}</span>
-          {usedPercentage !== null ? <ContextRing percent={usedPercentage} warn={isContextNearlyFull(contextWindow)} /> : null}
+          {usedPercentage !== null ? <ContextRing percent={usedPercentage} className="h-4 w-4" /> : null}
         </div>
       ) : null}
     </>
@@ -322,7 +368,6 @@ export function ComposerHarnessMenu({
   const unauthenticated = useUnauthenticatedHarnesses()
   const { selectedProvider, providerSwitchPending, effectiveState, optionControls } = composer
   const providerConfig = composer.providerConfig ?? availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const Icon = PROVIDER_ICONS[selectedProvider]
   const modelLabel = resolveModelLabel(providerConfig?.models ?? [], effectiveState.model)
   const providerLabel = selectedProvider === "claude" ? "Claude" : providerConfig?.label ?? selectedProvider
   const contextWarning = isContextNearlyFull(contextWindow)
@@ -333,7 +378,7 @@ export function ComposerHarnessMenu({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`${providerLabel}, ${modelLabel}${contextWarning ? ", context nearly full" : ""}. Harness and model`}
+          aria-label={`${providerLabel}, ${modelLabel}${contextWarning ? ", context nearly full" : ""}${providerSwitchPending ? ", switches on your next message" : ""}. Harness and model`}
           className={cn(
             "flex shrink-0 items-center justify-center gap-1.5 rounded-full text-sm transition-colors hover:bg-muted/50 disabled:opacity-70",
             "data-[state=open]:bg-muted/50",
@@ -341,12 +386,11 @@ export function ComposerHarnessMenu({
           )}
           style={style}
         >
-          <span className="relative flex">
-            <Icon className={cn("h-4 w-4", providerSwitchPending ? "text-amber-500 dark:text-amber-400" : "text-foreground")} />
-            {contextWarning ? (
-              <span aria-hidden className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background dark:ring-card" />
-            ) : null}
-          </span>
+          <HarnessStatusMarks
+            provider={selectedProvider}
+            contextPercent={contextWindow?.usedPercentage ?? null}
+            staged={providerSwitchPending}
+          />
           {showModel ? <span className="whitespace-nowrap text-foreground">{modelLabel}</span> : null}
         </button>
       </PopoverTrigger>

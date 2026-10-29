@@ -5,7 +5,7 @@ import { deriveComposerOptionControls } from "../../lib/composer"
 import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import type { ComposerState } from "../../stores/chatPreferencesStore"
 import { TooltipProvider } from "../ui/tooltip"
-import { describeContextUsage, HarnessMenuBody, isContextNearlyFull, rowClick } from "./ComposerHarnessMenu"
+import { describeContextUsage, HarnessMenuBody, HarnessStatusMarks, isContextNearlyFull, rowClick } from "./ComposerHarnessMenu"
 
 function usage(usedTokens: number, maxTokens?: number): ContextWindowSnapshot {
   const usedPercentage = maxTokens ? (usedTokens / maxTokens) * 100 : null
@@ -111,12 +111,15 @@ describe("HarnessMenuBody", () => {
     expect(html.indexOf("Codex · Sign In")).toBeGreaterThan(html.indexOf('<span class="sr-only">Pi</span>'))
   })
 
-  test("ends with the context meter: text, then a ring that turns amber from 90%", () => {
+  test("ends with the context meter: text, then a ring in Kanna's colour at every level", () => {
     const calm = renderMenu({ provider: "claude", model: "opus", contextWindow: usage(178_000, 200_000) })
     expect(calm).toContain("89% context used · 178k of 200k")
     expect(calm).toContain("<circle")
+    expect(calm).toContain("text-logo")
     expect(calm).not.toContain("text-amber-500")
-    expect(renderMenu({ provider: "claude", model: "opus", contextWindow: usage(180_000, 200_000) })).toContain("text-amber-500")
+    const full = renderMenu({ provider: "claude", model: "opus", contextWindow: usage(180_000, 200_000) })
+    expect(full).toContain("text-logo")
+    expect(full).not.toContain("text-amber-500")
     expect(renderMenu({ provider: "claude", model: "opus" })).not.toContain("context used")
   })
 })
@@ -160,5 +163,33 @@ describe("rowClick", () => {
     // On the switch, its own handler flips it; the row leaves it alone.
     rowClick({ currentTarget: row(true), target: target(true) }, () => { toggles += 1 }, '[role="switch"]')
     expect(toggles).toBe(1)
+  })
+})
+
+describe("HarnessStatusMarks", () => {
+  const marks = (contextPercent: number | null, staged: boolean) =>
+    renderToStaticMarkup(<HarnessStatusMarks provider="claude" contextPercent={contextPercent} staged={staged} />)
+
+  test("no badge below 90% of the context window, a ring badge from 90%", () => {
+    expect(marks(89, false)).not.toContain("data-badge")
+    const full = marks(90, false)
+    expect(full).toContain('data-badge="context"')
+    expect(full).toContain("text-logo")
+    expect(full).not.toContain('data-badge="staged"')
+  })
+
+  test("a staged switch is an amber dot, and the mark keeps its own colour", () => {
+    const html = marks(40, true)
+    expect(html).toContain('data-badge="staged"')
+    expect(html).toContain("bg-amber-500")
+    expect(html).not.toContain("text-amber")
+    expect(html).toContain("h-4 w-4 text-foreground")
+    expect(html).not.toContain('data-badge="context"')
+  })
+
+  test("both at once: the ring keeps the top right, the dot moves to the top left", () => {
+    const html = marks(95, true)
+    expect(html).toMatch(/data-badge="context" class="[^"]*-right-1\.5/)
+    expect(html).toMatch(/data-badge="staged" class="[^"]*-left-1/)
   })
 })

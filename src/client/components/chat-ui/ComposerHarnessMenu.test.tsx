@@ -4,7 +4,8 @@ import { PROVIDERS, type AgentProvider } from "../../../shared/types"
 import { deriveComposerOptionControls } from "../../lib/composer"
 import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import type { ComposerState } from "../../stores/chatPreferencesStore"
-import { describeContextUsage, HarnessMenuBody, isContextNearlyFull } from "./ComposerHarnessMenu"
+import { TooltipProvider } from "../ui/tooltip"
+import { describeContextUsage, HarnessMenuBody, isContextNearlyFull, rowClick } from "./ComposerHarnessMenu"
 
 function usage(usedTokens: number, maxTokens?: number): ContextWindowSnapshot {
   const usedPercentage = maxTokens ? (usedTokens / maxTokens) * 100 : null
@@ -33,6 +34,7 @@ function renderMenu(args: {
     providerConfig,
   )
   return renderToStaticMarkup(
+    <TooltipProvider>
     <HarnessMenuBody
       providers={PROVIDERS}
       unauthenticated={new Set(args.unauthenticated ?? [])}
@@ -51,21 +53,26 @@ function renderMenu(args: {
       onFastModeChange={() => {}}
       onModeChange={() => {}}
     />
+    </TooltipProvider>
   )
+}
+
+/** The segment for a harness: its button, named by the hidden label inside it. */
+function segment(html: string, label: string) {
+  const end = html.indexOf(`<span class="sr-only">${label}</span>`)
+  return html.slice(html.lastIndexOf("<button", end), end)
 }
 
 describe("HarnessMenuBody", () => {
   test("lists every harness, the harness's models, effort as a pop-up and fast mode as a switch", () => {
     const html = renderMenu({ provider: "claude", model: "opus", modelOptions: { reasoningEffort: "high", fastMode: true } })
 
-    for (const provider of PROVIDERS) expect(html).toContain(`aria-label="${provider.label}"`)
-    expect(html).toContain('role="radio" aria-checked="true" aria-label="Claude Code"')
-    // Bare marks: no tile behind any of them, a dot under the current one.
-    expect(html).not.toContain("bg-muted text-foreground")
-    expect(html.match(/rounded-full bg-foreground/g)).toHaveLength(1)
+    // A segmented control, one icon per harness, the current one pressed.
+    for (const provider of PROVIDERS) expect(html).toContain(`<span class="sr-only">${provider.label}</span>`)
+    expect(segment(html, "Claude Code")).toContain('aria-pressed="true"')
+    expect(segment(html, "Codex")).toContain('aria-pressed="false"')
     for (const model of PROVIDERS.find((provider) => provider.id === "claude")!.models) expect(html).toContain(model.label)
     expect(html).toContain('aria-label="Effort"')
-    expect(html).toContain(">High<")
     expect(html).toContain('role="switch" aria-checked="true" aria-label="Fast Mode"')
   })
 
@@ -76,20 +83,28 @@ describe("HarnessMenuBody", () => {
     expect(cursor).toContain('role="switch" aria-checked="false" aria-label="Fast"')
   })
 
-  test("offers the mode as a pop-up after fast mode, for a harness that has modes", () => {
-    const html = renderMenu({ provider: "claude", model: "opus", modelOptions: { fastMode: false }, planMode: true })
+  test("runs models, Effort, Mode, then Fast Mode last, then the context line", () => {
+    const html = renderMenu({
+      provider: "claude",
+      model: "opus",
+      modelOptions: { reasoningEffort: "high", fastMode: false },
+      planMode: true,
+      contextWindow: usage(86_000, 200_000),
+    })
+    const order = ["Sonnet", 'aria-label="Effort"', 'aria-label="Mode"', 'role="switch"', "context used"].map((needle) => html.indexOf(needle))
 
-    expect(html).toContain('aria-label="Mode"')
-    expect(html).toContain(">Plan Mode<")
-    expect(html.indexOf('aria-label="Mode"')).toBeGreaterThan(html.indexOf('role="switch"'))
+    expect(order.every((index) => index >= 0)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    // Settings' borderless accessory, not a boxed select.
+    expect(html).not.toContain("rounded-lg border border-border bg-background px-3")
     expect(renderMenu({ provider: "pi", model: PROVIDERS.find((provider) => provider.id === "pi")!.defaultModel })).not.toContain('aria-label="Mode"')
   })
 
   test("sinks a signed-out harness to the end of the strip and says so", () => {
     const html = renderMenu({ provider: "claude", model: "opus", unauthenticated: ["codex"] })
 
-    expect(html).toContain('aria-label="Codex · Sign In"')
-    expect(html.indexOf("Codex · Sign In")).toBeGreaterThan(html.indexOf('aria-label="Pi"'))
+    expect(html).toContain('<span class="sr-only">Codex · Sign In</span>')
+    expect(html.indexOf("Codex · Sign In")).toBeGreaterThan(html.indexOf('<span class="sr-only">Pi</span>'))
   })
 
   test("ends with the context meter: text, then a ring that turns amber from 90%", () => {
@@ -113,5 +128,33 @@ describe("context usage", () => {
   test("says the raw count when the harness gave no ceiling", () => {
     expect(describeContextUsage(usage(12_500))).toBe("13k tokens used so far")
     expect(describeContextUsage(usage(6_000, 1_000_000))).toBe("0.6% context used · 6k of 1m")
+  })
+})
+
+describe("rowClick", () => {
+  // Stand-ins for the row and what was clicked: `contains` is the row's DOM,
+  // `closest` the clicked element's ancestry.
+  const row = (inside: boolean) => ({ contains: () => inside })
+  const target = (onControl: boolean) => ({ closest: () => (onControl ? {} : null) })
+
+  test("a click on the row opens its picker", () => {
+    let opened = 0
+    rowClick({ currentTarget: row(true), target: target(false) }, () => { opened += 1 })
+    expect(opened).toBe(1)
+  })
+
+  test("a click in the picker's portalled panel does not reopen it", () => {
+    let opened = 0
+    rowClick({ currentTarget: row(false), target: target(false) }, () => { opened += 1 })
+    expect(opened).toBe(0)
+  })
+
+  test("the Fast row toggles from anywhere, and once when the switch itself is clicked", () => {
+    let toggles = 0
+    rowClick({ currentTarget: row(true), target: target(false) }, () => { toggles += 1 }, '[role="switch"]')
+    expect(toggles).toBe(1)
+    // On the switch, its own handler flips it; the row leaves it alone.
+    rowClick({ currentTarget: row(true), target: target(true) }, () => { toggles += 1 }, '[role="switch"]')
+    expect(toggles).toBe(1)
   })
 })

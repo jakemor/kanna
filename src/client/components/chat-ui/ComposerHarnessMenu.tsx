@@ -15,8 +15,10 @@ import { cn } from "../../lib/utils"
 import type { ComposerController } from "../../hooks/useComposer"
 import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
 import { PROVIDER_ICONS } from "../provider-icons"
+import { SettingsRow, SettingsSelect } from "../../app/settings/shared"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
+import { SegmentedControl } from "../ui/segmented-control"
+import { SelectItem } from "../ui/select"
 import { Switch } from "../ui/switch"
 import { ProviderModelList } from "./ChatPreferenceControls"
 
@@ -66,6 +68,51 @@ export function describeContextUsage(usage: ContextWindowSnapshot): string {
   return `${formatContextWindowTokens(usage.usedTokens)} tokens used so far`
 }
 
+/**
+ * A click anywhere on a settings row acts as a click on its control. Only
+ * clicks that land in the row's own DOM count: the select's panel is
+ * portalled, and its clicks still bubble here through React, where they
+ * would open the picker again the moment an item closed it. A click already
+ * on the control (`ownSelector`) is left to the control, so a switch flips once.
+ */
+export function rowClick(
+  event: { currentTarget: { contains: (node: never) => boolean }; target: unknown },
+  act: () => void,
+  ownSelector?: string,
+) {
+  const target = event.target as { closest?: (selector: string) => unknown } | null
+  if (!event.currentTarget.contains(target as never)) return
+  if (ownSelector && target?.closest?.(ownSelector)) return
+  act()
+}
+
+/** A row in the menu's settings: the Settings page's row, the whole of it a target. */
+const MENU_ROW_CLASS = "cursor-pointer transition-colors hover:bg-muted/50 [&>div]:px-3"
+
+function MenuSelectRow({
+  title,
+  value,
+  onValueChange,
+  children,
+}: {
+  title: string
+  value: string
+  onValueChange: (value: string) => void
+  /** The SelectItems. */
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={MENU_ROW_CLASS} onClick={(event) => rowClick(event, () => setOpen(true))}>
+      <SettingsRow title={title}>
+        <SettingsSelect aria-label={title} value={value} onValueChange={onValueChange} open={open} onOpenChange={setOpen}>
+          {children}
+        </SettingsSelect>
+      </SettingsRow>
+    </div>
+  )
+}
+
 type ModelOptionsOf = ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
 
 export interface HarnessMenuBodyProps {
@@ -92,7 +139,7 @@ export interface HarnessMenuBodyProps {
 
 /**
  * What the harness button opens: the harness strip, the harness's models,
- * then one line each for effort, fast mode and mode, and the context meter.
+ * then one line each for effort, mode and fast mode, and the context meter.
  * Everything about how the next turn runs is here, so + only attaches.
  */
 export function HarnessMenuBody({
@@ -120,49 +167,56 @@ export function HarnessMenuBody({
     ...providers.filter((provider) => !unauthenticated.has(provider.id)),
     ...providers.filter((provider) => unauthenticated.has(provider.id)),
   ], [providers, unauthenticated])
-  const selectedEffortLabel = reasoning?.options.find((option) => option.id === reasoning.selectedId)?.label
   const fastLabel = selectedProvider === "cursor" ? "Fast" : "Fast Mode"
   const usedPercentage = contextWindow?.usedPercentage ?? null
 
   return (
     <>
-      {/* Bare marks, no tiles: the current harness is the one at full strength
-          with a dot under it (iOS matches). Cells touch, so a pointer moving
-          along the strip is always on one. */}
-      <div role="radiogroup" aria-label="Harness" className="flex border-b border-border/60">
-        {ordered.map((provider) => {
-          const Icon = PROVIDER_ICONS[provider.id]
-          const selected = provider.id === selectedProvider
-          const signedOut = unauthenticated.has(provider.id)
-          const label = signedOut ? `${provider.label} · Sign In` : provider.label
-          return (
-            <button
-              key={provider.id}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              aria-label={label}
-              title={label}
-              onClick={() => onProviderChange(provider.id)}
-              className={cn(
-                "relative flex h-11 flex-1 items-center justify-center transition-[color,opacity]",
-                selected ? "text-foreground" : "text-muted-foreground opacity-60 hover:opacity-100",
-                signedOut && !selected && "opacity-30",
-              )}
-            >
-              <Icon className={cn("h-4 w-4", selected && providerSwitchPending && "text-amber-500 dark:text-amber-400")} />
-              {selected ? (
-                <span
-                  aria-hidden
-                  className={cn(
-                    "absolute bottom-1.5 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full",
-                    providerSwitchPending ? "bg-amber-500 dark:bg-amber-400" : "bg-foreground",
-                  )}
-                />
-              ) : null}
-            </button>
-          )
-        })}
+      {/* The app's segmented control, one icon per harness. Arrow keys move
+          the selection, as in a native radio group. */}
+      <div
+        className="border-b border-border/60 p-2"
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
+          event.preventDefault()
+          const index = ordered.findIndex((provider) => provider.id === selectedProvider)
+          const step = event.key === "ArrowRight" ? 1 : -1
+          const next = ordered[(index + step + ordered.length) % ordered.length]
+          if (!next) return
+          onProviderChange(next.id)
+          const buttons = event.currentTarget.querySelectorAll("button")
+          buttons[ordered.indexOf(next)]?.focus()
+        }}
+      >
+        <SegmentedControl
+          size="sm"
+          value={selectedProvider}
+          onValueChange={onProviderChange}
+          className="flex w-full"
+          optionClassName="flex-1 justify-center"
+          options={ordered.map((provider) => {
+            const Icon = PROVIDER_ICONS[provider.id]
+            const selected = provider.id === selectedProvider
+            const signedOut = unauthenticated.has(provider.id)
+            const label = signedOut ? `${provider.label} · Sign In` : provider.label
+            return {
+              value: provider.id,
+              tooltip: label,
+              label: (
+                <span className="flex items-center">
+                  <Icon
+                    className={cn(
+                      "h-4 w-4",
+                      selected && providerSwitchPending && "text-amber-500 dark:text-amber-400",
+                      signedOut && !selected && "opacity-40",
+                    )}
+                  />
+                  <span className="sr-only">{label}</span>
+                </span>
+              ),
+            }
+          })}
+        />
       </div>
       <div className="px-3 pt-2 pb-1 text-xs text-muted-foreground">
         {providerConfig.label}
@@ -179,46 +233,36 @@ export function HarnessMenuBody({
           onEditModels={onEditModels}
         />
       </div>
+      {/* Effort, then mode, then fast mode last: the two pickers read as a
+          pair, and the switch ends the list. Rows touch, hairline between. */}
       {reasoning || fastMode || mode ? (
         <div className="divide-y divide-border/60 border-t border-border/60">
           {reasoning ? (
-            <div className="flex items-center justify-between gap-3 py-1.5 pl-3 pr-2">
-              <span className="text-sm text-muted-foreground">Effort</span>
-              <Select value={reasoning.selectedId ?? ""} onValueChange={onReasoningChange}>
-                <SelectTrigger aria-label="Effort" className="h-8 w-auto min-w-28 gap-1.5 px-2.5 focus:ring-offset-0">
-                  <SelectValue placeholder="Default">{selectedEffortLabel}</SelectValue>
-                </SelectTrigger>
-                <SelectContent align="end">
-                  {reasoning.options.map((option) => (
-                    <SelectItem key={option.id} value={option.id} disabled={option.disabled} title={option.description}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
-          {fastMode ? (
-            <div className="flex items-center justify-between gap-3 py-2 pl-3 pr-2">
-              <span className="text-sm text-muted-foreground">{fastLabel}</span>
-              <Switch checked={fastMode.enabled} onCheckedChange={onFastModeChange} aria-label={fastLabel} />
-            </div>
+            <MenuSelectRow title="Effort" value={reasoning.selectedId ?? ""} onValueChange={onReasoningChange}>
+              {reasoning.options.map((option) => (
+                <SelectItem key={option.id} value={option.id} disabled={option.disabled} title={option.description}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </MenuSelectRow>
           ) : null}
           {mode ? (
-            <div className="flex items-center justify-between gap-3 py-1.5 pl-3 pr-2">
-              <span className="text-sm text-muted-foreground">Mode</span>
-              <Select value={mode.selected} onValueChange={(value) => onModeChange(value as ChatMode)}>
-                <SelectTrigger aria-label="Mode" className="h-8 w-auto min-w-28 gap-1.5 px-2.5 focus:ring-offset-0">
-                  <SelectValue>{CHAT_MODE_LABELS[mode.selected].label}</SelectValue>
-                </SelectTrigger>
-                <SelectContent align="end">
-                  {mode.options.map((option) => (
-                    <SelectItem key={option} value={option} title={CHAT_MODE_LABELS[option].description}>
-                      {CHAT_MODE_LABELS[option].label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <MenuSelectRow title="Mode" value={mode.selected} onValueChange={(value) => onModeChange(value as ChatMode)}>
+              {mode.options.map((option) => (
+                <SelectItem key={option} value={option} title={CHAT_MODE_LABELS[option].description}>
+                  {CHAT_MODE_LABELS[option].label}
+                </SelectItem>
+              ))}
+            </MenuSelectRow>
+          ) : null}
+          {fastMode ? (
+            <div
+              className={MENU_ROW_CLASS}
+              onClick={(event) => rowClick(event, () => onFastModeChange(!fastMode.enabled), '[role="switch"]')}
+            >
+              <SettingsRow title={fastLabel}>
+                <Switch checked={fastMode.enabled} onCheckedChange={onFastModeChange} aria-label={fastLabel} />
+              </SettingsRow>
             </div>
           ) : null}
         </div>

@@ -1049,6 +1049,11 @@ export interface SidebarChatRow {
   chatId: string
   title: string
   status: KannaStatus
+  /**
+   * Its last turn ended and the user has not opened it since. Always false on
+   * a sub-chat, whose parent reports what it did, unless it is an adopted chat
+   * still listed in the sidebar (`tracksUnread` in src/server/events.ts).
+   */
   unread: boolean
   /** User marked the chat done (board Done column). Cleared when a new turn starts. */
   done?: boolean
@@ -1133,10 +1138,10 @@ export interface SidebarChatRow {
    */
   adopted?: true
   /**
-   * Whether lists of chats leave this one out: the sidebar, the palette, a
-   * project's page, and what counts as unread for the user. A hidden chat is
-   * shown with its parent, the way a subagent is. It stays in `chats` so
-   * anything that looks a chat up by id still finds it. See `ChatRecord.hidden`.
+   * Whether lists of chats leave this one out: the sidebar, the palette and a
+   * project's page. A hidden chat is shown with its parent, the way a
+   * subagent is, and is never unread. It stays in `chats` so anything that
+   * looks a chat up by id still finds it. See `ChatRecord.hidden`.
    *
    * The server states it on every row. Optional for a server that predates
    * it, which a client of its own version never meets: such a server meant

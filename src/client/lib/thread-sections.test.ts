@@ -60,14 +60,11 @@ describe("hidden chats", () => {
 describe("isUnreadForUser", () => {
   // One rule for every count of chats that want you: the window title, the
   // chime, the notification and a channel's badge.
-  test("counts an unread chat at rest, and no hidden chat or chat still working", () => {
+  test("counts an unread chat at rest, and no chat still working", () => {
     const unread = (overrides: Partial<SidebarChatRow> = {}) => makeChatRow({ chatId: "c", title: "C", unread: true, ...overrides })
     expect(isUnreadForUser(unread())).toBe(true)
     expect(isUnreadForUser(unread({ status: "failed" }))).toBe(true)
     expect(isUnreadForUser(unread({ status: "waiting_for_user" }))).toBe(true)
-    expect(isUnreadForUser(unread({ parentChatId: "parent", hidden: true }))).toBe(false)
-    // A listed chat's mark is the user's to hear about, sub-chat or not.
-    expect(isUnreadForUser(unread({ parentChatId: "parent", hidden: false }))).toBe(true)
     expect(isUnreadForUser(unread({ status: "waiting_on_subagent" }))).toBe(false)
     expect(isUnreadForUser(unread({ status: "running" }))).toBe(false)
     expect(isUnreadForUser(unread({ unread: false }))).toBe(false)

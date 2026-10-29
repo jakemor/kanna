@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import type { TranscriptEntry } from "../shared/types"
 import type { SnapshotFile } from "./events"
 import { EventStore, forkPointOf } from "./event-store"
-import { deriveLocalProjectsSnapshot } from "./read-models"
+import { deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 
 const originalRuntimeProfile = process.env.KANNA_RUNTIME_PROFILE
 const tempDirs: string[] = []
@@ -229,6 +229,91 @@ describe("EventStore", () => {
     const reloaded = new EventStore(dataDir)
     await reloaded.initialize()
     expect(reloaded.getChat(chat.id)?.unread).toBe(true)
+  })
+
+  test("a sub-chat is never unread, and its parent still is", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const parent = await store.createChat(project.id)
+    const hidden = await store.createChat(project.id, { parentChatId: parent.id, createdByChatId: parent.id })
+    const listed = await store.createChat(project.id, { parentChatId: parent.id, createdByChatId: parent.id }, { hidden: false })
+
+    for (const chat of [parent, hidden, listed]) await store.recordTurnFinished(chat.id)
+    await store.recordTurnFailed(hidden.id, "boom")
+    expect(store.getChat(parent.id)?.unread).toBe(true)
+    expect(store.getChat(hidden.id)?.unread).toBe(false)
+    // Listed or not, an agent started it, and its parent reports for it.
+    expect(store.getChat(listed.id)?.unread).toBe(false)
+    // What the sidebar rows carry, and so every dot and count drawn from them.
+    const rows = deriveSidebarData(store.state, new Map()).projectGroups.flatMap((group) => group.chats)
+    expect(rows.filter((row) => row.unread).map((row) => row.chatId)).toEqual([parent.id])
+
+    // Nothing to mark read, so nothing is written.
+    const log = await readFile(join(dataDir, "chats.jsonl"), "utf8")
+    await store.setChatReadState(hidden.id, false)
+    expect(await readFile(join(dataDir, "chats.jsonl"), "utf8")).toBe(log)
+  })
+
+  test("an adopted chat keeps its unread mark while it is listed, and loses it hidden", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const delegator = await store.createChat(project.id)
+    const mine = await store.createChat(project.id)
+
+    await store.recordTurnFinished(mine.id)
+    await store.setChatParent(mine.id, { parentChatId: delegator.id, adopted: true })
+    expect(store.getChat(mine.id)?.unread).toBe(true)
+    await store.setChatReadState(mine.id, false)
+    await store.recordTurnFinished(mine.id)
+    expect(store.getChat(mine.id)?.unread).toBe(true)
+
+    // Hidden (`showInSidebar: false`), it is shown with its parent like any sub-chat.
+    await store.setChatHidden(mine.id, true)
+    expect(store.getChat(mine.id)?.unread).toBe(false)
+    await store.recordTurnFinished(mine.id)
+    expect(store.getChat(mine.id)?.unread).toBe(false)
+
+    // Listed again, it starts unmarked and turns unread from its next turn on.
+    await store.setChatHidden(mine.id, false)
+    expect(store.getChat(mine.id)?.unread).toBe(false)
+    await store.recordTurnFinished(mine.id)
+    expect(store.getChat(mine.id)?.unread).toBe(true)
+  })
+
+  test("a chat becoming a sub-chat loses its mark, and one detached behaves normally again", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const parent = await store.createChat(project.id)
+    const chat = await store.createChat(project.id)
+
+    await store.recordTurnFinished(chat.id)
+    await store.setChatParent(chat.id, { parentChatId: parent.id, adopted: false })
+    expect(store.getChat(chat.id)?.unread).toBe(false)
+
+    await store.setChatParent(chat.id, null)
+    expect(store.getChat(chat.id)?.unread).toBe(false)
+    await store.recordTurnFinished(chat.id)
+    expect(store.getChat(chat.id)?.unread).toBe(true)
+  })
+
+  test("a sub-chat's unread mark in an older log is dropped on replay", async () => {
+    const dataDir = await createTempDataDir()
+    const line = (event: Record<string, unknown>) => `${JSON.stringify({ v: 2, ...event })}\n`
+    await writeFile(join(dataDir, "projects.jsonl"), line({ type: "project_opened", timestamp: 1, projectId: "p", localPath: dataDir, title: "P" }))
+    await writeFile(join(dataDir, "chats.jsonl"), [
+      line({ type: "chat_created", timestamp: 2, chatId: "parent", projectId: "p", title: "parent" }),
+      line({ type: "chat_created", timestamp: 3, chatId: "child", projectId: "p", title: "child", parentChatId: "parent", hidden: true }),
+      line({ type: "chat_read_state_set", timestamp: 4, chatId: "child", unread: true }),
+    ].join(""))
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    expect(store.getChat("child")?.unread).toBe(false)
   })
 
   test("stores and resolves a read anchor across restart", async () => {

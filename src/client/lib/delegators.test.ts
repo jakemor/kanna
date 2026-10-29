@@ -53,13 +53,14 @@ describe("delegatedAttentionCount", () => {
     expect(delegatedAttentionCount([row({ status: "waiting_for_user" }), row({ status: "running" }), row({})], "deleg")).toBe(1)
   })
 
-  test("a chat that finished and has not been opened is counted until it is", () => {
-    expect(delegatedAttentionCount([row({ unread: true })], "deleg")).toBe(1)
-    expect(delegatedAttentionCount([row({ unread: false })], "deleg")).toBe(0)
+  // The server marks no other sub-chat unread: the delegator reports for it.
+  test("an adopted chat that finished and has not been opened is counted until it is", () => {
+    expect(delegatedAttentionCount([row({ adopted: true, unread: true })], "deleg")).toBe(1)
+    expect(delegatedAttentionCount([row({ adopted: true, unread: false })], "deleg")).toBe(0)
   })
 
   test("an unread mark on a chat still working is not its last word, and not counted", () => {
-    expect(delegatedAttentionCount([row({ unread: true, status: "running" }), row({ unread: true, status: "waiting_on_subagent" })], "deleg")).toBe(0)
+    expect(delegatedAttentionCount([row({ adopted: true, unread: true, status: "running" }), row({ adopted: true, unread: true, status: "waiting_on_subagent" })], "deleg")).toBe(0)
   })
 
   test("only this delegator's chats", () => {

@@ -46,6 +46,7 @@ export interface ChatRecord {
   pinnedAt?: number
   /** Set when the user marks the chat done (e.g. drags it to the board's Done column). Cleared when a new turn starts. */
   doneAt?: number
+  /** Never set on a chat `tracksUnread` leaves out. */
   unread: boolean
   /**
    * Where the user last left off reading, anchored to a transcript entry `_id`
@@ -162,7 +163,7 @@ export interface ChatRecord {
   adopted?: true
   /**
    * Left out of every list of chats (the sidebar, the palette, a project's
-   * page) and of what the user is told is unread. Such a chat is shown with
+   * page), and never unread (`tracksUnread`). Such a chat is shown with
    * its parent instead: the parent's task log and the card where it was
    * started. Never false; absent on a listed chat.
    *
@@ -560,6 +561,22 @@ export type ScheduleEvent =
     }
 
 export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | QueuedMessageEvent | TurnEvent | ScheduleEvent
+
+/**
+ * Whether a chat can be unread at all. A sub-chat's reply goes to its parent
+ * as a report, and the parent turns unread for it, so a mark on the sub-chat
+ * too would tell the user the same thing twice. The exception is a chat the
+ * user had before an agent adopted it: still listed, it is still theirs to
+ * read. Hidden, it is shown with its parent like any sub-chat.
+ *
+ * Applied where `unread` is written (the store's reducer), so the mark is
+ * never set rather than set and cleared: no read events, no `markRead`.
+ * A chat that leaves the rule (a parent link dropped, an adopted chat listed
+ * again) starts unmarked and turns unread from its next turn on.
+ */
+export function tracksUnread(chat: Pick<ChatRecord, "parentChatId" | "adopted" | "hidden">): boolean {
+  return !chat.hidden && (!chat.parentChatId || Boolean(chat.adopted))
+}
 
 export function createEmptyState(): StoreState {
   return {

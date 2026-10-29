@@ -241,10 +241,9 @@ interface ChannelRowProps {
  * and finds the row under the pointer by `CHANNEL_ROW_ATTRIBUTE`.
  */
 const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned, actions, onSelect }: ChannelRowProps) {
-  // A hidden sub-chat finishing is its parent's news, not the channel's, so
-  // its unread mark is not counted. One that stops to ask you something still is.
-  // Nor is the mark of a chat still working, which the window's title and
-  // the notifications leave out for the same reason (`isUnreadForUser`).
+  // The mark of a chat still working is not counted, which the window's
+  // title and the notifications leave out for the same reason
+  // (`isUnreadForUser`). A hidden sub-chat that stops to ask you something is.
   const unread = group.chats.some(isUnreadForUser)
   // Chats that want you: unread, or waiting on an answer. One chat counts
   // once even when it is both.

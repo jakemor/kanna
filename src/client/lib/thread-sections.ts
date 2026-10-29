@@ -90,9 +90,8 @@ export function carryProjectSidebarLabel(
 
 /**
  * Whether a chat's unread mark is the user's to hear about, as a sound, a
- * notification or a count. A hidden chat's is not: it is shown with its
- * parent, which reports the result in its own turn. A listed chat's mark is
- * the user's, sub-chat or not.
+ * notification or a count. A sub-chat has no mark to hear about: the server
+ * never sets one (`tracksUnread`), since its parent reports the result.
  *
  * Nor is the mark of a chat that is still working. Its turn ended, which is
  * what set the mark, but a chat waiting on a subagent has more to say, and the
@@ -100,8 +99,8 @@ export function carryProjectSidebarLabel(
  * hearing about would be the one that made no sound. Held back until the chat
  * comes to rest, the mark is announced once, when everything is in.
  */
-export function isUnreadForUser(row: Pick<SidebarChatRow, "unread" | "hidden" | "status">): boolean {
-  return row.unread && !row.hidden && !isWorkingStatus(row.status)
+export function isUnreadForUser(row: Pick<SidebarChatRow, "unread" | "status">): boolean {
+  return row.unread && !isWorkingStatus(row.status)
 }
 
 /** The threads a list of chats shows: everything but hidden chats (`SidebarChatRow.hidden`). */

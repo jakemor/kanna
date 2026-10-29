@@ -5,7 +5,7 @@ import path from "node:path"
 import { deflateRawSync } from "node:zlib"
 import { ZIP_PREVIEW_LIMITS, zipEntryUrl, zipListingUrl } from "../shared/zip-preview"
 import { buildTestZip } from "./__fixtures__/build-test-zip"
-import { startKannaServer } from "./server"
+import { startTestServer } from "./__fixtures__/test-server"
 import { buildTranscriptMediaUrl, getTranscriptMediaDir } from "./transcript-media"
 import { persistProjectUpload } from "./uploads"
 import { bytesZipSource, normalizeEntryPath, readZipEntry, readZipListing, ZipPreviewError } from "./zip-preview"
@@ -232,7 +232,7 @@ describe("zip routes", () => {
     const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-zip-project-"))
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-zip-data-"))
     tempDirs.push(projectDir, dataDir)
-    const server = await startKannaServer({ dataDir, port, strictPort: true, ...(password ? { password } : {}) })
+    const server = await startTestServer({ dataDir, port, strictPort: true, ...(password ? { password } : {}) })
     const project = await server.store.openProject(projectDir, "Project")
     const upload = await persistProjectUpload({
       projectId: project.id,

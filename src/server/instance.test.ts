@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { instanceFingerprint, probeExistingInstance } from "./instance"
-import { startKannaServer } from "./server"
+import { startTestServer } from "./__fixtures__/test-server"
 
 const stops: Array<() => Promise<void>> = []
 const tempDirs: string[] = []
@@ -27,7 +27,7 @@ describe("probeExistingInstance", () => {
   test("finds a running same-data-dir instance and ignores foreign ones", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-instance-"))
     tempDirs.push(dataDir)
-    const server = await startKannaServer({ dataDir, port: 4381 })
+    const server = await startTestServer({ dataDir, port: 4381 })
     stops.push(server.stop)
 
     const match = await probeExistingInstance(server.port, dataDir)

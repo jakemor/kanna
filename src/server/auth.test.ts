@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { persistProjectUpload } from "./uploads"
-import { startKannaServer } from "./server"
+import { startTestServer } from "./__fixtures__/test-server"
 
 const tempDirs: string[] = []
 
@@ -21,7 +21,7 @@ async function startPasswordServer(options: { trustProxy?: boolean; port?: numbe
   tempDirs.push(projectDir)
   tempDirs.push(dataDir)
   tempDirs.push(clientDistDir)
-  const server = await startKannaServer({
+  const server = await startTestServer({
     dataDir,
     clientDistDir,
     port: options.port ?? 4320,

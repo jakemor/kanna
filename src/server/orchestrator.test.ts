@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -12,7 +12,6 @@ import { KannaToolRuntime } from "./kanna-tools"
 import { buildKannaSystemInstructions } from "./harness-instructions"
 import { buildKannaAgentId } from "./attribution"
 import { ChatOrchestrator, MAX_CHAT_DEPTH, MAX_LIVE_CHATS } from "./orchestrator"
-import { resetServerProvidersForTests } from "./provider-catalog"
 import type { ChatChange } from "./chat-commands"
 import { deriveChatSnapshot, deriveSidebarData } from "./read-models"
 import { timestamped } from "./transcript"
@@ -96,13 +95,6 @@ async function until(condition: () => boolean, label = "condition") {
   }
   throw new Error(`Timed out waiting for ${label}`)
 }
-
-// The model checks read the shared provider catalog. Test files that start a
-// real server have probed this machine's own `codex` and left its account's
-// model list there, so each test starts from the static catalog instead.
-beforeEach(() => {
-  resetServerProvidersForTests()
-})
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {

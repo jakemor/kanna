@@ -305,7 +305,7 @@ interface ClaudeSessionState {
   cancelledPromptSeqs: Set<number>
 }
 
-interface AgentCoordinatorArgs {
+export interface AgentCoordinatorArgs {
   store: EventStore
   /** Where `request_secrets` answers are stored. Defaults to this machine's keychain under the store's data dir. */
   secrets?: SecretsService

@@ -20,7 +20,7 @@ import { createFleetCache } from "./cloud/fleet"
 import { writeCloudIdentity } from "./cloud/identity"
 import { createPairSessionManager, type PairSessionSnapshot } from "./cloud/pair-session"
 import { EventStore } from "./event-store"
-import { AgentCoordinator } from "./agent"
+import { AgentCoordinator, type AgentCoordinatorArgs } from "./agent"
 import { CodexAppServerManager } from "./codex-app-server"
 import { isAnalyticsDisabledByEnv, KannaAnalyticsReporter, NoopAnalyticsReporter } from "./analytics"
 import { AppSettingsManager } from "./app-settings"
@@ -144,6 +144,18 @@ export interface StartKannaServerOptions {
    * through the app-settings snapshot to unlock dev-box-only UI.
    */
   directCloud?: boolean
+  /**
+   * What the server reaches outside its data dir for: the agent CLIs and
+   * Claude sessions it starts, the login shell it takes PATH from, and the
+   * LLM provider file. Each defaults to this machine's real one. Booting
+   * runs `codex`, `cursor-agent` and `grok` for their model lists and seeds
+   * Pi's picker from the file, all into the process-wide provider catalog, so
+   * tests pass stand-ins (`__fixtures__/test-server.ts`).
+   */
+  machine?: Pick<AgentCoordinatorArgs, "codexManager" | "cursorManager" | "grokManager" | "piManager" | "startClaudeSession"> & {
+    inheritShellPath?: () => Promise<void>
+    llmProviderFile?: string
+  }
   /** The built web client. Defaults to `dist/client`; tests point it at a fixture. */
   clientDistDir?: string
   onMigrationProgress?: (message: string) => void
@@ -164,7 +176,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const runtimeProfile = getRuntimeProfile()
   // Runs alongside the store setup below (~0.5 s for a zsh with nvm) and is
   // awaited before anything can start an agent.
-  const shellPathReady = inheritShellPath()
+  const machine = options.machine ?? {}
+  const shellPathReady = (machine.inheritShellPath ?? inheritShellPath)()
+  const readLlmProvider = () => readLlmProviderSnapshot(machine.llmProviderFile)
+  const writeLlmProvider = (value: Parameters<typeof writeLlmProviderSnapshot>[0]) =>
+    writeLlmProviderSnapshot(value, machine.llmProviderFile)
   const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
   const diagnostics = new PerformanceLog(options.dataDir ?? getDataDir(homedir()), undefined, options.update?.version)
   const store = new EventStore(options.dataDir, diagnostics)
@@ -273,11 +289,15 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       onCheck: options.update.checkCloudflared,
     })
     : null
-  const codexManager = new CodexAppServerManager()
+  const codexManager = machine.codexManager ?? new CodexAppServerManager()
   const agent = new AgentCoordinator({
     store,
     analytics,
     codexManager,
+    cursorManager: machine.cursorManager,
+    grokManager: machine.grokManager,
+    piManager: machine.piManager,
+    startClaudeSession: machine.startClaudeSession,
     getIdleSessionTimeoutMinutes: () => appSettings.getSnapshot().idleSessionTimeoutMinutes ?? DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
@@ -319,8 +339,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   const providerAuth = new ProviderAuthManager({
     ...createProcessAuthDeps(),
-    readLlmProvider: readLlmProviderSnapshot,
-    writeLlmProvider: writeLlmProviderSnapshot,
+    readLlmProvider,
+    writeLlmProvider,
     fetchLatestNpmVersion: fetchLatestPackageVersion,
     trackEvent: analytics.track.bind(analytics),
     onSignedIn: (service) => {
@@ -359,8 +379,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     analytics,
     usageLimits,
     llmProvider: {
-      read: readLlmProviderSnapshot,
-      write: writeLlmProviderSnapshot,
+      read: readLlmProvider,
+      write: writeLlmProvider,
       validate: validateLlmProviderCredentials,
     },
     refreshDiscovery,
@@ -380,7 +400,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   void agent.refreshGrokModelCatalog()
   // Seed the pi provider's model picker from saved fave models before the
   // first snapshots go out.
-  void readLlmProviderSnapshot()
+  void readLlmProvider()
     .then((snapshot) => {
       if (applyPiFaveModels(snapshot.faveModels)) {
         return router.broadcastSnapshots()
@@ -719,7 +739,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return withOriginAgentCluster(uploadResponse)
           }
 
-          const transcribeResponse = await handleTranscribe(req, url, readLlmProviderSnapshot)
+          const transcribeResponse = await handleTranscribe(req, url, readLlmProvider)
           if (transcribeResponse) {
             return withOriginAgentCluster(transcribeResponse)
           }

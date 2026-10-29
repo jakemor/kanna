@@ -9,7 +9,7 @@ import {
   PROXY_AUTH_HEADER,
   type CloudWsEndpointResponse,
 } from "../../shared/cloud-api"
-import { startKannaServer } from "../server"
+import { startTestServer } from "../__fixtures__/test-server"
 import { createConnectTokenManager } from "./connect-token"
 import type { PairSessionSnapshot } from "./pair-session"
 import type { CloudIdentity } from "./identity"
@@ -53,7 +53,7 @@ async function startCloudServer(options: {
 }) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-cloud-server-"))
   tempDirs.push(dataDir)
-  const server = await startKannaServer({
+  const server = await startTestServer({
     dataDir,
     port: options.port,
     cloud: options.cloud,

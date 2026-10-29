@@ -193,7 +193,10 @@ function AttachmentBody({ attachment, kind, content, view }: {
   if (kind === "image") {
     return (
       <div className="flex min-h-full items-center justify-center p-6">
-        <img src={attachment.url} alt={attachment.name} className="max-h-full max-w-full rounded-lg object-contain shadow-sm" />
+        {/* 80vh, not max-h-full: the body only has a min-height, so a
+            percentage cap resolves to nothing and a tall phone screenshot
+            ran far below the fold. Auto width/height never upscale. */}
+        <img src={attachment.url} alt={attachment.name} className="h-auto max-h-[80vh] w-auto max-w-full rounded-lg object-contain shadow-sm" />
       </div>
     )
   }

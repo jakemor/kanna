@@ -381,6 +381,7 @@ describe("AgentCoordinator codex integration", () => {
       releaseTitle = resolve
     })
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -452,6 +453,7 @@ describe("AgentCoordinator codex integration", () => {
       releaseTitle = resolve
     })
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -520,6 +522,7 @@ describe("AgentCoordinator codex integration", () => {
 
   test("reports provider failure without a second rename after the optimistic title", async () => {
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -595,6 +598,7 @@ describe("AgentCoordinator codex integration", () => {
     // health-check preflight) no-op instead of re-resuming.
     const openSessions = new Set<string>()
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession(args: { chatId: string; sessionToken: string | null; pendingForkSessionToken?: string | null }) {
         if (openSessions.has(args.chatId) && !args.pendingForkSessionToken) return
         openSessions.add(args.chatId)
@@ -674,6 +678,7 @@ describe("AgentCoordinator codex integration", () => {
     const turnCalls: Array<{ effort?: string; serviceTier?: string }> = []
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession(args: { chatId: string; sessionToken: string | null; serviceTier?: string }) {
         sessionCalls.push({
           chatId: args.chatId,
@@ -754,6 +759,7 @@ describe("AgentCoordinator codex integration", () => {
     let turnCount = 0
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession(args: { chatId: string; sessionToken: string | null }) {
         sessionCalls.push({ chatId: args.chatId, sessionToken: args.sessionToken })
       },
@@ -894,6 +900,7 @@ describe("AgentCoordinator codex integration", () => {
     })
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(args: {
         onToolRequest: (request: any) => Promise<unknown>
@@ -967,6 +974,7 @@ describe("AgentCoordinator codex integration", () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1048,6 +1056,7 @@ describe("AgentCoordinator codex integration", () => {
     let streamClosed = false
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1121,6 +1130,7 @@ describe("AgentCoordinator codex integration", () => {
     let interruptDone = false
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1198,6 +1208,7 @@ describe("AgentCoordinator codex integration", () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1261,6 +1272,7 @@ describe("AgentCoordinator codex integration", () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1335,6 +1347,7 @@ describe("AgentCoordinator codex integration", () => {
     const startTurnCalls: string[] = []
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(args: {
         content: string
@@ -2538,6 +2551,7 @@ describe("mid-conversation provider switch", () => {
     const sentContents: string[] = []
     const stoppedCodexSessions: string[] = []
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {
         return { sessionToken: "codex-thread-1", resumeFellBack: false }
       },
@@ -2748,6 +2762,7 @@ describe("session restore on lost native session", () => {
     const sentContents: string[] = []
     let resumeFellBack = true
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {
         return { sessionToken: "codex-thread-new", resumeFellBack }
       },
@@ -2810,6 +2825,7 @@ describe("AgentCoordinator restart resume", () => {
   test("shutdown cancels running turns and marks their chats for resume", async () => {
     const events = new AsyncEventQueue<any>()
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         return {
@@ -2852,6 +2868,7 @@ describe("AgentCoordinator restart resume", () => {
     })
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(args: { onToolRequest: (request: any) => Promise<unknown> }): Promise<HarnessTurn> {
         async function* stream() {
@@ -2918,6 +2935,7 @@ describe("AgentCoordinator restart resume", () => {
   test("a user-initiated cancel leaves no resume marker", async () => {
     const events = new AsyncEventQueue<any>()
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         return {
@@ -3134,6 +3152,7 @@ describe("shared display tool lifecycle", () => {
       let host: import("./kanna-tools").KannaToolHost | undefined
       const capture = (args: { customTools?: import("./kanna-tools").KannaToolHost }) => { host = args.customTools }
       const manager = {
+        getSessionPids: () => new Map<string, number>(),
         async startSession(args: { customTools?: import("./kanna-tools").KannaToolHost }) { capture(args) },
         async startTurn(args: { customTools?: import("./kanna-tools").KannaToolHost }): Promise<HarnessTurn> {
           if (args.customTools) capture(args)
@@ -3662,6 +3681,7 @@ describe("waiting on a subagent", () => {
     let report: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
     const stopped: string[] = []
     const manager = {
+      getSessionPids: () => new Map<string, number>(),
       setTaskActivityListener(listener: typeof report) { report = listener },
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
@@ -3787,6 +3807,7 @@ describe("a chat made a delegator, or an ordinary chat again, mid-conversation",
       let codexSessionToken: string | null | undefined
       let stream = new AsyncEventQueue<any>()
       const manager = {
+        getSessionPids: () => new Map<string, number>(),
         async startSession(args: { sessionToken: string | null }) {
           codexSessionToken = args.sessionToken
           return { sessionToken: "session-1" }

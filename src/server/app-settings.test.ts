@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { AppSettingsManager, readAppSettingsSnapshot } from "./app-settings"
-import type { AppSettingsSnapshot } from "../shared/types"
+import { DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES, type AppSettingsSnapshot } from "../shared/types"
 
 let tempDirs: string[] = []
 
@@ -33,6 +33,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     chatSoundId: "funk",
     chatBrowserNotificationPreference: "never",
     submitWhileRunning: "queue",
+    idleSessionTimeoutMinutes: DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
     paneVisibility: { widgets: "chat", terminal: "chat" },
     terminal: {
       scrollbackLines: 1_000,

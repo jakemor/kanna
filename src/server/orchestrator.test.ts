@@ -43,6 +43,7 @@ class FakeCodex {
   async startSession() {}
   stopSession() {}
   stopAll() {}
+  getSessionPids() { return new Map<string, number>() }
   getResourceCounts() { return {} }
 
   async startTurn(args: { chatId: string; content: string; model?: string; effort?: string; planMode: boolean; delegator?: boolean; skipPlanApproval?: boolean }): Promise<HarnessTurn> {

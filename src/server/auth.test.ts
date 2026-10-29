@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { persistProjectUpload } from "./uploads"
@@ -14,10 +14,16 @@ afterEach(async () => {
 async function startPasswordServer(options: { trustProxy?: boolean; port?: number } = {}) {
   const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-auth-test-"))
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-auth-data-"))
+  // A stand-in for the built client, so the shell is served without a prior
+  // `bun run build` (a fresh checkout has no dist/client and answers 503).
+  const clientDistDir = await mkdtemp(path.join(tmpdir(), "kanna-auth-client-"))
+  await writeFile(path.join(clientDistDir, "index.html"), '<!doctype html><div id="root"></div>')
   tempDirs.push(projectDir)
   tempDirs.push(dataDir)
+  tempDirs.push(clientDistDir)
   const server = await startKannaServer({
     dataDir,
+    clientDistDir,
     port: options.port ?? 4320,
     strictPort: true,
     password: "secret",

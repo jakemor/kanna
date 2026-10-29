@@ -144,6 +144,8 @@ export interface StartKannaServerOptions {
    * through the app-settings snapshot to unlock dev-box-only UI.
    */
   directCloud?: boolean
+  /** The built web client. Defaults to `dist/client`; tests point it at a fixture. */
+  clientDistDir?: string
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
@@ -471,7 +473,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       console.warn(`${LOG_PREFIX} touched-file backfill failed:`, error)
     })
 
-  const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
+  const distDir = options.clientDistDir ?? path.join(import.meta.dir, "..", "..", "dist", "client")
 
   const MAX_PORT_ATTEMPTS = 20
   let actualPort = port

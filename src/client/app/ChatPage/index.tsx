@@ -1403,6 +1403,8 @@ export function ChatPage() {
         onCancel={handleCancel}
         onEditModels={handleEditModels}
         onListSkills={handleListSkills}
+        oldestQueuedMessageId={state.queuedMessages[0]?.id ?? null}
+        onSendQueuedNow={state.handleSteerQueuedMessage}
       />
       <DefaultModelsDialog
         open={defaultModelsDialogOpen}

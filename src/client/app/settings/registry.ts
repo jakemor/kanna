@@ -157,7 +157,7 @@ export const SETTINGS_ROWS = defineRows({
   submitWhileRunning: {
     sectionId: "general",
     title: "Enter While Running",
-    description: "What Enter does while an agent is working. ⌘Enter always does the other one.",
+    description: "What Enter does while an agent is working. ⌘Enter always does the other one. With nothing typed, ⌘Enter sends the oldest queued message now.",
     keywords: ["queue", "steer", "interrupt", "enter", "send", "composer"],
   },
   widgetsVisibility: {

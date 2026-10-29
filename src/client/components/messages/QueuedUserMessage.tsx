@@ -15,7 +15,16 @@ interface QueuedUserMessageProps {
   /** Each may return the command's promise, which is how long the row stays dimmed. */
   onRemove: () => void | Promise<void>
   onSendNow: () => void | Promise<void>
+  /** The queue's first message: ⌘/Ctrl+Enter on an empty composer sends it, and its Send now says so. */
+  first?: boolean
 }
+
+/**
+ * The keys that send the queue's first message from an empty composer
+ * (`resolveModifiedEnter`). The composer takes either modifier; this names
+ * the one the platform uses.
+ */
+export const SEND_QUEUED_SHORTCUT_LABEL = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘↵" : "Ctrl+Enter"
 
 /** The dashed outline that says a message is waiting, on either side of the column. */
 const QUEUED_BUBBLE_CLASS = "rounded-2xl border border-dashed border-border bg-transparent prose prose-sm prose-invert text-left text-primary"
@@ -28,13 +37,14 @@ const QUEUED_BUBBLE_CLASS = "rounded-2xl border border-dashed border-border bg-t
  */
 const QUEUED_CONTROL_CLASS = "transition-[color,background-color,scale] duration-150 ease-snappy active:scale-[0.95] motion-reduce:transition-none motion-reduce:active:scale-100"
 
-function SendNowButton({ onSendNow, disabled }: { onSendNow: () => void; disabled: boolean }) {
+function SendNowButton({ onSendNow, disabled, first }: { onSendNow: () => void; disabled: boolean; first?: boolean }) {
   return (
     <Button
       type="button"
       variant="default"
       size="none"
       aria-label="Send now"
+      title={first ? `Send now (${SEND_QUEUED_SHORTCUT_LABEL})` : "Send now"}
       disabled={disabled}
       className={cn(
         QUEUED_CONTROL_CLASS,
@@ -85,6 +95,7 @@ interface QueuedFormProps {
   busy: boolean
   onRemove: () => void
   onSendNow: () => void
+  first?: boolean
 }
 
 /**
@@ -94,7 +105,7 @@ interface QueuedFormProps {
  */
 const QUEUED_ROW_CLASS = "flex flex-col gap-2 py-2 transition-opacity duration-150 ease-out motion-reduce:transition-none"
 
-export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMessageProps) {
+export function QueuedUserMessage({ message, onRemove, onSendNow, first }: QueuedUserMessageProps) {
   const [busy, setBusy] = useState(false)
   // Held until the command settles, not until the row goes: if the server
   // refuses, the message is still queued and has to be usable again.
@@ -102,7 +113,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
     setBusy(true)
     void Promise.resolve(action()).finally(() => setBusy(false))
   }
-  const form = { message, busy, onRemove: carryOut(onRemove), onSendNow: carryOut(onSendNow) }
+  const form = { message, busy, first, onRemove: carryOut(onRemove), onSendNow: carryOut(onSendNow) }
   // A sender this client does not draw waits as the user's own (`drawnMessageSource`).
   const source = drawnMessageSource(message.source)
   if (source?.kind === "report") return <QueuedReport {...form} source={source} />
@@ -111,7 +122,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
     : <QueuedTypedMessage {...form} />
 }
 
-function QueuedTypedMessage({ message, busy, onRemove, onSendNow }: QueuedFormProps) {
+function QueuedTypedMessage({ message, busy, onRemove, onSendNow, first }: QueuedFormProps) {
   // What the sent message will show: without the parts meant for the agent.
   const content = stripSystemMessages(message.content)
   return (
@@ -134,7 +145,7 @@ function QueuedTypedMessage({ message, busy, onRemove, onSendNow }: QueuedFormPr
                 <p className="text-muted-foreground">Queued</p>
               )}
             </div>
-            <SendNowButton onSendNow={onSendNow} disabled={busy} />
+            <SendNowButton onSendNow={onSendNow} disabled={busy} first={first} />
           </div>
           <RemoveButton corner="start" onRemove={onRemove} disabled={busy} />
         </div>
@@ -151,7 +162,7 @@ function QueuedTypedMessage({ message, busy, onRemove, onSendNow }: QueuedFormPr
  * from another chat. It is one message to send or remove, however many
  * sub-chats it covers, so there is one of each control.
  */
-function QueuedReport({ message, source, busy, onRemove, onSendNow }: QueuedFormProps & { source: Extract<MessageSource, { kind: "report" }> }) {
+function QueuedReport({ message, source, busy, onRemove, onSendNow, first }: QueuedFormProps & { source: Extract<MessageSource, { kind: "report" }> }) {
   const sections = useMemo(() => sourcedSections(message.content, source), [message.content, source])
   // Nothing to read: a report on sub-chats that were stopped before they
   // said anything. Delivered, it draws no line, as there is no reply to
@@ -167,7 +178,7 @@ function QueuedReport({ message, source, busy, onRemove, onSendNow }: QueuedForm
       <UserMessageAttachments attachments={message.attachments} align="start" />
       <div className="relative group min-w-0 max-w-[85%] sm:max-w-[80%]">
         <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2.5 rounded-xl border border-dashed border-border py-1.5 pl-1.5 pr-3.5">
-          <SendNowButton onSendNow={onSendNow} disabled={busy} />
+          <SendNowButton onSendNow={onSendNow} disabled={busy} first={first} />
           <div className="flex min-w-0 flex-col items-start gap-1">
             {lines.map((section, index) => isAdoptionNotice(section)
               ? <AdoptionNotice key={index} section={section} />
@@ -193,7 +204,7 @@ function QueuedReport({ message, source, busy, onRemove, onSendNow }: QueuedForm
  * can reach over that corner, and the line between them keeps it 20px up,
  * well clear of Remove and of the 6px around it that also takes a press.
  */
-function QueuedSourcedMessage({ message, source, busy, onRemove, onSendNow }: QueuedFormProps & { source: MessageSource }) {
+function QueuedSourcedMessage({ message, source, busy, onRemove, onSendNow, first }: QueuedFormProps & { source: MessageSource }) {
   // All of it for the agent leaves nothing to read. It still waits its
   // turn, and still says who it is from.
   const body = useMemo(() => sourcedSections(message.content, source)[0]?.body ?? "", [message.content, source])
@@ -207,7 +218,7 @@ function QueuedSourcedMessage({ message, source, busy, onRemove, onSendNow }: Qu
         </ReplyQuoteRow>
         <div className="relative group min-w-0 max-w-full">
           <div {...{ [FOLD_SURFACE_ATTRIBUTE]: "" }} className={cn(QUEUED_BUBBLE_CLASS, "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-end gap-2.5 py-1.5 pl-1.5 pr-3.5")}>
-            <SendNowButton onSendNow={onSendNow} disabled={busy} />
+            <SendNowButton onSendNow={onSendNow} disabled={busy} first={first} />
             <div className="min-w-0">
               {body
                 ? <ClampedMessageText text={body} lines={CLAMP_LINES.sent} />

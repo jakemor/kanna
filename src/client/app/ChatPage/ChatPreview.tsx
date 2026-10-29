@@ -404,6 +404,8 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
           onListSkills={handleListSkills}
           placeholder={`Message ${title}`}
           secondary
+          oldestQueuedMessageId={session.queuedMessages[0]?.id ?? null}
+          onSendQueuedNow={session.handleSteerQueuedMessage}
         />
       </div>
     </ChatSchedulesProvider>

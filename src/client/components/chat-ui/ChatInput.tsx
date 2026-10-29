@@ -32,7 +32,7 @@ import { copyTextToClipboard } from "../../lib/clipboard"
 import { buildUploadErrorReport, simpleUploadError, type UploadErrorReport } from "../../lib/uploadError"
 import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
-import { shouldSteerSubmit } from "../../../shared/submit-mode"
+import { resolveModifiedEnter, shouldSteerSubmit } from "../../../shared/submit-mode"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatModePicker } from "./ChatPreferenceControls"
 import { ComposerHarnessMenu } from "./ComposerHarnessMenu"
@@ -242,6 +242,12 @@ interface Props {
    * chat's draft is not touched.
    */
   draftKey?: string
+  /**
+   * The first message in the chat's queue, and what its Send now calls.
+   * ⌘/Ctrl+Enter on an empty composer sends it (`resolveModifiedEnter`).
+   */
+  oldestQueuedMessageId?: string | null
+  onSendQueuedNow?: (queuedMessageId: string) => Promise<void>
 }
 
 export interface ChatInputHandle {
@@ -279,6 +285,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   placeholder: placeholderOverride,
   secondary = false,
   draftKey,
+  oldestQueuedMessageId = null,
+  onSendQueuedNow,
 }, forwardedRef) {
   // The draft's key: the chat's, unless the composer keeps its own.
   const draftId = draftKey ?? chatId ?? null
@@ -989,6 +997,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }
 
+  // One send at a time: the queue is the server's, so the message stays first
+  // until the server says it has gone, and a second press before then would
+  // ask for the same message again.
+  const sendingQueuedRef = useRef(false)
+  function sendOldestQueuedNow() {
+    if (!oldestQueuedMessageId || !onSendQueuedNow || sendingQueuedRef.current) return
+    sendingQueuedRef.current = true
+    void onSendQueuedNow(oldestQueuedMessageId).finally(() => {
+      sendingQueuedRef.current = false
+    })
+  }
+
   function discardRecording() {
     recorder.cancelRecording()
     window.requestAnimationFrame(() => {
@@ -1126,6 +1146,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       setValue(previousPrompt)
       if (draftId) setDraft(draftId, previousPrompt)
       return
+    }
+
+    if (event.key === "Enter" && !event.shiftKey && (event.metaKey || event.ctrlKey)) {
+      const action = resolveModifiedEnter(
+        { text: value, attachmentCount: attachments.length },
+        Boolean(oldestQueuedMessageId && onSendQueuedNow)
+      )
+      if (action === "send-oldest-queued") {
+        event.preventDefault()
+        // A held key sends one message, not the queue.
+        if (!event.repeat) sendOldestQueuedNow()
+        return
+      }
     }
 
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0

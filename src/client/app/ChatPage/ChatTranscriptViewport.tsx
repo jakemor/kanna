@@ -1261,10 +1261,11 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
       {queuePaused && queuedMessages.length > 0 ? (
         <QueuePausedNotice onResume={() => onSteerQueuedMessage(queuedMessages[0]!.id)} />
       ) : null}
-      {queuedMessages.map((message) => (
+      {queuedMessages.map((message, index) => (
         <QueuedUserMessage
           key={message.id}
           message={message}
+          first={index === 0}
           onRemove={() => onRemoveQueuedMessage(message.id)}
           onSendNow={() => onSteerQueuedMessage(message.id)}
         />

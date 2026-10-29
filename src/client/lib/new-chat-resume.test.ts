@@ -39,6 +39,7 @@ function resolve({ projectChats = [], ...overrides }: Partial<Parameters<typeof 
     drafts: drafts({}),
     startedChats: {},
     startingChatIds: new Set(),
+    viewedChatIds: [],
     ...overrides,
   })
 }
@@ -162,6 +163,43 @@ describe("resolveProjectNewChat", () => {
       drafts: drafts({ live: { text: "here", touchedAt: 10 }, pruned: { text: "gone", touchedAt: 11 } }),
       startedChats: { pruned: { projectId: PROJECT } },
     })).toEqual({ kind: "carry", fromChatId: "pruned" })
+  })
+
+  describe("the chat last viewed here", () => {
+    test("is where a click on the project goes", () => {
+      expect(resolve({
+        projectChats: [{ chatId: "older", lastMessageAt: 9 }, { chatId: "viewed", lastMessageAt: 5 }],
+        viewedChatIds: ["viewed", "older"],
+      })).toEqual({ kind: "open", chatId: "viewed" })
+    })
+
+    test("gives way to the one viewed before it once archived, hidden under a parent, or deleted", () => {
+      expect(resolve({
+        projectChats: [
+          { chatId: "put-away", lastMessageAt: 9, archived: true },
+          { chatId: "sub", lastMessageAt: 9, parentChatId: "kept", hidden: true },
+          { chatId: "kept", lastMessageAt: 5 },
+        ],
+        viewedChatIds: ["deleted", "put-away", "sub", "kept"],
+      })).toEqual({ kind: "open", chatId: "kept" })
+    })
+
+    test("and to the new chat page when none of them is listed", () => {
+      expect(resolve({ projectChats: [{ chatId: "never-viewed", lastMessageAt: 5 }], viewedChatIds: ["deleted"] })).toEqual({ kind: "create" })
+      // An empty chat is not listed, so it is not gone back to for having been viewed.
+      expect(resolve({ projectChats: [{ chatId: "empty" }], viewedChatIds: ["empty"] })).toEqual({ kind: "create" })
+    })
+
+    test("a new chat holding a draft is gone back to in its place in that order", () => {
+      const projectChats = [{ chatId: "drafted" }, { chatId: "busy", lastMessageAt: 5 }]
+      const written = drafts({ drafted: { text: "half a thought", touchedAt: 10 } })
+      expect(resolve({ projectChats, drafts: written, viewedChatIds: ["drafted", "busy"] })).toEqual({ kind: "open", chatId: "drafted" })
+      expect(resolve({ projectChats, drafts: written, viewedChatIds: ["busy", "drafted"] })).toEqual({ kind: "open", chatId: "busy" })
+    })
+
+    test("an explicit New Chat still makes one", () => {
+      expect(resolve({ entry: "explicit", projectChats: [{ chatId: "viewed", lastMessageAt: 5 }], viewedChatIds: ["viewed"] })).toEqual({ kind: "create" })
+    })
   })
 
   test("a project's delegators are not opened for being ones", () => {

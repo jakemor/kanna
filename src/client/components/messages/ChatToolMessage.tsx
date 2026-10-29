@@ -256,11 +256,6 @@ export function ChatCard({ chatId, title, caption, pending = false, quote = fals
               // A card is one chat someone pointed at, not a list to scan, so
               // its title never recedes.
               dimIdleTitles={false}
-              // A card or a quote is about which chat a message went to or
-              // came from. What kind of chat that is belongs to its row in a
-              // list; here it put a compass on every reply a delegator's
-              // sub-chat quoted.
-              delegatorMark={false}
               detailLabel={getThreadDetailLabel(thread, "project-scoped", now)}
             />
           </div>

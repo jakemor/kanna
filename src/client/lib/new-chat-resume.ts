@@ -2,17 +2,18 @@ import type { SidebarThread } from "./thread-sections"
 
 /**
  * How a new chat was asked for. A click on a project in the Channels view is
- * `project`: it goes to the project's new chat page, which is the one already
- * being written if there is one. Everything that says "New Chat" (a button, the row in a channel's
- * card, a menu item, the shortcut, the palette) is `explicit`, and makes one
- * every time.
+ * `project`: it goes back to the chat in the project last viewed here, and
+ * failing that to its new chat page, which is the one already being written
+ * if there is one. Everything that says "New Chat" (a button, the row in a
+ * channel's card, a menu item, the shortcut, the palette) is `explicit`, and
+ * makes one every time.
  */
 export type NewChatEntry = "project" | "explicit"
 
 export type NewChatDecision =
   /** Make a chat, as New Chat does. */
   | { kind: "create" }
-  /** A new chat in the project already holds a draft: go to it. */
+  /** Go to a chat that is there: the one last viewed, or a new chat holding a draft. */
   | { kind: "open"; chatId: string }
   /**
    * A draft was being written in a new chat that is gone (the server deletes
@@ -40,9 +41,16 @@ export function hasNewChatDraft(drafts: NewChatDrafts, chatId: string): boolean 
 }
 
 /**
- * What asking for a new chat in a project does: resume which chat, or create.
+ * What a click on a project does: go back to which chat, or create.
  *
- * Only a new chat is resumed, and only for its draft. A new chat is one with
+ * The chat in the project last viewed in this browser comes first
+ * (`viewedChatIds`), if the sidebar still lists it: not archived, not a
+ * sub-chat shown under its parent (`hidden`), not deleted, and with a
+ * message, as an empty chat is not listed. Failing that the one viewed
+ * before it, and so on. A new chat holding a draft takes its place in that
+ * order. With none of those, the project's new chat page, as below.
+ *
+ * Only a new chat is resumed for its draft. A new chat is one with
  * no messages that the user started, not one an agent started under its own. An empty chat with no
  * draft is left alone and a fresh one made, as before: there is nothing in it
  * to come back to, and it may be seconds from being cleared away. A chat with
@@ -66,9 +74,27 @@ export function resolveProjectNewChat(args: {
   startedChats: Readonly<Record<string, { projectId: string }>>
   /** Started chats whose `chat.create` is still in flight: not listed yet, and not gone. */
   startingChatIds: ReadonlySet<string>
+  /** The project's chats viewed in this browser, most recent first (`lastViewedChats`). */
+  viewedChatIds: readonly string[]
 }): NewChatDecision {
-  const { entry, projectId, projectThreads, isListed, drafts, startedChats, startingChatIds } = args
+  const { entry, projectThreads, viewedChatIds } = args
   if (entry !== "project") return { kind: "create" }
+
+  const drafted = resolveDraftedNewChat(args)
+  const draftedChatId = drafted.kind === "open" ? drafted.chatId : drafted.kind === "carry" ? drafted.fromChatId : null
+  const listed = new Set(projectThreads
+    .filter((thread) => !thread.archived && !thread.row.hidden && thread.row.lastMessageAt != null)
+    .map((thread) => thread.chatId))
+  for (const chatId of viewedChatIds) {
+    if (chatId === draftedChatId) return drafted
+    if (listed.has(chatId)) return { kind: "open", chatId }
+  }
+  return drafted
+}
+
+/** The new chat page a project click comes back to, or a fresh one. See `resolveProjectNewChat`. */
+function resolveDraftedNewChat(args: Parameters<typeof resolveProjectNewChat>[0]): Extract<NewChatDecision, { kind: "create" | "open" | "carry" }> {
+  const { projectId, projectThreads, isListed, drafts, startedChats, startingChatIds } = args
 
   type Decision = Extract<NewChatDecision, { kind: "open" | "carry" }>
   const candidates: Array<{ decision: Decision; touchedAt: number; live: boolean }> = []

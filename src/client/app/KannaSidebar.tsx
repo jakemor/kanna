@@ -90,7 +90,7 @@ interface KannaSidebarProps {
   onCollapse: () => void
   onExpand: () => void
   onCreateChat: (projectId: string) => void
-  /** A click on a channel: its new chat page (the one being written if there is one). */
+  /** A click on a channel: its chat last viewed here, or its new chat page (the one being written if there is one). */
   onOpenProjectNewChat: (projectId: string) => void
   /** The New Chat row: a chat in the current project, no picker. */
   onCompose: () => void

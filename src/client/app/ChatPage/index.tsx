@@ -37,6 +37,7 @@ import { openViewer, useChatViewer, useViewerStore, viewerWidthClass } from "../
 import type { ChatPreviewContext } from "./ChatPreview"
 import { useOpenChat } from "../useOpenChat"
 import type { DiffViewerContext } from "../../components/chat-ui/git/DiffViewer"
+import { recordChatViewed } from "../../lib/lastViewedChats"
 import { useChatExists, useChatIsDelegator, useProjectRepoUrl, useSidebarChatIsNew } from "../../stores/sidebarStore"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, isTerminalVisible, useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
@@ -510,6 +511,10 @@ export function ChatPage() {
     : state.messages.length === 0 && state.runtime?.title === "New Chat"
   settledShowEmptyStateRef.current = showEmptyState
   const projectId = state.activeProjectId
+  // Where a click on the project comes back to (`lastViewedChats`).
+  useEffect(() => {
+    if (state.activeChatId && projectId) recordChatViewed(projectId, state.activeChatId)
+  }, [projectId, state.activeChatId])
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const storedTerminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
   // Set to the active chat when that pane opens and closes per chat, null when

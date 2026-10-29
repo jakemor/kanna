@@ -1,6 +1,5 @@
 import type { ReactNode } from "react"
 import { MessageCircle, PencilLine } from "lucide-react"
-import { DelegatorIcon } from "./delegator-icon"
 import { StatusMark } from "./StatusMark"
 import type { SidebarChatRow } from "../../../shared/types"
 import type { SidebarThread } from "../../lib/thread-sections"
@@ -48,7 +47,6 @@ export function ThreadRowContent({
   dimIdleTitles = true,
   hasDraft = false,
   showProjectIcon = false,
-  delegatorMark = true,
   detailLabel,
   hoverActions,
 }: {
@@ -81,13 +79,6 @@ export function ThreadRowContent({
    * still take the slot when they have something to say.
    */
   showProjectIcon?: boolean
-  /**
-   * Draw a delegator's own mark in the icon slot (see `isMarkedDelegator`).
-   * Off on a quote or card in a transcript, which is about which chat a
-   * message came from and not what kind of chat it is. The row is then drawn
-   * as any chat's.
-   */
-  delegatorMark?: boolean
   /**
    * The trailing detail slot — the project in cross-project lists, the chat's
    * age in project-scoped ones. **Required, and deliberately so**: this used to
@@ -130,19 +121,11 @@ export function ThreadRowContent({
   // keeps its pencil, since swapping the glyph as you click through rows is a
   // flicker in the corner of your eye for no information gained.
   const showsDraft = hasDraft
-  // A delegator is told apart by its own mark, where another chat's harness
-  // icon would go: what it is matters more on its row than what it runs on.
-  // It gives the slot up as any icon does, to a status mark (a delegator
-  // running, waiting on its chats or wanting you still has to say so) and to
-  // the draft pencil, and is then not marked at all. It used to keep a small
-  // copy of the mark beside its age for that case. That was a second mark on
-  // a row that mostly sits under a heading saying the same, so it went.
-  const isMarkedDelegator = delegatorMark && Boolean(thread.row.delegator)
+  // A delegator's row is drawn as any chat's: with Delegator mode most chats
+  // are one, so a mark for it would say nothing and push out the harness.
   const HarnessIcon = showsDraft
     ? PencilLine
-    : isMarkedDelegator
-      ? DelegatorIcon
-      : thread.row.provider ? PROVIDER_ICONS[thread.row.provider] : null
+    : thread.row.provider ? PROVIDER_ICONS[thread.row.provider] : null
   // The chat has work sitting in its project's dirty tree, so keep its title at
   // full contrast. Deliberately *not* a colour treatment on the harness icon —
   // that icon says which agent ran the chat, and tinting it (brand red) read as
@@ -166,7 +149,7 @@ export function ThreadRowContent({
   const dimTitle = dimIdleTitles && !isActive && !hasUncommittedWork && !needsAttention
   return (
     <>
-      {statusDot ?? (showProjectIcon && !showsDraft && !isMarkedDelegator
+      {statusDot ?? (showProjectIcon && !showsDraft
         ? <ProjectIcon name={thread.projectTitle} iconUrl={thread.projectIconUrl} className={thread.archived ? "opacity-50" : undefined} />
         : HarnessIcon
           ? <HarnessIcon className={iconClass} />

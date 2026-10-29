@@ -195,8 +195,9 @@ export interface ChannelActions {
   editorLabel: string
   onCreateChat: (projectId: string) => void
   /**
-   * What a click on the channel itself does: its new chat page, which is
-   * the one already being written if it has one (`resolveProjectNewChat`). `onCreateChat` is for what says
+   * What a click on the channel itself does: the chat in it last viewed
+   * here, and failing that its new chat page, which is the one already
+   * being written if it has one (`resolveProjectNewChat`). `onCreateChat` is for what says
    * New Chat, and makes one every time.
    */
   onOpenNewChat: (projectId: string) => void
@@ -349,8 +350,9 @@ export function ChannelList({
   // clicking a channel lets it go. See `ListHoverCard` on pinning.
   const [pinnedChannelId, setPinnedChannelId] = useState<string | null>(null)
   const unpinChannel = useCallback(() => setPinnedChannelId(null), [])
-  // A click on a channel goes to its new chat page. The menu is for reaching
-  // a chat that is already there, and hovering is enough to get it.
+  // A click on a channel goes back to its chat last viewed here, or to its
+  // new chat page. The menu is for reaching any other chat already there,
+  // and hovering is enough to get it.
   //
   // Not by New Chat's route, which makes a chat every time: clicking away
   // from a new chat and clicking the channel again comes back to what was

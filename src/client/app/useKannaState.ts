@@ -11,6 +11,7 @@ import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/ter
 import { useEffectiveEditorPreset } from "../components/open-external-menu"
 import { useChatInputStore } from "../stores/chatInputStore"
 import { generateUUID } from "../lib/utils"
+import { getViewedChatIds } from "../lib/lastViewedChats"
 import { resolveProjectNewChat } from "../lib/new-chat-resume"
 import { resolveForkBoundary, type ForkBoundary } from "../lib/fork-boundary"
 import { flattenSidebarThreads } from "../lib/thread-sections"
@@ -237,8 +238,9 @@ export interface KannaState {
   activeChatStarted: boolean
   handleCreateChat: (projectId: string) => Promise<void>
   /**
-   * A click on a project, as against on something that says New Chat: its
-   * new chat page, which is the one already being written if there is one
+   * A click on a project, as against on something that says New Chat: the
+   * chat in it last viewed here, and failing that its new chat page, which
+   * is the one already being written if there is one
    * (`resolveProjectNewChat`), and a fresh chat if not.
    */
   handleOpenProjectNewChat: (projectId: string) => void
@@ -1030,6 +1032,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_id", projectId })
   }, [startChatFromIntent])
 
+  // A click on a project goes back to the chat in it last viewed here.
   // Clicking away from a new chat and clicking its project again comes back
   // to what was being written. Nothing is made when the chat is still there,
   // and the page is drawn from what the sidebar already says of it. See
@@ -1053,6 +1056,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       },
       startedChats: chatInput.startedChats,
       startingChatIds: startingChatIdsRef.current,
+      viewedChatIds: getViewedChatIds(projectId),
     })
     if (decision.kind !== "open") {
       createChatForProject(projectId, decision.kind === "carry" ? { carryDraftFrom: decision.fromChatId } : undefined)

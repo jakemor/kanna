@@ -1,13 +1,14 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react"
 import { PANE_CLOSE_MS, prefersReducedMotion } from "../../app/paneAnimation"
 import type { ChatViewerState } from "../../stores/rightSidebarStore"
-import { isChatTrailItem, useChatViewer, useViewerStore, type ViewerItem } from "../../stores/viewerStore"
+import { isChatTrailItem, useChatViewer, useViewerStore, type ViewerAttachment, type ViewerItem } from "../../stores/viewerStore"
 import type { DiffViewerContext } from "../chat-ui/git/DiffViewer"
 import type { ChatPreviewContext } from "../../app/ChatPage/ChatPreview"
 import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../messages/shared"
 import { cn } from "../../lib/utils"
 import { viewerLevelBelow } from "../../lib/viewer-levels"
 import { viewerCardEnters, viewerPaneState, type ViewerPaneState } from "../../lib/viewer-split"
+import { attachmentNavigation } from "./attachmentSequence"
 import { ViewerCardPlaceholder, ViewerFloorProvider, ViewerMotionProvider, ViewerPlacementProvider, type ViewerFloorState, type ViewerMotion, type ViewerPlacement } from "./ViewerSurface"
 
 // Each view loads with its first use: the diff renderer (shiki grammars),
@@ -49,10 +50,13 @@ function showsOn(item: ViewerItem | null, projectId: string | null | undefined) 
  * transcript's do. `placement` is given where the page has a pane for it.
  * `chat` is what the page knows about talking to a chat; a page without it
  * never previews one, and a chat clicked there is navigated to.
+ * `attachments` is the chat's attachments in order (`chatAttachmentSequence`),
+ * for an attachment's card to step through.
  */
-export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement, presented, layerRef }: {
+export function ViewerLayer({ diff, chat, attachments, className, onOpenLocalLink, placement, presented, layerRef }: {
   diff?: DiffViewerContext
   chat?: ChatPreviewContext
+  attachments?: readonly ViewerAttachment[]
   className?: string
   onOpenLocalLink?: (target: OpenLocalLinkTarget) => void
   placement?: ViewerPlacement
@@ -116,6 +120,14 @@ export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement,
     () => ({ cardEnters, bodyEnters: !cardEnters && !changedByKey }),
     [cardEnters, changedByKey],
   )
+  const replace = useViewerStore((store) => store.replace)
+  const currentAttachment = item?.kind === "attachment" ? item.attachment : null
+  const navigation = useMemo(
+    () => (currentAttachment && attachments
+      ? attachmentNavigation(attachments, currentAttachment, (attachment) => replace({ kind: "attachment", attachment }))
+      : undefined),
+    [attachments, currentAttachment, replace],
+  )
   if (!item || !shown) return null
   // In a pane, the pane closes around it. Over the chat it leaves the way it
   // came, faded and a touch small, quicker than it came.
@@ -146,7 +158,9 @@ export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement,
               onClose={close}
             />
           ) : item.kind === "attachment" ? (
-            <AttachmentViewer attachment={item.attachment} onClose={close} />
+            // Keyed so each attachment starts over: its own scroll, its own
+            // Preview/Original, and a zip's opened entry left behind with it.
+            <AttachmentViewer key={item.attachment.url} attachment={item.attachment} onClose={close} navigation={navigation} />
           ) : item.kind === "file" && diff ? (
             // Keyed so a new file or line starts over: its own view, its own jump.
             <FileViewer key={`${item.path}:${item.line ?? ""}`} projectId={item.projectId} path={item.path} line={item.line} context={diff} onClose={close} />

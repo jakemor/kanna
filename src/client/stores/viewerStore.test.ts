@@ -26,6 +26,18 @@ describe("viewerStore", () => {
     expect(getChatViewer()).toEqual({ item: FILE, expanded: true })
   })
 
+  test("stepping to another attachment keeps the pane as it is: expanded, with its way back", () => {
+    const NEXT = { kind: "attachment", attachment: { url: "/media/b.png", name: "b.png", mimeType: "image/png", size: 1 } } as const
+    openViewer(CHAT)
+    openViewer(IMAGE, { expanded: true })
+    const before = getChatViewer()
+    useViewerStore.getState().replace(NEXT)
+    expect(getChatViewer()).toEqual({ ...before!, item: NEXT })
+    expect(useViewerStore.getState().changedByKey).toBe(true)
+    useViewerStore.getState().close()
+    expect(getChatViewer()).toEqual({ item: CHAT, expanded: false })
+  })
+
   test("a width dragged in one chat is the width in every chat, and stays when the pane is shut", () => {
     openViewer(FILE)
     useViewerStore.getState().setWidth(700)

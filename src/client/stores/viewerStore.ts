@@ -130,6 +130,12 @@ interface ViewerState {
   /** `expanded` opens it over the chat whatever the pane was, and only for as long as it is open. */
   open: (item: ViewerItem, options?: { expanded?: boolean }) => void
   /**
+   * Shows `item` in place of what is open, the pane exactly as it is
+   * (expanded, its way back): a step through the chat's attachments. It
+   * lands at once, like a key's change, since a step is made again and again.
+   */
+  replace: (item: ViewerItem) => void
+  /**
    * The Close button and Escape. Shuts the pane, or goes back to the chat
    * that what is open was opened over. On a page with a floor it is Escape
    * only, and one level down: to the floor from what is over it, then shut.
@@ -227,6 +233,10 @@ export const useViewerStore = create<ViewerState>()((set, get) => ({
       ...(returnTo ? { returnTo } : {}),
     })
     set((state) => ({ openCount: state.openCount + 1, changedByKey: isKeyboardInitiated() }))
+  },
+  replace: (item) => {
+    updateViewer(get().chatKey, (viewer) => ({ ...viewer, item }))
+    set({ changedByKey: true })
   },
   close: () => {
     const { chatKey, floor } = get()

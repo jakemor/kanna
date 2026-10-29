@@ -29,6 +29,7 @@ import { buildChatJumpLocationState } from "../../lib/chat-navigation"
 import { snapshotDroppedFiles } from "../../lib/snapshotDroppedFiles"
 import { useRightSidebarStore, useWidgetsOpen } from "../../stores/rightSidebarStore"
 import { ViewerLayer, usePresentedViewer, useViewerShown } from "../../components/viewer/ViewerLayer"
+import { chatAttachmentSequence } from "../../components/viewer/attachmentSequence"
 import { dockedViewerPaneWidthPx, resolveViewerSplitMove, viewerPaneState, type ViewerPaneState } from "../../lib/viewer-split"
 import { opensInViewer, projectRelativePath } from "../../components/viewer/localLinks"
 import type { OpenLocalLinkTarget } from "../../components/messages/shared"
@@ -1427,6 +1428,11 @@ export function ChatPage() {
     isMac: state.localProjects?.machine.platform === "darwin",
   } : undefined), [diffRenderMode, handleLoadDiffPatch, handleOpenDiffFile, projectId, setDiffRenderMode, setWrapDiffLines, state.chatDiffSnapshot?.files, state.chatDiffSnapshot?.status, state.editorLabel, state.localProjects?.machine.platform, wrapDiffLines])
 
+  // What an open attachment steps through: the chat's, in transcript order.
+  const viewerAttachments = useMemo(
+    () => chatAttachmentSequence(state.chatSnapshot?.messages ?? EMPTY_TRANSCRIPT_ENTRIES),
+    [state.chatSnapshot?.messages],
+  )
   // What the viewer needs to show a sub-chat, live and with a composer.
   const chatPreviewContext = useMemo<ChatPreviewContext>(() => ({
     socket: state.socket,
@@ -1455,6 +1461,7 @@ export function ChatPage() {
     <ViewerLayer
       diff={diffViewerContext}
       chat={chatPreviewContext}
+      attachments={viewerAttachments}
       onOpenLocalLink={handleViewerLocalLink}
       placement={viewerPaneAvailable ? viewerPlacement : undefined}
       presented={presentedViewer}

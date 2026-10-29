@@ -8,7 +8,7 @@ import { TEXT_PREVIEW_LIMIT_BYTES } from "../messages/attachmentPreview"
 import { Skeleton } from "../ui/skeleton"
 import { downloadAttachment } from "./attachmentActions"
 import { RenderedFilePreview } from "./AttachmentViewer"
-import { ViewerIconButton, ViewerPanes, ViewerSurface } from "./ViewerSurface"
+import { ViewerIconButton, ViewerPanes, ViewerSurface, type ViewerNavigation } from "./ViewerSurface"
 import {
   allZipFolders,
   buildZipTree,
@@ -56,7 +56,16 @@ function absoluteUrl(url: string) {
  * the card in place of the tree, with Back to return to it, still open
  * where it was. Download stays in the header for the zip itself.
  */
-export function ZipPreview({ attachment, onClose }: { attachment: ViewerAttachment; onClose: () => void }) {
+export function ZipPreview({ attachment, onClose, navigation }: {
+  attachment: ViewerAttachment
+  onClose: () => void
+  /**
+   * The chat's attachments, the zip among them. Its keys step past the zip
+   * from anywhere in it, an opened entry included: the tree has no arrow keys
+   * of its own, and an entry is left by Back.
+   */
+  navigation?: ViewerNavigation
+}) {
   const state = useZipListing(attachment.url)
   const listing = state.status === "ready" ? state.listing : null
   const tree = useMemo(() => (listing ? buildZipTree(listing.entries) : null), [listing])
@@ -99,6 +108,7 @@ export function ZipPreview({ attachment, onClose }: { attachment: ViewerAttachme
       title={openEntry ? openEntry.path.slice(openEntry.path.lastIndexOf("/") + 1) : attachment.name}
       subtitle={subtitle}
       onClose={onClose}
+      navigation={navigation}
       leading={openEntry ? (
         <ViewerIconButton label={`Back to ${attachment.name}`} onClick={() => setOpenPath(null)}><ArrowLeft /></ViewerIconButton>
       ) : undefined}

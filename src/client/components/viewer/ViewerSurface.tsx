@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronDown, ChevronUp, Maximize2, Minimize2, X } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Maximize2, Minimize2, X } from "lucide-react"
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { FOCUS_FALLBACK_IGNORE_ATTRIBUTE } from "../../app/chatFocusPolicy"
 import { isEscapeClaimed, resolveEscapePress, VIEWER_FIELDS_KEEP_ESCAPE_ATTRIBUTE } from "../../lib/escape-key"
@@ -36,7 +36,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
  * card, to the floor, and Close, which shuts the pane. Esc there is Back,
  * one level at a time, so it shuts the pane only from the floor itself.
  *
- * j/k (or ]/[) step when there's more than one item, but never while you're
+ * j/k (or ]/[) step when there's more than one item, and → and ← too where
+ * the items run sideways (a chat's attachments), but never while you're
  * typing in a field. In a pane beside the chat they're the viewer's only
  * while focus is in it: the chat is live then, and a j typed there is the
  * chat's. Over the chat they're the viewer's from anywhere but a field.
@@ -178,23 +179,35 @@ export interface ViewerNavigation {
    */
   hasPrevious?: boolean
   hasNext?: boolean
+  /**
+   * Items side by side, like photos, rather than one under another, like
+   * files in a diff: the buttons point left and right, and ← and → step too.
+   */
+  horizontal?: boolean
 }
 
 /**
  * What a key does to a card's navigation, or null for nothing: j or ] for
- * the next item, k or [ for the previous. Nothing for a key something
- * nearer has answered (a menu), one held with a modifier, one typed in a
- * field, or one with nowhere to step to.
+ * the next item, k or [ for the previous, and → and ← where the items run
+ * sideways. Nothing for a key something nearer has answered (a menu), one
+ * held with a modifier, one typed in a field, an arrow a focused video or
+ * slider seeks with, or one with nowhere to step to.
  */
 export function viewerNavigationStep(
-  event: { key: string; defaultPrevented: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean },
-  { navigation, typing }: { navigation: ViewerNavigation | undefined; typing: boolean },
+  event: { key: string; defaultPrevented: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey?: boolean },
+  { navigation, typing, arrowsTaken = false }: { navigation: ViewerNavigation | undefined; typing: boolean; arrowsTaken?: boolean },
 ): "next" | "previous" | null {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return null
   if (!navigation || navigation.count < 2 || typing) return null
-  if (event.key === "j" || event.key === "]") return navigation.hasNext === false ? null : "next"
-  if (event.key === "k" || event.key === "[") return navigation.hasPrevious === false ? null : "previous"
+  const arrows = navigation.horizontal && !arrowsTaken && !event.shiftKey
+  if (event.key === "j" || event.key === "]" || (arrows && event.key === "ArrowRight")) return navigation.hasNext === false ? null : "next"
+  if (event.key === "k" || event.key === "[" || (arrows && event.key === "ArrowLeft")) return navigation.hasPrevious === false ? null : "previous"
   return null
+}
+
+/** A focused element that answers ← and → itself: a video or audio player seeks with them. */
+function takesArrows(target: EventTarget | null) {
+  return typeof HTMLMediaElement !== "undefined" && target instanceof HTMLMediaElement
 }
 
 export function ViewerSurface({
@@ -327,7 +340,7 @@ export function ViewerSurface({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       // Something closer to the key (a menu, a field) already answered it.
-      const step = viewerNavigationStep(event, { navigation, typing: isTypingTarget(event.target) })
+      const step = viewerNavigationStep(event, { navigation, typing: isTypingTarget(event.target), arrowsTaken: takesArrows(event.target) })
       if (!step || !navigation || !ownsKeys()) return
       event.preventDefault()
       if (step === "next") navigation.onNext()
@@ -386,8 +399,8 @@ export function ViewerSurface({
             <>
               <ViewerDivider />
               <span className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground">{navigation.index + 1} of {navigation.count}</span>
-              <ViewerIconButton label={navigation.previousLabel ?? "Previous (k)"} disabled={navigation.hasPrevious === false} onClick={navigation.onPrevious}><ChevronUp /></ViewerIconButton>
-              <ViewerIconButton label={navigation.nextLabel ?? "Next (j)"} disabled={navigation.hasNext === false} onClick={navigation.onNext}><ChevronDown /></ViewerIconButton>
+              <ViewerIconButton label={navigation.previousLabel ?? "Previous (k)"} disabled={navigation.hasPrevious === false} onClick={navigation.onPrevious}>{navigation.horizontal ? <ChevronLeft /> : <ChevronUp />}</ViewerIconButton>
+              <ViewerIconButton label={navigation.nextLabel ?? "Next (j)"} disabled={navigation.hasNext === false} onClick={navigation.onNext}>{navigation.horizontal ? <ChevronRight /> : <ChevronDown />}</ViewerIconButton>
             </>
           ) : null}
           <ViewerDivider />

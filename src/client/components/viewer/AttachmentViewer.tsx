@@ -17,7 +17,7 @@ import { Skeleton } from "../ui/skeleton"
 import type { ViewerAttachment } from "../../stores/viewerStore"
 import { downloadAttachment, openAttachmentInNewTab, openInBrowserLabel, opensInBrowser } from "./attachmentActions"
 import { pdfPreviewUrl, servedInline } from "./attachmentOpenAction"
-import { ViewerIconButton, ViewerPanes, ViewerSurface, ViewerToggle } from "./ViewerSurface"
+import { ViewerIconButton, ViewerPanes, ViewerSurface, ViewerToggle, type ViewerNavigation } from "./ViewerSurface"
 import { isZipAttachment } from "../../../shared/zip-preview"
 import { ZipPreview } from "./ZipPreview"
 
@@ -107,14 +107,21 @@ export function hasRenderedView(attachment: ViewerAttachment) {
   return kind === "markdown" || kind === "table"
 }
 
-/** An attachment at full size: images and video fit, PDFs fill, text reads. */
-export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAttachment; onClose: () => void }) {
+/**
+ * An attachment at full size: images and video fit, PDFs fill, text reads.
+ * `navigation` steps through the chat's other attachments.
+ */
+export function AttachmentViewer({ attachment, onClose, navigation }: {
+  attachment: ViewerAttachment
+  onClose: () => void
+  navigation?: ViewerNavigation
+}) {
   const kind = previewKind(attachment)
   const content = useTextContent(attachment, kind)
   const [view, setView] = useState<RenderView>("rendered")
   // After the hooks, which read nothing for a zip, so their order holds when
   // the viewer goes from a zip to another file.
-  if (isZipAttachment(attachment)) return <ZipPreview attachment={attachment} onClose={onClose} />
+  if (isZipAttachment(attachment)) return <ZipPreview attachment={attachment} onClose={onClose} navigation={navigation} />
   const Icon = KIND_ICONS[kind]
   // What was left out leads the subtitle, before type and size, rather than
   // taking a row of the body: it's the part of the file's description that
@@ -132,6 +139,7 @@ export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAt
       title={attachment.name}
       subtitle={subtitle}
       onClose={onClose}
+      navigation={navigation}
       center={hasRenderedView(attachment) ? (
         <ViewerToggle
           value={view}

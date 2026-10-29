@@ -1,11 +1,9 @@
-import { projectDelegators } from "./delegators"
 import type { SidebarThread } from "./thread-sections"
 
 /**
  * How a new chat was asked for. A click on a project in the Channels view is
- * `project`: it goes to the project's delegator if it has one, and otherwise
- * to its new chat page, which is the one already being written if there is
- * one. Everything that says "New Chat" (a button, the row in a channel's
+ * `project`: it goes to the project's new chat page, which is the one already
+ * being written if there is one. Everything that says "New Chat" (a button, the row in a channel's
  * card, a menu item, the shortcut, the palette) is `explicit`, and makes one
  * every time.
  */
@@ -22,13 +20,6 @@ export type NewChatDecision =
    * its draft). Make a chat and bring the draft over to it.
    */
   | { kind: "carry"; fromChatId: string }
-  /**
-   * The project has a delegator, which is the way into it: open it. A draft
-   * whose new chat is gone is brought back to a chat of its own on the way
-   * (`restoreDraftFrom`), where the channel's card lists it, without going
-   * there.
-   */
-  | { kind: "delegator"; chatId: string; restoreDraftFrom?: string }
 
 type ProjectThread = Pick<SidebarThread, "chatId" | "projectId" | "archived" | "lastActivityAt" | "row">
 
@@ -52,29 +43,18 @@ export function hasNewChatDraft(drafts: NewChatDrafts, chatId: string): boolean 
  * What asking for a new chat in a project does: resume which chat, or create.
  *
  * Only a new chat is resumed, and only for its draft. A new chat is one with
- * no messages that the user started: not a delegator made empty to be sent to
- * later, and not a chat an agent started under its own. An empty chat with no
+ * no messages that the user started, not one an agent started under its own. An empty chat with no
  * draft is left alone and a fresh one made, as before: there is nothing in it
  * to come back to, and it may be seconds from being cleared away. A chat with
  * messages and a draft is that chat's business, reached from its row.
  *
  * With several drafts, the one changed most recently.
- *
- * A project with a delegator opens that instead: it is the project's way in.
- * A delegator here is one the lists show: not
- * archived, and not a sub-chat another chat's agent made, which is that
- * chat's and not the project's way in. Of several, the one last opened in
- * this browser, and failing that the most recently active. A new chat's
- * draft is then left where it is, in the channel's card, and only one whose
- * chat is gone is made a chat again so that it shows there too.
  */
 export function resolveProjectNewChat(args: {
   entry: NewChatEntry
   projectId: string
   /** The project's chats as the sidebar lists them, archived and empty ones included. */
   projectThreads: readonly ProjectThread[]
-  /** When this browser last opened each delegator. */
-  delegatorViewedAt: Readonly<Record<string, number>>
   /**
    * Whether the sidebar lists the chat at all, in any project, archived or
    * not. A chat it does not list is gone, but only once the sidebar has
@@ -87,33 +67,8 @@ export function resolveProjectNewChat(args: {
   /** Started chats whose `chat.create` is still in flight: not listed yet, and not gone. */
   startingChatIds: ReadonlySet<string>
 }): NewChatDecision {
-  const { entry, projectId, projectThreads, delegatorViewedAt, isListed, drafts, startedChats, startingChatIds } = args
+  const { entry, projectId, projectThreads, isListed, drafts, startedChats, startingChatIds } = args
   if (entry !== "project") return { kind: "create" }
-
-  const newChat = resolveDraftedNewChat(projectId, projectThreads, isListed, drafts, startedChats, startingChatIds)
-  // Most recently active first, so the first of the last viewed wins a tie
-  // and the most active stands in when none has been viewed here.
-  const delegators = projectDelegators(projectThreads as SidebarThread[], projectId).filter((thread) => !thread.row.hidden)
-  if (delegators.length > 0) {
-    let delegator = delegators[0]!
-    for (const candidate of delegators) {
-      if ((delegatorViewedAt[candidate.chatId] ?? 0) > (delegatorViewedAt[delegator.chatId] ?? 0)) delegator = candidate
-    }
-    return newChat.kind === "carry"
-      ? { kind: "delegator", chatId: delegator.chatId, restoreDraftFrom: newChat.fromChatId }
-      : { kind: "delegator", chatId: delegator.chatId }
-  }
-  return newChat
-}
-
-function resolveDraftedNewChat(
-  projectId: string,
-  projectThreads: readonly ProjectThread[],
-  isListed: ((chatId: string) => boolean) | null,
-  drafts: NewChatDrafts,
-  startedChats: Readonly<Record<string, { projectId: string }>>,
-  startingChatIds: ReadonlySet<string>,
-): Extract<NewChatDecision, { kind: "create" | "open" | "carry" }> {
 
   type Decision = Extract<NewChatDecision, { kind: "open" | "carry" }>
   const candidates: Array<{ decision: Decision; touchedAt: number; live: boolean }> = []
@@ -126,7 +81,7 @@ function resolveDraftedNewChat(
   for (const thread of projectThreads) {
     listedHere.add(thread.chatId)
     const chat = thread.row
-    if (thread.archived || chat.lastMessageAt != null || chat.delegator || chat.hidden) continue
+    if (thread.archived || chat.lastMessageAt != null || chat.hidden) continue
     consider(chat.chatId, { kind: "open", chatId: chat.chatId }, true)
   }
 

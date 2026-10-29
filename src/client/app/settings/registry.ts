@@ -154,6 +154,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Show a system notification when a chat starts waiting on you or turns unread.",
     keywords: ["notifications", "browser", "desktop", "system", "popup", "permission", "chat notifications"],
   },
+  delegatorMode: {
+    sectionId: "general",
+    title: "Delegator Mode",
+    description: "New chats hand their work to sub-chats and report back. Only affects chats created from now on; each chat's menu can still switch it.",
+    keywords: ["delegator", "delegate", "delegation", "sub-chats", "subchats", "hand off", "orchestrate", "coordinate", "work directly"],
+  },
   submitWhileRunning: {
     sectionId: "general",
     title: "Enter While Running",

@@ -83,9 +83,7 @@ export function ThreadRowContent({
   showProjectIcon?: boolean
   /**
    * Draw a delegator's own mark in the icon slot (see `isMarkedDelegator`).
-   * Off where something else already says what the row is: under a
-   * "Delegators" heading, where the mark on every row repeated the heading,
-   * and on a quote or card in a transcript, which is about which chat a
+   * Off on a quote or card in a transcript, which is about which chat a
    * message came from and not what kind of chat it is. The row is then drawn
    * as any chat's.
    */

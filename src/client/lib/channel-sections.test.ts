@@ -172,32 +172,19 @@ describe("getChannelPeekGroups", () => {
     ])
   })
 
-  test("lists the project's delegators under Pinned, and a pinned one under Pinned alone", () => {
+  test("has no group for delegators: each is in the group its state puts it in", () => {
     expect(peek([
-      chat("pinned", NOW - 9 * DAY, { pinnedAt: 1 }),
-      chat("running", NOW, { status: "running" }),
-      chat("today", NOW),
-      // Each would be in a group below, were it not a delegator.
-      chat("delegator-idle-old", NOW - 9 * DAY, { delegator: true }),
+      chat("delegator-pinned", NOW - 30 * DAY, { delegator: true, pinnedAt: 3 }),
       chat("delegator-running", NOW - DAY, { delegator: true, status: "running" }),
       chat("delegator-unread", NOW - 2 * DAY, { delegator: true, unread: true }),
+      chat("delegator-today", NOW, { delegator: true }),
       chat("delegator-empty", NOW - 3 * DAY, { delegator: true, lastMessageAt: undefined }),
-      // Pinned wins: these two are Pinned's, in the order they were pinned.
-      chat("delegator-pinned-second", NOW - 5 * DAY, { delegator: true, pinnedAt: 7 }),
-      chat("delegator-pinned-first", NOW - 30 * DAY, { delegator: true, pinnedAt: 3 }),
-      chat("delegator-archived", NOW, { delegator: true }),
-    ], ["delegator-archived"])).toEqual([
-      ["Pinned", ["pinned", "delegator-pinned-first", "delegator-pinned-second"]],
-      // The rest, newest first, one with no message yet among them.
-      ["Delegators", ["delegator-running", "delegator-unread", "delegator-empty", "delegator-idle-old"]],
-      ["In Progress", ["running"]],
-      ["Today", ["today"]],
+    ])).toEqual([
+      ["Pinned", ["delegator-pinned"]],
+      ["In Progress", ["delegator-running"]],
+      ["Relevant", ["delegator-unread"]],
+      ["Today", ["delegator-today"]],
     ])
-  })
-
-  test("delegators are all there before the card is asked for more, and a project of only delegators has one group", () => {
-    expect(peek([chat("d1", NOW - 40 * DAY, { delegator: true }), chat("d2", NOW - 50 * DAY, { delegator: true })]))
-      .toEqual([["Delegators", ["d1", "d2"]]])
   })
 
   test("is the latest day alone for a project with nothing pressing", () => {

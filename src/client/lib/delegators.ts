@@ -1,24 +1,12 @@
-import type { SidebarChatRow } from "../../shared/types"
+import { providerHasKannaTools, type SidebarChatRow } from "../../shared/types"
 import { isUnreadForUser, type SidebarThread } from "./thread-sections"
 
 /**
  * Delegators on the client: a chat whose job is to hand work to the chats
  * under it (`SidebarChatRow.delegator`). The rules that are not drawing:
- * a project's delegators, which chats a delegator's list holds, and how many
- * of them want the user. React-free for tests.
+ * which chats a delegator's list holds, and how many of them want the user.
+ * React-free for tests.
  */
-
-/**
- * A project's delegators, the one to reach for first at the head: the most
- * recently active. Archived ones are not offered: archiving a delegator is
- * putting it away.
- */
-export function projectDelegators(threads: readonly SidebarThread[], projectId: string | null): SidebarThread[] {
-  if (!projectId) return []
-  return threads
-    .filter((thread) => thread.projectId === projectId && Boolean(thread.row.delegator) && !thread.archived)
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.chatId.localeCompare(right.chatId))
-}
 
 /**
  * The chats a delegator's list holds: the ones directly under it, archived
@@ -71,4 +59,15 @@ export function isUnnamedDelegator(title: string): boolean {
  */
 export function delegatedListTitle(title: string | undefined): string {
   return title === undefined || isUnnamedDelegator(title) ? "Delegator" : title
+}
+
+/**
+ * What the chat menu's role switch says on this chat, or null where it is
+ * not offered: a chat on a provider without the Kanna tools cannot start
+ * delegating, though one that already is can still stop. The command palette
+ * offers the same item.
+ */
+export function delegatorToggleTitle(row: Pick<SidebarChatRow, "delegator" | "provider">): string | null {
+  if (row.delegator) return "Work Here Directly"
+  return providerHasKannaTools(row.provider) ? "Make Delegator" : null
 }

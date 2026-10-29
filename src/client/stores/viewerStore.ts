@@ -123,12 +123,10 @@ interface ViewerState {
   floor: ViewerFloor | null
   setChat: (chatId: string | null) => void
   /**
-   * Called by the page, after `setChat`. `openByDefault` puts the floor in
-   * an empty pane: a delegator's list is there the first time its page is
-   * opened. After that the pane is as it was left, open or shut, like any
-   * chat's (the page remembers which, and passes false).
+   * Called by the page, after `setChat`. It leaves the pane as it was, open
+   * or shut, like any chat's: the navbar's button puts the floor in it.
    */
-  setFloor: (floor: ViewerFloor | null, options?: { openByDefault?: boolean }) => void
+  setFloor: (floor: ViewerFloor | null) => void
   /** `expanded` opens it over the chat whatever the pane was, and only for as long as it is open. */
   open: (item: ViewerItem, options?: { expanded?: boolean }) => void
   /**
@@ -191,14 +189,11 @@ export const useViewerStore = create<ViewerState>()((set, get) => ({
   liveChatId: null,
   changedByKey: false,
   floor: null,
-  setFloor: (floor, options) => {
+  setFloor: (floor) => {
     const { chatKey } = get()
     if (get().floor?.chatId !== floor?.chatId) set({ floor })
     const current = currentViewer(chatKey)
-    if (floor) {
-      if (!current && options?.openByDefault) useRightSidebarStore.getState().setChatViewer(chatKey, { item: floor, expanded: false })
-      return
-    }
+    if (floor) return
     // A list left in the pane with no floor under it: the window went to a
     // phone's width, where the list is opened on request, or the page loaded
     // there. It was only ever there as the floor.

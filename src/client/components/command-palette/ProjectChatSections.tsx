@@ -8,7 +8,6 @@ export function ThreadItem({
   thread,
   onSelect,
   showStatus = false,
-  delegatorMark,
   scope,
   nowMs,
 }: {
@@ -16,8 +15,6 @@ export function ThreadItem({
   onSelect: (thread: SidebarThread) => void
   /** Use the sidebar status glyph (ping dots / spinner) instead of the chat icon. */
   showStatus?: boolean
-  /** See `ThreadRowContent`. Off under this file's "Delegators" heading. */
-  delegatorMark?: boolean
   /**
    * Whether this list spans projects. The detail slot follows from it — see
    * `getThreadDetailLabel`. Taking the scope rather than a finished label is
@@ -39,18 +36,11 @@ export function ThreadItem({
         // them recede the way an ambient sidebar list does.
         dimIdleTitles={false}
         hasDraft={hasDraft}
-        delegatorMark={delegatorMark}
         detailLabel={getThreadDetailLabel(thread, scope, nowMs)}
       />
     </CommandItem>
   )
 }
-
-/**
- * The key of the group headed "Delegators". Its rows are drawn without the
- * delegator's mark: the heading says it for all of them.
- */
-export const DELEGATORS_GROUP_KEY = "delegators"
 
 export interface ProjectChatGroup {
   key: string
@@ -60,8 +50,8 @@ export interface ProjectChatGroup {
 
 /**
  * One project's chats under the sidebar Chats tab's headings — Pinned,
- * Delegators, In Progress, Review, Relevant, date buckets, Archived — empty
- * groups dropped.
+ * In Progress, Review, Relevant, date buckets, Archived — empty groups
+ * dropped.
  * The palette's "Chats in <project>" page and the new chat page's project card
  * both group by this, so the two read the same.
  */
@@ -77,7 +67,6 @@ export function getProjectChatGroups(threads: SidebarThread[], nowMs: number, {
   let remaining = limit ?? Number.POSITIVE_INFINITY
   return [
     { key: "pinned", label: "Pinned", threads: sections.pinned },
-    { key: DELEGATORS_GROUP_KEY, label: "Delegators", threads: sections.delegators },
     { key: "in-progress", label: "In Progress", threads: sections.inProgress },
     { key: "review", label: "Review", threads: sections.review },
     { key: "relevant", label: "Relevant", threads: sections.relevant },
@@ -109,7 +98,6 @@ export function ProjectChatSections({
           thread={thread}
           onSelect={onSelect}
           showStatus
-          delegatorMark={group.key !== DELEGATORS_GROUP_KEY}
           scope="project-scoped"
           nowMs={nowMs}
         />

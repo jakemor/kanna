@@ -214,12 +214,16 @@ export type ClientCommand =
       terminal?: TerminalPreset
     }
   /**
-   * `delegator` makes the new chat a delegator. It can be made empty, to be sent to later.
-   * `chatId` is the id the chat is to have, a UUID of the client's making: the
+   * Whether the new chat is a delegator is the server's to decide (Delegator
+   * mode, `ChatCommands.create`). `chatId` is the id the chat is to have, a UUID of the client's making: the
    * web client goes to the chat's page as it sends this, not when it is acked.
    */
-  | { type: "chat.create"; projectId: string; delegator?: boolean; chatId?: string }
-  /** Makes an existing chat a delegator, or an ordinary chat again. */
+  | { type: "chat.create"; projectId: string; chatId?: string }
+  /**
+   * Makes an existing chat a delegator, or an ordinary chat again. It changes
+   * the agent's system prompt, so it takes effect on the chat's next turn,
+   * in a restarted session that carries the conversation over.
+   */
   | { type: "chat.setDelegator"; chatId: string; delegator: boolean }
   | { type: "chat.fork"; chatId: string }
   | { type: "chat.rename"; chatId: string; title: string }
@@ -287,8 +291,6 @@ export type ClientCommand =
       effort?: string
       planMode?: boolean
       autoPlan?: boolean
-      /** With no `chatId`: the chat this send creates is a delegator. Ignored otherwise. */
-      delegator?: boolean
     }
   | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.initGit"; chatId: string }

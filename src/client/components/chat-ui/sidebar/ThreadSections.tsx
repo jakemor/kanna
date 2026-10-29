@@ -195,11 +195,10 @@ function ThreadSectionsImpl({
     setSectionExpanded(key, !(expandOverrides[key] ?? defaultExpanded))
   }
 
-  // The sections that hold their chats whatever state those are in, then In
-  // Progress. The first two fold, and the fold is kept (`sidebarSectionStore`).
+  // Pinned, which holds its chats whatever state those are in, then In
+  // Progress. Pinned folds, and the fold is kept (`sidebarSectionStore`).
   const pinnedGroups = [
     { key: "pinned", heading: "Pinned", threads: sections.pinned, collapsible: true },
-    { key: "delegators", heading: "Delegators", threads: sections.delegators, collapsible: true },
     { key: "in-progress", heading: "In Progress", threads: sections.inProgress, collapsible: false },
   ].filter((group) => group.threads.length > 0)
 
@@ -212,10 +211,7 @@ function ThreadSectionsImpl({
     && sections.archived.length === 0
   ) return null
 
-  // `delegatorMark` is off for the Delegators section alone: its heading
-  // says what its rows are. A delegator anywhere else here (pinned, or
-  // archived) has only its mark to say so.
-  const renderRow = (thread: SidebarThread, delegatorMark = true) => (
+  const renderRow = (thread: SidebarThread) => (
     <ThreadRow
       key={thread.chatId}
       thread={thread}
@@ -225,7 +221,6 @@ function ThreadSectionsImpl({
       nowMs={nowMs}
       dimIdleTitles={false}
       showProjectIcon={showProjectIcons}
-      delegatorMark={delegatorMark}
       onSelect={onSelectChat}
       onCreateChat={onCreateChat}
       onRenameChat={onRenameChat}
@@ -254,7 +249,7 @@ function ThreadSectionsImpl({
             />
             {isExpanded ? (
               <div className="space-y-[2px] mb-3">
-                {group.threads.map((thread) => renderRow(thread, group.key !== "delegators"))}
+                {group.threads.map((thread) => renderRow(thread))}
               </div>
             ) : null}
           </div>

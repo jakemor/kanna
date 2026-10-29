@@ -14,7 +14,6 @@ import { generateUUID } from "../lib/utils"
 import { resolveProjectNewChat } from "../lib/new-chat-resume"
 import { resolveForkBoundary, type ForkBoundary } from "../lib/fork-boundary"
 import { flattenSidebarThreads } from "../lib/thread-sections"
-import { useDelegateStore } from "../stores/delegateStore"
 import {
   findSidebarChat,
   getSidebarProjectGroups,
@@ -239,9 +238,8 @@ export interface KannaState {
   handleCreateChat: (projectId: string) => Promise<void>
   /**
    * A click on a project, as against on something that says New Chat: its
-   * delegator if it has one, and otherwise its new chat page, which is the
-   * one already being written if there is one (`resolveProjectNewChat`), and
-   * a fresh chat if not.
+   * new chat page, which is the one already being written if there is one
+   * (`resolveProjectNewChat`), and a fresh chat if not.
    */
   handleOpenProjectNewChat: (projectId: string) => void
   handleForkChat: (chat: SidebarChatRow) => Promise<void>
@@ -917,9 +915,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
   // `carryDraftFrom` names a new chat that is gone and left a draft behind
   // (`resolveProjectNewChat`). The draft, and the model it was being written
   // for, come over to this chat before its page is up, so the composer mounts
-  // holding them. With `background` the chat is made for the draft alone and
-  // not gone to: a click on a project with a delegator opens the delegator.
-  const createChatForProject = useCallback((projectId: string, options?: { carryDraftFrom?: string; background?: boolean }) => {
+  // holding them.
+  const createChatForProject = useCallback((projectId: string, options?: { carryDraftFrom?: string }) => {
     const chatPreferences = useChatPreferencesStore.getState()
     const chatInput = useChatInputStore.getState()
     const carriedFrom = options?.carryDraftFrom
@@ -956,13 +953,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
     startingChatIdsRef.current.add(chatId)
     chatPreferences.initializeComposerForChat(chatId, { sourceState: sourceComposerState })
-    if (!options?.background) {
-      setSelectedProjectId(projectId)
-      setPendingChatId(chatId)
-      setStartedChat({ chatId, projectId })
-      navigate(`/chat/${chatId}`)
-      setCommandError(null)
-    }
+    setSelectedProjectId(projectId)
+    setPendingChatId(chatId)
+    setStartedChat({ chatId, projectId })
+    navigate(`/chat/${chatId}`)
+    setCommandError(null)
     created.then(() => {
       startingChatIdsRef.current.delete(chatId)
     }, (error) => {
@@ -1035,8 +1030,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_id", projectId })
   }, [startChatFromIntent])
 
-  // A click on a project opens its delegator if it has one. Otherwise,
-  // clicking away from a new chat and clicking its project again comes back
+  // Clicking away from a new chat and clicking its project again comes back
   // to what was being written. Nothing is made when the chat is still there,
   // and the page is drawn from what the sidebar already says of it. See
   // `resolveProjectNewChat` for which chat, and for what makes one instead.
@@ -1048,7 +1042,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       entry: "project",
       projectId,
       projectThreads: group ? flattenSidebarThreads({ projectGroups: [group] }) : [],
-      delegatorViewedAt: useDelegateStore.getState().viewedAt,
       isListed: sidebar.ready
         ? (chatId) => getProjectIdForChat(sidebar.data.projectGroups, chatId) !== null
         : null,
@@ -1061,14 +1054,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       startedChats: chatInput.startedChats,
       startingChatIds: startingChatIdsRef.current,
     })
-    if (decision.kind === "delegator") {
-      // An ordinary chat open: the tab bar picks up the chat as for any
-      // other, and the page opens where the delegator was left.
-      if (decision.restoreDraftFrom) createChatForProject(projectId, { carryDraftFrom: decision.restoreDraftFrom, background: true })
-      navigate(`/chat/${decision.chatId}`)
-      setCommandError(null)
-      return
-    }
     if (decision.kind !== "open") {
       createChatForProject(projectId, decision.kind === "carry" ? { carryDraftFrom: decision.fromChatId } : undefined)
       return

@@ -50,10 +50,7 @@ export interface ChannelSection {
  * Pinned holds the channels pinned in their own right (`pinnedAt`, kept by
  * the server with the project) and nothing else. A
  * pinned chat is not a pinned project: its pin is set aside here, and the chat
- * counts toward its project by status and age like any other. A delegator is
- * set aside the same way. The Chats view gives delegators a section of their
- * own, and this list has none: it lists projects, and a project is not a
- * delegator for having one.
+ * counts toward its project by status and age like any other.
  *
  * Projects with no chat in any section (none yet, or all archived) trail in a
  * section of their own, folded: a channel list has to keep them reachable,
@@ -66,9 +63,9 @@ export function computeChannelSections(
   pendingSends?: PendingSendTimes,
 ): ChannelSection[] {
   const threads = listedThreads(flattenSidebarThreads({ projectGroups: [...projectGroups] })).map((thread) => (
-    thread.row.pinnedAt == null && !thread.row.delegator
+    thread.row.pinnedAt == null
       ? thread
-      : { ...thread, row: { ...thread.row, pinnedAt: undefined, delegator: undefined } }
+      : { ...thread, row: { ...thread.row, pinnedAt: undefined } }
   ))
   const sections = computeSidebarThreadSections(threads, nowMs, draftStartTimes, pendingSends)
   // Review folded into Relevant, as the Chats view shows it.
@@ -158,13 +155,9 @@ export interface ChannelPeekGroup {
 /**
  * The chats a channel's hover card offers: the ones you are most likely
  * hovering it to reach. That is the Chats view's sections down to Relevant,
- * in the Chats view's order (Pinned, Delegators, In Progress, Relevant), and
- * then one group further: the project's most recent date bucket. A project
- * with nothing pressing therefore shows just its latest day of chats.
- *
- * Delegators are the Chats view's too (`computeSidebarThreadSections`): the
- * project's delegators that are not pinned, whatever their state, and all of
- * them, with no "Show more" to reach the rest.
+ * in the Chats view's order (Pinned, In Progress, Relevant), and then one
+ * group further: the project's most recent date bucket. A project with
+ * nothing pressing therefore shows just its latest day of chats.
  *
  * `all` is the card asked for the rest: every date bucket, in order.
  */
@@ -182,7 +175,6 @@ export function getChannelPeekGroups(
     // This is the one place a channel's pinned chats show: the sidebar's
     // Pinned section is for pinned channels only.
     { key: "pinned", label: "Pinned", threads: sections.pinned },
-    { key: "delegators", label: "Delegators", threads: sections.delegators },
     { key: "in-progress", label: "In Progress", threads: sections.inProgress },
     { key: "relevant", label: "Relevant", threads: mergeRelevantThreads(sections, draftStartTimes) },
     ...buckets.map((bucket) => ({ key: bucket.key, label: bucket.label, threads: bucket.threads })),

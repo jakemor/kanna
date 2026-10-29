@@ -161,17 +161,17 @@ export function ChatRowMenu({
   onRestore,
   onClearDraft,
   onDelete,
-  delegator,
+  delegatorToggleTitle,
   onToggleDelegator,
   leadingItems,
   children,
 }: {
   pinned?: boolean
   onTogglePin?: () => void
-  /** The chat is a delegator. */
-  delegator?: boolean
+  /** What the role switch says (`delegatorToggleTitle`). */
+  delegatorToggleTitle?: string
   /**
-   * Makes the chat a delegator, or an ordinary chat again. Absent where that
+   * Makes the chat a delegator, or one that works directly. Absent where that
    * cannot be done: an archived chat, and a harness with no chat tools to
    * delegate with.
    */
@@ -231,11 +231,13 @@ export function ChatRowMenu({
             </ContextMenuItem>
           ) : null}
           {onToggleDelegator ? (
-            // The chat's agent is told at the start of a turn, so one that is
-            // running goes on as it was until its next.
-            <ContextMenuItem onSelect={onToggleDelegator} title="Takes effect on this chat's next turn">
+            // The role is in the agent's system prompt, so the flip waits for
+            // the chat's next turn, which restarts the agent's session with
+            // the conversation carried over. The item says so where it is read.
+            <ContextMenuItem onSelect={onToggleDelegator} title="Takes effect on this chat's next turn, which restarts its agent session">
               <DelegatorIcon className="h-3.5 w-3.5" />
-              <span className="text-xs font-medium">{delegator ? "Stop Delegating" : "Make Delegator"}</span>
+              <span className="text-xs font-medium">{delegatorToggleTitle}</span>
+              <span className="ml-auto pl-3 text-[11px] text-muted-foreground">Next turn</span>
             </ContextMenuItem>
           ) : null}
           {/* Draft leads: its own section, for something only this chat has and

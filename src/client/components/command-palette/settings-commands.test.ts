@@ -68,6 +68,14 @@ describe("buildSettingsCommands", () => {
     expect(byId(on, "toggle-project-icons-in-chats").title).toBe("Show Project Icons in Chats")
   })
 
+  test("Delegator Mode is on unless turned off", () => {
+    expect(byId(build(), "toggle-delegator-mode").title).toBe("Disable Delegator Mode")
+    expect(byId(build(), "toggle-delegator-mode").effect).toEqual({ type: "patch", patch: { delegatorMode: false } })
+    const off = build({ appSettings: { ...appSettings, delegatorMode: false } })
+    expect(byId(off, "toggle-delegator-mode").title).toBe("Enable Delegator Mode")
+    expect(topMatch(build(), "delegator mode")).toBe("toggle-delegator-mode")
+  })
+
   test("choices skip the current value", () => {
     const titles = build().map((item) => item.title)
     expect(titles).toContain("Chat Sounds: Never")

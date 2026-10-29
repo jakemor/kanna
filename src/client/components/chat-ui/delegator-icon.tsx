@@ -6,9 +6,9 @@
  * navbar's button wears it too (`DelegatedListButton`). The iOS app draws
  * the same symbol.
  *
- * Each place says it once. A row under a "Delegators" heading is not marked,
- * nor is the pane the navbar's button opens, nor the title beside that
- * button: on a delegator's page the compass was drawn four times.
+ * Each place says it once. The pane the navbar's button opens is not
+ * marked, nor is the title beside that button: on a delegator's page the
+ * compass was drawn four times.
  *
  * Lucide's own, unaltered: drawn at 14px in the delegate control and the
  * menus and 16px in a row and the navbar, at the stroke those places give

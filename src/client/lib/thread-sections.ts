@@ -392,11 +392,6 @@ export interface ThreadDateBucket {
 
 export interface SidebarThreadSections {
   pinned: SidebarThread[]
-  /**
-   * The delegators that are not pinned, most recently active first. Under
-   * Pinned, and held there whatever their status, as Pinned holds its own.
-   */
-  delegators: SidebarThread[]
   inProgress: SidebarThread[]
   review: SidebarThread[]
   /** Chats bearing on the project's uncommitted work — sits above the buckets. */
@@ -529,9 +524,8 @@ export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number
 }
 
 /**
- * Pinned chats keep their section across status changes, and so do
- * delegators, under them. Other chats appear in In Progress, Relevant, or
- * date buckets. Archived chats stay separate.
+ * Pinned chats keep their section across status changes. Other chats appear
+ * in In Progress, Relevant, or date buckets. Archived chats stay separate.
  */
 export function computeSidebarThreadSections(
   threads: SidebarThread[],
@@ -553,26 +547,14 @@ export function computeSidebarThreadSections(
   const pinned = threads
     .filter((thread) => !thread.archived && thread.row.pinnedAt != null)
     .sort((left, right) => left.row.pinnedAt! - right.row.pinnedAt! || left.chatId.localeCompare(right.chatId))
-  // So do delegators, in a section of their own under it. A delegator is a
-  // standing thing, like a pin: the place work is handed out from, to be
-  // found where it was whether it is running, wants you, or has not been
-  // used since last month. A pinned one is Pinned's. One with no message yet
-  // is listed too, unlike an empty chat anywhere below: a new delegator is
-  // empty until it is first sent to, and this is the only place it can be.
-  const isHeldDelegator = (thread: SidebarThread) => (
-    Boolean(thread.row.delegator) && !thread.archived && thread.row.pinnedAt == null
-  )
-  const delegators = threads
-    .filter(isHeldDelegator)
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.chatId.localeCompare(right.chatId))
-  const unpinned = threads.filter((thread) => thread.row.pinnedAt == null && !isHeldDelegator(thread))
+  const unpinned = threads.filter((thread) => thread.row.pinnedAt == null)
   const review = getReviewThreads(unpinned, pendingSends)
   const inProgress = getInProgressThreads(
     unpinned,
     new Set(review.map((thread) => thread.chatId)),
     pendingSends,
   )
-  const pinnedIds = new Set([...pinned, ...delegators, ...review, ...inProgress].map((thread) => thread.chatId))
+  const pinnedIds = new Set([...pinned, ...review, ...inProgress].map((thread) => thread.chatId))
   const relevant = getRelevantThreads(threads, pinnedIds, draftStartTimes)
   const excludeIds = new Set([...pinnedIds, ...relevant.map((thread) => thread.chatId)])
   const rest = threads.filter((thread) =>
@@ -581,7 +563,6 @@ export function computeSidebarThreadSections(
     && !excludeIds.has(thread.chatId))
   return {
     pinned,
-    delegators,
     inProgress,
     review,
     relevant,

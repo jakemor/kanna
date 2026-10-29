@@ -35,7 +35,6 @@ function resolve({ projectChats = [], ...overrides }: Partial<Parameters<typeof 
     entry: "project",
     projectId: PROJECT,
     projectThreads,
-    delegatorViewedAt: {},
     isListed: (chatId) => projectThreads.some((thread) => thread.chatId === chatId),
     drafts: drafts({}),
     startedChats: {},
@@ -72,7 +71,7 @@ describe("resolveProjectNewChat", () => {
     expect(resolve({ projectChats: [{ chatId: "empty" }], drafts: staged })).toEqual({ kind: "open", chatId: "empty" })
   })
 
-  test("a chat with messages, a delegator and a sub-chat are not new chats, draft or no", () => {
+  test("a chat with messages and a sub-chat are not new chats, draft or no", () => {
     expect(resolve({
       projectChats: [
         { chatId: "busy", lastMessageAt: 5 },
@@ -80,15 +79,15 @@ describe("resolveProjectNewChat", () => {
       ],
       drafts: drafts({ busy: { text: "a", touchedAt: 3 }, sub: { text: "c", touchedAt: 1 } }),
     })).toEqual({ kind: "create" })
-    // A delegator is opened for being one, not for its draft, which it keeps
-    // under its own id like any chat. A sub-chat delegator is neither.
+    // With Delegator mode a new chat is a delegator, and comes back like any
+    // other. A sub-chat delegator is still an agent's, not a new chat.
     expect(resolve({
       projectChats: [
-        { chatId: "delegator", delegator: true, title: "Lead" },
+        { chatId: "delegator", delegator: true },
         { chatId: "sub", parentChatId: "busy", hidden: true, delegator: true },
       ],
-      drafts: drafts({ delegator: { text: "b", touchedAt: 2 }, sub: { text: "c", touchedAt: 1 } }),
-    })).toEqual({ kind: "delegator", chatId: "delegator" })
+      drafts: drafts({ delegator: { text: "b", touchedAt: 2 }, sub: { text: "c", touchedAt: 3 } }),
+    })).toEqual({ kind: "open", chatId: "delegator" })
     // One the user started and an agent took on later is still theirs.
     expect(resolve({
       projectChats: [{ chatId: "adopted", parentChatId: "busy", adopted: true }],
@@ -165,68 +164,7 @@ describe("resolveProjectNewChat", () => {
     })).toEqual({ kind: "carry", fromChatId: "pruned" })
   })
 
-  describe("a project with a delegator", () => {
-    test("opens the delegator, and makes nothing", () => {
-      expect(resolve({ projectChats: [{ chatId: "lead", delegator: true }, { chatId: "busy", lastMessageAt: 5 }] }))
-        .toEqual({ kind: "delegator", chatId: "lead" })
-    })
-
-    test("of several, the one last viewed here", () => {
-      expect(resolve({
-        projectChats: [
-          { chatId: "active", delegator: true, lastActivityAt: 50 },
-          { chatId: "viewed", delegator: true, lastActivityAt: 10 },
-        ],
-        delegatorViewedAt: { active: 100, viewed: 200 },
-      })).toEqual({ kind: "delegator", chatId: "viewed" })
-    })
-
-    test("of several none of which has been viewed here, the most recently active", () => {
-      expect(resolve({
-        projectChats: [
-          { chatId: "quiet", delegator: true, lastActivityAt: 10 },
-          { chatId: "active", delegator: true, lastActivityAt: 50 },
-        ],
-        // Viewed, but no longer one of this project's delegators.
-        delegatorViewedAt: { elsewhere: 300 },
-      })).toEqual({ kind: "delegator", chatId: "active" })
-    })
-
-    test("a pinned delegator counts like any other", () => {
-      expect(resolve({ projectChats: [{ chatId: "pinned", delegator: true, pinnedAt: 1 }] }))
-        .toEqual({ kind: "delegator", chatId: "pinned" })
-    })
-
-    test("wins over a new chat with a draft, which is left where it is", () => {
-      expect(resolve({
-        projectChats: [{ chatId: "lead", delegator: true }, { chatId: "drafted" }],
-        drafts: drafts({ drafted: { text: "for the delegator", touchedAt: 10 } }),
-      })).toEqual({ kind: "delegator", chatId: "lead" })
-    })
-
-    test("brings back a draft whose new chat is gone, without going to it", () => {
-      expect(resolve({
-        projectChats: [{ chatId: "lead", delegator: true }],
-        drafts: drafts({ pruned: { text: "written before lunch", touchedAt: 10 } }),
-        startedChats: { pruned: { projectId: PROJECT } },
-      })).toEqual({ kind: "delegator", chatId: "lead", restoreDraftFrom: "pruned" })
-    })
-
-    test("an archived delegator is put away, and is not opened", () => {
-      expect(resolve({ projectChats: [{ chatId: "put-away", delegator: true, archived: true, lastMessageAt: 5 }] }))
-        .toEqual({ kind: "create" })
-    })
-
-    test("a delegator another chat's agent started is that chat's, and is not opened", () => {
-      expect(resolve({ projectChats: [{ chatId: "born-under", delegator: true, parentChatId: "busy", hidden: true }, { chatId: "busy", lastMessageAt: 5 }] }))
-        .toEqual({ kind: "create" })
-      // One the user made and an agent took on later is still the project's.
-      expect(resolve({ projectChats: [{ chatId: "adopted", delegator: true, parentChatId: "busy", adopted: true }] }))
-        .toEqual({ kind: "delegator", chatId: "adopted" })
-    })
-
-    test("an explicit New Chat still makes a chat", () => {
-      expect(resolve({ entry: "explicit", projectChats: [{ chatId: "lead", delegator: true }] })).toEqual({ kind: "create" })
-    })
+  test("a project's delegators are not opened for being ones", () => {
+    expect(resolve({ projectChats: [{ chatId: "lead", delegator: true, lastMessageAt: 5 }] })).toEqual({ kind: "create" })
   })
 })

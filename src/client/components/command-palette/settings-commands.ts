@@ -4,6 +4,7 @@ import {
   BellRing,
   ChartNoAxesColumn,
   Coffee,
+  Compass,
   Cpu,
   CornerDownLeft,
   FlaskConical,
@@ -65,6 +66,7 @@ export interface SettingsCommandInput {
     | "submitWhileRunning"
     | "newSidebarEnabled"
     | "projectIconsInChats"
+    | "delegatorMode"
     | "chatTabsEnabled"
     | "widgetsPeekEnabled"
   > & { terminal: Pick<AppSettingsSnapshot["terminal"], "webglRenderer"> } | null
@@ -156,6 +158,16 @@ export function buildSettingsCommands({ appSettings, theme, mac }: SettingsComma
       row: SETTINGS_ROWS.projectIconsInChats,
       icon: AppWindow,
       patch: (next) => ({ projectIconsInChats: next }),
+    }))
+    list.push(toggle({
+      id: "toggle-delegator-mode",
+      on: appSettings.delegatorMode !== false,
+      onTitle: "Enable Delegator Mode",
+      offTitle: "Disable Delegator Mode",
+      row: SETTINGS_ROWS.delegatorMode,
+      // The delegator's mark (`DelegatorIcon`), which is Lucide's compass.
+      icon: Compass,
+      patch: (next) => ({ delegatorMode: next }),
     }))
     list.push(toggle({
       id: "toggle-chat-tabs",

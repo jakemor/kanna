@@ -36,7 +36,6 @@ import { shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
 import { openViewer, useChatViewer, useViewerStore, viewerWidthClass } from "../../stores/viewerStore"
 import type { ChatPreviewContext } from "./ChatPreview"
 import { useOpenChat } from "../useOpenChat"
-import { useDelegateStore } from "../../stores/delegateStore"
 import type { DiffViewerContext } from "../../components/chat-ui/git/DiffViewer"
 import { useChatExists, useChatIsDelegator, useProjectRepoUrl, useSidebarChatIsNew } from "../../stores/sidebarStore"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
@@ -589,18 +588,11 @@ export function ChatPage() {
   // (`lib/viewer-levels`). Where there is a pane: on a phone the transcript
   // is the page and the list is the navbar button's overlay.
   //
-  // The list is in the pane the first time a delegator's page is opened in
-  // this browser. After that the pane is as it was left, open or shut, like
-  // any chat's viewer, and the navbar's button brings it back.
-  //
-  // After `setViewerChat` above, in the same commit, so a delegator opened
-  // for the first time is never painted with its pane shut.
+  // The pane is as it was left, open or shut, like any chat's viewer, and
+  // the navbar's button opens the list. It is not opened unasked: with
+  // Delegator mode nearly every chat is a delegator, most with nothing
+  // under them yet.
   const isDelegator = useChatIsDelegator(state.activeChatId)
-  // Which of a project's delegators a click on the project opens, when it has
-  // several (`resolveProjectNewChat`).
-  useEffect(() => {
-    if (isDelegator && state.activeChatId) useDelegateStore.getState().markViewed(state.activeChatId)
-  }, [isDelegator, state.activeChatId])
   const viewerFloorChatId = isDelegator && !isMobileViewport ? state.activeChatId : null
   const setViewerFloor = useViewerStore((store) => store.setFloor)
   useLayoutEffect(() => {
@@ -612,10 +604,7 @@ export function ChatPage() {
       setViewerFloor(null)
       return
     }
-    const delegateStore = useDelegateStore.getState()
-    const firstTime = !delegateStore.paneShown[viewerFloorChatId]
-    setViewerFloor({ kind: "delegated", chatId: viewerFloorChatId }, { openByDefault: firstTime })
-    if (firstTime) delegateStore.markPaneShown(viewerFloorChatId)
+    setViewerFloor({ kind: "delegated", chatId: viewerFloorChatId })
   }, [setViewerFloor, state.sidebarReady, viewerFloorChatId])
   const navigate = useNavigate()
   const location = useLocation()

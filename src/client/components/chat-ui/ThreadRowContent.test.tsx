@@ -292,7 +292,7 @@ describe("ThreadRowContent delegator mark", () => {
   })
 
   test("with the mark off it is drawn as any chat's row", () => {
-    // Under a "Delegators" heading, and on a quote or card in a transcript.
+    // On a quote or card in a transcript.
     const plain = renderRow({ thread: thread({ delegator: true }), showStatus: true, delegatorMark: false, detailLabel: "4h" })
     expect(plain).not.toContain("lucide-compass")
     expect(plain).toBe(renderRow({ thread: thread(), showStatus: true, detailLabel: "4h" }))

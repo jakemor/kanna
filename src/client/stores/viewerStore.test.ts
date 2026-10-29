@@ -183,19 +183,19 @@ describe("viewerStore", () => {
 
   describe("on a delegator, whose pane has a floor", () => {
     const LIST = { kind: "delegated", chatId: "chat-1" } as const
-    const openOnList = () => useViewerStore.getState().setFloor(LIST, { openByDefault: true })
+    // The page sets the floor, and the navbar's button opens the list.
+    const openOnList = () => {
+      useViewerStore.getState().setFloor(LIST)
+      openViewer(LIST)
+    }
 
-    test("the list is put in an empty pane only when asked to open by default", () => {
+    test("setting the floor leaves the pane as it was", () => {
       useViewerStore.getState().setFloor(LIST)
       expect(getChatViewer()).toBeNull()
 
-      openOnList()
-      expect(getChatViewer()).toEqual({ item: LIST, expanded: false })
-    })
-
-    test("a pane already showing something is left alone", () => {
       openViewer(FILE)
-      openOnList()
+      useViewerStore.getState().setFloor(null)
+      useViewerStore.getState().setFloor(LIST)
       expect(getChatViewer()?.item).toEqual(FILE)
     })
 

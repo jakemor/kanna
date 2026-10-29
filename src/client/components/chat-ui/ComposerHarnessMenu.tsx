@@ -28,6 +28,13 @@ import { Switch } from "../ui/switch"
  */
 export const CONTEXT_WARNING_PERCENT = 90
 
+/**
+ * Which edge of the harness button the menu lines up with. On a phone the
+ * button is at the right end of the composer, so the menu grows leftward
+ * from there instead of hanging off the screen's edge.
+ */
+export const HARNESS_MENU_ALIGN = { desktop: "start", phone: "end" } as const
+
 export function isContextNearlyFull(usage: ContextWindowSnapshot | null | undefined): boolean {
   return (usage?.usedPercentage ?? 0) >= CONTEXT_WARNING_PERCENT
 }
@@ -349,6 +356,7 @@ export function ComposerHarnessMenu({
   onEditModels,
   contextWindow,
   showModel,
+  align = HARNESS_MENU_ALIGN.desktop,
   disabled = false,
   className,
   style,
@@ -360,6 +368,7 @@ export function ComposerHarnessMenu({
   onEditModels?: () => void
   contextWindow: ContextWindowSnapshot | null
   showModel: boolean
+  align?: "start" | "end"
   disabled?: boolean
   className?: string
   style?: React.CSSProperties
@@ -395,7 +404,7 @@ export function ComposerHarnessMenu({
         </button>
       </PopoverTrigger>
       {providerConfig ? (
-        <PopoverContent side="top" align="start" className="w-72 overflow-hidden p-0">
+        <PopoverContent side="top" align={align} className="w-72 overflow-hidden p-0">
           <HarnessMenuBody
             providers={availableProviders}
             unauthenticated={unauthenticated}

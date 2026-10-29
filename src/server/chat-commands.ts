@@ -122,7 +122,8 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
       } else {
         await store.archiveChat(chatId)
         // Put away: free its agent process now rather than at the idle
-        // timeout, unless something is still running in it.
+        // timeout, background work and all, unless a turn is running in it
+        // or a job the model scheduled is still to fire.
         await agent.closeIdleSession?.(chatId, "archived")
       }
       return {

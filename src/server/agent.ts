@@ -96,6 +96,11 @@ import {
   type SubagentActivityUpdate,
   type TaskStart,
 } from "./background-tasks"
+import {
+  CLAUDE_SCHEDULED_JOB_TOOLS,
+  ClaudeScheduledJobs,
+  type ClaudeScheduledJobReport,
+} from "./claude-scheduled-jobs"
 
 export type { SubagentActivityUpdate } from "./background-tasks"
 
@@ -270,13 +275,8 @@ interface ClaudeSessionState {
   /** Baked into the system-prompt append, like `promptAgentId`. */
   delegator: boolean
   sessionToken: string | null
-  /**
-   * When a ScheduleWakeup the model set is due, plus a margin. The CLI keeps
-   * that timer itself, so closing the process before then would drop it.
-   */
-  wakeupDueAt?: number
-  /** CronCreate calls not matched by a CronDelete: jobs only the process holds. */
-  cronJobs?: number
+  /** Crons and wakeups the CLI holds in memory for the model. Absent on test doubles. */
+  scheduledJobs?: ClaudeScheduledJobs
   /** Closed by `closeIdleSession`; its stream's end is not the chat settling. */
   idleClosed?: boolean
   /** Called once this session's stream has ended and its cleanup is done. */
@@ -332,6 +332,7 @@ export interface AgentCoordinatorArgs {
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
     onSubagentActivity?: (update: SubagentActivityUpdate) => void
+    onScheduledJob?: (report: ClaudeScheduledJobReport) => void
   }) => Promise<ClaudeSessionHandle>
   /**
    * Probe whether a provider's native session artifact still exists on disk.
@@ -365,11 +366,23 @@ function isClaudeSteerLoggingEnabled() {
 
 /** How long a new turn waits for an idle-closed `claude` to exit before resuming anyway. */
 const IDLE_CLOSE_WAIT_MS = 5_000
-/** Slack past a ScheduleWakeup's due time, for the CLI to fire it and start its turn. */
-const WAKEUP_MARGIN_MS = 2 * 60_000
+/** Shortest wait between idle checks, so a 0-minute timeout does not spin while work is pending. */
+const MIN_IDLE_RECHECK_MS = 60_000
+/**
+ * How long background work (a shell, a subagent) may hold an idle process
+ * with nothing heard from the provider. Work that keeps reporting is never cut
+ * off, but a shell that hangs would otherwise keep a few hundred MB alive for
+ * good. T3 Code's value. Scheduled jobs are exempt: the model asked to be
+ * woken then, however far off it is.
+ */
+export const MAX_IDLE_BACKGROUND_WAIT_MS = 4 * 60 * 60_000
+/** Longest single wait on a scheduled job, well under setTimeout's 24.8-day ceiling. */
+const MAX_SCHEDULED_JOB_WAIT_MS = 24 * 60 * 60_000
 
-function logIdleClose(stage: "closed" | "skipped", details: Record<string, unknown>) {
-  console.log("[kanna/idle-close]", JSON.stringify({ stage, ...details }))
+function logIdleClose(stage: "closed" | "skipped" | "deferred" | "wait-expired", details: Record<string, unknown>) {
+  const line = `[kanna/idle-close] ${JSON.stringify({ stage, ...details })}`
+  if (stage === "wait-expired") console.warn(line)
+  else console.log(line)
 }
 
 function logClaudeSteer(stage: string, details?: Record<string, unknown>) {
@@ -918,10 +931,16 @@ async function* createClaudeHarnessStream(
  * the same id, with its tool call. The hook also fires for every agent a
  * workflow runs, which belong on the workflow's card, not as rows of their own.
  *
+ * The same two report the model's scheduled jobs (claude-scheduled-jobs.ts):
+ * `PostToolUse`, which fires only for a call that succeeded, for each
+ * `CronCreate` / `CronDelete` / `ScheduleWakeup`, and `Stop`'s
+ * `session_crons`, the CLI's own list of them.
+ *
  * Every hook returns `{}`: these observe, they never block or steer the model.
  */
-function subagentHooks(
-  onActivity: (update: SubagentActivityUpdate) => void
+export function subagentHooks(
+  onActivity: (update: SubagentActivityUpdate) => void,
+  onScheduledJob?: (report: ClaudeScheduledJobReport) => void
 ): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   const one = (hook: HookCallback): HookCallbackMatcher[] => [{ hooks: [hook] }]
 
@@ -945,8 +964,31 @@ function subagentHooks(
     Stop: one(async (input) => {
       if (input.hook_event_name !== "Stop") return {}
       sweep(input)
+      // Absent from CLIs older than the field: keep what PostToolUse gave.
+      if (Array.isArray(input.session_crons)) {
+        onScheduledJob?.({
+          kind: "sessionCrons",
+          crons: input.session_crons.map((cron) => ({ id: cron.id, schedule: cron.schedule, recurring: cron.recurring })),
+        })
+      }
       return {}
     }),
+    ...(onScheduledJob ? {
+      PostToolUse: [{
+        matcher: `^(${CLAUDE_SCHEDULED_JOB_TOOLS.join("|")})$`,
+        hooks: [async (input) => {
+          if (input.hook_event_name !== "PostToolUse") return {}
+          onScheduledJob({
+            kind: "toolSucceeded",
+            toolName: input.tool_name,
+            toolUseId: input.tool_use_id,
+            input: input.tool_input,
+            response: input.tool_response,
+          })
+          return {}
+        }],
+      }],
+    } : {}),
   }
 }
 
@@ -976,6 +1018,8 @@ async function startClaudeSession(args: {
    * (background-tasks.ts) and SDK hooks (`subagentHooks`).
    */
   onSubagentActivity?: (update: SubagentActivityUpdate) => void
+  /** A cron or wakeup made or removed, or the CLI's list of them at a Stop. */
+  onScheduledJob?: (report: ClaudeScheduledJobReport) => void
 }): Promise<ClaudeSessionHandle> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
@@ -1053,7 +1097,7 @@ async function startClaudeSession(args: {
         mcpServers: { kanna: createClaudeKannaTools(args.customTools) },
       } : {}),
       tools: claudeToolset(args.autoPlan),
-      ...(args.onSubagentActivity ? { hooks: subagentHooks(args.onSubagentActivity) } : {}),
+      ...(args.onSubagentActivity ? { hooks: subagentHooks(args.onSubagentActivity, args.onScheduledJob) } : {}),
       // By default the SDK forwards only a subagent's tool calls. Its text
       // (what it is doing, and its final report) completes the nested view
       // under the Agent row; the normalizer stamps it with parent_tool_use_id
@@ -1205,6 +1249,11 @@ export class AgentCoordinator {
    * one that is exiting.
    */
   private readonly idleClosing = new Map<string, Promise<void>>()
+  /**
+   * Per chat: when an idle check first found background work holding the
+   * process, with nothing heard from the provider since (T3's `pinnedSinceMs`).
+   */
+  private readonly idleWaitingSince = new Map<string, number>()
   private readonly getIdleSessionTimeoutMinutes: () => number
   private shuttingDown = false
   /**
@@ -1228,6 +1277,7 @@ export class AgentCoordinator {
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     // Optional: test stand-ins for the manager predate it.
     this.codexManager.setTaskActivityListener?.((chatId, update) => this.applySubagentActivity(chatId, update))
+    this.codexManager.setProviderActivityListener?.((chatId) => this.touchIdleClose(chatId))
     this.cursorManager = args.cursorManager ?? new CursorCliManager()
     this.grokManager = args.grokManager ?? new GrokCliManager()
     this.piManager = args.piManager ?? new PiAgentManager()
@@ -1469,6 +1519,7 @@ export class AgentCoordinator {
 
   private markStarting(chatId: string) {
     this.cancelIdleClose(chatId)
+    this.idleWaitingSince.delete(chatId)
     this.startingTurns.set(chatId, (this.startingTurns.get(chatId) ?? 0) + 1)
   }
 
@@ -1492,26 +1543,37 @@ export class AgentCoordinator {
   // next turn resumes it by `sessionToken`, the same way every chat comes
   // back after Kanna restarts. Cursor and Grok spawn a process per turn and
   // Pi runs in this process, so they have nothing to close.
+  //
+  // This follows T3 Code's ProviderSessionManager: the timer starts when a
+  // turn ends and restarts on every provider event; when it fires, the
+  // provider is asked whether background work is still running in the
+  // process, and if so the check comes round again after another timeout,
+  // until the provider has been silent for MAX_IDLE_BACKGROUND_WAIT_MS.
+  // Unlike T3, a Claude process holding a scheduled job is never closed for
+  // being idle, and the timeout is a setting.
 
   /** Whether the chat has an agent process this can close. */
   private hasIdleClosableSession(chatId: string) {
     return this.claudeSessions.has(chatId) || (this.codexManager.getSessionPids().has(chatId) ?? false)
   }
 
+  private idleTimeoutMs() {
+    return Math.max(0, this.getIdleSessionTimeoutMinutes()) * 60_000
+  }
+
   /**
-   * (Re)starts the chat's idle timer. Called whenever the chat settles; any
-   * new activity cancels it (`cancelIdleClose`) or restarts it.
+   * (Re)starts the chat's idle timer. Called whenever the chat settles and on
+   * provider activity after that; a turn starting cancels it.
    */
-  private scheduleIdleClose(chatId: string, delayMs?: number) {
+  private scheduleIdleClose(chatId: string, delayMs = this.idleTimeoutMs(), then: "check" | "restart" = "check") {
     this.cancelIdleClose(chatId)
     if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return
-    const minutes = this.getIdleSessionTimeoutMinutes()
-    const delay = delayMs ?? Math.max(0, minutes) * 60_000
     const timer = setTimeout(() => {
       if (this.idleCloseTimers.get(chatId) !== timer) return
       this.idleCloseTimers.delete(chatId)
-      void this.closeIdleSession(chatId, "idle")
-    }, delay)
+      if (then === "restart") this.scheduleIdleClose(chatId)
+      else void this.closeIdleSession(chatId, "idle")
+    }, delayMs)
     timer.unref?.()
     this.idleCloseTimers.set(chatId, timer)
   }
@@ -1523,57 +1585,96 @@ export class AgentCoordinator {
     this.idleCloseTimers.delete(chatId)
   }
 
-  /** Activity on a settled chat's session: start its idle wait over. */
+  /**
+   * The provider said something about a settled chat: its idle wait starts
+   * over, and so does the time its background work has been silent.
+   */
   private touchIdleClose(chatId: string) {
+    this.idleWaitingSince.delete(chatId)
     if (this.idleCloseTimers.has(chatId)) this.scheduleIdleClose(chatId)
   }
 
-  /**
-   * Why the chat's process must stay up, or null when it may close. Each is
-   * something only the live process holds, or a turn that is using it.
-   */
-  private idleCloseBlocker(chatId: string): string | null {
+  /** A turn is using the process: running, about to, or still answering a prompt. */
+  private idleCloseBusy(chatId: string): string | null {
     if (this.isBusy(chatId)) return "turn running"
     if (this.drainingStreams.has(chatId)) return "stream draining"
-    const claude = this.claudeSessions.get(chatId)
-    if (claude?.pendingPrompts.length) return "prompts pending"
-    if (typeof this.store.getQueuedMessages === "function" && this.store.getQueuedMessages(chatId).length > 0) {
-      return "messages queued"
-    }
-    // Subagents and workflows, and the shells and monitors left running: all
-    // live in the process and die with it.
-    for (const activity of this.subagents.get(chatId)?.values() ?? []) {
-      if (activity.status === "running") return `${activity.type} running`
-    }
-    if (this.foregroundTasks.get(chatId)?.size) return "shell running"
-    // waiting_on_subagent / waiting_on_subchats, and anything else in flight.
-    const status = this.getChatStatuses().get(chatId)
-    if (status) return status
-    if (claude?.cronJobs) return "cron job scheduled"
-    if (claude?.wakeupDueAt && claude.wakeupDueAt > Date.now()) return "wakeup scheduled"
+    if (this.claudeSessions.get(chatId)?.pendingPrompts.length) return "prompts pending"
     return null
   }
 
   /**
-   * Closes the chat's agent process if nothing needs it. `idle` is the timer;
-   * `archived` and `done` close at once and do not retry. A busy chat on the
-   * timer is checked again after another timeout, which also catches a wait
-   * that ends without the chat settling (a sub-chat finishing).
+   * Work still running in the chat's process, which closing it would kill:
+   * T3's `hasPendingBackgroundWork`, asked of the provider. For Claude that
+   * is the task log the CLI keeps us told of (subagents, workflows, and the
+   * shells and monitors left running); Codex answers from its own manager.
+   */
+  private pendingBackgroundWork(chatId: string): string | null {
+    const claude = this.claudeSessions.get(chatId)
+    if (claude) {
+      for (const activity of this.subagents.get(chatId)?.values() ?? []) {
+        if (activity.status === "running") return `${activity.type} running`
+      }
+      if (this.foregroundTasks.get(chatId)?.size) return "shell running"
+    }
+    if (this.codexManager.getSessionPids().has(chatId) && this.codexManager.hasPendingBackgroundWork?.(chatId)) {
+      return "codex work running"
+    }
+    return null
+  }
+
+  /**
+   * Closes the chat's agent process if nothing needs it.
+   *
+   * `idle` is the timer. A turn still using the process, or a scheduled job
+   * still pending, keeps it for as long as that lasts; background work keeps
+   * it until the provider has been silent for MAX_IDLE_BACKGROUND_WAIT_MS.
+   *
+   * `archived` and `done` close at once, as T3's archive and settle do, even
+   * with background work running; only a turn or a scheduled job stops them,
+   * and they do not retry.
    */
   async closeIdleSession(chatId: string, reason: "idle" | "archived" | "done") {
     this.cancelIdleClose(chatId)
     if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return false
-    const blocker = this.idleCloseBlocker(chatId)
-    if (blocker) {
+    const busy = this.idleCloseBusy(chatId)
+    if (busy) {
+      // The turn's end restarts the timer; this check is for one that ends
+      // without the chat settling.
+      if (reason === "idle") this.scheduleIdleClose(chatId, Math.max(MIN_IDLE_RECHECK_MS, this.idleTimeoutMs()))
+      else logIdleClose("skipped", { chatId, reason, blocker: busy })
+      return false
+    }
+
+    const now = Date.now()
+    const claude = this.claudeSessions.get(chatId)
+    const jobsHeldUntil = claude?.scheduledJobs?.heldUntil(now) ?? null
+    if (jobsHeldUntil !== null) {
       if (reason === "idle") {
-        this.scheduleIdleClose(chatId, Math.max(60_000, this.getIdleSessionTimeoutMinutes() * 60_000))
+        // Checked again when the next job is due to end; once none is left
+        // the idle timeout counts from then.
+        this.scheduleIdleClose(chatId, Math.min(jobsHeldUntil - now, MAX_SCHEDULED_JOB_WAIT_MS), "restart")
+        logIdleClose("deferred", { chatId, blocker: "scheduled job", jobs: claude?.scheduledJobs?.size, checkAt: new Date(Math.min(jobsHeldUntil, now + MAX_SCHEDULED_JOB_WAIT_MS)).toISOString() })
       } else {
-        logIdleClose("skipped", { chatId, reason, blocker })
+        logIdleClose("skipped", { chatId, reason, blocker: "scheduled job" })
       }
       return false
     }
 
-    const claude = this.claudeSessions.get(chatId)
+    if (reason === "idle") {
+      const work = this.pendingBackgroundWork(chatId)
+      if (work) {
+        const since = this.idleWaitingSince.get(chatId) ?? now
+        if (now - since < MAX_IDLE_BACKGROUND_WAIT_MS) {
+          this.idleWaitingSince.set(chatId, since)
+          this.scheduleIdleClose(chatId, Math.max(MIN_IDLE_RECHECK_MS, this.idleTimeoutMs()))
+          logIdleClose("deferred", { chatId, blocker: work, waitedMs: now - since })
+          return false
+        }
+        logIdleClose("wait-expired", { chatId, blocker: work, waitedMs: now - since })
+      }
+    }
+    this.idleWaitingSince.delete(chatId)
+
     if (claude) {
       // Out of the map before close(), so a turn arriving now starts a fresh
       // session instead of reusing this one; it waits on `idleClosing` first.
@@ -1603,32 +1704,6 @@ export class AgentCoordinator {
     const closing = this.idleClosing.get(chatId)
     if (!closing) return
     await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, IDLE_CLOSE_WAIT_MS).unref?.())])
-  }
-
-  /**
-   * Keeps track of the timers the CLI holds for the model: ScheduleWakeup
-   * and CronCreate. Kanna's own schedules arrive as ordinary messages, which
-   * resume a closed session; these would be lost with the process.
-   */
-  private noteClaudeTimers(session: ClaudeSessionState, entry: TranscriptEntry) {
-    if (entry.kind !== "tool_call") return
-    const tool = entry.tool
-    const input = (tool.rawInput
-      ?? (tool.input as { payload?: Record<string, unknown> } | undefined)?.payload
-      ?? tool.input) as Record<string, unknown> | undefined
-    if (tool.toolName === "ScheduleWakeup") {
-      if (input?.stop === true) {
-        session.wakeupDueAt = undefined
-        return
-      }
-      const delaySeconds = Number(input?.delaySeconds)
-      const seconds = Number.isFinite(delaySeconds) ? Math.min(3600, Math.max(60, delaySeconds)) : 3600
-      session.wakeupDueAt = Date.now() + seconds * 1000 + WAKEUP_MARGIN_MS
-    } else if (tool.toolName === "CronCreate") {
-      session.cronJobs = (session.cronJobs ?? 0) + 1
-    } else if (tool.toolName === "CronDelete") {
-      session.cronJobs = Math.max(0, (session.cronJobs ?? 0) - 1)
-    }
   }
 
   /**
@@ -2617,6 +2692,7 @@ export class AgentCoordinator {
         this.claudeSessions.delete(args.chatId)
       }
 
+      const scheduledJobs = new ClaudeScheduledJobs()
       const started = await this.startClaudeSessionFn({
         localPath: args.localPath,
         model: args.model,
@@ -2631,7 +2707,12 @@ export class AgentCoordinator {
         onToolRequest: args.onToolRequest,
         customTools: args.customTools,
         onRateLimitEvent: (info) => this.onClaudeRateLimit?.(info),
-        onSubagentActivity: (update) => this.applySubagentActivity(args.chatId, update),
+        onSubagentActivity: (update) => {
+          this.applySubagentActivity(args.chatId, update)
+          this.touchIdleClose(args.chatId)
+        },
+        // This process's own: a restart's replacement starts with none.
+        onScheduledJob: (report) => scheduledJobs.apply(report, Date.now()),
       })
       this.refreshClaudeModelCatalog(started)
 
@@ -2648,6 +2729,7 @@ export class AgentCoordinator {
         autoPlan: args.autoPlan,
         delegator: args.delegator,
         sessionToken: args.sessionToken,
+        scheduledJobs,
         accountInfoLoaded: false,
         nextPromptSeq: 0,
         pendingPrompts: [],
@@ -3095,6 +3177,7 @@ export class AgentCoordinator {
     const customToolEvents = new KannaToolEventFilter()
     try {
       for await (const event of session.session.stream) {
+        if (this.claudeSessions.get(session.chatId) === session) this.touchIdleClose(session.chatId)
         if (event.type === "session_token" && event.sessionToken) {
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
@@ -3103,8 +3186,6 @@ export class AgentCoordinator {
         }
 
         if (!event.entry || customToolEvents.skip(event.entry)) continue
-        this.noteClaudeTimers(session, event.entry)
-        this.touchIdleClose(session.chatId)
 
         const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
           ? this.takeAnsweredClaudePrompts(session, event.promptIds, event.entry.kind === "interrupted" || event.entry.isError)

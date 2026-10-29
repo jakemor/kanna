@@ -1305,7 +1305,7 @@ export interface FsListResult {
 export const DEFAULT_NEW_PROJECTS_DIRECTORY = "~/Kanna"
 
 /** Bounds of `idleSessionTimeoutMinutes`. 0 closes an idle session as soon as its turn ends. */
-export const DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES = 5
+export const DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES = 30
 export const MIN_IDLE_SESSION_TIMEOUT_MINUTES = 0
 export const MAX_IDLE_SESSION_TIMEOUT_MINUTES = 1440
 
@@ -1367,11 +1367,9 @@ export interface AppSettingsSnapshot {
    * Minutes a chat's agent process stays alive after its turn ends with
    * nothing left running in it. 0 closes it as soon as the turn ends. The next
    * message resumes the session, so this trades a little startup time on that
-   * message for memory. Claude and Codex: see `AgentCoordinator.scheduleIdleClose`.
-   * Always sent by this server; optional for older servers and fixtures, where
-   * DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES applies.
+   * message for memory. Claude and Codex: see `AgentCoordinator.closeIdleSession`.
    */
-  idleSessionTimeoutMinutes?: number
+  idleSessionTimeoutMinutes: number
   /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
   newSidebarEnabled: boolean
   /**

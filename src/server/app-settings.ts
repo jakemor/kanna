@@ -44,6 +44,7 @@ interface AppSettingsFile {
   chatBrowserNotificationPreference?: unknown
   submitWhileRunning?: unknown
   idleSessionTimeoutMinutes?: unknown
+  idleSessionTimeoutChosen?: unknown
   terminal?: {
     scrollbackLines?: unknown
     minColumnWidth?: unknown
@@ -81,6 +82,11 @@ interface AppSettingsFile {
 // devbox and the installed-app lists are server-runtime facts, not settings state.
 interface AppSettingsState extends Omit<AppSettingsSnapshot, "devbox" | "installedEditors" | "installedTerminals"> {
   analyticsUserId: string
+  /**
+   * The user set `idleSessionTimeoutMinutes`. Only then is it written to the
+   * file, so a change to the default reaches everyone who left it alone.
+   */
+  idleSessionTimeoutChosen: boolean
 }
 
 interface SnapshotExtras {
@@ -187,7 +193,9 @@ function toFilePayload(state: AppSettingsState) {
     chatSoundId: state.chatSoundId,
     chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
     submitWhileRunning: state.submitWhileRunning,
-    idleSessionTimeoutMinutes: state.idleSessionTimeoutMinutes,
+    ...(state.idleSessionTimeoutChosen
+      ? { idleSessionTimeoutMinutes: state.idleSessionTimeoutMinutes, idleSessionTimeoutChosen: true }
+      : {}),
     terminal: state.terminal,
     editor: state.editor,
     transcript: state.transcript,
@@ -284,6 +292,10 @@ function normalizeAppSettings(
   }
 
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
+  // The build that added the setting wrote its default, 5, into every file.
+  // A 5 without the marker is that, not a choice, and follows the default now.
+  const idleSessionTimeoutChosen = source?.idleSessionTimeoutChosen === true
+    || (typeof source?.idleSessionTimeoutMinutes === "number" && source.idleSessionTimeoutMinutes !== 5)
   const state: AppSettingsState = {
     analyticsEnabled,
     analyticsUserId,
@@ -293,12 +305,15 @@ function normalizeAppSettings(
     chatSoundId: normalizeChatSoundId(source?.chatSoundId),
     chatBrowserNotificationPreference: normalizeChatBrowserNotificationPreference(source?.chatBrowserNotificationPreference),
     submitWhileRunning: normalizeSubmitWhileRunning(source?.submitWhileRunning),
-    idleSessionTimeoutMinutes: clampNumber(
-      source?.idleSessionTimeoutMinutes,
-      DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
-      MIN_IDLE_SESSION_TIMEOUT_MINUTES,
-      MAX_IDLE_SESSION_TIMEOUT_MINUTES
-    ),
+    idleSessionTimeoutMinutes: idleSessionTimeoutChosen
+      ? clampNumber(
+        source?.idleSessionTimeoutMinutes,
+        DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
+        MIN_IDLE_SESSION_TIMEOUT_MINUTES,
+        MAX_IDLE_SESSION_TIMEOUT_MINUTES
+      )
+      : DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
+    idleSessionTimeoutChosen,
     terminal: {
       scrollbackLines: clampNumber(source?.terminal?.scrollbackLines, DEFAULT_TERMINAL_SCROLLBACK, MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK),
       minColumnWidth: clampNumber(source?.terminal?.minColumnWidth, DEFAULT_TERMINAL_MIN_COLUMN_WIDTH, MIN_TERMINAL_MIN_COLUMN_WIDTH, MAX_TERMINAL_MIN_COLUMN_WIDTH),
@@ -359,6 +374,7 @@ function toComparablePayload(source: AppSettingsFile) {
     chatBrowserNotificationPreference: source.chatBrowserNotificationPreference,
     submitWhileRunning: source.submitWhileRunning,
     idleSessionTimeoutMinutes: source.idleSessionTimeoutMinutes,
+    idleSessionTimeoutChosen: source.idleSessionTimeoutChosen,
     terminal: source.terminal,
     editor: source.editor,
     transcript: source.transcript,
@@ -382,6 +398,7 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
   return normalizeAppSettings({
     ...toFilePayload(state),
     ...patch,
+    ...(patch.idleSessionTimeoutMinutes !== undefined ? { idleSessionTimeoutChosen: true } : {}),
     terminal: {
       ...state.terminal,
       ...patch.terminal,

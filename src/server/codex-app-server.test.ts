@@ -2876,4 +2876,30 @@ describe("Codex spawned agents", () => {
     expect(process.messages.at(-1)).toMatchObject({ method: "turn/start", params: { threadId: ROOT } })
     manager.stopAll()
   })
+
+  test("background work is a command or an agent still running past the chat's turn, and every notification is activity", async () => {
+    const { send, settle, manager, events } = await startSpawningTurn()
+    const activity: string[] = []
+    manager.setProviderActivityListener((chatId) => activity.push(chatId))
+    expect(manager.hasPendingBackgroundWork("chat-1")).toBe(false)
+
+    const command = { type: "commandExecution", id: "cmd-1", command: "bun run dev", cwd: "/tmp", status: "inProgress" }
+    send("item/started", { threadId: ROOT, turnId: "turn-root", item: command })
+    send("item/completed", spawned())
+    send("turn/started", turnOf(AGENT, "turn-agent", "inProgress"))
+    send("turn/completed", rootCompleted())
+    await events
+    expect(manager.hasPendingBackgroundWork("chat-1")).toBe(true)
+    expect(activity.length).toBeGreaterThan(0)
+
+    send("item/completed", { threadId: ROOT, turnId: "turn-root", item: { ...command, status: "completed" } })
+    await settle()
+    // The agent is still on its turn.
+    expect(manager.hasPendingBackgroundWork("chat-1")).toBe(true)
+    send("turn/completed", turnOf(AGENT, "turn-agent", "completed"))
+    await settle()
+    expect(manager.hasPendingBackgroundWork("chat-1")).toBe(false)
+    expect(manager.hasPendingBackgroundWork("chat-unknown")).toBe(false)
+    manager.stopAll()
+  })
 })

@@ -29,6 +29,7 @@ async function setup() {
     },
     closeChat: async (chatId: string) => { calls.push(`close:${chatId}`) },
     forkChat: async () => ({ chatId: "fork" }),
+    closeIdleSession: async (chatId: string, reason: string) => { calls.push(`closeIdle:${chatId}:${reason}`); return true },
   }
   const commands = createChatCommands({
     store,
@@ -94,6 +95,17 @@ describe("chat commands", () => {
     await store.appendMessage(used, timestamped({ kind: "user_prompt", content: "hello" }))
     expect((await commands.archive(used)).changed).toEqual({ sidebar: true, localProjects: true })
     expect(store.getChat(used)?.archivedAt).toBeDefined()
+  })
+
+  test("archiving a chat or marking it done closes its agent process at once", async () => {
+    const { commands, project, store, calls } = await setup()
+    const chatId = (await commands.create(project.id)).result.chatId
+    await store.appendMessage(chatId, timestamped({ kind: "user_prompt", content: "hello" }))
+    await commands.setDone(chatId, false)
+    expect(calls).toEqual([])
+    await commands.setDone(chatId, true)
+    await commands.archive(chatId)
+    expect(calls).toEqual([`closeIdle:${chatId}:done`, `closeIdle:${chatId}:archived`])
   })
 
   test("restoring a chat marks it done", async () => {

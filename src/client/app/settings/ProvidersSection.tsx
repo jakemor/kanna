@@ -406,7 +406,7 @@ export function ProvidersSection({
         <SettingsGroup title="Sessions">
           <SettingsRow def={SETTINGS_ROWS.idleSessionTimeout} wideControl>
             <SettingsField
-              hint={`Minutes, ${MIN_IDLE_SESSION_TIMEOUT_MINUTES}–${MAX_IDLE_SESSION_TIMEOUT_MINUTES}. 0 closes at once${idleSessionTimeout === DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES ? " (default 5)" : ""}`}
+              hint={`Minutes, ${MIN_IDLE_SESSION_TIMEOUT_MINUTES}–${MAX_IDLE_SESSION_TIMEOUT_MINUTES}. 0 closes at once${idleSessionTimeout === DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES ? ` (default ${DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES})` : ""}`}
             >
               <Input
                 type="number"

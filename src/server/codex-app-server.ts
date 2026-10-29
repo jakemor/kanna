@@ -172,6 +172,12 @@ interface SessionContext {
    * other, and not always in the same order.
    */
   unclaimedTurns: Map<string, string>
+  /**
+   * Commands and dynamic tool calls on the chat's thread that started and have
+   * not completed, by item id. One can outlive its turn (a background
+   * terminal), and dies with the process.
+   */
+  runningItems: Set<string>
   stderrLines: string[]
   closed: boolean
 }
@@ -823,6 +829,7 @@ export class CodexAppServerManager {
   private readonly spawnProcess: SpawnCodexAppServer
   private onRateLimits: ((snapshot: CodexRateLimitSnapshot) => void) | null = null
   private onTaskActivity: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
+  private onProviderActivity: ((chatId: string) => void) | null = null
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
     this.spawnProcess = args.spawnProcess ?? ((cwd) =>
@@ -846,6 +853,30 @@ export class CodexAppServerManager {
    */
   setTaskActivityListener(listener: ((chatId: string, update: SubagentActivityUpdate) => void) | null) {
     this.onTaskActivity = listener
+  }
+
+  /**
+   * Register a sink called for every notification a chat's process sends.
+   * The idle close counts silence from the last one (`AgentCoordinator.closeIdleSession`).
+   */
+  setProviderActivityListener(listener: ((chatId: string) => void) | null) {
+    this.onProviderActivity = listener
+  }
+
+  /**
+   * Work still running in the chat's process that its end would kill, after
+   * the turn that started it: an agent it spawned, mid-turn, and a command or
+   * dynamic tool call started and not finished. T3 Code's
+   * `CodexAdapterV2.hasPendingBackgroundWork`, which the idle close asks.
+   */
+  hasPendingBackgroundWork(chatId: string) {
+    const context = this.sessions.get(chatId)
+    if (!context || context.closed) return false
+    if (context.runningItems.size > 0 || context.unclaimedTurns.size > 0) return true
+    for (const agent of context.agents.values()) {
+      if (agent.turnId !== null) return true
+    }
+    return false
   }
 
   /**
@@ -923,6 +954,7 @@ export class CodexAppServerManager {
       sessionToken: null,
       agents: new Map(),
       unclaimedTurns: new Map(),
+      runningItems: new Set(),
       stderrLines: [],
       closed: false,
     }
@@ -966,6 +998,7 @@ export class CodexAppServerManager {
       sessionToken: null,
       agents: new Map(),
       unclaimedTurns: new Map(),
+      runningItems: new Set(),
       stderrLines: [],
       closed: false,
     }
@@ -1505,6 +1538,9 @@ export class CodexAppServerManager {
       return
     }
 
+    // After rate limits, which are the account's and not this chat's doing.
+    if (this.sessions.get(context.chatId) === context) this.onProviderActivity?.(context.chatId)
+
     // Everything past here is about one thread, and the threads of the agents
     // a chat spawns report on this connection too. Read as the chat's own, an
     // agent's `turn/completed` ended the chat's turn while it was still
@@ -1520,6 +1556,15 @@ export class CodexAppServerManager {
     // thread, and can come after the turn that spawned it is over.
     if (notification.method === "item/started" || notification.method === "item/completed") {
       this.trackSpawnedAgents(context, notification.params.item)
+      const item = notification.params.item
+      if (item.type === "commandExecution" || item.type === "dynamicToolCall") {
+        if (notification.method === "item/started") context.runningItems.add(item.id)
+        else context.runningItems.delete(item.id)
+      }
+    }
+    // An interrupt kills the turn's commands without completing their items.
+    if (notification.method === "turn/completed" && notification.params.turn.status === "interrupted") {
+      context.runningItems.clear()
     }
 
     const pendingTurn = context.pendingTurn

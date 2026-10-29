@@ -230,7 +230,12 @@ export interface ChatSchedule {
   id: string
   name: string
   content: string
-  target: { kind: "chat"; chatId: string } | { kind: "new_chat"; projectId: string }
+  /**
+   * `delegator` on a new chat target: what each chat it makes is. The agent
+   * that made the schedule chose it; absent on schedules from before it was
+   * asked, whose chats follow Delegator mode.
+   */
+  target: { kind: "chat"; chatId: string } | { kind: "new_chat"; projectId: string; delegator?: boolean }
   trigger: ScheduleTrigger
   provider?: AgentProvider
   model?: string

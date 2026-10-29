@@ -1080,7 +1080,7 @@ describe("schedules", () => {
     const { orchestrator, codex, store, project, userChat, setClock } = await setup()
     const root = await userChat()
     setClock(0)
-    const schedule = await orchestrator.setSchedule(root, { name: "Nightly triage", message: "triage new issues", newChat: true, everyMinutes: 60 })
+    const schedule = await orchestrator.setSchedule(root, { name: "Nightly triage", message: "triage new issues", newChat: true, delegator: false, everyMinutes: 60 })
     setClock(60 * 60_000)
     await orchestrator.runDueSchedules()
 
@@ -1092,6 +1092,29 @@ describe("schedules", () => {
     setClock(120 * 60_000)
     await orchestrator.runDueSchedules()
     expect(store.getSchedule(schedule.scheduleId)).toMatchObject({ runCount: 1, lastRunChatId: created })
+  })
+
+  test("a newChat schedule needs delegator, keeps it through changes, and makes its chats that", async () => {
+    const { orchestrator, store, userChat, setClock } = await setup({ delegatorMode: true })
+    const root = await userChat()
+    setClock(0)
+    await expect(orchestrator.setSchedule(root, { message: "sweep", newChat: true, everyMinutes: 60 }))
+      .rejects.toThrow("set_schedule with newChat needs delegator: false for a chat that does the work itself, true for one that coordinates")
+    const worker = await orchestrator.setSchedule(root, { name: "Sweep", message: "sweep", newChat: true, delegator: false, everyMinutes: 60 })
+    expect(store.getSchedule(worker.scheduleId)?.target).toMatchObject({ kind: "new_chat", delegator: false })
+    // A change that does not say keeps the answer.
+    await orchestrator.setSchedule(root, { scheduleId: worker.scheduleId, newChat: true, message: "sweep again" })
+    expect(store.getSchedule(worker.scheduleId)?.target).toMatchObject({ kind: "new_chat", delegator: false })
+    const lead = await orchestrator.setSchedule(root, { name: "Lead", message: "plan the week", newChat: true, delegator: true, everyMinutes: 60 })
+    await expect(orchestrator.setSchedule(root, { message: "x", newChat: true, delegator: true, provider: "grok", everyMinutes: 60 })).rejects.toThrow("cannot be a delegator")
+
+    // With the mode on, the worker schedule's chats are still workers.
+    setClock(60 * 60_000)
+    await orchestrator.runDueSchedules()
+    const workerChat = store.getSchedule(worker.scheduleId)!.lastRunChatId!
+    const leadChat = store.getSchedule(lead.scheduleId)!.lastRunChatId!
+    expect(store.getChat(workerChat)).not.toHaveProperty("delegator")
+    expect(store.getChat(leadChat)).toMatchObject({ delegator: true })
   })
 
   test("a schedule can be changed, paused and deleted", async () => {
@@ -2401,7 +2424,7 @@ describe("the tools", () => {
     }
 
     expect((await call("get_context", {})).value.chat.chatId).toBe(root)
-    const created = await call("create_chat", { message: "audit", title: "Audit" })
+    const created = await call("create_chat", { message: "audit", title: "Audit", delegator: false })
     expect(created.value).toMatchObject({ title: "Audit", parentChatId: root })
     // What the transcript keeps is what the chat card is drawn from: the
     // call as an inline `chat` tool, and the result as an object naming the chat.
@@ -2584,7 +2607,7 @@ describe("sidebar visibility", () => {
       const result = await runtime.execute(name, input)
       return result.isError ? { error: result.content[0]!.text } : JSON.parse(result.content[0]!.text)
     }
-    const created = await call("create_chat", { message: "audit", title: "Audit", showInSidebar: true })
+    const created = await call("create_chat", { message: "audit", title: "Audit", showInSidebar: true, delegator: false })
     expect(store.getChat(created.chatId)).toMatchObject({ parentChatId: root })
     expect(store.getChat(created.chatId)).not.toHaveProperty("hidden")
     const source = await forkable(context)

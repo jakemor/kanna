@@ -213,7 +213,7 @@ describe("shared Kanna display tools", () => {
     expect(validate("read_chat", { chatId: "c", after: -1, textOffset: 50000, lastTurns: 1, kinds: ["reply", "tool_result"], limit: 5 }))
       .toEqual({ chatId: "c", after: -1, textOffset: 50000, lastTurns: 1, kinds: ["reply", "tool_result"], limit: 5 })
     expect(() => validate("read_chat", { chatId: "c", kinds: ["assistant"] })).toThrow("Validation failed")
-    expect(validate("create_chat", { message: "go", title: "Lexer fix" })).toEqual({ message: "go", title: "Lexer fix" })
+    expect(validate("create_chat", { message: "go", title: "Lexer fix", delegator: false })).toEqual({ message: "go", title: "Lexer fix", delegator: false })
     expect(() => validate("create_chat", {})).toThrow("Validation failed")
     // Without a server behind the runtime the tools say so instead of failing oddly.
     expect(await runtime.execute("list_chats", {})).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("not available") }] })
@@ -246,6 +246,25 @@ describe("shared Kanna display tools", () => {
       const blank = await runtime.execute("fork_chat", { title: "  " })
       expect(blank).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("fork_chat needs a title") }] })
       expect((await runtime.execute("create_chat", { message: "go" })).content[0]!.text).toContain("create_chat needs a title")
+    } finally { runtime.abort() }
+  })
+
+  test("create_chat makes the agent choose delegator, newChat schedules too, and a fork keeps its source's by default", async () => {
+    const schemaOf = (name: string) => kannaToolSpecs().find((tool) => tool.name === name)!.inputSchema as unknown as { required?: string[]; properties: Record<string, { type?: string; description?: string }> }
+    expect(schemaOf("create_chat").required).toContain("delegator")
+    expect(schemaOf("create_chat").properties.delegator!.description).toContain("false for a chat that does the work itself")
+    expect(schemaOf("create_chat").properties.delegator!.description).toContain("true for a chat that coordinates sub-chats of its own")
+    expect(schemaOf("fork_chat").required ?? []).not.toContain("delegator")
+    expect(schemaOf("fork_chat").properties.delegator!.description).toContain("Defaults to the original's role")
+    expect(schemaOf("fork_chat").properties.delegator!.description).toContain("Pass it to change the role")
+    // Required with newChat only, which the schema cannot say, so the orchestrator checks it.
+    expect(schemaOf("set_schedule").required ?? []).not.toContain("delegator")
+    expect(schemaOf("set_schedule").properties.delegator!.description).toContain("With newChat, required")
+
+    const { runtime } = setup()
+    try {
+      const missing = await runtime.execute("create_chat", { message: "go", title: "Lexer fix" })
+      expect(missing).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("create_chat needs delegator: false for a chat that does the work itself, true for one that coordinates sub-chats of its own") }] })
     } finally { runtime.abort() }
   })
 

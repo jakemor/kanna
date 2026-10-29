@@ -25,8 +25,10 @@ describe("buildKannaSystemInstructions", () => {
   test("tells a delegator to hand work on, and no other chat", () => {
     for (const build of [buildKannaSystemInstructions, buildKannaSystemMessage]) {
       expect(build(AGENT_ID, { delegator: true })).toContain(KANNA_DELEGATOR_INSTRUCTIONS)
-      expect(build(AGENT_ID)).not.toContain("delegator")
-      expect(build(AGENT_ID, { delegator: false })).not.toContain("delegator")
+      // Every chat with the tools is told of the `delegator` choice on
+      // create_chat, but only a delegator is told it is one.
+      expect(build(AGENT_ID)).not.toContain("# This chat is a delegator")
+      expect(build(AGENT_ID, { delegator: false })).not.toContain("# This chat is a delegator")
       // It hands work on with the chat tools, so a harness without them is not told to.
       expect(build(AGENT_ID, { delegator: true, tools: false })).not.toContain("delegator")
     }
@@ -41,6 +43,10 @@ describe("buildKannaSystemInstructions", () => {
   test("every chat with the tools is told one chat is one piece of work, and to fork for new work", () => {
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("Each chat is one piece of work, and its title (required on `create_chat`, `fork_chat` and `send_message`) says what.")
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("prefer a fork to retitling a chat")
+    // The tool requires the choice, so the instructions say what each side means.
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`create_chat` needs a choice of `delegator: false` for a chat that does the work itself")
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`delegator: true` for one that coordinates sub-chats of its own")
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("So does `set_schedule` with `newChat`.")
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).not.toMatch(/ticket|checkpoint/i)
   })
 
@@ -48,7 +54,7 @@ describe("buildKannaSystemInstructions", () => {
     const told = KANNA_DELEGATOR_INSTRUCTIONS
     expect(told).toContain("Each chat under this one is a self-contained timeline of one piece of work, and its title says what that work is.")
     expect(told).toContain("The chat list is the user's record of what was worked on")
-    expect(told).toContain("New work goes to a new chat: `create_chat`, titled for that work.")
+    expect(told).toContain("New work goes to a new chat: `create_chat`, titled for that work, with `delegator: false` unless it should run chats of its own.")
     expect(told).toContain("To reuse a chat's context for new work, fork it: `fork_chat`, titled for the new work.")
     expect(told).toContain("Never point an existing chat at different work.")
     expect(told).toContain("Follow-ups on a chat's own work go to it with `send_message`, passing its current title")

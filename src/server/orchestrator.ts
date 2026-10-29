@@ -55,6 +55,14 @@ import {
  * take it from the chat that runs it.
  */
 
+/**
+ * What a chat an agent makes is: the agent has to say, as nothing in a
+ * chat's message tells Kanna whether it was meant to coordinate or to work.
+ * Here for `setSchedule`, which asks the same, and for the tools' schemas.
+ */
+export const DELEGATOR_DESCRIPTION = "Required. false for a chat that does the work itself, almost always the right choice. true for a chat that coordinates sub-chats of its own and does none of the work."
+export const DELEGATOR_REQUIRED = (tool: string) => `${tool} needs delegator: false for a chat that does the work itself, true for one that coordinates sub-chats of its own and does none of the work.`
+
 /** A chat with no parent is in no task log, so a list is the only place it is shown. */
 const UNLISTED_ORPHAN_ERROR = "A chat that is not a sub-chat of this one has to be in the sidebar: nothing else would show it. Leave showInSidebar unset, or keep the chat a sub-chat."
 
@@ -1376,6 +1384,8 @@ export class ChatOrchestrator {
     message?: string
     chatId?: string
     newChat?: boolean
+    /** With `newChat`: what each chat it makes is. Required when the target becomes a new chat. */
+    delegator?: boolean
     projectId?: string
     inMinutes?: number
     runAt?: string
@@ -1401,9 +1411,17 @@ export class ChatOrchestrator {
     if (input.newChat) {
       const projectId = input.projectId ?? caller.projectId
       if (!this.store.getProject(projectId)) throw new Error(`Project ${projectId} not found. get_context lists the projects.`)
-      target = { kind: "new_chat", projectId }
+      // Asked once, when the schedule starts making chats; a change to it
+      // keeps the answer unless it gives a new one.
+      const delegator = input.delegator ?? (target?.kind === "new_chat" ? target.delegator : undefined)
+      if (delegator === undefined) throw new Error(DELEGATOR_REQUIRED("set_schedule with newChat"))
+      if (delegator) this.checkCanDelegate(input.provider ?? existing?.provider ?? caller.provider)
+      target = { kind: "new_chat", projectId, delegator }
     } else if (input.chatId || !target) {
       target = { kind: "chat", chatId: this.requireChat(input.chatId ?? actorChatId).id }
+    } else if (input.delegator !== undefined && target.kind === "new_chat") {
+      if (input.delegator) this.checkCanDelegate(input.provider ?? existing?.provider ?? caller.provider)
+      target = { ...target, delegator: input.delegator }
     }
 
     // The message runs later with nobody to hold it to this chat's mode, so
@@ -1585,7 +1603,8 @@ export class ChatOrchestrator {
 
     if (!this.store.getProject(schedule.target.projectId)) return { outcome: "gone" }
     if (schedule.lastRunChatId && this.isLive(schedule.lastRunChatId)) return { outcome: "skipped" }
-    const chatId = (await this.commands.create(schedule.target.projectId)).result.chatId
+    // A schedule from before the choice was asked follows Delegator mode, as the user's own chats do.
+    const chatId = (await this.commands.create(schedule.target.projectId, undefined, schedule.target.delegator === undefined ? undefined : { delegator: schedule.target.delegator })).result.chatId
     await this.commands.rename(chatId, schedule.name)
     await this.commands.send({
       type: "chat.send",

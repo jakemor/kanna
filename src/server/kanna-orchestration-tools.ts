@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { AgentProvider } from "../shared/types"
 import type { KannaToolDefinition, KannaToolResult } from "./kanna-tools"
-import { READ_CHAT_KINDS, type ChatOrchestrator } from "./orchestrator"
+import { DELEGATOR_DESCRIPTION, DELEGATOR_REQUIRED, READ_CHAT_KINDS, type ChatOrchestrator } from "./orchestrator"
 
 /**
  * The chat tools: what a user can do to chats in Kanna, for an agent to do.
@@ -84,7 +84,7 @@ const createChat = z.strictObject({
   title: requiredTitle("create_chat needs a title: name the work the new chat does.").describe(TITLE_DESCRIPTION),
   subchat: z.boolean().optional().describe("Default true: its result is sent back to this chat when it finishes, and stopping this chat stops it. false makes an independent chat for the user."),
   showInSidebar: z.boolean().optional().describe(SHOW_IN_SIDEBAR_DESCRIPTION),
-  delegator: z.boolean().optional().describe("true makes it a delegator, which hands its work on to chats of its own: for a piece of work big enough to coordinate. By default a sub-chat does the work itself."),
+  delegator: z.boolean({ error: DELEGATOR_REQUIRED("create_chat") }).describe(DELEGATOR_DESCRIPTION),
   projectId: z.string().optional().describe("Defaults to this chat's project."),
   ...runOptions,
 })
@@ -95,7 +95,7 @@ const forkChat = z.strictObject({
   title: requiredTitle("fork_chat needs a title: a fork does new work, and is named for it.").describe("Required: a short title for the new work the fork does, not the original's. A fork is how a chat's context is reused for new work, so it is named for that work."),
   subchat: z.boolean().optional().describe("Whether the copy reports back to this chat. Defaults to true when a message is given."),
   showInSidebar: z.boolean().optional().describe(SHOW_IN_SIDEBAR_DESCRIPTION),
-  delegator: z.boolean().optional().describe("Makes the copy a delegator (true) or a chat that does its work itself (false). By default it keeps the original's."),
+  delegator: z.boolean().optional().describe("Defaults to the original's role, which suits a fork: it carries on the same conversation, and a new role changes its system prompt under that history. Pass it to change the role: true for a chat that coordinates sub-chats of its own and does none of the work, false for one that does the work."),
   ...runOptions,
 })
 
@@ -140,6 +140,7 @@ const setSchedule = z.strictObject({
   message: z.string().optional().describe("What to send. Required for a new schedule."),
   chatId: z.string().optional().describe("The chat to send it to. Defaults to this chat. A delegator points it at a sub-chat made for the automation."),
   newChat: z.boolean().optional().describe("Send it to a new chat on each run, instead of to an existing one."),
+  delegator: z.boolean().optional().describe(`With newChat, required when the schedule is made: what each new chat is. ${DELEGATOR_DESCRIPTION}`),
   projectId: z.string().optional().describe("With newChat: the project for the new chats. Defaults to this chat's."),
   inMinutes: z.number().min(0).optional().describe("Once, this many minutes from now."),
   runAt: z.string().optional().describe("Once, at this ISO 8601 time."),

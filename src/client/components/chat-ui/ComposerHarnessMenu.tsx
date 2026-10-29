@@ -20,7 +20,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { SegmentedControl } from "../ui/segmented-control"
 import { SelectItem } from "../ui/select"
 import { Switch } from "../ui/switch"
-import { ProviderModelList } from "./ChatPreferenceControls"
 
 /**
  * The context meter lives in the menu's footer; from this share of the
@@ -113,6 +112,9 @@ function MenuSelectRow({
   )
 }
 
+/** The "Add models…" entry in pi's model picker; not a model id. */
+const ADD_MODELS_VALUE = "__kanna_add_models__"
+
 type ModelOptionsOf = ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
 
 export interface HarnessMenuBodyProps {
@@ -138,8 +140,8 @@ export interface HarnessMenuBodyProps {
 }
 
 /**
- * What the harness button opens: the harness strip, the harness's models,
- * then one line each for effort, mode and fast mode, and the context meter.
+ * What the harness button opens: the harness picker, then one line each for
+ * model, effort, mode and fast mode, and the context meter.
  * Everything about how the next turn runs is here, so + only attaches.
  */
 export function HarnessMenuBody({
@@ -172,10 +174,12 @@ export function HarnessMenuBody({
 
   return (
     <>
-      {/* The app's segmented control, one icon per harness. Arrow keys move
-          the selection, as in a native radio group. */}
+      {/* The app's segmented control, one icon per harness, plain: no track
+          or outline, the segments spanning the menu. It keeps a 4px inset
+          so the selected fill never runs into the menu's rounded corners.
+          Arrow keys move the selection, as in a native radio group. */}
       <div
-        className="border-b border-border/60 p-2"
+        className="border-b border-border/60 px-1 py-1"
         onKeyDown={(event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
           event.preventDefault()
@@ -190,6 +194,7 @@ export function HarnessMenuBody({
       >
         <SegmentedControl
           size="sm"
+          variant="plain"
           value={selectedProvider}
           onValueChange={onProviderChange}
           className="flex w-full"
@@ -218,55 +223,64 @@ export function HarnessMenuBody({
           })}
         />
       </div>
-      <div className="px-3 pt-2 pb-1 text-xs text-muted-foreground">
-        {providerConfig.label}
-        {providerSwitchPending ? <span className="text-amber-500 dark:text-amber-400"> · switches on your next message</span> : null}
-      </div>
-      {/* Runtime-discovered model lists (e.g. Cursor) can be long: scroll instead of overflowing the viewport. */}
-      <div className="max-h-64 overflow-y-auto divide-y divide-border/60">
-        <ProviderModelList
-          provider={selectedProvider}
-          providerConfig={providerConfig}
-          model={model}
-          modelOptions={modelOptions}
-          onSelect={onModelChange}
-          onEditModels={onEditModels}
-        />
-      </div>
-      {/* Effort, then mode, then fast mode last: the two pickers read as a
-          pair, and the switch ends the list. Rows touch, hairline between. */}
-      {reasoning || fastMode || mode ? (
-        <div className="divide-y divide-border/60 border-t border-border/60">
-          {reasoning ? (
-            <MenuSelectRow title="Effort" value={reasoning.selectedId ?? ""} onValueChange={onReasoningChange}>
-              {reasoning.options.map((option) => (
-                <SelectItem key={option.id} value={option.id} disabled={option.disabled} title={option.description}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </MenuSelectRow>
-          ) : null}
-          {mode ? (
-            <MenuSelectRow title="Mode" value={mode.selected} onValueChange={(value) => onModeChange(value as ChatMode)}>
-              {mode.options.map((option) => (
-                <SelectItem key={option} value={option} title={CHAT_MODE_LABELS[option].description}>
-                  {CHAT_MODE_LABELS[option].label}
-                </SelectItem>
-              ))}
-            </MenuSelectRow>
-          ) : null}
-          {fastMode ? (
-            <div
-              className={MENU_ROW_CLASS}
-              onClick={(event) => rowClick(event, () => onFastModeChange(!fastMode.enabled), '[role="switch"]')}
-            >
-              <SettingsRow title={fastLabel}>
-                <Switch checked={fastMode.enabled} onCheckedChange={onFastModeChange} aria-label={fastLabel} />
-              </SettingsRow>
-            </div>
-          ) : null}
+      {providerSwitchPending ? (
+        <div className="border-b border-border/60 px-3 py-1.5 text-xs text-amber-500 dark:text-amber-400">
+          {providerConfig.label} takes over on your next message
         </div>
       ) : null}
+      {/* Every setting is a row: Model, Effort and Mode open a picker, Fast
+          Mode is a switch, last. Rows touch, hairline between. */}
+      <div className="divide-y divide-border/60">
+        <MenuSelectRow
+          title="Model"
+          value={model}
+          onValueChange={(value) => {
+            if (value === ADD_MODELS_VALUE) onEditModels?.()
+            else onModelChange(value)
+          }}
+        >
+          {providerConfig.models.map((candidate) => (
+            <SelectItem key={candidate.id} value={candidate.id}>
+              {candidate.id === "gpt-5.6-luna" && (modelOptions as CodexModelOptions).reasoningEffort === "ultra"
+                ? `${candidate.label} (Ultra → Max)`
+                : candidate.label}
+            </SelectItem>
+          ))}
+          {/* Pi's list is the user's Default Models; this edits it. Never
+              selected: picking it opens the dialog and the value stays. */}
+          {selectedProvider === "pi" && onEditModels ? (
+            <SelectItem value={ADD_MODELS_VALUE}>Add models…</SelectItem>
+          ) : null}
+        </MenuSelectRow>
+        {reasoning ? (
+          <MenuSelectRow title="Effort" value={reasoning.selectedId ?? ""} onValueChange={onReasoningChange}>
+            {reasoning.options.map((option) => (
+              <SelectItem key={option.id} value={option.id} disabled={option.disabled} title={option.description}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </MenuSelectRow>
+        ) : null}
+        {mode ? (
+          <MenuSelectRow title="Mode" value={mode.selected} onValueChange={(value) => onModeChange(value as ChatMode)}>
+            {mode.options.map((option) => (
+              <SelectItem key={option} value={option} title={CHAT_MODE_LABELS[option].description}>
+                {CHAT_MODE_LABELS[option].label}
+              </SelectItem>
+            ))}
+          </MenuSelectRow>
+        ) : null}
+        {fastMode ? (
+          <div
+            className={MENU_ROW_CLASS}
+            onClick={(event) => rowClick(event, () => onFastModeChange(!fastMode.enabled), '[role="switch"]')}
+          >
+            <SettingsRow title={fastLabel}>
+              <Switch checked={fastMode.enabled} onCheckedChange={onFastModeChange} aria-label={fastLabel} />
+            </SettingsRow>
+          </div>
+        ) : null}
+      </div>
       {contextWindow ? (
         <div className="flex items-center justify-between gap-3 border-t border-border/60 py-2.5 pl-3 pr-2.5 text-xs text-muted-foreground">
           <span className="min-w-0 truncate">{describeContextUsage(contextWindow)}</span>
@@ -351,10 +365,7 @@ export function ComposerHarnessMenu({
             mode={optionControls.mode}
             contextWindow={contextWindow}
             onProviderChange={onProviderChange}
-            onModelChange={(modelId) => {
-              composer.selectModel(modelId)
-              setOpen(false)
-            }}
+            onModelChange={(modelId) => composer.selectModel(modelId)}
             onReasoningChange={(effortId) => composer.setReasoningEffort(effortId)}
             onFastModeChange={(enabled) => composer.setFastMode(enabled)}
             onModeChange={(next) => composer.setMode(next)}

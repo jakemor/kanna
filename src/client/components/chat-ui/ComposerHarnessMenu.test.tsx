@@ -64,14 +64,18 @@ function segment(html: string, label: string) {
 }
 
 describe("HarnessMenuBody", () => {
-  test("lists every harness, the harness's models, effort as a pop-up and fast mode as a switch", () => {
+  test("lists every harness, then model and effort as pop-ups and fast mode as a switch", () => {
     const html = renderMenu({ provider: "claude", model: "opus", modelOptions: { reasoningEffort: "high", fastMode: true } })
 
     // A segmented control, one icon per harness, the current one pressed.
     for (const provider of PROVIDERS) expect(html).toContain(`<span class="sr-only">${provider.label}</span>`)
     expect(segment(html, "Claude Code")).toContain('aria-pressed="true"')
     expect(segment(html, "Codex")).toContain('aria-pressed="false"')
-    for (const model of PROVIDERS.find((provider) => provider.id === "claude")!.models) expect(html).toContain(model.label)
+    // Borderless and edge to edge: no track, no outline.
+    expect(html).not.toContain("rounded-lg border border-border p-[3px]")
+    // The models are one picker now, not a list of rows, and no harness label heads them.
+    expect(html).toContain('aria-label="Model"')
+    expect(html).not.toContain('text-muted-foreground">Claude Code')
     expect(html).toContain('aria-label="Effort"')
     expect(html).toContain('role="switch" aria-checked="true" aria-label="Fast Mode"')
   })
@@ -83,7 +87,7 @@ describe("HarnessMenuBody", () => {
     expect(cursor).toContain('role="switch" aria-checked="false" aria-label="Fast"')
   })
 
-  test("runs models, Effort, Mode, then Fast Mode last, then the context line", () => {
+  test("runs Model, Effort, Mode, then Fast Mode last, then the context line", () => {
     const html = renderMenu({
       provider: "claude",
       model: "opus",
@@ -91,7 +95,7 @@ describe("HarnessMenuBody", () => {
       planMode: true,
       contextWindow: usage(86_000, 200_000),
     })
-    const order = ["Sonnet", 'aria-label="Effort"', 'aria-label="Mode"', 'role="switch"', "context used"].map((needle) => html.indexOf(needle))
+    const order = ['aria-label="Model"', 'aria-label="Effort"', 'aria-label="Mode"', 'role="switch"', "context used"].map((needle) => html.indexOf(needle))
 
     expect(order.every((index) => index >= 0)).toBe(true)
     expect([...order].sort((a, b) => a - b)).toEqual(order)

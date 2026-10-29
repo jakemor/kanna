@@ -261,7 +261,7 @@ export interface KannaState {
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
-  handleCancel: () => Promise<void>
+  handleCancel: (options?: { cascade?: boolean }) => Promise<void>
   handleStopDraining: () => Promise<void>
   handleRenameChat: (chat: SidebarChatRow) => Promise<void>
   handleRenameProject: (target: string | { localPath: string }, sidebarTitle: string | undefined, realTitle: string) => Promise<void>

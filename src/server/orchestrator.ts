@@ -180,6 +180,11 @@ export interface AgentChatSummary {
   lastMessageAt?: string
   turnCount: number
   queuedMessages: number
+  /**
+   * Its last turn was stopped and the queue is held: nothing in it starts on
+   * its own. `update_queued_message` with `send_now` resumes it.
+   */
+  queuePaused?: true
   archived?: true
   pinned?: true
   done?: true
@@ -474,9 +479,21 @@ export class ChatOrchestrator {
     if (this.agent.isBusy(chat.id) || this.agent.isDraining(chat.id)) return true
     // A queue normally drains as soon as the turn ends, so messages in it mean
     // a turn is about to start. The exception is a stopped chat, whose queue
-    // is parked until someone sends again.
+    // is parked until someone sends again (`isQueuePaused`).
     const queued = this.store.getQueuedMessages(chat.id).length
     return queued > 0 && chat.lastTurnOutcome !== "cancelled"
+  }
+
+  /**
+   * A stop holds the queue: the next message does not start when the turn
+   * ends, so a person who stopped a chat can change what was lined up before
+   * it runs. That holds for a sub-chat stopped with its parent too. Nothing
+   * releases it but a send, so it is shown as paused, to the user and to
+   * agents, with sending one now as the way on.
+   */
+  isQueuePaused(chat: ChatRecord) {
+    if (chat.lastTurnOutcome !== "cancelled" || this.agent.isBusy(chat.id)) return false
+    return this.store.getQueuedMessages(chat.id).length > 0
   }
 
   /**
@@ -597,6 +614,7 @@ export class ChatOrchestrator {
       ...(chat.lastMessageAt ? { lastMessageAt: iso(chat.lastMessageAt) } : {}),
       turnCount: chat.turnCount ?? 0,
       queuedMessages: this.store.getQueuedMessages(chat.id).length,
+      ...(this.isQueuePaused(chat) ? { queuePaused: true as const } : {}),
       ...(chat.archivedAt ? { archived: true as const } : {}),
       ...(chat.pinnedAt ? { pinned: true as const } : {}),
       ...(chat.doneAt ? { done: true as const } : {}),
@@ -1251,7 +1269,8 @@ export class ChatOrchestrator {
     }
   }
 
-  async cancelChat(actorChatId: string, chatId: string) {
+  /** `cascade: false` stops the chat's turn and leaves the sub-chats it started running. */
+  async cancelChat(actorChatId: string, chatId: string, options?: { cascade?: boolean }) {
     if (chatId === actorChatId) throw new Error("This would stop your own turn. Finish your reply instead.")
     const target = this.requireChat(chatId)
     // Whoever stops a sub-chat of its own already knows it ended, so no report.
@@ -1259,7 +1278,7 @@ export class ChatOrchestrator {
       this.forgetLaterTurn(target.id)
       await this.store.setReportOwed(target.id, false)
     }
-    await this.commands.cancel(target.id)
+    await this.commands.cancel(target.id, { cascade: options?.cascade })
     this.push({ sidebar: true, chatIds: [target.id] })
     return this.summarize(this.requireChat(target.id))
   }
@@ -1607,6 +1626,26 @@ export class ChatOrchestrator {
   }
 
   /**
+   * A queued message is about to start a turn. One its parent sent owes the
+   * parent the result, as the send that queued it said (`send` arms the
+   * report then), but a stop releases that report while the message waits:
+   * stopping the parent, or the parent stopping this chat. The stop also
+   * holds the queue (`isQueuePaused`), so the message starts only when
+   * someone sends it on, and then the parent's work goes on and the parent
+   * hears how it ends.
+   *
+   * Only out of a held queue. One that drains on its own after a turn that
+   * was not stopped (an adopted chat's, under a parent that was) keeps the
+   * stop's word: the parent asked to hear nothing.
+   */
+  async armReportForQueuedMessage(chatId: string, source: MessageSource | undefined) {
+    const chat = this.store.getChat(chatId)
+    if (!chat?.parentChatId || chat.reportOwed || chat.lastTurnOutcome !== "cancelled") return
+    if (source?.kind !== "agent" || source.chatId !== chat.parentChatId) return
+    await this.store.setReportOwed(chatId, true)
+  }
+
+  /**
    * A task of the provider's began in a chat with no turn running, which puts
    * the chats above it in the same wait a turn starting would.
    */
@@ -1675,6 +1714,8 @@ export class ChatOrchestrator {
         ...(status === "needs_input" ? { summary: "Waiting for your answer" } : {}),
         ...(running ? { stoppable: true } : {}),
         chatId: child.id,
+        // A stop of this chat leaves it running, so the stop button's count leaves it out.
+        ...(child.adopted ? { adopted: true as const } : {}),
       }
     })
     const running = activities.filter((activity) => activity.status === "running")
@@ -1740,6 +1781,16 @@ export class ChatOrchestrator {
         "<system-message>Chats you started that are still running:",
         ...running.map((child) => `${child.title} (chat id ${child.id})`),
         "Each one's result arrives here as a message when it finishes. Stop any you no longer need with cancel_chat.</system-message>",
+      ].join("\n"))
+    }
+    // Stopped, most often with this chat, with its messages from here still
+    // waiting. Nothing will come of them unless someone sends one on.
+    const paused = this.childrenOf(chatId).filter((child) => !child.adopted && this.isQueuePaused(child))
+    if (paused.length > 0) {
+      notices.push([
+        "<system-message>Chats you started that were stopped with messages still queued. Their queues are paused: nothing in them runs, and no result comes here, until one is sent with update_queued_message (send_now):",
+        ...paused.map((child) => `${child.title} (chat id ${child.id})`),
+        "</system-message>",
       ].join("\n"))
     }
     return notices

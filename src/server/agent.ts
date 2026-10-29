@@ -2017,6 +2017,9 @@ export class AgentCoordinator {
 
   private async dequeueAndStartQueuedMessage(chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean }) {
     await this.store.removeQueuedMessage(chatId, queuedMessage.id)
+    // Before the turn starts, as a send from the parent arms it: a stop since
+    // the message was queued may have released the report it was owed.
+    await this.orchestration?.armReportForQueuedMessage(chatId, queuedMessage.source)
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage, chatId)
@@ -3422,12 +3425,16 @@ export class AgentCoordinator {
     }
   }
 
-  async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {
+  /**
+   * `cascade: false` is "Stop this turn": the sub-chats this chat started go
+   * on, and still report here when they finish. Without it they stop too.
+   */
+  async cancel(chatId: string, options?: { hideInterrupted?: boolean; cascade?: boolean }) {
     // A steer hides its interrupt and replaces the turn, and a shutdown brings
     // it back, so neither is a stop. Fired even when nothing is running here:
     // an idle chat can still have sub-chats to stop.
     const stopped = !options?.hideInterrupted && !this.shuttingDown
-    if (stopped) this.onChatStopped?.(chatId)
+    if (stopped && options?.cascade !== false) this.onChatStopped?.(chatId)
 
     // Also clean up any draining stream for this chat.
     const draining = this.drainingStreams.get(chatId)

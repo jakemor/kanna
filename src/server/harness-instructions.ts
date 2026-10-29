@@ -23,7 +23,8 @@ export const KANNA_ORCHESTRATION_INSTRUCTIONS = [
   "- Each chat is one piece of work, and its title (required on `create_chat`, `fork_chat` and `send_message`) says what. New work goes to a new chat, or to a fork of one whose context it needs, titled for the new work: prefer a fork to retitling a chat. `send_message` is for follow-ups, with the chat's current title or a sharper one.",
   "- `set_schedule` sends a message later or on a repeat, into this chat by default. Use it to check on something in a while instead of sleeping.",
   "- `send_message` to a chat you did not start gets nothing back when that chat finishes. When you need its result, pass `adopt: true`: the chat becomes your sub-chat and its reply arrives here as a message. An adopted chat is still the user's, so it stays in their sidebar.",
-  "- Stopping this chat stops the sub-chats it started, not ones it adopted. Stop one yourself with `cancel_chat` when it is no longer needed.",
+  "- When the user stops this chat's turn while sub-chats it started are running, they choose whether those stop too. Adopted ones never do. Stop one yourself with `cancel_chat` when it is no longer needed.",
+  "- A stopped chat holds its queue (`queuePaused`): nothing waiting in it starts until it is delivered with `update_queued_message` (action send_now), or another message is sent.",
   "- When a task needs credentials (API keys, tokens, passwords), ask with `request_secrets`. Never ask the user to paste one into the chat or to run the security command themselves. You never see the values: use them by name with `kanna secret exec KEY -- <command>`.",
 ].join("\n")
 

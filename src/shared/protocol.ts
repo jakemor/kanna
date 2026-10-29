@@ -323,7 +323,16 @@ export type ClientCommand =
   | { type: "chat.createBranch"; chatId: string; name: string; baseBranchName?: string }
   | { type: "chat.discardDiffFile"; chatId: string; path: string }
   | { type: "chat.ignoreDiffFile"; chatId: string; path: string }
-  | { type: "chat.cancel"; chatId: string }
+  | {
+      type: "chat.cancel"
+      chatId: string
+      /**
+       * Whether the sub-chats this chat started stop with it. Absent is true,
+       * the behaviour before the flag: a client that does not send it still
+       * stops them. "Stop this turn" sends false.
+       */
+      cascade?: boolean
+    }
   | { type: "chat.stopDraining"; chatId: string }
   /** Stops one background task (a monitor, a workflow, a subagent) and leaves the turn running. */
   | { type: "chat.stopTask"; chatId: string; taskId: string }

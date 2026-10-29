@@ -2558,6 +2558,8 @@ export interface SubagentActivity {
   stoppable?: boolean
   /** Set when the task is a Kanna chat this one started (`type: "chat"`): the chat to open. */
   chatId?: string
+  /** On a `chat` row: the chat was adopted, not started here, so stopping this one does not stop it. */
+  adopted?: true
 }
 
 /**
@@ -2661,6 +2663,12 @@ export interface ChatRuntime {
   nextRun?: ChatNextRun
   /** With `status: "waiting_on_subagent"`, and only then. The same value as `SidebarChatRow.waitingOn`. */
   waitingOn?: WaitingOn
+  /**
+   * The chat's last turn was stopped and messages are still queued. A stop
+   * holds the queue rather than starting the next message, so it waits until
+   * one is sent now or another message arrives. Absent otherwise.
+   */
+  queuePaused?: true
   /**
    * Set on a fork: the chat it was copied from, and where the copy ends, so
    * the transcript can draw "Forked from …" there. The source's title, and

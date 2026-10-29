@@ -35,6 +35,7 @@ import { createToolPayloadStore } from "./toolPayloadStore"
 import type { TranscriptJumpRequest } from "./transcriptScrollAnchors"
 import { useTranscriptPaddingBottom } from "./useTranscriptPaddingBottom"
 import { hasFileDragTypes, sameContextWindowSnapshot } from "./utils"
+import { countCascadingSubchats } from "../../../shared/stop-turn"
 
 type ChatViewerItem = Extract<ViewerItem, { kind: "chat" }>
 
@@ -293,7 +294,8 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
     onEdit: handleEditSchedule,
   }), [chatId, handleEditSchedule, session.runtime?.schedules])
 
-  const handleCancel = useCallback(() => { void session.handleCancel() }, [session.handleCancel])
+  const handleCancel = useCallback((options?: { cascade?: boolean }) => { void session.handleCancel(options) }, [session.handleCancel])
+  const cascadingSubchats = countCascadingSubchats(session.runtime?.subagents)
   const handleListSkills = useCallback(
     (skillProvider: AgentProvider) => socket.command<ChatSkillsSnapshot>({
       type: "chat.listSkills",
@@ -345,6 +347,7 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
             latestToolIds={session.latestToolIds}
             isProcessing={session.isProcessing}
             runtimeStatus={session.runtimeStatus}
+            queuePaused={Boolean(session.runtime?.queuePaused)}
             isDraining={session.isDraining}
             commandError={session.commandError}
             onStopDraining={session.handleStopDraining}
@@ -388,6 +391,7 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
           hasSelectedProject
           runtimeStatus={session.runtimeStatus}
           canCancel={session.canCancel}
+          cascadingSubchats={cascadingSubchats}
           projectId={projectId}
           projectPath={projectPath}
           projectRepoLabel={projectRepoLabel}

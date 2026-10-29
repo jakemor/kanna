@@ -25,6 +25,8 @@ import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../../stores/chat
 import { ATTACH_FILES_EVENT, CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import { isEscapeClaimed, isViewerPaneOpen, resolveEscapePress } from "../../lib/escape-key"
 import { HoldToStopHint, HoldToStopRing, useHoldToStop } from "./HoldToStop"
+import { StopChoicePopover } from "./StopChoicePopover"
+import { resolveStop } from "../../../shared/stop-turn"
 import { abbreviatePathHead, formatPathWithTilde } from "../../lib/pathUtils"
 import { copyTextToClipboard } from "../../lib/clipboard"
 import { buildUploadErrorReport, simpleUploadError, type UploadErrorReport } from "../../lib/uploadError"
@@ -201,9 +203,12 @@ interface Props {
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean; attachments?: ChatAttachment[]; steer?: boolean }
   ) => Promise<void>
   onLayoutChange?: () => void
-  onCancel?: () => void
+  /** `cascade` as on `chat.cancel`: left out when there was nothing to choose. */
+  onCancel?: (options?: { cascade?: boolean }) => void
   disabled: boolean
   canCancel?: boolean
+  /** Running sub-chats a stop could take with it. Above zero, Stop asks. See `resolveStop`. */
+  cascadingSubchats?: number
   chatId?: string | null
   projectId?: string | null
   /** Current project directory — the placeholder's fallback when there's no repo. */
@@ -259,6 +264,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onCancel,
   disabled,
   canCancel,
+  cascadingSubchats = 0,
   chatId,
   projectId,
   projectPath,
@@ -493,17 +499,34 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
   const canSubmit = value.trim().length > 0 || uploadedAttachments.length > 0
+  // Open while Stop asks whether the sub-chats stop too (StopChoicePopover).
+  const [stopChoiceOpen, setStopChoiceOpen] = useState(false)
+  /** A stop, by the button or by the key. See `resolveStop`. */
+  function stop(via: "button" | "keyboard") {
+    const intent = resolveStop(cascadingSubchats, via)
+    if (intent.kind === "ask") {
+      setStopChoiceOpen(true)
+      return
+    }
+    setStopChoiceOpen(false)
+    onCancel?.(intent.cascade === false ? { cascade: false } : undefined)
+  }
+  // Nothing left to stop: the turn ended while the choice was open.
+  useEffect(() => {
+    if (!canCancel) setStopChoiceOpen(false)
+  }, [canCancel])
   // Escape, held, stops the turn. See HoldToStop.
-  const holdToStop = useHoldToStop({ enabled: Boolean(canCancel), onConfirm: () => onCancel?.() })
+  const holdToStop = useHoldToStop({ enabled: Boolean(canCancel), onConfirm: () => stop("keyboard") })
   // The round button is Send while there is something to send and Stop
   // otherwise. Under a hold it is Stop either way: the ring is drawn round
   // it, and it has to say what the ring is counting down to.
   const showStop = Boolean(canCancel) && (!canSubmit || holdToStop.engaged)
   /** What the round button does. Stop is immediate here; only the key is held. */
   function runPrimaryAction(withModifier: boolean) {
-    // Under a hold the button reads Stop, so that is what a click on it does.
+    // Under a hold the button reads Stop, so that is what a click on it
+    // does: the stop the held key was counting down to.
     if (holdToStop.engaged && canCancel) {
-      onCancel?.()
+      stop("keyboard")
       return
     }
     // Anything sendable (text or attachments alone) wins over cancel, so a
@@ -511,7 +534,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!disabled && canSubmit && !hasPendingUploads) {
       void handleSubmit({ withModifier })
     } else if (canCancel) {
-      onCancel?.()
+      // A second press on Stop while it asks puts the question away.
+      if (stopChoiceOpen) setStopChoiceOpen(false)
+      else stop("button")
     }
   }
   const recorder = useVoiceRecorder()
@@ -1438,11 +1463,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {recording || transcribing || (showMic && !canCancel) ? null : (
             // A box that hugs the button, for the hold's ring and hint to be
             // placed against.
+            <StopChoicePopover
+              open={stopChoiceOpen}
+              onOpenChange={setStopChoiceOpen}
+              count={cascadingSubchats}
+              onStop={(cascade) => onCancel?.({ cascade })}
+            >
             <span className="relative flex flex-shrink-0">
             <Button
               type="button"
               aria-label={showStop ? "Stop" : "Send message"}
-              title={showStop ? "Stop (hold Esc)" : undefined}
+              title={showStop ? (cascadingSubchats > 0 ? "Stop (hold Esc to stop this turn only)" : "Stop (hold Esc)") : undefined}
+              aria-haspopup={showStop && cascadingSubchats > 0 ? "menu" : undefined}
+              aria-expanded={showStop && cascadingSubchats > 0 ? stopChoiceOpen : undefined}
               onPointerDown={(event) => {
                 event.preventDefault()
                 runPrimaryAction(event.metaKey || event.ctrlKey)
@@ -1469,6 +1502,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             <HoldToStopRing arcRef={holdToStop.arcRef} shown={holdToStop.ringShown} />
             <HoldToStopHint shown={holdToStop.hintShown} />
             </span>
+            </StopChoicePopover>
             )}
             </div>
             {/* Where the text would wrap on the one line; see updateStacking. */}

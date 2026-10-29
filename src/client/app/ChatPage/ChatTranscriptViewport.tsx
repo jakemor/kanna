@@ -10,6 +10,7 @@ import {
 import { ArrowDown, Flower, Upload } from "lucide-react"
 import { DrainingIndicator } from "../../components/messages/DrainingIndicator"
 import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
+import { QueuePausedNotice } from "../../components/messages/QueuePausedNotice"
 import { messageNamingParent, ParentChatLink } from "../../components/messages/ParentChatLink"
 import type { ForkBoundary } from "../../lib/fork-boundary"
 import { ReplyQuoteProjectContext } from "../../components/messages/ChatToolMessage"
@@ -261,6 +262,8 @@ interface ChatTranscriptViewportProps {
   runtimeStatus: string | null
   /** What the chat is waiting on, while that is its status. */
   waitingOn?: WaitingOn
+  /** A stop is holding the queue. See `ChatRuntime.queuePaused`. */
+  queuePaused?: boolean
   isDraining: boolean
   commandError: string | null
   onStopDraining: () => void
@@ -474,6 +477,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   isProcessing,
   runtimeStatus,
   waitingOn,
+  queuePaused,
   isDraining,
   commandError,
   onStopDraining,
@@ -1254,6 +1258,9 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
       {isProcessing || (runtimeStatus === "waiting_on_subagent" && !isDraining)
         ? <ProcessingMessage status={runtimeStatus ?? undefined} waitingOn={waitingOn} />
         : null}
+      {queuePaused && queuedMessages.length > 0 ? (
+        <QueuePausedNotice onResume={() => onSteerQueuedMessage(queuedMessages[0]!.id)} />
+      ) : null}
       {queuedMessages.map((message) => (
         <QueuedUserMessage
           key={message.id}

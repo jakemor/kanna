@@ -2633,3 +2633,80 @@ describe("update_chat settings", () => {
     runtime.abort()
   })
 })
+
+describe("stopping a chat with sub-chats", () => {
+  test("stopping only the turn leaves the sub-chats running, and their results still come back", async () => {
+    const { orchestrator, codex, store, agent, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "audit the parser" })
+
+    await agent.cancel(root, { cascade: false })
+    expect(codex.turnsFor(child.chatId)[0]!.open).toBe(true)
+    expect(store.getChat(child.chatId)?.reportOwed).toBe(true)
+
+    codex.finish(child.chatId, "Found two bugs.")
+    await until(() => codex.turnsFor(root).length === 2, "the report to wake the stopped parent")
+    expect(codex.turn(root).content).toContain("Found two bugs.")
+  })
+
+  test("cancel_chat without cascade stops the chat and not the chats under it", async () => {
+    const { orchestrator, codex, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "lead the audit" })
+    const grandchild = await orchestrator.createChat(child.chatId, { message: "read the lexer" })
+
+    await orchestrator.cancelChat(root, child.chatId, { cascade: false })
+    expect(codex.turnsFor(child.chatId)[0]!.open).toBe(false)
+    expect(codex.turnsFor(grandchild.chatId)[0]!.open).toBe(true)
+  })
+
+  // What happened in a delegator: the user stopped its turn, the cascade
+  // stopped a sub-chat with the delegator's follow-up queued, and the queue
+  // sat there with nothing to say it would never start.
+  test("a sub-chat stopped with its parent holds its queue, says so, and reports once resumed", async () => {
+    const { orchestrator, codex, store, agent, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "ship the toggle" })
+    const queued = await orchestrator.sendMessage(root, { chatId: child.chatId, message: "scope change: only the toggle" })
+    expect(queued.queuedMessageId).toBeDefined()
+
+    await agent.cancel(root)
+    await until(() => store.getChat(child.chatId)?.lastTurnOutcome === "cancelled", "the sub-chat to stop")
+    // Held, not drained: the stop released the report too.
+    expect(codex.turnsFor(child.chatId)).toHaveLength(1)
+    expect(store.getChat(child.chatId)?.reportOwed).toBeFalsy()
+
+    // Shown as paused, to agents and to the user.
+    expect(orchestrator.listChats({ parentChatId: root }).chats[0]).toMatchObject({ status: "cancelled", queuedMessages: 1, queuePaused: true })
+    const snapshot = deriveChatSnapshot(store.state, agent.getChatStatuses(), new Set(), child.chatId, (id) => store.getClientTranscript(id))
+    expect(snapshot?.runtime.queuePaused).toBe(true)
+    // The parent's next turn is told.
+    await agent.send({ type: "chat.send", chatId: root, provider: "codex", content: "where are we?" })
+    await until(() => codex.turnsFor(root).length === 2, "the parent's next turn")
+    expect(codex.turn(root).content).toContain("Their queues are paused")
+    expect(codex.turn(root).content).toContain(`chat id ${child.chatId}`)
+
+    // Sent now, the parent's message runs, and its result is the parent's again.
+    await orchestrator.updateQueuedMessage({ chatId: child.chatId, queuedMessageId: queued.queuedMessageId!, action: "send_now" })
+    await until(() => codex.turnsFor(child.chatId).length === 2, "the queued message's turn")
+    expect(codex.turn(child.chatId).content).toContain("scope change: only the toggle")
+    expect(store.getChat(child.chatId)?.reportOwed).toBe(true)
+    expect(orchestrator.listChats({ parentChatId: root }).chats[0]).not.toHaveProperty("queuePaused")
+
+    codex.finish(child.chatId, "Shipped the toggle.")
+    await until(() => store.getQueuedMessages(root).length === 1, "the report, behind the parent's turn")
+    expect(store.getQueuedMessages(root)[0]!.content).toContain("Shipped the toggle.")
+  })
+
+  test("the task log marks an adopted sub-chat, which a stop leaves running", async () => {
+    const { orchestrator, userChat } = await setup()
+    const root = await userChat()
+    const other = await userChat("something else")
+    const child = await orchestrator.createChat(root, { message: "work" })
+    await orchestrator.sendMessage(root, { chatId: other, message: "rebase", adopt: true })
+
+    const rows = orchestrator.getChildActivities(root)
+    expect(rows.find((row) => row.chatId === child.chatId)).not.toHaveProperty("adopted")
+    expect(rows.find((row) => row.chatId === other)).toMatchObject({ adopted: true, status: "running" })
+  })
+})

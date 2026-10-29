@@ -190,8 +190,9 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
       return { result: undefined, changed: chatAndSidebar(command.chatId) }
     },
 
-    async cancel(chatId: string): Promise<ChatCommandOutcome> {
-      await agent.cancel(chatId)
+    /** `cascade: false` stops only this chat's turn, and leaves its sub-chats running. */
+    async cancel(chatId: string, options?: { cascade?: boolean }): Promise<ChatCommandOutcome> {
+      await agent.cancel(chatId, options?.cascade === false ? { cascade: false } : undefined)
       return { result: undefined, changed: null }
     },
   }

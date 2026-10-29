@@ -109,6 +109,7 @@ const sendMessage = z.strictObject({
 
 const cancelChat = z.strictObject({
   chatId: z.string(),
+  cascade: z.boolean().optional().describe("Default true: the sub-chats it started stop too. false stops only its own turn, and they go on and still report to it."),
 })
 
 const updateChat = z.strictObject({
@@ -213,7 +214,8 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
     description: "Stop a chat's current turn, and every sub-chat running under it.",
     schema: cancelChat,
     async execute(input, context) {
-      return reply(await orchestration(context).cancelChat(context.chatId, cancelChat.parse(input).chatId))
+      const { chatId, cascade } = cancelChat.parse(input)
+      return reply(await orchestration(context).cancelChat(context.chatId, chatId, { cascade }))
     },
   },
   {
@@ -227,7 +229,7 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
   },
   {
     name: "update_queued_message",
-    description: "Remove a message waiting in a chat's queue, or deliver it now.",
+    description: "Remove a message waiting in a chat's queue, or deliver it now. A stopped chat holds its queue (queuePaused in its summary): nothing in it starts until one is delivered with send_now.",
     schema: updateQueuedMessage,
     async execute(input, context) {
       return reply(await orchestration(context).updateQueuedMessage(updateQueuedMessage.parse(input)))

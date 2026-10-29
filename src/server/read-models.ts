@@ -466,6 +466,12 @@ export function deriveChatSnapshot(
     .sort((a, b) => a.createdAt - b.createdAt)
 
   const status = deriveStatus(chat, activeStatuses.get(chat.id))
+  // The same rule as `ChatOrchestrator.isQueuePaused`, from what this has:
+  // a chat with a turn of its own going reads one of these statuses.
+  const turnGoing = status === "starting" || status === "running" || status === "waiting_for_user"
+  const queuePaused = chat.lastTurnOutcome === "cancelled"
+    && !turnGoing
+    && (state.queuedMessagesByChatId.get(chat.id)?.length ?? 0) > 0
   const runtime: ChatRuntime = {
     chatId: chat.id,
     projectId: project.id,
@@ -473,6 +479,7 @@ export function deriveChatSnapshot(
     title: chat.title,
     status,
     ...waitingOnField(status, waitingOn),
+    ...(queuePaused ? { queuePaused: true as const } : {}),
     isDraining: drainingChatIds.has(chat.id),
     provider: chat.provider,
     planMode: chat.planMode,

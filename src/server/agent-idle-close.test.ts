@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test"
-import { AgentCoordinator, MAX_IDLE_BACKGROUND_WAIT_MS, subagentHooks } from "./agent"
+import { AgentCoordinator, IDLE_SESSION_TIMEOUT_MS, MAX_IDLE_BACKGROUND_WAIT_MS, subagentHooks } from "./agent"
 import { ClaudeScheduledJobs, SCHEDULED_JOB_MARGIN_MS, type ClaudeScheduledJobReport } from "./claude-scheduled-jobs"
-import { DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES } from "../shared/types"
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
-const TIMEOUT = DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES * MINUTE
+const TIMEOUT = 30 * MINUTE
 
 function cronAt(at: number) {
   const date = new Date(at)
@@ -18,7 +17,7 @@ function cronAt(at: number) {
  * straight into `claudeSessions`, and a Codex manager that reports one pid.
  * The idle timer is the only thing that runs, on fake timers.
  */
-function idleHarness(options: { timeoutMinutes?: number } = {}) {
+function idleHarness() {
   const codex = { pids: new Map<string, number>(), pending: false, stopped: [] as string[] }
   let codexActivity: ((chatId: string) => void) | null = null
   const coordinator = new AgentCoordinator({
@@ -33,7 +32,6 @@ function idleHarness(options: { timeoutMinutes?: number } = {}) {
       },
       setProviderActivityListener: (listener: (chatId: string) => void) => { codexActivity = listener },
     } as never,
-    ...(options.timeoutMinutes !== undefined ? { getIdleSessionTimeoutMinutes: () => options.timeoutMinutes! } : {}),
   })
   const internals = coordinator as unknown as {
     notifySettled(chatId: string): void
@@ -93,8 +91,8 @@ afterEach(() => {
 })
 
 describe("idle agent sessions", () => {
-  test("the default timeout is 30 minutes", () => {
-    expect(DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES).toBe(30)
+  test("the timeout is 30 minutes, as in T3 Code", () => {
+    expect(IDLE_SESSION_TIMEOUT_MS).toBe(30 * MINUTE)
   })
 
   test("a settled Claude chat's process is closed once the timeout passes", () => {
@@ -108,11 +106,11 @@ describe("idle agent sessions", () => {
     expect(logs.some((line) => line.includes('"stage":"closed"') && line.includes('"provider":"claude"'))).toBe(true)
   })
 
-  test("a settled Codex chat's process is stopped once the timeout passes, and the setting sets the timeout", () => {
-    const { codex, settle, advance } = idleHarness({ timeoutMinutes: 10 })
+  test("a settled Codex chat's process is stopped once the timeout passes", () => {
+    const { codex, settle, advance } = idleHarness()
     codex.pids.set("chat-1", 4242)
     settle()
-    advance(10 * MINUTE - 1)
+    advance(TIMEOUT - 1)
     expect(codex.stopped).toEqual([])
     advance(1)
     expect(codex.stopped).toEqual(["chat-1"])

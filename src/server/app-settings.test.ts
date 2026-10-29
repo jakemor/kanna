@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { AppSettingsManager, readAppSettingsSnapshot } from "./app-settings"
-import { DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES, type AppSettingsSnapshot } from "../shared/types"
+import type { AppSettingsSnapshot } from "../shared/types"
 
 let tempDirs: string[] = []
 
@@ -33,7 +33,6 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     chatSoundId: "funk",
     chatBrowserNotificationPreference: "never",
     submitWhileRunning: "queue",
-    idleSessionTimeoutMinutes: DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
     paneVisibility: { widgets: "chat", terminal: "chat" },
     terminal: {
       scrollbackLines: 1_000,
@@ -314,31 +313,6 @@ describe("AppSettingsManager", () => {
     await writeFile(filePath, JSON.stringify({ submitWhileRunning: "yolo" }), "utf8")
     await manager.reload()
     expect(manager.getSnapshot().submitWhileRunning).toBe("queue")
-
-    manager.dispose()
-  })
-
-  test("the idle-session timeout defaults to 30 minutes, and keeps a value the user set", async () => {
-    const filePath = await createTempFilePath()
-    const manager = new AppSettingsManager(filePath)
-    await manager.initialize()
-    expect(manager.getSnapshot().idleSessionTimeoutMinutes).toBe(30)
-    // Not written until it is set, so a later default reaches this file too.
-    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("idleSessionTimeoutMinutes")
-
-    expect((await manager.writePatch({ idleSessionTimeoutMinutes: 5 })).idleSessionTimeoutMinutes).toBe(5)
-    await manager.reload()
-    expect(manager.getSnapshot().idleSessionTimeoutMinutes).toBe(5)
-
-    // A file the build with the 5-minute default wrote that default into.
-    await writeFile(filePath, JSON.stringify({ idleSessionTimeoutMinutes: 5 }), "utf8")
-    await manager.reload()
-    expect(manager.getSnapshot().idleSessionTimeoutMinutes).toBe(30)
-    // Any other value there was chosen.
-    await writeFile(filePath, JSON.stringify({ idleSessionTimeoutMinutes: 15 }), "utf8")
-    await manager.reload()
-    expect(manager.getSnapshot().idleSessionTimeoutMinutes).toBe(15)
-    expect(manager.getSnapshot()).not.toHaveProperty("idleSessionTimeoutChosen")
 
     manager.dispose()
   })

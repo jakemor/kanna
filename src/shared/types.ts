@@ -1304,11 +1304,6 @@ export interface FsListResult {
 /** Default for `newProjectsDirectory` — expanded server-side at use time. */
 export const DEFAULT_NEW_PROJECTS_DIRECTORY = "~/Kanna"
 
-/** Bounds of `idleSessionTimeoutMinutes`. 0 closes an idle session as soon as its turn ends. */
-export const DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES = 30
-export const MIN_IDLE_SESSION_TIMEOUT_MINUTES = 0
-export const MAX_IDLE_SESSION_TIMEOUT_MINUTES = 1440
-
 /** One repository from the signed-in user's GitHub account (via the local `gh` CLI). */
 export interface GitHubRepoSummary {
   /** e.g. "owner/repo". */
@@ -1363,13 +1358,6 @@ export interface AppSettingsSnapshot {
     terminal: PaneVisibilityScope
   }
   providerDefaults: ChatProviderPreferences
-  /**
-   * Minutes a chat's agent process stays alive after its turn ends with
-   * nothing left running in it. 0 closes it as soon as the turn ends. The next
-   * message resumes the session, so this trades a little startup time on that
-   * message for memory. Claude and Codex: see `AgentCoordinator.closeIdleSession`.
-   */
-  idleSessionTimeoutMinutes: number
   /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
   newSidebarEnabled: boolean
   /**
@@ -1439,7 +1427,6 @@ export interface AppSettingsPatch {
   chatSoundId?: ChatSoundId
   chatBrowserNotificationPreference?: ChatBrowserNotificationPreference
   submitWhileRunning?: SubmitWhileRunning
-  idleSessionTimeoutMinutes?: number
   newSidebarEnabled?: boolean
   projectIconsInChats?: boolean
   chatTabsEnabled?: boolean

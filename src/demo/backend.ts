@@ -38,7 +38,6 @@ import {
   type SidebarData,
   type TranscriptEntry,
   type UpdateSnapshot,
-  DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
 } from "../shared/types"
 import { createUnifiedPatch } from "./patch"
 import {
@@ -932,7 +931,6 @@ export function createDemoAppSettings(theme: AppThemePreference): AppSettingsSna
     transcript: { windowAssistantMessages: DEFAULT_TRANSCRIPT_WINDOW_ASSISTANT_MESSAGES },
     defaultProvider: "claude",
     submitWhileRunning: "queue",
-    idleSessionTimeoutMinutes: DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES,
     paneVisibility: { widgets: "chat", terminal: "chat" },
     providerDefaults: createDefaultProviderDefaults(),
     newSidebarEnabled: true,

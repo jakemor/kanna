@@ -80,7 +80,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES, resolveClaudeApiModelId } from "../shared/types"
+import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
@@ -343,12 +343,6 @@ export interface AgentCoordinatorArgs {
     provider: AgentProvider,
     query: { cwd: string; sessionToken: string | null | undefined }
   ) => SessionArtifactStatus
-  /**
-   * Settings' idle timeout, read each time a chat settles: minutes before an
-   * idle chat's agent process is closed (`scheduleIdleClose`). Absent means
-   * the built-in default.
-   */
-  getIdleSessionTimeoutMinutes?: () => number
 }
 
 
@@ -366,8 +360,8 @@ function isClaudeSteerLoggingEnabled() {
 
 /** How long a new turn waits for an idle-closed `claude` to exit before resuming anyway. */
 const IDLE_CLOSE_WAIT_MS = 5_000
-/** Shortest wait between idle checks, so a 0-minute timeout does not spin while work is pending. */
-const MIN_IDLE_RECHECK_MS = 60_000
+/** How long a settled chat's agent process stays up with nothing to do: T3 Code's value, for parity. */
+export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 /**
  * How long background work (a shell, a subagent) may hold an idle process
  * with nothing heard from the provider. Work that keeps reporting is never cut
@@ -1254,7 +1248,6 @@ export class AgentCoordinator {
    * process, with nothing heard from the provider since (T3's `pinnedSinceMs`).
    */
   private readonly idleWaitingSince = new Map<string, number>()
-  private readonly getIdleSessionTimeoutMinutes: () => number
   private shuttingDown = false
   /**
    * Chats, schedules and the links between them. Set after construction,
@@ -1286,7 +1279,6 @@ export class AgentCoordinator {
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
     this.secretsService = args.secrets ?? null
-    this.getIdleSessionTimeoutMinutes = args.getIdleSessionTimeoutMinutes ?? (() => DEFAULT_IDLE_SESSION_TIMEOUT_MINUTES)
   }
 
   /** Made on first use, so a coordinator that never sees a secret never touches a keychain. */
@@ -1539,7 +1531,7 @@ export class AgentCoordinator {
   //
   // A chat's agent process (Claude's `claude`, Codex's `codex app-server`)
   // outlives its turn so the next message skips the startup. Each holds a few
-  // hundred MB, so one left idle is closed after the Settings timeout. The
+  // hundred MB, so one left idle is closed after IDLE_SESSION_TIMEOUT_MS. The
   // next turn resumes it by `sessionToken`, the same way every chat comes
   // back after Kanna restarts. Cursor and Grok spawn a process per turn and
   // Pi runs in this process, so they have nothing to close.
@@ -1550,22 +1542,18 @@ export class AgentCoordinator {
   // process, and if so the check comes round again after another timeout,
   // until the provider has been silent for MAX_IDLE_BACKGROUND_WAIT_MS.
   // Unlike T3, a Claude process holding a scheduled job is never closed for
-  // being idle, and the timeout is a setting.
+  // being idle.
 
   /** Whether the chat has an agent process this can close. */
   private hasIdleClosableSession(chatId: string) {
     return this.claudeSessions.has(chatId) || (this.codexManager.getSessionPids().has(chatId) ?? false)
   }
 
-  private idleTimeoutMs() {
-    return Math.max(0, this.getIdleSessionTimeoutMinutes()) * 60_000
-  }
-
   /**
    * (Re)starts the chat's idle timer. Called whenever the chat settles and on
    * provider activity after that; a turn starting cancels it.
    */
-  private scheduleIdleClose(chatId: string, delayMs = this.idleTimeoutMs(), then: "check" | "restart" = "check") {
+  private scheduleIdleClose(chatId: string, delayMs = IDLE_SESSION_TIMEOUT_MS, then: "check" | "restart" = "check") {
     this.cancelIdleClose(chatId)
     if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return
     const timer = setTimeout(() => {
@@ -1640,7 +1628,7 @@ export class AgentCoordinator {
     if (busy) {
       // The turn's end restarts the timer; this check is for one that ends
       // without the chat settling.
-      if (reason === "idle") this.scheduleIdleClose(chatId, Math.max(MIN_IDLE_RECHECK_MS, this.idleTimeoutMs()))
+      if (reason === "idle") this.scheduleIdleClose(chatId)
       else logIdleClose("skipped", { chatId, reason, blocker: busy })
       return false
     }
@@ -1666,7 +1654,7 @@ export class AgentCoordinator {
         const since = this.idleWaitingSince.get(chatId) ?? now
         if (now - since < MAX_IDLE_BACKGROUND_WAIT_MS) {
           this.idleWaitingSince.set(chatId, since)
-          this.scheduleIdleClose(chatId, Math.max(MIN_IDLE_RECHECK_MS, this.idleTimeoutMs()))
+          this.scheduleIdleClose(chatId)
           logIdleClose("deferred", { chatId, blocker: work, waitedMs: now - since })
           return false
         }

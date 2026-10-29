@@ -297,7 +297,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     grokManager: machine.grokManager,
     piManager: machine.piManager,
     startClaudeSession: machine.startClaudeSession,
-    getIdleSessionTimeoutMinutes: () => appSettings.getSnapshot().idleSessionTimeoutMinutes,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {

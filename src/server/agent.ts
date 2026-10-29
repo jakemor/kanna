@@ -80,7 +80,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { resolveClaudeApiModelId } from "../shared/types"
+import { providerHasKannaTools, resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
@@ -2759,17 +2759,9 @@ export class AgentCoordinator {
    * transcript entry.
    */
   async send(command: Extract<ClientCommand, { type: "chat.send" }>, extras?: { source?: MessageSource }) {
-    let chatId = command.chatId
-
-
-    if (!chatId) {
-      if (!command.projectId) {
-        throw new Error("Missing projectId for new chat")
-      }
-      const created = await this.store.createChat(command.projectId, undefined, { delegator: command.delegator })
-      chatId = created.id
-      this.analytics.track("chat_created")
-    }
+    // A send that makes its chat goes through `ChatCommands.send`, which makes it first.
+    const chatId = command.chatId
+    if (!chatId) throw new Error("Missing chatId")
 
     const chat = this.store.requireChat(chatId)
     // Sending a message to an archived chat resurrects it (viewing alone
@@ -2795,6 +2787,12 @@ export class AgentCoordinator {
     }
 
     const provider = this.resolveProvider(command, chat.provider)
+    // The first send is when a new chat gets its provider. One without the
+    // Kanna tools has nothing to delegate with, so it starts as a normal chat
+    // whatever Delegator mode made it (see `ChatCommands.create`).
+    if (!chat.provider && chat.delegator && !providerHasKannaTools(provider)) {
+      await this.store.setChatDelegator(chatId, false)
+    }
     const settings = this.getProviderSettings(provider, command, chatId)
     // The count is of messages people send.
     if (!extras?.source) this.analytics.track("message_sent")

@@ -1743,8 +1743,6 @@ export class EventStore {
       if (chat.deletedAt || chat.archivedAt || chat.pinnedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
       if (chat.hasMessages) continue
-      // Made empty on purpose, to be sent to later.
-      if (chat.delegator) continue
       // Peek without inserting into the transcript cache — the prune sweep
       // must not evict actively streaming chats.
       const entries = this.transcriptCache.get(chat.id)

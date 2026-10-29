@@ -1,5 +1,5 @@
 import type { ClientCommand } from "../shared/protocol"
-import type { MessageSource } from "../shared/types"
+import { providerHasKannaTools, type MessageSource } from "../shared/types"
 import type { AgentCoordinator } from "./agent"
 import type { AnalyticsReporter } from "./analytics"
 import type { EventStore } from "./event-store"
@@ -60,20 +60,32 @@ interface ChatCommandsDeps {
   agent: Pick<AgentCoordinator, "send" | "enqueue" | "steer" | "dequeue" | "cancel" | "closeChat" | "forkChat">
     & Partial<Pick<AgentCoordinator, "closeIdleSession">>
   analytics: AnalyticsReporter
+  /** App settings' Delegator mode (`AppSettingsSnapshot.delegatorMode`). Off when absent. */
+  delegatorMode?: () => boolean
 }
 
 function chatAndSidebar(chatId: string): ChatChange {
   return { sidebar: true, chatIds: [chatId] }
 }
 
-export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps) {
-  return {
+export function createChatCommands({ store, agent, analytics, delegatorMode }: ChatCommandsDeps) {
+  const commands = {
+    /**
+     * The chat's role is fixed here, when it is made, and only an explicit
+     * flip (`setDelegator`) changes it after. A chat the user starts is a
+     * delegator while Delegator mode is on; a sub-chat is a worker unless the
+     * chat making it asks for a delegator (`delegator`). Nothing reads the
+     * role off the parent link later, so adopting a chat leaves it as it was.
+     * A provider without the Kanna tools is settled on its first send
+     * (`AgentCoordinator.send`), since an empty chat has no provider yet.
+     */
     async create(
       projectId: string,
       lineage?: ChatLineage,
       options?: { delegator?: boolean; chatId?: string; hidden?: boolean },
     ): Promise<ChatCommandOutcome<{ chatId: string }>> {
-      const chat = await store.createChat(projectId, lineage, options)
+      const delegator = options?.delegator ?? (!lineage?.parentChatId && Boolean(delegatorMode?.()))
+      const chat = await store.createChat(projectId, lineage, { ...options, delegator })
       // The count is of chats people start.
       if (!lineage?.createdByChatId) analytics.track("chat_created")
       return {
@@ -100,7 +112,7 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
     async setDelegator(chatId: string, delegator: boolean): Promise<ChatCommandOutcome> {
       // Grok is not given the chat tools, so it has nothing to hand work off
       // with. The clients do not offer it; this holds it for any client.
-      if (delegator && store.getChat(chatId)?.provider === "grok") {
+      if (delegator && !providerHasKannaTools(store.getChat(chatId)?.provider)) {
         throw new Error("A Grok chat cannot be a delegator: Grok has no chat tools to hand work to other chats.")
       }
       await store.setChatDelegator(chatId, delegator)
@@ -171,7 +183,13 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
 
     /** Starts a turn when the chat is idle, and queues behind the running one otherwise. */
     async send(command: Command<"chat.send">, extras?: { source?: MessageSource }) {
-      const result = await agent.send(command, extras)
+      // A send with no chat makes one, through `create`, so its role is decided there too.
+      let chatId = command.chatId
+      if (!chatId) {
+        if (!command.projectId) throw new Error("Missing projectId for new chat")
+        chatId = (await commands.create(command.projectId)).result.chatId
+      }
+      const result = await agent.send({ ...command, chatId }, extras)
       return { result, changed: null } satisfies ChatCommandOutcome<typeof result>
     },
 
@@ -197,6 +215,7 @@ export function createChatCommands({ store, agent, analytics }: ChatCommandsDeps
       return { result: undefined, changed: null }
     },
   }
+  return commands
 }
 
 export type ChatCommands = ReturnType<typeof createChatCommands>

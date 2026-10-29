@@ -1437,7 +1437,7 @@ describe("AgentCoordinator codex integration", () => {
 })
 
 describe("AgentCoordinator claude integration", () => {
-  test("tracks analytics for new chats, queued messages, and forks", async () => {
+  test("tracks analytics for sent and queued messages, and forks", async () => {
     const events = new AsyncEventQueue<any>()
     const analyticsEvents: string[] = []
     const store = createFakeStore()
@@ -1476,9 +1476,10 @@ describe("AgentCoordinator claude integration", () => {
       }),
     })
 
+    // A new chat's own count is `ChatCommands.create`'s, which makes it.
     await coordinator.send({
       type: "chat.send",
-      projectId: "project-1",
+      chatId: "chat-1",
       provider: "claude",
       content: "first message",
     })
@@ -1493,7 +1494,6 @@ describe("AgentCoordinator claude integration", () => {
     await coordinator.forkChat("chat-1")
 
     expect(analyticsEvents).toEqual([
-      "chat_created",
       "message_sent",
       "message_sent",
       "chat_created",
@@ -3406,7 +3406,7 @@ describe("subagent activity", () => {
         }
       },
     })
-    await coordinator.send({ type: "chat.send", projectId: "project-1", provider: "claude", content: "watch it" })
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "watch it" })
     await waitFor(() => report !== undefined)
 
     report!({ kind: "started", id: "m1", type: "monitor", label: "Watch deploy", stoppable: true })
@@ -3609,7 +3609,7 @@ describe("waiting on a subagent", () => {
       },
     })
     agent.onChatSettled = (chatId) => settled.push(chatId)
-    await agent.send({ type: "chat.send", projectId: "project-1", provider: "claude", content: "review this in the background" })
+    await agent.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "review this in the background" })
     await waitFor(() => report !== undefined)
 
     // While the turn runs the chat is running, whatever it has handed off.

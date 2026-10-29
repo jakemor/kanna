@@ -101,7 +101,14 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
 })
 
-async function setup(options?: { closeOutGraceMs?: number }) {
+/** A Grok harness whose turns end at once: Grok is the provider without the Kanna tools. */
+const fakeGrok = {
+  async startTurn(): Promise<HarnessTurn> {
+    return { provider: "grok", stream: (async function* () {})(), interrupt: async () => {}, close: () => {} }
+  },
+}
+
+async function setup(options?: { closeOutGraceMs?: number; delegatorMode?: boolean }) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-orchestrator-data-"))
   const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-orchestrator-project-"))
   const store = new EventStore(dataDir)
@@ -112,14 +119,17 @@ async function setup(options?: { closeOutGraceMs?: number }) {
     store,
     onStateChange: () => {},
     codexManager: codex as never,
+    grokManager: fakeGrok as never,
     generateTitle: async () => ({ title: null, usedFallback: true, failureMessage: null }),
   })
   let clock: number | null = null
+  let delegatorMode = options?.delegatorMode ?? false
   const pushes: ChatChange[] = []
+  const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter, delegatorMode: () => delegatorMode })
   const orchestrator = new ChatOrchestrator({
     store,
     agent,
-    commands: createChatCommands({ store, agent, analytics: NoopAnalyticsReporter }),
+    commands,
     push: (change) => { pushes.push(change) },
     now: () => clock ?? Date.now(),
     closeOutGraceMs: options?.closeOutGraceMs,
@@ -149,9 +159,11 @@ async function setup(options?: { closeOutGraceMs?: number }) {
     codex,
     agent,
     orchestrator,
+    commands,
     pushes,
     userChat,
     setClock: (value: number) => { clock = value },
+    setDelegatorMode: (on: boolean) => { delegatorMode = on },
     prompts: (chatId: string) => store.getMessages(chatId).filter((entry) => entry.kind === "user_prompt"),
   }
 }
@@ -1732,39 +1744,63 @@ describe("delegators", () => {
     return chat.id
   }
 
-  test("the flag is set at creation, empty or by the first send, and reaches the sidebar and the chat's snapshot", async () => {
-    const { store, project, agent, codex } = await setup()
-    const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter })
+  test("Delegator mode makes the user's new chats delegators, and the flag reaches the sidebar and the chat's snapshot", async () => {
+    const { store, project, agent, codex, commands, setDelegatorMode } = await setup({ delegatorMode: true })
     const snapshotOf = (chatId: string) => deriveChatSnapshot(store.state, agent.getChatStatuses(), new Set(), chatId, () => ({ messages: [], startIndex: 0, readAnchor: null }))
     const rowOf = (chatId: string) => deriveSidebarData(store.state, agent.getChatStatuses()).projectGroups[0]!.chats.find((chat) => chat.chatId === chatId)
 
-    // Made empty, to be sent to later.
-    const made = await commands.create(project.id, undefined, { delegator: true })
+    // Made empty, as the web client does, or by the send that starts it, as iOS does.
+    const made = await commands.create(project.id)
     expect(made.changed).toEqual({ sidebar: true, localProjects: true, chatIds: [made.result.chatId] })
-    expect(store.getChat(made.result.chatId)).toMatchObject({ delegator: true, hasMessages: false })
-    expect(rowOf(made.result.chatId)).toMatchObject({ delegator: true })
-    expect(snapshotOf(made.result.chatId)?.runtime).toMatchObject({ delegator: true })
+    const sent = await commands.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "ship the release" })
+    await until(() => codex.turnsFor(sent.result.chatId).length === 1)
+    for (const chatId of [made.result.chatId, sent.result.chatId]) {
+      expect(store.getChat(chatId)).toMatchObject({ delegator: true })
+      expect(rowOf(chatId)).toMatchObject({ delegator: true })
+      expect(snapshotOf(chatId)?.runtime).toMatchObject({ delegator: true })
+    }
+    expect(codex.turn(sent.result.chatId).delegator).toBe(true)
 
-    // Made by the send that starts it.
-    const sent = await agent.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "ship the release", delegator: true })
-    await until(() => codex.turnsFor(sent.chatId).length === 1)
-    expect(store.getChat(sent.chatId)).toMatchObject({ delegator: true })
-
-    // Every other chat has no such field, on the record or on the wire.
+    // With the mode off, a new chat is an ordinary one, with no such field on the record or on the wire.
+    setDelegatorMode(false)
     const plain = (await commands.create(project.id)).result.chatId
-    const plainSent = await agent.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "hi" })
-    // A send to a chat that exists does not change what it is.
-    await agent.send({ type: "chat.send", chatId: plain, provider: "codex", content: "hi", delegator: true })
-    for (const chatId of [plain, plainSent.chatId]) {
+    const plainSent = await commands.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "hi" })
+    await until(() => codex.turnsFor(plainSent.result.chatId).length === 1)
+    expect(codex.turn(plainSent.result.chatId).delegator).toBe(false)
+    for (const chatId of [plain, plainSent.result.chatId]) {
       expect(store.getChat(chatId)).not.toHaveProperty("delegator")
       expect(rowOf(chatId)).not.toHaveProperty("delegator")
       expect(snapshotOf(chatId)?.runtime).not.toHaveProperty("delegator")
     }
+
+    // The mode decides at creation only: chats made before a change keep their role.
+    setDelegatorMode(true)
+    expect(store.getChat(plain)).not.toHaveProperty("delegator")
+    setDelegatorMode(false)
+    expect(store.getChat(made.result.chatId)).toMatchObject({ delegator: true })
+    // And so does a restart: nothing rewrites a role when the store is read back.
+    const reopened = new EventStore(store.dataDir)
+    await reopened.initialize()
+    expect(reopened.getChat(made.result.chatId)).toMatchObject({ delegator: true })
+    expect(reopened.getChat(plain)).not.toHaveProperty("delegator")
   })
 
-  test("the flag can be changed later, survives a restart, and keeps an empty delegator from being cleared away", async () => {
-    const { store, project, agent } = await setup()
-    const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter })
+  test("a chat whose first send is to a provider without the Kanna tools stays an ordinary chat", async () => {
+    const { store, project, commands } = await setup({ delegatorMode: true })
+    const made = (await commands.create(project.id)).result.chatId
+    expect(store.getChat(made)).toMatchObject({ delegator: true })
+    await commands.send({ type: "chat.send", chatId: made, provider: "grok", content: "hi" })
+    expect(store.getChat(made)).not.toHaveProperty("delegator")
+
+    const sent = await commands.send({ type: "chat.send", projectId: project.id, provider: "grok", content: "hi" })
+    expect(store.getChat(sent.result.chatId)).not.toHaveProperty("delegator")
+
+    // And one cannot be made a delegator after.
+    await expect(commands.setDelegator(made, true)).rejects.toThrow("cannot be a delegator")
+  })
+
+  test("a chat's role can be flipped later, and survives a restart", async () => {
+    const { store, project, commands } = await setup()
     const born = (await commands.create(project.id, undefined, { delegator: true })).result.chatId
     const made = (await commands.create(project.id)).result.chatId
     const unmade = (await commands.create(project.id, undefined, { delegator: true })).result.chatId
@@ -1785,12 +1821,9 @@ describe("delegators", () => {
       expect(reopened.getChat(empty)).not.toHaveProperty("delegator")
     }
 
-    // An empty chat left lying is deleted in time. An empty delegator is waiting to be used.
+    // An empty chat left lying is deleted in time, a delegator like any other.
     const pruned = await store.pruneStaleEmptyChats({ now: Date.now() + 24 * 60 * 60_000 })
-    expect(pruned).toContain(empty)
-    expect(pruned).toContain(unmade)
-    expect(pruned).not.toContain(born)
-    expect(pruned).not.toContain(made)
+    expect(pruned.sort()).toEqual([born, made, unmade, empty].sort())
   })
 
   test("a delegator's turns are started with the delegator instructions, and no other chat's are", async () => {
@@ -1977,6 +2010,81 @@ describe("delegators", () => {
     const listed = orchestrator.listChats({}).chats
     expect(listed.find((chat) => chat.chatId === root)).toMatchObject({ delegator: true })
     expect(listed.find((chat) => chat.chatId === other)).not.toHaveProperty("delegator")
+  })
+
+  test("with the mode on, a sub-chat is a worker unless it is asked for as a delegator, and a separate chat follows the mode", async () => {
+    const context = await setup({ delegatorMode: true })
+    const { orchestrator, store, userChat, setDelegatorMode } = context
+    const root = await delegatorChat(context)
+    const worker = await orchestrator.createChat(root, { message: "audit the parser", title: "Parser audit" })
+    expect(store.getChat(worker.chatId)).not.toHaveProperty("delegator")
+    expect(worker).not.toHaveProperty("delegator")
+    const nested = await orchestrator.createChat(root, { message: "run the release", title: "Release", delegator: true })
+    expect(store.getChat(nested.chatId)).toMatchObject({ delegator: true, parentChatId: root })
+
+    // A chat that is not a sub-chat is the user's own, made as theirs are.
+    const other = await userChat("something else")
+    const separate = await orchestrator.createChat(other, { message: "separate work", title: "Separate", subchat: false })
+    expect(store.getChat(separate.chatId)).toMatchObject({ delegator: true })
+    expect(store.getChat(separate.chatId)?.parentChatId).toBeUndefined()
+    const asWorker = await orchestrator.createChat(other, { message: "more work", title: "More", subchat: false, delegator: false })
+    expect(store.getChat(asWorker.chatId)).not.toHaveProperty("delegator")
+    setDelegatorMode(false)
+    const offSeparate = await orchestrator.createChat(other, { message: "and more", title: "And more", subchat: false })
+    expect(store.getChat(offSeparate.chatId)).not.toHaveProperty("delegator")
+
+    // A provider without the Kanna tools cannot be asked for as one.
+    await expect(orchestrator.createChat(root, { message: "x", title: "X", provider: "grok", delegator: true })).rejects.toThrow("cannot be a delegator")
+  })
+
+  test("adopting a chat does not change its role", async () => {
+    const context = await setup({ delegatorMode: true })
+    const { orchestrator, store, codex, userChat } = context
+    const root = await delegatorChat(context)
+    const other = await delegatorChat(context, "another delegator")
+    const plain = await userChat("a chat of the user's")
+    for (const chatId of [other, plain]) codex.finish(chatId, "done")
+    await until(() => [other, plain].every((chatId) => orchestrator.readChat({ chatId }).chat.status === "completed"))
+
+    await orchestrator.sendMessage(root, { chatId: other, message: "take the docs", title: "another delegator" })
+    await orchestrator.sendMessage(root, { chatId: plain, message: "look at this", title: "a chat of the user's" })
+    expect(store.getChat(other)).toMatchObject({ parentChatId: root, adopted: true, delegator: true })
+    expect(store.getChat(plain)).toMatchObject({ parentChatId: root, adopted: true })
+    expect(store.getChat(plain)).not.toHaveProperty("delegator")
+  })
+
+  test("a fork keeps its source's role unless it is asked for another", async () => {
+    const context = await setup({ delegatorMode: true })
+    const { orchestrator, store, codex } = context
+    const root = await delegatorChat(context)
+    const worker = await orchestrator.createChat(root, { message: "audit the parser", title: "Parser audit" })
+    codex.turn(worker.chatId).events.push({ type: "session_token", sessionToken: "thread-worker" })
+    codex.finish(worker.chatId, "Found two bugs.")
+    await until(() => orchestrator.readChat({ chatId: worker.chatId }).chat.status === "completed")
+
+    const workerFork = await orchestrator.forkChat(root, { chatId: worker.chatId, title: "Parser fixes" })
+    expect(store.getChat(workerFork.chatId)).not.toHaveProperty("delegator")
+    const promoted = await orchestrator.forkChat(root, { chatId: worker.chatId, title: "Parser rewrite", delegator: true })
+    expect(store.getChat(promoted.chatId)).toMatchObject({ delegator: true })
+    expect(store.getChat(worker.chatId)).not.toHaveProperty("delegator")
+  })
+
+  test("update_chat flips a chat's role, says when it takes effect, and refuses a provider without the tools", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat("do the thing")
+    const made = await orchestrator.updateChat(root, { delegator: true })
+    expect(store.getChat(root)).toMatchObject({ delegator: true })
+    expect(made).toMatchObject({ delegator: true, roleNote: expect.stringContaining("next turn") })
+    const unmade = await orchestrator.updateChat(root, { delegator: false })
+    expect(store.getChat(root)).not.toHaveProperty("delegator")
+    expect(unmade).toMatchObject({ roleNote: expect.stringContaining("works directly") })
+    // No flip, no note.
+    expect(await orchestrator.updateChat(root, { delegator: false })).not.toHaveProperty("roleNote")
+    // A provider staged for the next turn counts, and nothing is changed when it is refused.
+    await expect(orchestrator.updateChat(root, { delegator: true, provider: "grok" })).rejects.toThrow("cannot be a delegator")
+    expect(store.getChat(root)).not.toHaveProperty("delegator")
+    expect(store.getChat(root)?.nextRun).toBeUndefined()
   })
 })
 

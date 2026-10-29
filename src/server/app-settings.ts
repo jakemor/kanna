@@ -66,6 +66,7 @@ interface AppSettingsFile {
   }
   newSidebarEnabled?: unknown
   projectIconsInChats?: unknown
+  delegatorMode?: unknown
   chatTabsEnabled?: unknown
   widgetsPeekEnabled?: unknown
   newProjectsDirectory?: unknown
@@ -191,6 +192,7 @@ function toFilePayload(state: AppSettingsState) {
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
     ...(state.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
+    ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
@@ -223,6 +225,7 @@ function toSnapshot(
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
     ...(state.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
+    ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
@@ -312,6 +315,7 @@ function normalizeAppSettings(
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     newSidebarEnabled,
     ...(source?.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
+    ...(source?.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(source?.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(source?.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
     newProjectsDirectory,
@@ -354,6 +358,7 @@ function toComparablePayload(source: AppSettingsFile) {
     providerDefaults: source.providerDefaults,
     newSidebarEnabled: source.newSidebarEnabled,
     projectIconsInChats: source.projectIconsInChats,
+    delegatorMode: source.delegatorMode,
     chatTabsEnabled: source.chatTabsEnabled,
     widgetsPeekEnabled: source.widgetsPeekEnabled,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"

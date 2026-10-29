@@ -9,7 +9,7 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import { stripSystemMessages } from "../shared/message-preview"
-import { getCodexReasoningOptions } from "../shared/types"
+import { getCodexReasoningOptions, providerHasKannaTools } from "../shared/types"
 import { buildAgentToAgentNote, type AgentToAgentTurn } from "./agent-to-agent"
 import type { ChatChange, ChatCommands } from "./chat-commands"
 import type { EventStore } from "./event-store"
@@ -1014,6 +1014,11 @@ export class ChatOrchestrator {
     subchat?: boolean
     /** Overrides where it is shown. By default a sub-chat is hidden and any other chat listed. */
     showInSidebar?: boolean
+    /**
+     * Makes it a delegator, or not. By default a sub-chat is a worker and any
+     * other chat follows Delegator mode, as the user's own do (`ChatCommands.create`).
+     */
+    delegator?: boolean
   }) {
     const caller = this.requireChat(actorChatId)
     // A delegator's chats are always under it. See the note at the top.
@@ -1031,11 +1036,12 @@ export class ChatOrchestrator {
       planMode: false,
       autoPlan: false,
     })
+    if (input.delegator) this.checkCanDelegate(run.provider)
 
     const created = await this.commands.create(projectId, {
       createdByChatId: actorChatId,
       ...(subchat ? { parentChatId: actorChatId } : {}),
-    }, { hidden })
+    }, { hidden, ...(input.delegator !== undefined ? { delegator: input.delegator } : {}) })
     const chat = this.requireChat(created.result.chatId)
     if (input.title?.trim()) await this.commands.rename(chat.id, input.title)
     await this.send(actorChatId, chat, input.message, run, { report: subchat })
@@ -1051,6 +1057,8 @@ export class ChatOrchestrator {
     subchat?: boolean
     /** As for `createChat`. */
     showInSidebar?: boolean
+    /** Makes the fork a delegator, or not. By default it keeps the source's role. */
+    delegator?: boolean
   }) {
     const source = this.requireChat(input.chatId ?? actorChatId)
     const caller = this.requireChat(actorChatId)
@@ -1059,12 +1067,16 @@ export class ChatOrchestrator {
     const subchat = this.isDelegating(caller) ? true : input.subchat ?? Boolean(input.message)
     const hidden = input.showInSidebar === undefined ? subchat : !input.showInSidebar
     if (hidden && !subchat) throw new Error(UNLISTED_ORPHAN_ERROR)
+    if (input.delegator) this.checkCanDelegate(input.provider ?? source.provider)
     this.checkBudget(actorChatId)
     const forked = await this.commands.fork(source.id, {
       createdByChatId: actorChatId,
       ...(subchat ? { parentChatId: actorChatId } : {}),
     }, { hidden })
     const chat = this.requireChat(forked.result.chatId)
+    if (input.delegator !== undefined && Boolean(chat.delegator) !== input.delegator) {
+      await this.commands.setDelegator(chat.id, input.delegator)
+    }
     if (input.title?.trim()) await this.commands.rename(chat.id, input.title.trim())
     if (input.message) {
       const run = this.resolveRun(actorChatId, input, {
@@ -1297,6 +1309,8 @@ export class ChatOrchestrator {
     archived?: boolean
     /** As on `sendMessage`, for a sub-chat of this one, without the message. */
     showInSidebar?: boolean
+    /** Makes the chat a delegator, or an ordinary chat again. See `ChatCommands.setDelegator`. */
+    delegator?: boolean
   }) {
     const chat = this.requireChat(input.chatId ?? actorChatId)
     if (input.title !== undefined && !input.title.trim()) throw new Error("The title cannot be empty.")
@@ -1308,6 +1322,8 @@ export class ChatOrchestrator {
     // The rules a message's settings follow, the plan-mode ceiling among them:
     // a chat in plan mode cannot stage its way out of it, its own next turn included.
     const run = staging ? this.resolveRun(actorChatId, input, this.ownRun(chat)) : null
+    const flipsRole = input.delegator !== undefined && input.delegator !== Boolean(chat.delegator)
+    if (flipsRole && input.delegator) this.checkCanDelegate(run?.provider ?? chat.provider)
     const changes: Array<ChatChange | null> = []
     // Compared with queued messages' `createdAt`, so on the store's clock.
     if (run) await this.store.setChatNextRun(chat.id, { ...run, setAt: Date.now() })
@@ -1316,6 +1332,7 @@ export class ChatOrchestrator {
     if (input.archived === false && chat.archivedAt) changes.push((await this.commands.unarchive(chat.id)).changed)
     if (input.pinned !== undefined) changes.push((await this.commands.setPinned(chat.id, input.pinned)).changed)
     if (input.done !== undefined) changes.push((await this.commands.setDone(chat.id, input.done)).changed)
+    if (flipsRole) changes.push((await this.commands.setDelegator(chat.id, input.delegator!)).changed)
     if (input.archived && !chat.archivedAt) changes.push((await this.commands.archive(chat.id)).changed)
     this.push({
       sidebar: true,
@@ -1324,7 +1341,19 @@ export class ChatOrchestrator {
     })
     // An empty chat is deleted by archiving, so there may be nothing left to describe.
     const updated = this.store.getChat(chat.id)
-    return updated ? this.summarize(updated) : { chatId: chat.id, deleted: true as const }
+    if (!updated) return { chatId: chat.id, deleted: true as const }
+    return {
+      ...this.summarize(updated),
+      // The role is in the system prompt, which a running turn cannot change.
+      ...(flipsRole ? { roleNote: `${input.delegator ? "It delegates" : "It works directly"} from its next turn, which restarts its provider session with the conversation carried over.` } : {}),
+    }
+  }
+
+  /** A delegator hands work off with the Kanna tools, which some providers are not given. */
+  private checkCanDelegate(provider: AgentProvider | null | undefined) {
+    if (!providerHasKannaTools(provider)) {
+      throw new Error(`A ${provider} chat cannot be a delegator: it has no Kanna tools to hand work to other chats with.`)
+    }
   }
 
   async updateQueuedMessage(input: { chatId: string; queuedMessageId: string; action: "remove" | "send_now" }) {

@@ -272,7 +272,12 @@ export function createWsRouter({
     await chatCreations.get(chatId)?.catch(() => {})
   }
   const resolvedAnalytics = analytics ?? NoopAnalyticsReporter
-  const chatCommands = providedChatCommands ?? createChatCommands({ store, agent, analytics: resolvedAnalytics })
+  const chatCommands = providedChatCommands ?? createChatCommands({
+    store,
+    agent,
+    analytics: resolvedAnalytics,
+    delegatorMode: () => appSettings.getSnapshot().delegatorMode !== false,
+  })
 
   /**
    * Every chat that is not at rest: a turn in flight, or waiting on a
@@ -1655,7 +1660,7 @@ export function createWsRouter({
         // The chat actions are defined in chat-commands.ts, where the agents'
         // tools reach them too. Only the ack and the push are done here.
         case "chat.create": {
-          const creation = chatCommands.create(command.projectId, undefined, { delegator: command.delegator, chatId: command.chatId })
+          const creation = chatCommands.create(command.projectId, undefined, { chatId: command.chatId })
           if (command.chatId !== undefined) {
             const requestedId = command.chatId
             chatCreations.set(requestedId, creation)

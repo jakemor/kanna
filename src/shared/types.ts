@@ -969,6 +969,15 @@ export function supportsClaudeMaxReasoningEffort(modelId: string): boolean {
   return Boolean(getClaudeModelOption(modelId)?.supportsMaxReasoningEffort)
 }
 
+/**
+ * Whether a chat on this provider is handed the Kanna tools, which a
+ * delegator hands work off with. Grok's CLI is not given them, so a Grok chat
+ * is never made a delegator.
+ */
+export function providerHasKannaTools(provider: AgentProvider | null | undefined): boolean {
+  return provider !== "grok"
+}
+
 export function supportsProviderFastMode(provider: AgentProvider, modelId: string): boolean {
   return Boolean(getProviderModelOption(provider, modelId)?.supportsFastMode)
 }
@@ -1371,6 +1380,13 @@ export interface AppSettingsSnapshot {
    */
   projectIconsInChats?: boolean
   /**
+   * Delegator mode: a chat the user starts (one with no parent) is made a
+   * delegator (`ChatRecord.delegator`). It decides only when a chat is made,
+   * so turning it off leaves every existing delegator one. On unless false,
+   * and absent when on.
+   */
+  delegatorMode?: boolean
+  /**
    * Show the chats you have open as tabs in the chat's title bar, in place of
    * the one chat's title. Off unless true, and absent when off. The tabs
    * themselves are each browser's own; this is only whether to show them.
@@ -1434,6 +1450,7 @@ export interface AppSettingsPatch {
   submitWhileRunning?: SubmitWhileRunning
   newSidebarEnabled?: boolean
   projectIconsInChats?: boolean
+  delegatorMode?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
   newProjectsDirectory?: string

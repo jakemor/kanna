@@ -84,6 +84,7 @@ const createChat = z.strictObject({
   title: requiredTitle("create_chat needs a title: name the work the new chat does.").describe(TITLE_DESCRIPTION),
   subchat: z.boolean().optional().describe("Default true: its result is sent back to this chat when it finishes, and stopping this chat stops it. false makes an independent chat for the user."),
   showInSidebar: z.boolean().optional().describe(SHOW_IN_SIDEBAR_DESCRIPTION),
+  delegator: z.boolean().optional().describe("true makes it a delegator, which hands its work on to chats of its own: for a piece of work big enough to coordinate. By default a sub-chat does the work itself."),
   projectId: z.string().optional().describe("Defaults to this chat's project."),
   ...runOptions,
 })
@@ -94,6 +95,7 @@ const forkChat = z.strictObject({
   title: requiredTitle("fork_chat needs a title: a fork does new work, and is named for it.").describe("Required: a short title for the new work the fork does, not the original's. A fork is how a chat's context is reused for new work, so it is named for that work."),
   subchat: z.boolean().optional().describe("Whether the copy reports back to this chat. Defaults to true when a message is given."),
   showInSidebar: z.boolean().optional().describe(SHOW_IN_SIDEBAR_DESCRIPTION),
+  delegator: z.boolean().optional().describe("Makes the copy a delegator (true) or a chat that does its work itself (false). By default it keeps the original's."),
   ...runOptions,
 })
 
@@ -119,6 +121,7 @@ const updateChat = z.strictObject({
   done: z.boolean().optional().describe("Mark the chat done, or not done."),
   archived: z.boolean().optional().describe("true puts the chat away; it does not stop a running turn. false brings it back."),
   showInSidebar: z.boolean().optional().describe("Lists the chat in the user's sidebar (true) or takes it out (false). Only for a sub-chat of this one: one it started or adopted. Pass it only when the user asks to see the chat in their sidebar, or to put it away there. It stays a sub-chat either way."),
+  delegator: z.boolean().optional().describe("true makes the chat a delegator, which hands work to other chats; false makes it do its work itself. Takes effect on its next turn, which restarts its provider session."),
   provider: z.string().optional().describe("claude, codex, cursor, grok or pi, for the chat's next turn. get_context lists them."),
   model: z.string().optional().describe("A model id from get_context, for the chat's next turn. Defaults to the chat's own when the provider is unchanged."),
   effort: z.string().optional().describe("Reasoning effort for the chat's next turn, one the model offers. get_context lists each provider's."),
@@ -187,8 +190,8 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
     description: "Start a new chat for new work, with a first message, on any provider and model, and a title naming that work (required). Returns at once. By default it is a sub-chat of this one: its reply arrives here as a message when its turn ends. If it is still waiting on work it handed off, the message says so and another follows when that work comes back.",
     schema: createChat,
     async execute(input, context) {
-      const { message, title, subchat, showInSidebar, projectId, ...run } = createChat.parse(input)
-      return reply(await orchestration(context).createChat(context.chatId, { message, title, subchat, showInSidebar, projectId, ...(run as Run) }))
+      const { message, title, subchat, showInSidebar, delegator, projectId, ...run } = createChat.parse(input)
+      return reply(await orchestration(context).createChat(context.chatId, { message, title, subchat, showInSidebar, delegator, projectId, ...(run as Run) }))
     },
   },
   {
@@ -196,8 +199,8 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
     description: "Copy a chat, conversation included, into a new chat that continues separately. The default way to take on new work that needs an existing chat's context: the fork does the new work, under a title for it (required), and the original stays one timeline, untouched.",
     schema: forkChat,
     async execute(input, context) {
-      const { chatId, message, title, subchat, showInSidebar, ...run } = forkChat.parse(input)
-      return reply(await orchestration(context).forkChat(context.chatId, { chatId, message, title, subchat, showInSidebar, ...(run as Run) }))
+      const { chatId, message, title, subchat, showInSidebar, delegator, ...run } = forkChat.parse(input)
+      return reply(await orchestration(context).forkChat(context.chatId, { chatId, message, title, subchat, showInSidebar, delegator, ...(run as Run) }))
     },
   },
   {
@@ -220,7 +223,7 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
   },
   {
     name: "update_chat",
-    description: "Change a chat's settings without sending it a message: rename it, pin it, mark it done, archive it, show it in the sidebar or take it out, or set the provider, model, effort and plan mode its next turn runs with. These apply to the next turn and do not start one; the result lists them as nextRun until it starts. A message already in its queue keeps the settings it was sent with. send_message, create_chat and fork_chat take the same settings with a message.",
+    description: "Change a chat's settings without sending it a message: rename it, pin it, mark it done, archive it, show it in the sidebar or take it out, make it a delegator or not, or set the provider, model, effort and plan mode its next turn runs with. These apply to the next turn and do not start one; the result lists them as nextRun until it starts. A message already in its queue keeps the settings it was sent with. send_message, create_chat and fork_chat take the same settings with a message.",
     schema: updateChat,
     async execute(input, context) {
       const parsed = updateChat.parse(input)

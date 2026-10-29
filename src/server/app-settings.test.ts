@@ -317,6 +317,25 @@ describe("AppSettingsManager", () => {
     manager.dispose()
   })
 
+  test("Delegator mode is on unless turned off, and is written only when off", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("delegatorMode")
+    expect((await manager.writePatch({ delegatorMode: false })).delegatorMode).toBe(false)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { delegatorMode?: boolean }).delegatorMode).toBe(false)
+    expect(await manager.writePatch({ delegatorMode: true })).not.toHaveProperty("delegatorMode")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("delegatorMode")
+
+    // Anything but false is on.
+    await writeFile(filePath, JSON.stringify({ delegatorMode: "no" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot()).not.toHaveProperty("delegatorMode")
+
+    manager.dispose()
+  })
+
   test("keeps pane visibility per chat by default, and patches one pane without the other", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)

@@ -313,7 +313,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   // Its pushes go through `router`, which exists by the time anything can fire.
   // One set of chat actions for both callers: the router runs them for the
   // user, the orchestrator for an agent.
-  const chatCommands = createChatCommands({ store, agent, analytics })
+  const chatCommands = createChatCommands({
+    store,
+    agent,
+    analytics,
+    delegatorMode: () => appSettings.getSnapshot().delegatorMode !== false,
+  })
   const orchestrator = new ChatOrchestrator({
     store,
     agent,

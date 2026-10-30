@@ -23,8 +23,8 @@ import { Switch } from "../ui/switch"
 
 /**
  * The context meter lives in the menu's footer; from this share of the
- * window on, the harness button also wears it as a ring badge. The same
- * line as iOS.
+ * window on, the harness button also wears a dot in the ring's colour. The
+ * same line as iOS.
  */
 export const CONTEXT_WARNING_PERCENT = 90
 
@@ -34,7 +34,8 @@ export function isContextNearlyFull(usage: ContextWindowSnapshot | null | undefi
 
 /**
  * How much of the window is used, in Kanna's colour at every level: the
- * badge appearing at all is the warning, so the ring does not change colour.
+ * button's dot appearing at all is the warning, so the ring does not change
+ * colour.
  */
 function ContextRing({ percent, className }: { percent: number; className?: string }) {
   const radius = 6
@@ -119,10 +120,11 @@ function MenuSelectRow({
 const ADD_MODELS_VALUE = "__kanna_add_models__"
 
 /**
- * The harness icon with its status badges. Context nearly full: a ring badge
- * showing how full, top right. A staged change (a harness switch waiting for
- * the next send): an amber dot, top right, or top left when the ring holds
- * that corner. The mark itself is never tinted.
+ * The harness icon with its status badges. Context nearly full: a dot in
+ * Kanna's colour, top right; the footer's ring says how full. A staged change
+ * (a harness switch waiting for the next send): an amber dot, top right, or
+ * top left when the context dot holds that corner. The mark itself is never
+ * tinted.
  */
 export function HarnessStatusMarks({
   provider,
@@ -135,18 +137,16 @@ export function HarnessStatusMarks({
   staged: boolean
 }) {
   const Icon = PROVIDER_ICONS[provider]
-  const ring = contextPercent !== null && contextPercent >= CONTEXT_WARNING_PERCENT
+  const full = contextPercent !== null && contextPercent >= CONTEXT_WARNING_PERCENT
   return (
     <span className="relative flex">
       <Icon className="h-4 w-4 text-foreground" />
-      {ring ? (
+      {full ? (
         <span
           aria-hidden
           data-badge="context"
-          className="absolute -right-1.5 -top-1.5 flex rounded-full bg-background dark:bg-card"
-        >
-          <ContextRing percent={contextPercent} className="h-3 w-3" />
-        </span>
+          className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-logo ring-2 ring-background dark:ring-card"
+        />
       ) : null}
       {staged ? (
         <span
@@ -154,7 +154,7 @@ export function HarnessStatusMarks({
           data-badge="staged"
           className={cn(
             "absolute -top-1 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-background dark:ring-card",
-            ring ? "-left-1" : "-right-1",
+            full ? "-left-1" : "-right-1",
           )}
         />
       ) : null}

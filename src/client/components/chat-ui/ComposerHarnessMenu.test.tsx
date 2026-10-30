@@ -170,11 +170,11 @@ describe("HarnessStatusMarks", () => {
   const marks = (contextPercent: number | null, staged: boolean) =>
     renderToStaticMarkup(<HarnessStatusMarks provider="claude" contextPercent={contextPercent} staged={staged} />)
 
-  test("no badge below 90% of the context window, a ring badge from 90%", () => {
+  test("no badge below 90% of the context window, a plain dot in Kanna's colour from 90%", () => {
     expect(marks(89, false)).not.toContain("data-badge")
     const full = marks(90, false)
-    expect(full).toContain('data-badge="context"')
-    expect(full).toContain("text-logo")
+    expect(full).toMatch(/data-badge="context" class="[^"]*h-2 w-2 rounded-full bg-logo/)
+    expect(full).not.toContain("<circle")
     expect(full).not.toContain('data-badge="staged"')
   })
 
@@ -187,9 +187,9 @@ describe("HarnessStatusMarks", () => {
     expect(html).not.toContain('data-badge="context"')
   })
 
-  test("both at once: the ring keeps the top right, the dot moves to the top left", () => {
+  test("both at once: the context dot keeps the top right, the amber dot moves to the top left", () => {
     const html = marks(95, true)
-    expect(html).toMatch(/data-badge="context" class="[^"]*-right-1\.5/)
+    expect(html).toMatch(/data-badge="context" class="[^"]*-right-1 /)
     expect(html).toMatch(/data-badge="staged" class="[^"]*-left-1/)
   })
 })

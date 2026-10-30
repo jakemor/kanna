@@ -1563,7 +1563,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           >
             {renderField()}
             {renderPlus("h-9 w-9", phoneBusy)}
-            <span data-slot="harness" style={{ gridArea: "harness" }} className="flex shrink-0">
+            <span data-slot="harness" style={{ gridArea: "harness" }} className="flex min-w-0">
               {recording ? (
                 <Button
                   type="button"

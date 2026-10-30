@@ -371,6 +371,8 @@ export function ComposerHarnessMenu({
   const modelLabel = resolveModelLabel(providerConfig?.models ?? [], effectiveState.model)
   const providerLabel = selectedProvider === "claude" ? "Claude" : providerConfig?.label ?? selectedProvider
   const contextWarning = isContextNearlyFull(contextWindow)
+  // The menu's Effort row's label, said faintly after the model in the card.
+  const effortLabel = optionControls.reasoning?.options.find((option) => option.id === optionControls.reasoning?.selectedId)?.label
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -378,9 +380,11 @@ export function ComposerHarnessMenu({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`${providerLabel}, ${modelLabel}${contextWarning ? ", context nearly full" : ""}${providerSwitchPending ? ", switches on your next message" : ""}. Harness and model`}
+          aria-label={`${providerLabel}, ${modelLabel}${showModel && effortLabel ? ` ${effortLabel}` : ""}${contextWarning ? ", context nearly full" : ""}${providerSwitchPending ? ", switches on your next message" : ""}. Harness and model`}
           className={cn(
-            "flex shrink-0 items-center justify-center gap-1.5 rounded-full text-sm transition-colors hover:bg-muted/50 disabled:opacity-70",
+            // Named, it may shrink in a narrow card: the effort goes first, then the model.
+            "flex", showModel ? "min-w-0" : "shrink-0",
+            "items-center justify-center gap-1.5 rounded-full text-sm transition-colors hover:bg-muted/50 disabled:opacity-70",
             "data-[state=open]:bg-muted/50",
             className,
           )}
@@ -391,7 +395,14 @@ export function ComposerHarnessMenu({
             contextPercent={contextWindow?.usedPercentage ?? null}
             staged={providerSwitchPending}
           />
-          {showModel ? <span className="whitespace-nowrap text-foreground">{modelLabel}</span> : null}
+          {showModel ? (
+            <span className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
+              <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
+              {effortLabel ? (
+                <span data-part="effort" className="min-w-0 shrink-[1000] truncate text-muted-foreground/70">{effortLabel}</span>
+              ) : null}
+            </span>
+          ) : null}
         </button>
       </PopoverTrigger>
       {providerConfig ? (

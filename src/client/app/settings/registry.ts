@@ -226,12 +226,6 @@ export const SETTINGS_ROWS = defineRows({
     description: "Use this machine from anywhere with a personal URL.",
     keywords: ["cloud", "pair", "pairing", "remote", "url", "link", "fleet", "setup", "connect"],
   },
-  cloudSetupPrompt: {
-    sectionId: "cloud",
-    title: "Show Setup Prompt in the Sidebar",
-    description: "Show \"Setup Kanna Cloud\" in the sidebar. Turn it off if Kanna Cloud isn't allowed where you work.",
-    keywords: ["cloud", "pair", "remote", "url", "sidebar", "setup", "enterprise", "hide", "dismiss", "prompt"],
-  },
 
   // Providers
   defaultProvider: {

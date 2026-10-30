@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { normalizeToolCall } from "../../../shared/tools"
 import type { ChatAttachment, TranscriptEntry } from "../../../shared/types"
 import type { ViewerAttachment } from "../../stores/viewerStore"
-import { attachmentNavigation, chatAttachmentSequence, stepAttachmentIndex } from "./attachmentSequence"
+import { attachmentNavigation, chatAttachmentSequence } from "./attachmentSequence"
 
 let nextId = 0
 function prompt(attachments: ChatAttachment[]): TranscriptEntry {
@@ -64,24 +64,39 @@ describe("chatAttachmentSequence", () => {
 })
 
 describe("stepping", () => {
-  test("loops round at both ends", () => {
-    expect(stepAttachmentIndex(5, 6, "next")).toBe(0)
-    expect(stepAttachmentIndex(0, 6, "previous")).toBe(5)
-    expect(stepAttachmentIndex(2, 6, "next")).toBe(3)
-    expect(stepAttachmentIndex(2, 6, "previous")).toBe(1)
-  })
-
   const sequence = ["1.png", "2.png", "3.pdf"].map((name) => ({ url: `/api/chats/c1/media/${name}`, name, mimeType: "image/png", size: 1 }))
 
-  test("finds the open attachment in the list, and shows the next or previous, round the ends", () => {
+  function stepsFrom(index: number) {
     const shown: string[] = []
-    const navigation = attachmentNavigation(sequence, sequence[2]!, (attachment) => shown.push(attachment.name))!
-    expect(navigation).toMatchObject({ index: 2, count: 3, horizontal: true })
-    expect(navigation.hasNext).toBeUndefined()
-    expect(navigation.hasPrevious).toBeUndefined()
+    const edges: string[] = []
+    const navigation = attachmentNavigation(sequence, sequence[index]!, (attachment, direction) => shown.push(`${direction}:${attachment.name}`), (direction) => edges.push(direction))!
+    return { navigation, shown, edges }
+  }
+
+  test("steps to the neighbour either side, saying which way", () => {
+    const { navigation, shown, edges } = stepsFrom(1)
+    expect(navigation).toMatchObject({ index: 1, count: 3, horizontal: true, hasPrevious: true, hasNext: true })
     navigation.onNext()
     navigation.onPrevious()
-    expect(shown).toEqual(["1.png", "2.png"])
+    expect(shown).toEqual(["next:3.pdf", "previous:1.png"])
+    expect(edges).toEqual([])
+  })
+
+  test("does not loop: past the last is an edge, and shows nothing", () => {
+    const { navigation, shown, edges } = stepsFrom(2)
+    expect(navigation).toMatchObject({ index: 2, hasNext: false, hasPrevious: true })
+    navigation.onNext()
+    expect(shown).toEqual([])
+    expect(edges).toEqual(["next"])
+  })
+
+  test("does not loop: before the first is an edge, and shows nothing", () => {
+    const { navigation, shown, edges } = stepsFrom(0)
+    expect(navigation).toMatchObject({ index: 0, hasPrevious: false, hasNext: true })
+    navigation.onPrevious()
+    navigation.onEdge?.("previous")
+    expect(shown).toEqual([])
+    expect(edges).toEqual(["previous", "previous"])
   })
 
   test("none for an attachment not in the list, or a list of one", () => {

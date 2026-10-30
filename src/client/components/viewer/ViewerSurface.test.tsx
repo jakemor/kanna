@@ -78,24 +78,49 @@ describe("the navigation's buttons", () => {
 })
 
 describe("an attachment's steps in the header", () => {
-  test("say where you are, point sideways, and are never disabled", async () => {
+  async function render(index: number) {
     const { renderToStaticMarkup } = await import("react-dom/server")
     const { ViewerSurface } = await import("./ViewerSurface")
     const { TooltipProvider } = await import("../ui/tooltip")
     const { attachmentNavigation } = await import("./attachmentSequence")
-    const sequence = Array.from({ length: 6 }, (_, index) => ({ url: `/a/${index}.png`, name: `${index}.png`, mimeType: "image/png", size: 1 }))
-    const html = renderToStaticMarkup(
+    const sequence = Array.from({ length: 6 }, (_, item) => ({ url: `/a/${item}.png`, name: `${item}.png`, mimeType: "image/png", size: 1 }))
+    return renderToStaticMarkup(
       <TooltipProvider>
-      <ViewerSurface label="Preview 5.png" title="5.png" onClose={() => {}} navigation={attachmentNavigation(sequence, sequence[5]!, () => {})}>
+      <ViewerSurface label={`Preview ${index}.png`} title={`${index}.png`} onClose={() => {}} navigation={attachmentNavigation(sequence, sequence[index]!, () => {})}>
         body
       </ViewerSurface>
       </TooltipProvider>,
     )
-    expect(html).toContain(">6 of 6<")
-    expect(html).toContain('aria-label="Previous attachment (k)"')
-    expect(html).toContain('aria-label="Next attachment (j)"')
-    expect(html).not.toContain("aria-disabled")
+  }
+
+  test("say where you are, and point sideways", async () => {
+    const html = await render(2)
+    expect(html).toContain(">3 of 6<")
     expect(html).toContain("lucide-chevron-left")
     expect(html).toContain("lucide-chevron-right")
+    expect(html).not.toContain("aria-disabled")
+  })
+
+  test("dim Next on the last and Previous on the first", async () => {
+    const last = await render(5)
+    expect(last).toContain(">6 of 6<")
+    expect(last).toMatch(/aria-label="Next attachment \(j\)" aria-disabled="true"/)
+    expect(last).not.toMatch(/aria-label="Previous attachment \(k\)" aria-disabled/)
+    const first = await render(0)
+    expect(first).toContain(">1 of 6<")
+    expect(first).toMatch(/aria-label="Previous attachment \(k\)" aria-disabled="true"/)
+    expect(first).not.toMatch(/aria-label="Next attachment \(j\)" aria-disabled/)
+  })
+})
+
+describe("viewerNavigationPress", () => {
+  test("a press past an end is kept, as blocked, for a list that answers it", async () => {
+    const { viewerNavigationPress } = await import("./ViewerSurface")
+    const atLast = { ...navigation, index: 2, hasNext: false, horizontal: true }
+    expect(viewerNavigationPress(key("ArrowRight"), { navigation: atLast, typing: false })).toEqual({ direction: "next", blocked: true })
+    expect(viewerNavigationPress(key("j"), { navigation: atLast, typing: false })).toEqual({ direction: "next", blocked: true })
+    expect(viewerNavigationPress(key("ArrowLeft"), { navigation: atLast, typing: false })).toEqual({ direction: "previous", blocked: false })
+    expect(viewerNavigationStep(key("ArrowRight"), { navigation: atLast, typing: false })).toBeNull()
+    expect(viewerNavigationPress(key("ArrowRight"), { navigation: atLast, typing: true })).toBeNull()
   })
 })

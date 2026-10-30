@@ -2,6 +2,7 @@ import { ATTACHMENT_TOOL_NAMES, displayAttachments } from "../../../shared/displ
 import type { TranscriptEntry } from "../../../shared/types"
 import { viewerAttachmentFromChat, viewerAttachmentFromDisplay, type ViewerAttachment } from "../../stores/viewerStore"
 import { attachmentOpenAction } from "./attachmentOpenAction"
+import type { StepDirection } from "./attachmentMotion"
 import type { ViewerNavigation } from "./ViewerSurface"
 
 /**
@@ -41,32 +42,35 @@ export function chatAttachmentSequence(entries: readonly TranscriptEntry[]): Vie
   return sequence
 }
 
-/** The index a step lands on: round from the last back to the first, and the other way. */
-export function stepAttachmentIndex(index: number, count: number, step: "next" | "previous") {
-  return (index + (step === "next" ? 1 : -1) + count) % count
-}
-
 /**
  * The viewer's steps from `current` through `sequence`, or nothing when it
  * has nowhere to go: a chat with one attachment, or one not in the list (the
  * composer's, not sent yet; a previewed sub-chat's; one the window has moved
- * past). The list loops, so neither end is a wall.
+ * past). The list has ends: a press past one is `onEdge`'s, and moves nothing.
  */
 export function attachmentNavigation(
   sequence: readonly ViewerAttachment[],
   current: ViewerAttachment,
-  show: (attachment: ViewerAttachment) => void,
+  show: (attachment: ViewerAttachment, direction: StepDirection) => void,
+  onEdge: (direction: StepDirection) => void = () => {},
 ): ViewerNavigation | undefined {
   const index = sequence.findIndex((attachment) => attachment.url === current.url)
   if (index < 0 || sequence.length < 2) return undefined
-  const step = (direction: "next" | "previous") => show(sequence[stepAttachmentIndex(index, sequence.length, direction)]!)
+  const step = (direction: StepDirection) => {
+    const target = sequence[index + (direction === "next" ? 1 : -1)]
+    if (target) show(target, direction)
+    else onEdge(direction)
+  }
   return {
     index,
     count: sequence.length,
     onPrevious: () => step("previous"),
     onNext: () => step("next"),
+    onEdge,
     previousLabel: "Previous attachment (k)",
     nextLabel: "Next attachment (j)",
+    hasPrevious: index > 0,
+    hasNext: index < sequence.length - 1,
     horizontal: true,
   }
 }

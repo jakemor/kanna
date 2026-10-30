@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import { FOCUS_FALLBACK_IGNORE_ATTRIBUTE } from "../../app/chatFocusPolicy"
 import { isEscapeClaimed, resolveEscapePress, VIEWER_FIELDS_KEEP_ESCAPE_ATTRIBUTE } from "../../lib/escape-key"
 import { cn } from "../../lib/utils"
+import { playEnter, type AttachmentStepMotion } from "./attachmentMotion"
 import { useScrollMemory } from "./scroll-memory"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
@@ -102,6 +103,8 @@ export interface ViewerMotion {
   cardEnters: boolean
   /** The pane was open and its content changed by pointer: the body fades in. */
   bodyEnters: boolean
+  /** A step through a chat's attachments arrived here: the body slides in (`attachmentMotion`). */
+  step?: Extract<AttachmentStepMotion, { kind: "slide" | "fade" }> | null
 }
 
 /** With no layer to say otherwise (a card used on its own), a card is something that just opened. */
@@ -184,6 +187,11 @@ export interface ViewerNavigation {
    * files in a diff: the buttons point left and right, and ← and → step too.
    */
   horizontal?: boolean
+  /**
+   * A press past an end (a key, or a click on the dimmed button), for a list
+   * that shows there is nothing further. Without it such a press is ignored.
+   */
+  onEdge?: (direction: "next" | "previous") => void
 }
 
 /**
@@ -194,14 +202,28 @@ export interface ViewerNavigation {
  * slider seeks with, or one with nowhere to step to.
  */
 export function viewerNavigationStep(
-  event: { key: string; defaultPrevented: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey?: boolean },
-  { navigation, typing, arrowsTaken = false }: { navigation: ViewerNavigation | undefined; typing: boolean; arrowsTaken?: boolean },
+  event: ViewerNavigationKeyEvent,
+  options: { navigation: ViewerNavigation | undefined; typing: boolean; arrowsTaken?: boolean },
 ): "next" | "previous" | null {
+  const press = viewerNavigationPress(event, options)
+  return press && !press.blocked ? press.direction : null
+}
+
+type ViewerNavigationKeyEvent = { key: string; defaultPrevented: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey?: boolean }
+
+/**
+ * The same, with a press at an end kept as one: `blocked`, for a list that
+ * answers it (`ViewerNavigation.onEdge`).
+ */
+export function viewerNavigationPress(
+  event: ViewerNavigationKeyEvent,
+  { navigation, typing, arrowsTaken = false }: { navigation: ViewerNavigation | undefined; typing: boolean; arrowsTaken?: boolean },
+): { direction: "next" | "previous"; blocked: boolean } | null {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return null
   if (!navigation || navigation.count < 2 || typing) return null
   const arrows = navigation.horizontal && !arrowsTaken && !event.shiftKey
-  if (event.key === "j" || event.key === "]" || (arrows && event.key === "ArrowRight")) return navigation.hasNext === false ? null : "next"
-  if (event.key === "k" || event.key === "[" || (arrows && event.key === "ArrowLeft")) return navigation.hasPrevious === false ? null : "previous"
+  if (event.key === "j" || event.key === "]" || (arrows && event.key === "ArrowRight")) return { direction: "next", blocked: navigation.hasNext === false }
+  if (event.key === "k" || event.key === "[" || (arrows && event.key === "ArrowLeft")) return { direction: "previous", blocked: navigation.hasPrevious === false }
   return null
 }
 
@@ -274,6 +296,7 @@ export function ViewerSurface({
   const motion = useContext(ViewerMotionContext)
   const [cardEnters] = useState(motion.cardEnters)
   const [bodyEnters] = useState(motion.bodyEnters)
+  const [stepEnter] = useState(motion.step ?? null)
   // The view's own Back (a previewed chat names what it goes back to), or
   // the pane's, for a view that has none of its own.
   const back = leading ?? (floor?.onBack ? (
@@ -291,6 +314,11 @@ export function ViewerSurface({
   useLayoutEffect(() => {
     if (scrollKey !== undefined) bodyRef.current?.scrollTo({ top: 0 })
   }, [scrollKey])
+
+  // Before paint, so its first frame is already the start of the slide.
+  useLayoutEffect(() => {
+    if (stepEnter && bodyRef.current) playEnter(bodyRef.current, stepEnter)
+  }, [stepEnter])
 
   // Before paint, so the list is never seen at its top first.
   useScrollMemory(scrollMemoryKey, bodyRef)
@@ -340,10 +368,11 @@ export function ViewerSurface({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       // Something closer to the key (a menu, a field) already answered it.
-      const step = viewerNavigationStep(event, { navigation, typing: isTypingTarget(event.target), arrowsTaken: takesArrows(event.target) })
-      if (!step || !navigation || !ownsKeys()) return
+      const press = viewerNavigationPress(event, { navigation, typing: isTypingTarget(event.target), arrowsTaken: takesArrows(event.target) })
+      if (!press || !navigation || (press.blocked && !navigation.onEdge) || !ownsKeys()) return
       event.preventDefault()
-      if (step === "next") navigation.onNext()
+      if (press.blocked) navigation.onEdge?.(press.direction)
+      else if (press.direction === "next") navigation.onNext()
       else navigation.onPrevious()
     }
     window.addEventListener("keydown", handleKeyDown)
@@ -399,8 +428,8 @@ export function ViewerSurface({
             <>
               <ViewerDivider />
               <span className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground">{navigation.index + 1} of {navigation.count}</span>
-              <ViewerIconButton label={navigation.previousLabel ?? "Previous (k)"} disabled={navigation.hasPrevious === false} onClick={navigation.onPrevious}>{navigation.horizontal ? <ChevronLeft /> : <ChevronUp />}</ViewerIconButton>
-              <ViewerIconButton label={navigation.nextLabel ?? "Next (j)"} disabled={navigation.hasNext === false} onClick={navigation.onNext}>{navigation.horizontal ? <ChevronRight /> : <ChevronDown />}</ViewerIconButton>
+              <ViewerIconButton label={navigation.previousLabel ?? "Previous (k)"} disabled={navigation.hasPrevious === false} onClick={navigation.onPrevious} onDisabledClick={navigation.onEdge && (() => navigation.onEdge?.("previous"))}>{navigation.horizontal ? <ChevronLeft /> : <ChevronUp />}</ViewerIconButton>
+              <ViewerIconButton label={navigation.nextLabel ?? "Next (j)"} disabled={navigation.hasNext === false} onClick={navigation.onNext} onDisabledClick={navigation.onEdge && (() => navigation.onEdge?.("next"))}>{navigation.horizontal ? <ChevronRight /> : <ChevronDown />}</ViewerIconButton>
             </>
           ) : null}
           <ViewerDivider />
@@ -413,7 +442,7 @@ export function ViewerSurface({
           <ViewerIconButton label={back && floor ? "Close" : "Close (Esc)"} onClick={floor ? floor.onShut : onClose}><X /></ViewerIconButton>
         </div>
       </header>
-      <div ref={bodyRef} className={cn("min-h-0 flex-1 overflow-auto", bodyEnters && VIEWER_BODY_ENTER_CLASS, bodyClassName)}>{children}</div>
+      <div ref={bodyRef} data-viewer-body className={cn("min-h-0 flex-1 overflow-auto", bodyEnters && VIEWER_BODY_ENTER_CLASS, bodyClassName)}>{children}</div>
     </div>
   )
 }
@@ -427,12 +456,14 @@ export function ViewerDivider() {
 }
 
 /** A header control: an icon, named by its tooltip, lit when it's the active choice. */
-export function ViewerIconButton({ label, active = false, disabled = false, onClick, children }: {
+export function ViewerIconButton({ label, active = false, disabled = false, onClick, onDisabledClick, children }: {
   label: string
   active?: boolean
   /** Dimmed and inert, but still named by its tooltip: `aria-disabled`, not `disabled`, which would take the tooltip too. */
   disabled?: boolean
   onClick: () => void
+  /** What a click does while it is disabled, if anything: a step past an end says there is none. */
+  onDisabledClick?: () => void
   children: ReactNode
 }) {
   return (
@@ -443,7 +474,7 @@ export function ViewerIconButton({ label, active = false, disabled = false, onCl
           aria-label={label}
           aria-pressed={active || undefined}
           aria-disabled={disabled || undefined}
-          onClick={disabled ? undefined : onClick}
+          onClick={disabled ? onDisabledClick : onClick}
           className={cn(
             "flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4",
             active && "bg-muted text-foreground",

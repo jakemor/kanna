@@ -322,6 +322,10 @@ export function deriveSidebarData(
     // The lists a project shows leave hidden chats out; `chats` keeps them for lookups.
     const listedChats = chats.filter((chat) => !chat.hidden)
     const { previewChats, olderChats } = getSidebarChatBuckets(listedChats, nowMs)
+    // Only for a project known to be in a repo: a probe for one that isn't
+    // reads as a clean tree, which would say "clean" about a folder git has
+    // never seen.
+    const workingTree = repoLabel ? options?.workingTrees?.get(project.id) : undefined
 
     return {
       groupKey: project.id,
@@ -337,6 +341,15 @@ export function deriveSidebarData(
         : options?.projectsWithoutRepo?.has(project.id)
           ? { hasGitRepo: false }
           : {}),
+      ...(workingTree
+        ? {
+            gitState: {
+              dirty: workingTree.trackedDirty,
+              ahead: workingTree.ahead,
+              untrackedOnly: workingTree.dirty && !workingTree.trackedDirty,
+            },
+          }
+        : {}),
       ...(repoLabel?.branchName ? { branchName: repoLabel.branchName } : {}),
       ...(repoLabel?.repoOwner ? { repoOwner: repoLabel.repoOwner } : {}),
       ...(repoLabel?.repoUrl ? { repoUrl: repoLabel.repoUrl } : {}),

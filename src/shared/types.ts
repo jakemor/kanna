@@ -1216,6 +1216,19 @@ export interface ChatTouchedFilesResult {
   totalCount: number
 }
 
+/** See `SidebarProjectGroup.gitState`. */
+export interface SidebarProjectGitState {
+  /** A tracked file is changed, staged or not. Untracked files don't count. */
+  dirty: boolean
+  /**
+   * Commits on the current branch its upstream lacks, as of the last fetch or
+   * push. 0 for a branch with no upstream: local-only isn't "unpushed".
+   */
+  ahead: number
+  /** The only changes are untracked files: not `dirty`, but not clean either. */
+  untrackedOnly: boolean
+}
+
 export interface SidebarProjectGroup {
   groupKey: string
   title: string
@@ -1240,6 +1253,12 @@ export interface SidebarProjectGroup {
    * the folder.
    */
   hasGitRepo?: boolean
+  /**
+   * The repo's state as far as the Channels view's Relevant section asks it:
+   * work not yet committed, or committed and not yet pushed. Absent until the
+   * server has probed the repo, and for a project not in one.
+   */
+  gitState?: SidebarProjectGitState
   /** Current branch of `repoName`'s repo; absent on a detached HEAD. */
   branchName?: string
   /**

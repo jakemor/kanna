@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import type { SidebarChatRow, SidebarProjectGroup } from "../../shared/types"
-import { computeChannelSections, getChannelPeekGroups, RECENT_CHANNEL_DAYS } from "./channel-sections"
+import type { SidebarChatRow, SidebarProjectGitState, SidebarProjectGroup } from "../../shared/types"
+import {
+  computeChannelSections,
+  getChannelPeekGroups,
+  isChannelRelevant,
+  RECENT_CHANNEL_DAYS,
+  RELEVANT_CHANNEL_ACTIVITY_MS,
+} from "./channel-sections"
 
 const NOW = new Date(2026, 9, 1, 12).getTime()
 const DAY = 24 * 60 * 60 * 1_000
@@ -20,8 +26,22 @@ function chat(chatId: string, at: number, extra: Partial<SidebarChatRow> = {}): 
   } as SidebarChatRow
 }
 
-function project(groupKey: string, chats: SidebarChatRow[]): SidebarProjectGroup {
-  return { groupKey, title: groupKey, realTitle: groupKey, localPath: `/tmp/${groupKey}`, chats } as SidebarProjectGroup
+const CLEAN: SidebarProjectGitState = { dirty: false, ahead: 0, untrackedOnly: false }
+
+/** A clean repo unless told otherwise, so only chats decide where it goes. */
+function project(
+  groupKey: string,
+  chats: SidebarChatRow[],
+  gitState: SidebarProjectGitState | null = CLEAN,
+): SidebarProjectGroup {
+  return {
+    groupKey,
+    title: groupKey,
+    realTitle: groupKey,
+    localPath: `/tmp/${groupKey}`,
+    chats,
+    ...(gitState ? { gitState, hasGitRepo: true } : { hasGitRepo: false }),
+  } as SidebarProjectGroup
 }
 
 function sectionsOf(groups: SidebarProjectGroup[], pins: Record<string, number> = {}) {
@@ -133,6 +153,61 @@ describe("computeChannelSections", () => {
     ])
   })
 
+  test("Relevant is a repo with work not yet committed or pushed", () => {
+    expect(sectionsOf([
+      project("dirty", [chat("a", NOW - 30 * DAY)], { ...CLEAN, dirty: true }),
+      project("unpushed", [chat("b", NOW - 30 * DAY)], { ...CLEAN, ahead: 2 }),
+      // Untracked files don't make work: this one is filed by age.
+      project("untracked-old", [chat("c", NOW - 30 * DAY)], { ...CLEAN, untrackedOnly: true }),
+      // Busy, but nothing is open in it.
+      project("clean-busy", [chat("d", NOW)]),
+    ])).toEqual([
+      ["Relevant", ["dirty", "unpushed"]],
+      ["Recent", ["clean-busy"]],
+      ["Older", ["untracked-old"]],
+    ])
+  })
+
+  test("Relevant falls back to the last 72 hours where git can't answer", () => {
+    const justIn = NOW - RELEVANT_CHANNEL_ACTIVITY_MS + 60_000
+    const justOut = NOW - RELEVANT_CHANNEL_ACTIVITY_MS - 60_000
+    expect(sectionsOf([
+      project("untracked-fresh", [chat("a", justIn)], { ...CLEAN, untrackedOnly: true }),
+      project("untracked-stale", [chat("b", justOut)], { ...CLEAN, untrackedOnly: true }),
+      project("no-repo-fresh", [chat("c", justIn)], null),
+      project("no-repo-stale", [chat("d", justOut)], null),
+    ])).toEqual([
+      ["Relevant", ["untracked-fresh", "no-repo-fresh"]],
+      ["Recent", ["untracked-stale", "no-repo-stale"]],
+    ])
+  })
+
+  test("Relevant is newest first, and still holds a project waiting on you", () => {
+    expect(sectionsOf([
+      project("dirty-old", [chat("a", NOW - 20 * DAY)], { ...CLEAN, dirty: true }),
+      project("unread-clean", [chat("b", NOW - 9 * DAY, { unread: true })]),
+      project("unpushed-new", [chat("c", NOW - DAY)], { ...CLEAN, ahead: 1 }),
+    ])).toEqual([
+      ["Relevant", ["unpushed-new", "unread-clean", "dirty-old"]],
+    ])
+  })
+
+  test("a chat the Chats view calls relevant doesn't make its clean project relevant", () => {
+    expect(sectionsOf([
+      project("clean", [chat("a", NOW - 9 * DAY, { uncommittedWork: true })]),
+    ])).toEqual([["Older", ["clean"]]])
+  })
+
+  test("In Progress and Pinned still come first", () => {
+    expect(sectionsOf([
+      project("dirty-running", [chat("a", NOW, { status: "running" })], { ...CLEAN, dirty: true }),
+      project("dirty-pinned", [chat("b", NOW)], { ...CLEAN, dirty: true }),
+    ], { "dirty-pinned": 1 })).toEqual([
+      ["Pinned", ["dirty-pinned"]],
+      ["In Progress", ["dirty-running"]],
+    ])
+  })
+
   test("keeps projects with no chats to show reachable at the end", () => {
     expect(sectionsOf([
       project("empty", []),
@@ -144,6 +219,25 @@ describe("computeChannelSections", () => {
     ])
   })
 
+})
+
+describe("isChannelRelevant", () => {
+  const recent = NOW - DAY
+  const old = NOW - 10 * DAY
+  test.each([
+    ["tracked changes", { ...CLEAN, dirty: true }, old, true],
+    ["unpushed commits", { ...CLEAN, ahead: 3 }, old, true],
+    // The server sends 0 ahead for a branch with no upstream.
+    ["a clean local-only branch, however recent", CLEAN, recent, false],
+    ["a clean repo", CLEAN, old, false],
+    ["untracked files and a recent chat", { ...CLEAN, untrackedOnly: true }, recent, true],
+    ["untracked files and an old chat", { ...CLEAN, untrackedOnly: true }, old, false],
+    ["no repo and a recent chat", undefined, recent, true],
+    ["no repo and an old chat", undefined, old, false],
+    ["no repo and no chat", undefined, undefined, false],
+  ] as const)("%s", (_name, gitState, lastActivityAt, expected) => {
+    expect(isChannelRelevant({ gitState }, lastActivityAt, NOW)).toBe(expected)
+  })
 })
 
 describe("getChannelPeekGroups", () => {

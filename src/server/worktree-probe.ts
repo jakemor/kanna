@@ -17,7 +17,8 @@ import {
  * chat is relevant to your uncommitted work" dot, which intersects those paths
  * with the files a chat actually touched (`ChatRecord.touchedFiles`) and keeps
  * only the ones no commit has settled since — plus the repo name and branch
- * behind the sidebar's `repo/branch` label.
+ * behind the sidebar's `repo/branch` label, and the tracked-dirty and
+ * unpushed readings that put a channel in Relevant (`gitState`).
  *
  * Entirely in-memory and derived: nothing is persisted, so a restart just
  * repopulates lazily. Reads are synchronous because the sidebar snapshot
@@ -54,7 +55,12 @@ const PROBE_TICK_INTERVAL_MS = 30_000
 interface ProjectProbeEntry {
   /** Cached because resolving it costs two git invocations. */
   location: WorkingTreeLocation | null
-  /** Combined mtime of the git dir's `index` and `HEAD`; "" when unreadable. */
+  /** Where refs live: the git dir, or for a linked worktree the one it shares. */
+  commonDir: string | null
+  /**
+   * Combined mtime of the git dir's `index` and `HEAD`, and of the upstream
+   * ref when there is one (`upstreamRefPath`); "" when unreadable.
+   */
   stamp: string
   /**
    * Mtime of `HEAD` as of the last repo-label read; "" when unreadable.
@@ -74,6 +80,15 @@ interface ProjectProbeEntry {
    *   label frozen at the wrong branch forever.
    */
   labelStamp: string
+  /**
+   * Where the upstream's remote-tracking ref lives (`<commonDir>/refs/remotes/
+   * origin/main`), learned from the last probe that read the branch. Its mtime
+   * joins `stamp`: a push or fetch moves that ref and nothing else the stamp
+   * watches, and the ahead count has to notice a push made outside Kanna.
+   * Absent without an upstream; a branch that gains one (`push -u`) is still 0
+   * ahead afterwards, so nothing is missed until the next probe learns it.
+   */
+  upstreamRefPath?: string
 }
 
 /** Identity of the repo a project sits in, for the sidebar's `repo/branch` label. */
@@ -98,7 +113,13 @@ export interface ProjectRepoLabel {
 }
 
 function probesEqual(left: WorkingTreeProbe | undefined, right: WorkingTreeProbe) {
-  if (!left || left.dirty !== right.dirty || left.paths.size !== right.paths.size) return false
+  if (
+    !left
+    || left.dirty !== right.dirty
+    || left.trackedDirty !== right.trackedDirty
+    || left.ahead !== right.ahead
+    || left.paths.size !== right.paths.size
+  ) return false
   for (const dirtyPath of right.paths) {
     if (!left.paths.has(dirtyPath)) return false
   }
@@ -278,7 +299,7 @@ export class WorktreeProbe {
         return
       }
       // Banked before the read, never after — see `labelStamp`.
-      entry.labelStamp = (await this.readStamp(entry.location.gitDir)).head
+      entry.labelStamp = (await this.readStamp(entry)).head
       this.applyRepoLabel(projectId, await this.readRepoLabel(entry.location))
       await this.applyProbe(projectId, await probeWorkingTree(entry.location.repoRoot))
     })
@@ -294,8 +315,7 @@ export class WorktreeProbe {
     if (this.ticking) return
     this.ticking = true
     try {
-      const { labelled, dirtyCandidates } = this.getTickProjectIds()
-      for (const projectId of labelled) {
+      for (const projectId of this.getTickProjectIds()) {
         const project = this.getState().projectsById.get(projectId)
         if (!project) continue
         await this.batchChanges(async () => {
@@ -305,7 +325,7 @@ export class WorktreeProbe {
             return
           }
 
-          const stamp = await this.readStamp(entry.location.gitDir)
+          const stamp = await this.readStamp(entry)
           // A checkout rewrites HEAD, so this covers every branch switch.
           if (stamp.head === "" || stamp.head !== entry.labelStamp || !this.repoLabels.has(projectId)) {
             // Banked before the read, never after — see `labelStamp`.
@@ -316,12 +336,7 @@ export class WorktreeProbe {
           // An unreadable stamp falls through to a full probe rather than being
           // skipped — better one wasted `git status` than a silently stuck dot.
           const changed = stamp.combined === "" || stamp.combined !== entry.stamp
-          if (!changed || !dirtyCandidates.has(projectId)) {
-            // Label-only projects never reach `applyProbe`, so bank the stamp
-            // here or every tick would re-read a HEAD that hasn't moved.
-            entry.stamp = stamp.combined
-            return
-          }
+          if (!changed) return
 
           await this.applyProbe(projectId, await probeWorkingTree(entry.location.repoRoot))
         })
@@ -332,26 +347,22 @@ export class WorktreeProbe {
   }
 
   /**
-   * Two nested sets, in one pass over the chats:
-   *
-   * - `labelled` — projects with a live chat, i.e. everything the sidebar can
-   *   put a `repo/branch` label on. Only cheap work runs for these.
-   * - `dirtyCandidates` — of those, the ones with a chat that finished a turn.
-   *   A chat can only dot if `lastTurnEndedAt` is set, so running `git status`
-   *   for any other project is wasted work.
+   * Projects with a live chat: everything the sidebar can put a `repo/branch`
+   * label on, and every channel whose place in Relevant rides on the probe
+   * (`SidebarProjectGroup.gitState`). The probe used to skip projects with no
+   * finished turn, since no chat there could dot; the channel rule reads the
+   * repo itself, so they get one `git status` per stamp change like the rest.
    */
   private getTickProjectIds() {
     const state = this.getState()
-    const labelled = new Set<string>()
-    const dirtyCandidates = new Set<string>()
+    const projectIds = new Set<string>()
     for (const chat of state.chatsById.values()) {
       if (chat.deletedAt) continue
       const project = state.projectsById.get(chat.projectId)
       if (!project || project.deletedAt) continue
-      labelled.add(chat.projectId)
-      if (chat.lastTurnEndedAt != null) dirtyCandidates.add(chat.projectId)
+      projectIds.add(chat.projectId)
     }
-    return { labelled, dirtyCandidates }
+    return projectIds
   }
 
   private async ensureEntry(projectId: string, localPath: string) {
@@ -360,8 +371,10 @@ export class WorktreeProbe {
     // a repo later (`git init` through Kanna), and re-resolving costs two
     // `rev-parse` calls only for the rare project that isn't a repo yet.
     if (existing?.location) return existing
+    const location = await resolveWorkingTreeLocation(localPath)
     const entry: ProjectProbeEntry = {
-      location: await resolveWorkingTreeLocation(localPath),
+      location,
+      commonDir: location ? await resolveCommonDir(location.gitDir) : null,
       stamp: existing?.stamp ?? "",
       labelStamp: existing?.labelStamp ?? "",
     }
@@ -442,8 +455,12 @@ export class WorktreeProbe {
     // scans into a per-path "first seen dirty" ledger to derive a
     // `dirtySinceMs`; a single file left uncommitted overnight then flagged
     // every chat that had run since, whether or not it touched that file.)
+    const previous = this.probes.get(projectId)
     const probe: WorkingTreeProbe = {
       dirty: scan.dirty,
+      trackedDirty: scan.trackedDirty ?? scan.dirty,
+      // A scan that didn't read the branch leaves the last count standing.
+      ahead: scan.branch?.ahead ?? previous?.ahead ?? 0,
       paths: new Set(scan.paths),
       headBlobs: await this.readHeadBlobs(projectId, scan.paths),
     }
@@ -451,7 +468,7 @@ export class WorktreeProbe {
     // waits on bookkeeping. The blob lookup above is the one thing publication
     // does wait for: a probe carrying paths but no blobs would read every claim
     // as live, i.e. flash the dot back onto chats a commit had just settled.
-    const changed = !probesEqual(this.probes.get(projectId), probe)
+    const changed = !probesEqual(previous, probe)
     this.probes.set(projectId, probe)
     if (changed) {
       this.notifyChanged()
@@ -463,7 +480,12 @@ export class WorktreeProbe {
     // read that never was.
     const entry = this.entries.get(projectId)
     if (entry?.location) {
-      entry.stamp = (await this.readStamp(entry.location.gitDir)).combined
+      if (scan.branch) {
+        entry.upstreamRefPath = scan.branch.upstream && entry.commonDir
+          ? path.join(entry.commonDir, "refs", "remotes", scan.branch.upstream)
+          : undefined
+      }
+      entry.stamp = (await this.readStamp(entry)).combined
     }
   }
 
@@ -489,18 +511,24 @@ export class WorktreeProbe {
   }
 
   /**
-   * Both readings of the git dir's mtimes in one pair of stats: `combined`
+   * Both readings of the git dir's mtimes in one round of stats: `combined`
    * gates the dirty probe, `head` gates the repo label. See `labelStamp` for
    * why the label can't ride on the combined one. `""` means unreadable, which
-   * every caller treats as "assume changed".
+   * every caller treats as "assume changed". The upstream ref is a third stat
+   * only for branches that have one (see `upstreamRefPath`); a missing one
+   * reads as empty rather than unreadable, since a packed ref has no file.
    */
-  private async readStamp(gitDir: string): Promise<{ combined: string, head: string }> {
-    const [index, head] = await Promise.all([
-      stat(path.join(gitDir, "index")).then((info) => info.mtimeMs).catch(() => null),
-      stat(path.join(gitDir, "HEAD")).then((info) => info.mtimeMs).catch(() => null),
+  private async readStamp(entry: ProjectProbeEntry): Promise<{ combined: string, head: string }> {
+    const gitDir = entry.location?.gitDir
+    if (!gitDir) return { combined: "", head: "" }
+    const mtimeOf = (filePath: string) => stat(filePath).then((info) => info.mtimeMs).catch(() => null)
+    const [index, head, upstream] = await Promise.all([
+      mtimeOf(path.join(gitDir, "index")),
+      mtimeOf(path.join(gitDir, "HEAD")),
+      entry.upstreamRefPath ? mtimeOf(entry.upstreamRefPath) : null,
     ])
     return {
-      combined: index === null && head === null ? "" : `${index ?? ""}:${head ?? ""}`,
+      combined: index === null && head === null ? "" : `${index ?? ""}:${head ?? ""}:${upstream ?? ""}`,
       head: head === null ? "" : String(head),
     }
   }

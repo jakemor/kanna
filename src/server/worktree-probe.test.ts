@@ -105,7 +105,7 @@ describe("WorktreeProbe", () => {
 
     expect(probe.getStates().get("project-1")).toBeUndefined()
     await probe.refreshForChat("chat-1")
-    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, paths: new Set(), headBlobs: new Map() })
+    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, paths: new Set(), headBlobs: new Map() })
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await probe.refreshForChat("chat-1")
@@ -167,10 +167,10 @@ describe("WorktreeProbe", () => {
     await run(["git", "commit", "-am", "external"], repoRoot)
     await tick(probe)
 
-    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, paths: new Set(), headBlobs: new Map() })
+    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, paths: new Set(), headBlobs: new Map() })
   })
 
-  test("the tick skips projects whose chats never finished a turn", async () => {
+  test("the tick probes projects whose chats never finished a turn", async () => {
     const repoRoot = await createRepo()
     const state = createState(repoRoot)
     const probe = new WorktreeProbe(() => state, () => {})
@@ -178,8 +178,63 @@ describe("WorktreeProbe", () => {
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await tick(probe)
 
-    // No chat can qualify for the dot, so the project is never probed.
-    expect(probe.getStates().get("project-1")).toBeUndefined()
+    // No chat there can dot, but the channel's place in Relevant reads the repo.
+    expect(probe.getStates().get("project-1")?.trackedDirty).toBe(true)
+  })
+
+  test("tells tracked changes from untracked files", async () => {
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+
+    await writeFile(path.join(repoRoot, "scratch.txt"), "new\n", "utf8")
+    await probe.refreshForChat("chat-1")
+    expect(probe.getStates().get("project-1")).toMatchObject({ dirty: true, trackedDirty: false })
+
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+    await run(["git", "add", "app.txt"], repoRoot)
+    await probe.refreshForChat("chat-1")
+    // Staged counts as much as unstaged.
+    expect(probe.getStates().get("project-1")).toMatchObject({ dirty: true, trackedDirty: true })
+  })
+
+  test("counts commits not yet pushed, and none for a branch with no upstream", async () => {
+    const remote = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-remote-"))
+    tempDirs.push(remote)
+    await run(["git", "init", "--bare", "-b", "main"], remote)
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+    const commit = async (message: string) => {
+      await writeFile(path.join(repoRoot, "app.txt"), `${message}\n`, "utf8")
+      await run(["git", "commit", "-am", message], repoRoot)
+    }
+
+    // Local-only: committed work with nowhere it was meant to go yet.
+    await commit("local")
+    await probe.refreshForChat("chat-1")
+    expect(probe.getStates().get("project-1")?.ahead).toBe(0)
+
+    await run(["git", "remote", "add", "origin", remote], repoRoot)
+    await run(["git", "push", "-u", "origin", "main"], repoRoot)
+    await commit("one")
+    await commit("two")
+    await tick(probe)
+    expect(probe.getStates().get("project-1")).toMatchObject({ ahead: 2, trackedDirty: false })
+
+    // A push outside Kanna moves only the remote-tracking ref, which the
+    // tick's stamp watches for exactly this.
+    let changes = 0
+    const watched = new WorktreeProbe(() => state, () => {
+      changes += 1
+    })
+    await tick(watched)
+    changes = 0
+    await Bun.sleep(5)
+    await run(["git", "push"], repoRoot)
+    await tick(watched)
+    expect(watched.getStates().get("project-1")?.ahead).toBe(0)
+    expect(changes).toBe(1)
   })
 
   test("the tick skips deleted projects", async () => {
@@ -208,6 +263,9 @@ describe("WorktreeProbe", () => {
 
     expect(probe.getStates().get("project-1")).toEqual({
       dirty: true,
+      // A scan that doesn't say reads as tracked, and as 0 ahead.
+      trackedDirty: true,
+      ahead: 0,
       paths: new Set(["a.txt"]),
       // Uncommitted file: in the working tree, absent from HEAD.
       headBlobs: new Map([["a.txt", null]]),
@@ -223,7 +281,7 @@ describe("WorktreeProbe", () => {
 
     await probe.refreshForChat("chat-1")
 
-    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, paths: new Set(), headBlobs: new Map() })
+    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, paths: new Set(), headBlobs: new Map() })
   })
 })
 
@@ -373,7 +431,7 @@ describe("WorktreeProbe integration", () => {
     expect(label?.repoName).toBe(path.basename(repoRoot))
   })
 
-  test("the tick labels projects with no finished turn, without running git status", async () => {
+  test("the tick labels projects with no finished turn", async () => {
     const repoRoot = await createRepo()
     // No lastTurnEndedAt: this project can never show the dot, but its label is
     // still on screen, so the label must not depend on being a dot candidate.
@@ -384,7 +442,6 @@ describe("WorktreeProbe integration", () => {
     await tick(probe)
 
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("main")
-    expect(probe.getStates().get("project-1")).toBeUndefined()
   })
 
   test("the tick picks up a branch switch made outside Kanna", async () => {

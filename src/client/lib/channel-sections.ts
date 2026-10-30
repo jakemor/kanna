@@ -23,6 +23,38 @@ import {
  */
 export const RECENT_CHANNEL_DAYS = 7
 
+/**
+ * How recent a chat has to be to keep a project in Relevant when git can't
+ * speak for it: a folder that isn't a repo, or one whose only changes are
+ * untracked files. The iOS app's channel list uses the same window.
+ */
+export const RELEVANT_CHANNEL_ACTIVITY_MS = 72 * 60 * 60 * 1000
+
+/**
+ * Is there work in this project you haven't finished putting away?
+ *
+ * Read off the repo, not the chats: a tracked file changed (staged or not), or
+ * commits the branch's upstream hasn't got. A branch with no upstream is never
+ * "unpushed", since plenty of branches are meant to stay local. A clean repo is
+ * not relevant however busy its chats were: what the section answers is "what
+ * is still open", and in a repo git knows that better than recency does.
+ *
+ * Where git can't answer, recency stands in: a folder that isn't a repo, a repo
+ * whose only changes are untracked files (often scratch or build output, so
+ * not by itself a sign of open work), and a repo the server hasn't probed yet.
+ * Those count while a chat in them moved in the last 72 hours.
+ */
+export function isChannelRelevant(
+  group: Pick<SidebarProjectGroup, "gitState">,
+  lastActivityAt: number | undefined,
+  nowMs: number,
+): boolean {
+  const git = group.gitState
+  if (git && (git.dirty || git.ahead > 0)) return true
+  if (git && !git.untrackedOnly) return false
+  return lastActivityAt != null && nowMs - lastActivityAt <= RELEVANT_CHANNEL_ACTIVITY_MS
+}
+
 export interface ChannelSection {
   /** "pinned", "in-progress", "relevant", "recent", "older" or "quiet". */
   key: string
@@ -34,12 +66,17 @@ export interface ChannelSection {
 }
 
 /**
- * Each project goes to the section of its highest-priority chat: the sections
- * are walked in display order, and a project lands where it is first met. So
- * one with a chat from yesterday and one from last month sits under Recent,
- * and one with a chat from today and a relevant one sits under Relevant.
- * Within a section projects keep the order of the chats that put them there,
- * which below Relevant is newest first.
+ * Each project goes to the first section that claims it: the sections are
+ * walked in display order, and a project lands where it is first met. So one
+ * with a chat from yesterday and one from last month sits under Recent, and
+ * one with a running chat and a dirty tree sits under In Progress. Within a
+ * section projects are newest first.
+ *
+ * Relevant is the one section decided by the project rather than its chats:
+ * see `isChannelRelevant`. The Chats view's own Relevant is per chat (a chat
+ * whose files are still uncommitted) and stays that way; a project inherits
+ * only the chats waiting on you (Review) and unsent drafts from it, which
+ * are outstanding whatever the repo says.
  *
  * Below Relevant there are two sections by age, not the Chats view's date
  * buckets. Those were cut for chats, which a section holds many of. There are
@@ -68,8 +105,6 @@ export function computeChannelSections(
       : { ...thread, row: { ...thread.row, pinnedAt: undefined } }
   ))
   const sections = computeSidebarThreadSections(threads, nowMs, draftStartTimes, pendingSends)
-  // Review folded into Relevant, as the Chats view shows it.
-  const relevant = mergeRelevantThreads(sections, draftStartTimes)
 
   const groupsById = new Map(projectGroups.map((group) => [group.groupKey, group]))
   const placed = new Set<string>()
@@ -86,10 +121,12 @@ export function computeChannelSections(
   }
   const projectIdsOf = (threads: readonly SidebarThread[]) => threads.map((thread) => thread.projectId)
 
-  // Every chat the Chats view files by date, newest first, whichever bucket
-  // it put each in. A project is as recent as the first of its chats here.
-  const dated = sections.buckets
-    .flatMap((bucket) => bucket.threads)
+  // Every listed chat with a message, newest first. A project is as recent as
+  // the first of its chats here. Not just the Chats view's date buckets: a chat
+  // that view lifts into its own Relevant (its files still uncommitted) may
+  // belong to a project this view doesn't, which then still has to land by age.
+  const dated = threads
+    .filter((thread) => !thread.archived && thread.row.lastMessageAt != null)
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
   const recentFrom = startOfDayDaysAgo(nowMs, RECENT_CHANNEL_DAYS - 1)
 
@@ -98,6 +135,34 @@ export function computeChannelSections(
     .filter((group) => group.pinnedAt != null)
     .sort((left, right) => left.pinnedAt! - right.pinnedAt! || left.groupKey.localeCompare(right.groupKey))
     .map((group) => group.groupKey)
+
+  // Each project's latest chat with a message, and the latest it was touched
+  // at all, a draft counting from when it was started (as the Chats view's
+  // Relevant sorts). The first decides the 72-hour fallback, the second the
+  // order within Relevant.
+  const lastActivityByProject = new Map<string, number>()
+  const relevantSortByProject = new Map<string, number>()
+  const raise = (map: Map<string, number>, projectId: string, at: number) => {
+    if (at > (map.get(projectId) ?? 0)) map.set(projectId, at)
+  }
+  for (const thread of threads) {
+    if (thread.archived) continue
+    if (thread.row.lastMessageAt != null) raise(lastActivityByProject, thread.projectId, thread.lastActivityAt)
+    const draftAt = draftStartTimes?.get(thread.chatId)
+    if (draftAt || thread.row.lastMessageAt != null) {
+      raise(relevantSortByProject, thread.projectId, draftAt || thread.lastActivityAt)
+    }
+  }
+  // Waiting on you, or a draft never sent: outstanding whatever git says.
+  const outstanding = new Set(projectIdsOf([
+    ...sections.review,
+    ...sections.relevant.filter((thread) => draftStartTimes?.has(thread.chatId)),
+  ]))
+  const relevantIds = projectGroups
+    .filter((group) => outstanding.has(group.groupKey)
+      || isChannelRelevant(group, lastActivityByProject.get(group.groupKey), nowMs))
+    .map((group) => group.groupKey)
+    .sort((left, right) => (relevantSortByProject.get(right) ?? 0) - (relevantSortByProject.get(left) ?? 0))
 
   const result: ChannelSection[] = [
     {
@@ -119,7 +184,7 @@ export function computeChannelSections(
       label: "Relevant",
       collapsible: true,
       defaultExpanded: true,
-      groups: take(projectIdsOf(relevant)),
+      groups: take(relevantIds),
     },
     {
       key: "recent",

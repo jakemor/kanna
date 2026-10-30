@@ -927,6 +927,8 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
   for (const rawLine of output.split(/\r?\n/u)) {
     const line = rawLine.trimEnd()
     if (line.length < 4) continue
+    // The `--branch` header, which `probeWorkingTree` asks for and reads itself.
+    if (line.startsWith("## ")) continue
     const statusCode = line.slice(0, 2)
     const value = line.slice(3)
     if (!value) continue
@@ -967,20 +969,42 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
   return entries.sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function listDirtyPaths(repoRoot: string, options?: { noOptionalLocks?: boolean }) {
+async function runStatus(repoRoot: string, options?: { noOptionalLocks?: boolean; branch?: boolean }) {
   // `--no-optional-locks` keeps a read-only caller from taking the index lock
   // and rewriting `.git/index` just to refresh its stat cache. Background
   // pollers want it: it avoids contending with an agent's own git commands,
   // and it stops the poll from looking like a repo mutation to anything
   // watching the index mtime.
   const globalArgs = options?.noOptionalLocks ? ["--no-optional-locks"] : []
-  const status = await runGit([...globalArgs, "status", "--short", "--untracked-files=all"], repoRoot)
+  const branchArgs = options?.branch ? ["--branch"] : []
+  const status = await runGit([...globalArgs, "status", "--short", ...branchArgs, "--untracked-files=all"], repoRoot)
   if (status.exitCode !== 0) {
     throw new Error(status.stderr.trim() || "Failed to read git status")
   }
+  return status.stdout
+}
 
-  const paths = parseStatusPaths(status.stdout)
-  return paths
+async function listDirtyPaths(repoRoot: string, options?: { noOptionalLocks?: boolean }) {
+  return parseStatusPaths(await runStatus(repoRoot, options))
+}
+
+/**
+ * The branch line `git status --short --branch` leads with:
+ * `## main...origin/main [ahead 2, behind 1]`, `## main` with no upstream,
+ * `## No commits yet on main`, `## HEAD (no branch)`, or `[gone]` when the
+ * upstream was deleted. Git counts ahead against its local copy of the
+ * upstream, so this is as of the last fetch or push, which is the question
+ * "have I pushed this" asks anyway.
+ *
+ * No upstream reads as 0 ahead: a local-only branch is not "unpushed work"
+ * for the sidebar.
+ */
+export function parseStatusBranchHeader(output: string): { upstream: string | null; ahead: number } {
+  const header = output.split(/\r?\n/u).find((line) => line.startsWith("## "))
+  const match = header ? /^## \S.*?\.\.\.(\S+)(?: \[(.*)\])?$/u.exec(header) : null
+  if (!match?.[1]) return { upstream: null, ahead: 0 }
+  const ahead = /ahead (\d+)/u.exec(match[2] ?? "")
+  return { upstream: match[1], ahead: ahead ? Number(ahead[1]) : 0 }
 }
 
 /**
@@ -1203,11 +1227,27 @@ export interface WorkingTreeScan {
    * both sides of a rename, since either name can be what a chat touched.
    */
   paths: string[]
+  /**
+   * Whether a tracked file is changed, staged or not: `dirty` minus the case
+   * where every dirty path is untracked. Absent from scans that didn't say,
+   * which read it as `dirty`.
+   */
+  trackedDirty?: boolean
+  /**
+   * The current branch against its upstream, from `git status --branch`.
+   * Absent when the scan didn't ask, in which case the last known reading
+   * stands. `upstream` is the short name (`origin/main`), null without one.
+   */
+  branch?: { upstream: string | null; ahead: number }
 }
 
 /** Derived from a `WorkingTreeScan` — see `WorktreeProbe`. */
 export interface WorkingTreeProbe {
   dirty: boolean
+  /** See `WorkingTreeScan.trackedDirty`; always stated here. */
+  trackedDirty: boolean
+  /** Commits on the branch that its upstream lacks; 0 with no upstream. */
+  ahead: number
   /** Dirty paths, for intersecting against a chat's touched-path set. */
   paths: ReadonlySet<string>
   /**
@@ -1309,17 +1349,30 @@ export async function resolveWorkingTreeLocation(projectPath: string): Promise<W
  *
  * One `git status`, no `stat` calls: the paths are the whole answer now, so
  * there is nothing to sample or cap. A repo with thousands of dirty paths costs
- * exactly one process here.
+ * exactly one process here. `--branch` adds the ahead count to the same
+ * process rather than a `rev-list` of its own.
  */
 export async function probeWorkingTree(repoRoot: string): Promise<WorkingTreeScan> {
-  let dirtyPaths: DirtyPathEntry[]
+  let output: string
   try {
-    dirtyPaths = await listDirtyPaths(repoRoot, { noOptionalLocks: true })
+    output = await runStatus(repoRoot, { noOptionalLocks: true, branch: true })
   } catch {
     return { dirty: false, paths: [] }
   }
 
-  return { dirty: dirtyPaths.length > 0, paths: toDirtyPaths(dirtyPaths) }
+  const dirtyPaths = parseStatusPaths(output)
+  return {
+    ...scanOf(dirtyPaths),
+    branch: parseStatusBranchHeader(output),
+  }
+}
+
+function scanOf(dirtyPaths: DirtyPathEntry[]): WorkingTreeScan {
+  return {
+    dirty: dirtyPaths.length > 0,
+    trackedDirty: dirtyPaths.some((entry) => !entry.isUntracked),
+    paths: toDirtyPaths(dirtyPaths),
+  }
 }
 
 /**
@@ -1506,7 +1559,7 @@ async function computeCurrentFiles(
 
   return {
     files: files.filter((file): file is ChatDiffFile => file !== null),
-    scan: { dirty: currentDirtyPaths.length > 0, paths: toDirtyPaths(currentDirtyPaths) },
+    scan: scanOf(currentDirtyPaths),
     dirtyEntries: currentDirtyPaths,
   }
 }
@@ -2269,7 +2322,6 @@ export class DiffStore {
     const lastFetchedAt = await readLastFetchedAt(gitDir)
     this.lineCountCaches.set(projectId, nextLineCountCache)
     const files = currentFiles.files
-    this.onWorkingTreeProbe?.(projectId, currentFiles.scan)
     const hasOriginRemote = originRemoteUrl !== null
     const originRepoSlug = extractGitHubRepoSlug(originRemoteUrl) ?? undefined
     const [upstreamCounts, branchHistory] = await Promise.all([
@@ -2287,6 +2339,11 @@ export class DiffStore {
     ])
     const { aheadCount, behindCount } = upstreamCounts
     const unpushedCount = hasUpstream ? aheadCount ?? 0 : 0
+    // After the upstream count, so the sidebar's reading carries it too.
+    this.onWorkingTreeProbe?.(projectId, {
+      ...currentFiles.scan,
+      branch: { upstream: upstreamRef, ahead: unpushedCount },
+    })
     const historyWithChecks = attachCommitChecks({
       history: branchHistory,
       repoSlug: originRepoSlug,

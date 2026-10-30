@@ -1436,6 +1436,12 @@ export interface AppSettingsSnapshot {
    * Read when a turn starts. Off unless true, and absent when off.
    */
   disablePreconfiguredMcp?: boolean
+  /**
+   * Hide the sidebar's "Setup Kanna Cloud" prompt, for installs where Kanna
+   * Cloud isn't allowed. Pairing stays reachable from Settings. Off unless
+   * true, and absent when off.
+   */
+  cloudSetupDismissed?: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1492,6 +1498,7 @@ export interface AppSettingsPatch {
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
   disablePreconfiguredMcp?: boolean
+  cloudSetupDismissed?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean

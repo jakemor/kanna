@@ -136,6 +136,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Show the closed widget column over the chat while the mouse is at the window's right edge.",
     keywords: ["widgets", "right sidebar", "hover", "edge", "popout", "overlay", "slideover", "peek"],
   },
+  cloudSetupPrompt: {
+    sectionId: "general",
+    title: "Kanna Cloud Setup Prompt",
+    description: "Show \"Setup Kanna Cloud\" in the sidebar. Turn it off if Kanna Cloud isn't allowed where you work.",
+    keywords: ["kanna cloud", "cloud", "pair", "pairing", "sidebar", "setup", "enterprise", "hide", "dismiss"],
+  },
   chatSounds: {
     sectionId: "general",
     title: "Chat Sounds",

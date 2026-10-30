@@ -112,6 +112,8 @@ interface KannaSidebarProps {
   onLoadPreview?: (chatId: string) => Promise<ChatPreview>
   /** Prompts to `git init` a chat's project — the hover card's "Setup Git". */
   onSetupGit: (chatId: string) => void
+  /** Hides the "Setup Kanna Cloud" prompt; Settings brings it back. */
+  onDismissCloudSetup: () => void
   onRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
   onHideProject: (projectId: string) => void
   onReorderProjectGroups: (projectIds: string[]) => void
@@ -361,6 +363,7 @@ function KannaSidebarImpl({
   editorLabel,
   updateSnapshot,
   onOpenChangelog,
+  onDismissCloudSetup,
 }: KannaSidebarProps) {
   // The one place that wants the whole snapshot. Selected here rather than
   // passed down so a sidebar push re-renders this component and nothing above
@@ -1371,7 +1374,7 @@ function KannaSidebarImpl({
           onOpenExternalPath={onOpenExternalPath}
         />
 
-          <MachineSwitcher />
+          <MachineSwitcher onDismissCloudSetup={onDismissCloudSetup} />
         <div className={cn("hidden md:block border-t border-border p-2", isStandalone && "pb-[55px]")}>
           <button
             type="button"

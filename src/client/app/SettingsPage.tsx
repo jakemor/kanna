@@ -10,6 +10,7 @@ import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/bran
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import { ChangelogSection, useChangelog } from "./settings/ChangelogSection"
+import { CloudSection } from "./settings/CloudSection"
 import { GeneralSection } from "./settings/GeneralSection"
 import { KeybindingsSection } from "./settings/KeybindingsSection"
 import { LabsSection } from "./settings/LabsSection"
@@ -350,6 +351,8 @@ export function SettingsPage() {
                   <SkillsSection state={state} />
                 ) : selectedPage === "secrets" ? (
                   <SecretsSection state={state} />
+                ) : selectedPage === "cloud" ? (
+                  <CloudSection state={state} />
                 ) : selectedPage === "usage" ? (
                   <UsageSection state={state} />
                 ) : selectedPage === "labs" ? (

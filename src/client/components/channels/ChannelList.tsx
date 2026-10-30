@@ -223,25 +223,44 @@ interface ChannelRowProps {
 
 /**
  * The right end of a channel row: its uncommitted changes, then its count of
- * chats that want you. The name before them is `flex-1`, so with no count the
- * stat sits at the right edge, and with one it sits just left of it. Neither
- * shrinks: the name truncates first.
+ * chats that want you.
+ *
+ * The changes show only while the row is hovered, focused from the keyboard,
+ * has its menu up, or is the open channel: on every row at once they were too
+ * much. Laid over the end of the name rather than beside it, so appearing
+ * moves nothing and a hidden stat takes no room from the name. They sit just
+ * left of the badge, or at the right edge without one, on a fade into the
+ * row's own hover background so the name runs out under them. Hover is gated
+ * to pointers that hover, so a tap on a touch screen doesn't flash it.
  */
-export function ChannelRowTrailing({ gitState, attentionCount }: {
+export function ChannelRowTrailing({ gitState, attentionCount, active = false }: {
   gitState: SidebarProjectGroup["gitState"]
   attentionCount: number
+  /** The open channel: its changes stay shown. */
+  active?: boolean
 }) {
+  // Tracked changes only, so a tree with nothing but untracked files shows
+  // nothing, nor one whose counts are zero or unknown.
+  const showChanges = Boolean(gitState?.dirty && ((gitState.additions ?? 0) > 0 || (gitState.deletions ?? 0) > 0))
+  if (!showChanges && attentionCount === 0) return null
   return (
-    <>
-      {/* Tracked changes only, so a tree with nothing but untracked files
-          shows nothing; `DiffFileStat` drops a zero half, and both at zero.
-          Normal weight even on an unread row: it is a count, not the name. */}
-      {gitState?.dirty ? (
-        <DiffFileStat
-          additions={gitState.additions}
-          deletions={gitState.deletions}
-          className="shrink-0 font-normal tabular-nums"
-        />
+    // Zero wide without a badge, so the changes' right edge is the row's.
+    <span className="relative flex shrink-0 items-center">
+      {showChanges ? (
+        <span
+          data-channel-changes
+          className={cn(
+            "pointer-events-none absolute right-full top-1/2 flex -translate-y-1/2 items-center pl-4",
+            "bg-[linear-gradient(to_right,transparent,var(--color-muted)_12px)]",
+            attentionCount > 0 && "pr-2",
+            active
+              ? "opacity-100"
+              : "opacity-0 transition-opacity duration-150 ease-out motion-reduce:transition-none [@media(hover:hover)]:group-hover/channel:opacity-100 group-focus-visible/channel:opacity-100 group-data-[hover-card-open]/channel:opacity-100",
+          )}
+        >
+          {/* Normal weight even on an unread row: it is a count, not the name. */}
+          <DiffFileStat additions={gitState?.additions} deletions={gitState?.deletions} className="font-normal tabular-nums" />
+        </span>
       ) : null}
       {/* Neutral: the mark on the left carries the colour. A tint of the
           text colour rather than `bg-muted`, which is the selected row's
@@ -254,14 +273,14 @@ export function ChannelRowTrailing({ gitState, attentionCount }: {
           {attentionCount}
         </span>
       ) : null}
-    </>
+    </span>
   )
 }
 
 /**
  * A project as a channel: its mark, its name, its uncommitted changes as
- * `+added −deleted` (`gitState`, the git panel's own stat), and a count of
- * the chats that want you (unread, or waiting on an answer). The mark is the project's icon
+ * `+added −deleted` on hover (`ChannelRowTrailing`), and a count of the chats
+ * that want you (unread, or waiting on an answer). The mark is the project's icon
  * while every chat in it is idle and read, and otherwise the status glyph of
  * its most pressing chat, in the icon's slot so the name never shifts. Bold
  * means something in it is unread, as a Slack channel's is.
@@ -330,7 +349,7 @@ const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned,
               {statusMark ?? <ProjectIcon name={group.title} iconUrl={group.iconUrl} />}
             </span>
             <span className="min-w-0 flex-1 truncate">{group.title}</span>
-            <ChannelRowTrailing gitState={group.gitState} attentionCount={attentionCount} />
+            <ChannelRowTrailing gitState={group.gitState} attentionCount={attentionCount} active={active} />
           </span>
         </button>
     </ProjectSectionMenu>

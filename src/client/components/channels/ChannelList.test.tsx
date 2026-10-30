@@ -5,24 +5,51 @@ import { ChannelRowTrailing } from "./ChannelList"
 
 const DIRTY: SidebarProjectGitState = { dirty: true, ahead: 0, untrackedOnly: false, additions: 36, deletions: 38 }
 
-function render(gitState: SidebarProjectGitState | undefined, attentionCount = 0) {
-  return renderToStaticMarkup(<div>{ChannelRowTrailing({ gitState, attentionCount })}</div>)
+function render(gitState: SidebarProjectGitState | undefined, attentionCount = 0, active = false) {
+  return renderToStaticMarkup(<div>{ChannelRowTrailing({ gitState, attentionCount, active })}</div>)
+}
+
+/** The class list of the element carrying the changes. */
+function changesClass(html: string) {
+  return /<span data-channel-changes="true" class="([^"]*)"/u.exec(html)?.[1] ?? ""
 }
 
 describe("ChannelRowTrailing", () => {
-  test("shows the changes just left of the chat badge", () => {
+  test("puts the changes just left of the chat badge", () => {
     const html = render(DIRTY, 2)
     expect(html).toContain("+36")
     expect(html).toContain("-38")
     expect(html.indexOf("-38")).toBeLessThan(html.indexOf("data-channel-badge"))
+    // Laid over the name's end, left of the badge, with the badge's gap.
+    expect(changesClass(html)).toContain("absolute right-full")
+    expect(changesClass(html)).toContain("pr-2")
   })
 
-  test("is the last thing on the row without a badge, so it sits at the right edge", () => {
+  test("without a badge, ends at the row's right edge", () => {
     const html = render(DIRTY)
     expect(html).not.toContain("data-channel-badge")
-    expect(html.endsWith("</span></span></div>")).toBe(true)
-    // Neither the stat nor the badge gives way to a long name.
-    expect(html).toContain("shrink-0")
+    expect(changesClass(html)).toContain("right-full")
+    expect(changesClass(html)).not.toContain("pr-2")
+  })
+
+  test("shows only on hover (a pointer that hovers), keyboard focus or an open menu", () => {
+    const classes = changesClass(render(DIRTY, 1))
+    expect(classes).toContain("opacity-0")
+    expect(classes).toContain("[@media(hover:hover)]:group-hover/channel:opacity-100")
+    expect(classes).toContain("group-focus-visible/channel:opacity-100")
+    expect(classes).toContain("group-data-[hover-card-open]/channel:opacity-100")
+    // A fade on opacity alone, and none for reduced motion.
+    expect(classes).toContain("transition-opacity duration-150 ease-out motion-reduce:transition-none")
+  })
+
+  test("stays shown on the open channel", () => {
+    const classes = changesClass(render(DIRTY, 0, true))
+    expect(classes).toContain("opacity-100")
+    expect(classes).not.toContain("opacity-0")
+  })
+
+  test("takes no room from the name: overlaid, never in the flow", () => {
+    expect(changesClass(render(DIRTY))).toContain("pointer-events-none absolute")
   })
 
   test("drops a half that is zero", () => {
@@ -32,7 +59,13 @@ describe("ChannelRowTrailing", () => {
     expect(html).not.toContain("text-red")
   })
 
-  test("shows nothing for a clean repo, untracked-only work, zero counts or no git state", () => {
+  test("the badge alone when there are no changes to show", () => {
+    const html = render({ dirty: false, ahead: 0, untrackedOnly: false }, 3)
+    expect(html).toContain("data-channel-badge")
+    expect(html).not.toContain("data-channel-changes")
+  })
+
+  test("nothing for a clean repo, untracked-only work, zero counts or no git state", () => {
     for (const gitState of [
       { dirty: false, ahead: 0, untrackedOnly: false },
       // Ahead only: unpushed, but nothing uncommitted to count.

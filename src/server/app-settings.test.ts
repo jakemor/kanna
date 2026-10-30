@@ -336,6 +336,25 @@ describe("AppSettingsManager", () => {
     manager.dispose()
   })
 
+  test("chat CPU is off unless turned on, and is written only when on", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("chatCpuEnabled")
+    expect((await manager.writePatch({ chatCpuEnabled: true })).chatCpuEnabled).toBe(true)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { chatCpuEnabled?: boolean }).chatCpuEnabled).toBe(true)
+    expect(await manager.writePatch({ chatCpuEnabled: false })).not.toHaveProperty("chatCpuEnabled")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("chatCpuEnabled")
+
+    // Anything but true is off.
+    await writeFile(filePath, JSON.stringify({ chatCpuEnabled: "yes" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot()).not.toHaveProperty("chatCpuEnabled")
+
+    manager.dispose()
+  })
+
   test("keeps pane visibility per chat by default, and patches one pane without the other", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)

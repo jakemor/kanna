@@ -311,6 +311,15 @@ export function GeneralSection({
     }
   }
 
+  async function handleChatCpuChange(enabled: boolean) {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ chatCpuEnabled: enabled })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save appearance settings.")
+    }
+  }
+
   async function handleWidgetsPeekChange(enabled: boolean) {
     try {
       setAppSettingsError(null)
@@ -426,6 +435,15 @@ export function GeneralSection({
                 void handleWidgetsPeekChange(checked)
               }}
               aria-label={SETTINGS_ROWS.widgetsPeek.title}
+            />
+          </SettingsRow>
+          <SettingsRow def={SETTINGS_ROWS.chatCpu}>
+            <Switch
+              checked={appSettings?.chatCpuEnabled === true}
+              onCheckedChange={(checked) => {
+                void handleChatCpuChange(checked)
+              }}
+              aria-label={SETTINGS_ROWS.chatCpu.title}
             />
           </SettingsRow>
         </SettingsGroup>

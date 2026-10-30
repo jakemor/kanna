@@ -26,6 +26,7 @@ import { AppSettingsManager } from "./app-settings"
 import { refreshInstalledEditors } from "./editor-detection"
 import { refreshInstalledTerminals } from "./terminal-detection"
 import { UsageLimitsManager } from "./usage-limits"
+import { ChatCpuMonitor } from "./chat-cpu"
 import { DiffStore } from "./diff-store"
 import { WorktreeProbe } from "./worktree-probe"
 import { TurnFileTracker } from "./worktree-snapshot"
@@ -339,6 +340,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   await usageLimits.initialize()
   agent.setClaudeRateLimitListener((info) => usageLimits.recordClaudeRateLimitPush(info))
   codexManager.setRateLimitsListener((snapshot) => usageLimits.recordCodexRateLimitPush(snapshot))
+  // Idle until a client subscribes to `chat-cpu`; the router switches it.
+  const chatCpu = new ChatCpuMonitor({ getChatProcesses: () => agent.getChatProcesses() })
 
   const providerAuth = new ProviderAuthManager({
     ...createProcessAuthDeps(),
@@ -381,6 +384,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     appSettings,
     analytics,
     usageLimits,
+    chatCpu,
     llmProvider: {
       read: readLlmProvider,
       write: writeLlmProvider,
@@ -860,6 +864,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     router.dispose()
     providerAuth.dispose()
     usageLimits.dispose()
+    chatCpu.dispose()
     appSettings.dispose()
     keybindings.dispose()
     terminals.closeAll()

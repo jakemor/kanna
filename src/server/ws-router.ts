@@ -30,6 +30,7 @@ import type { ProjectIcons } from "./project-icons"
 import type { ProviderAuthManager } from "./provider-auth"
 import type { UpdateManager } from "./update-manager"
 import type { UsageLimitsManager } from "./usage-limits"
+import type { ChatCpuMonitor } from "./chat-cpu"
 import { deriveChatSnapshot, deriveChatTouchedFiles, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type {
   AppSettingsSnapshot,
@@ -126,6 +127,8 @@ interface CreateWsRouterArgs {
   machineDisplayName: string
   updateManager: UpdateManager | null
   usageLimits?: Pick<UsageLimitsManager, "getSnapshot" | "refresh" | "onChange"> | null
+  /** Sampled only while some socket holds a `chat-cpu` subscription. */
+  chatCpu?: Pick<ChatCpuMonitor, "getSnapshot" | "onChange" | "setActive"> | null
   providerAuth?: Pick<
     ProviderAuthManager,
     | "getSnapshot"
@@ -253,6 +256,7 @@ export function createWsRouter({
   machineDisplayName,
   updateManager,
   usageLimits,
+  chatCpu,
   providerAuth,
   backgroundChatPushIntervalMs = BACKGROUND_CHAT_PUSH_INTERVAL_MS,
   chatCommands: providedChatCommands,
@@ -368,6 +372,10 @@ export function createWsRouter({
     }
     if (topic.type === "provider-auth") {
       return Boolean(filter.includeProviderAuth)
+    }
+    if (topic.type === "chat-cpu") {
+      // Pushed by the monitor's own change event, never by a broadcast.
+      return false
     }
     if (topic.type === "chat") {
       return filter.chatIds?.has(topic.chatId) ?? false
@@ -593,6 +601,18 @@ export function createWsRouter({
         snapshot: {
           type: "usage-limits",
           data,
+        },
+      }
+    }
+
+    if (topic.type === "chat-cpu") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "chat-cpu",
+          data: chatCpu?.getSnapshot() ?? { chats: {}, cores: 1 },
         },
       }
     }
@@ -1176,6 +1196,40 @@ export function createWsRouter({
       }
     }
   }) ?? (() => {})
+
+  const disposeChatCpuEvents = chatCpu?.onChange(() => {
+    for (const ws of sockets) {
+      const snapshotSignatures = ensureSnapshotSignatures(ws)
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "chat-cpu") continue
+        const envelope = createEnvelope(id, topic)
+        if (envelope.type !== "snapshot") continue
+        const signature = JSON.stringify(envelope.snapshot)
+        if (snapshotSignatures.get(id) === signature) continue
+        snapshotSignatures.set(id, signature)
+        send(ws, envelope)
+      }
+    }
+  }) ?? (() => {})
+
+  /**
+   * The CPU monitor runs `ps` every few seconds, so it runs only while some
+   * socket is subscribed. Called after anything that adds or drops one.
+   */
+  function syncChatCpuActive() {
+    if (!chatCpu) return
+    let watched = false
+    for (const ws of sockets) {
+      for (const topic of ws.data.subscriptions.values()) {
+        if (topic.type === "chat-cpu") {
+          watched = true
+          break
+        }
+      }
+      if (watched) break
+    }
+    chatCpu.setActive(watched)
+  }
 
   const disposeProviderAuthEvents = providerAuth?.onChange(() => {
     for (const ws of sockets) {
@@ -2114,6 +2168,7 @@ export function createWsRouter({
       ws.data.chatWindowChecks?.clear()
       ws.data.sidebarPatchBases?.clear()
       for (const id of [...(ws.data.chatBackgroundPushes?.keys() ?? [])]) clearBackgroundChatPush(ws, id)
+      syncChatCpuActive()
     },
     broadcastSnapshots,
     broadcastChatStateImmediately,
@@ -2156,6 +2211,7 @@ export function createWsRouter({
         ws.data.chatWindowChecks?.delete(parsed.id)
         ws.data.sidebarPatchBases?.delete(parsed.id)
         clearBackgroundChatPush(ws, parsed.id)
+        if (parsed.topic.type === "chat-cpu") syncChatCpuActive()
         // After the subscription is on the books, so an unsubscribe that
         // arrives during the wait finds it and takes it off.
         if (parsed.topic.type === "chat" && chatCreations.has(parsed.topic.chatId)) {
@@ -2206,7 +2262,9 @@ export function createWsRouter({
 
       if (parsed.type === "unsubscribe") {
         const snapshotSignatures = ensureSnapshotSignatures(ws)
+        const wasChatCpu = ws.data.subscriptions.get(parsed.id)?.type === "chat-cpu"
         ws.data.subscriptions.delete(parsed.id)
+        if (wasChatCpu) syncChatCpuActive()
         snapshotSignatures.delete(parsed.id)
         // A (re)subscribe starts from nothing, so the next push sends a full window.
         ws.data.chatEntrySpans?.delete(parsed.id)
@@ -2233,6 +2291,8 @@ export function createWsRouter({
       disposeAppSettingsEvents()
       disposeUpdateEvents()
       disposeUsageLimitsEvents()
+      disposeChatCpuEvents()
+      chatCpu?.setActive(false)
       disposeProviderAuthEvents()
     },
   }

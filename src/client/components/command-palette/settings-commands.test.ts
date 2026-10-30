@@ -57,14 +57,18 @@ describe("buildSettingsCommands", () => {
     // Absent means on for project icons, off for peek.
     expect(byId(off, "toggle-project-icons-in-chats").title).toBe("Hide Project Icons in Chats")
     expect(byId(off, "toggle-widgets-peek").title).toBe("Enable Peek at Widgets")
+    expect(byId(off, "toggle-chat-cpu").title).toBe("Show CPU Usage on Chats")
+    expect(byId(off, "toggle-chat-cpu").effect).toEqual({ type: "patch", patch: { chatCpuEnabled: true } })
     expect(byId(off, "toggle-terminal-webgl").effect).toEqual({ type: "patch", patch: { terminal: { webglRenderer: true } } })
     expect(byId(off, "toggle-analytics").title).toBe("Disable Anonymous Analytics")
     expect(byId(off, "toggle-recent-chats-sidebar").title).toBe("Disable New Sidebar")
 
-    const on = build({ appSettings: { ...appSettings, chatTabsEnabled: true, widgetsPeekEnabled: true, projectIconsInChats: false } })
+    const on = build({ appSettings: { ...appSettings, chatTabsEnabled: true, widgetsPeekEnabled: true, chatCpuEnabled: true, projectIconsInChats: false } })
     expect(byId(on, "toggle-chat-tabs").title).toBe("Disable Chat Tabs")
     expect(byId(on, "toggle-chat-tabs").effect).toEqual({ type: "patch", patch: { chatTabsEnabled: false } })
     expect(byId(on, "toggle-widgets-peek").title).toBe("Disable Peek at Widgets")
+    expect(byId(on, "toggle-chat-cpu").title).toBe("Hide CPU Usage on Chats")
+    expect(byId(on, "toggle-chat-cpu").effect).toEqual({ type: "patch", patch: { chatCpuEnabled: false } })
     expect(byId(on, "toggle-project-icons-in-chats").title).toBe("Show Project Icons in Chats")
   })
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { SidebarChatRow } from "../../../shared/types"
 import type { SidebarThread } from "../../lib/thread-sections"
+import { chatCpuLevel, chatCpuTooltip, formatChatCpu } from "./ChatCpuMeter"
 import { renderChatStatusDot, ThreadRowContent } from "./ThreadRowContent"
 
 const baseChat: SidebarChatRow = {
@@ -299,5 +300,57 @@ describe("ThreadRowContent and delegators", () => {
       expect(drafted).toContain("lucide-pencil-line")
       expect(drafted).not.toContain("lucide-compass")
     }
+  })
+})
+
+describe("ThreadRowContent CPU meter", () => {
+  test("shows the chat's share of the machine with its tooltip", () => {
+    const html = renderRow({ thread: thread({ status: "running" }), cpuPercent: 12 })
+    expect(html).toContain('data-testid="chat-cpu"')
+    expect(html).toContain("12%")
+    expect(html).toContain('title="CPU share of this Mac, process + children, last 5s"')
+    expect(html).toContain("height:12%")
+  })
+
+  test("a live chat under 1% shows a dimmed <1%", () => {
+    const html = renderRow({ thread: thread({ status: "running" }), cpuPercent: 0.3 })
+    expect(html).toContain("&lt;1%")
+    expect(html).toContain('data-level="idle"')
+  })
+
+  test("shows nothing without a figure, or for an archived chat", () => {
+    expect(renderRow({ thread: thread() })).not.toContain("chat-cpu")
+    expect(renderRow({ thread: thread({}, true), cpuPercent: 30 })).not.toContain("chat-cpu")
+  })
+
+  test("the title keeps its truncation beside the meter", () => {
+    const html = renderRow({ thread: thread({ status: "running" }), cpuPercent: 12 })
+    expect(html).toMatch(/class="[^"]*min-w-0[^"]*truncate|class="[^"]*truncate[^"]*min-w-0/)
+  })
+})
+
+describe("chat CPU figure", () => {
+  test("is coloured by cores in use, from the machine's core count", () => {
+    // 8 cores: one core is 12.5% of the machine.
+    expect(chatCpuLevel(0.5, 8)).toBe("idle")
+    expect(chatCpuLevel(10, 8)).toBe("low")
+    expect(chatCpuLevel(12.5, 8)).toBe("busy")
+    expect(chatCpuLevel(25, 8)).toBe("heavy")
+    expect(chatCpuLevel(50, 8)).toBe("hot")
+    // One core: any load is the whole machine.
+    expect(chatCpuLevel(60, 1)).toBe("low")
+  })
+
+  test("one decimal under 10, whole above, <1% for the quiet", () => {
+    expect(formatChatCpu(0.4)).toBe("<1%")
+    expect(formatChatCpu(2.5)).toBe("2.5%")
+    expect(formatChatCpu(3)).toBe("3%")
+    expect(formatChatCpu(47.6)).toBe("48%")
+  })
+
+  test("the tooltip says when it covers sub-chats", () => {
+    expect(chatCpuTooltip(8)).toBe("CPU share of this Mac (8 cores), process + children, last 5s")
+    expect(chatCpuTooltip(8, 1)).toBe("CPU: this chat + 1 sub-chat (share of this Mac (8 cores), last 5s)")
+    expect(chatCpuTooltip(null, 3)).toBe("CPU: this chat + 3 sub-chats (share of this Mac, last 5s)")
   })
 })

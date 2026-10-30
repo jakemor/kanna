@@ -1429,6 +1429,11 @@ export interface AppSettingsSnapshot {
    * Off unless true, and absent when off.
    */
   widgetsPeekEnabled?: boolean
+  /**
+   * Show each chat's CPU on its sidebar row, and sample it. Off unless true,
+   * and absent when off.
+   */
+  chatCpuEnabled?: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1484,6 +1489,7 @@ export interface AppSettingsPatch {
   delegatorMode?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
+  chatCpuEnabled?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean
@@ -1584,6 +1590,19 @@ export interface ProviderUsageSnapshot {
 
 export interface UsageLimitsSnapshot {
   providers: ProviderUsageSnapshot[]
+}
+
+/**
+ * Each chat's CPU over the last sample interval (~5s): its agent process plus
+ * every descendant, as a share of the whole machine (0–100, all `cores`
+ * together). One decimal under 10, whole above; a row shows under 1 as a
+ * dimmed "<1%". A chat with no live process is absent. Totals over a
+ * delegator's sub-chats are the client's to add up (it has the parent links).
+ */
+export interface ChatCpuSnapshot {
+  chats: Record<string, number>
+  /** Logical cores the share is taken over. */
+  cores: number
 }
 
 // ---------------------------------------------------------------------------

@@ -136,6 +136,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Show the closed widget column over the chat while the mouse is at the window's right edge.",
     keywords: ["widgets", "right sidebar", "hover", "edge", "popout", "overlay", "slideover", "peek"],
   },
+  chatCpu: {
+    sectionId: "general",
+    title: "Show CPU Usage on Chats",
+    description: "Show how much CPU each chat is using on its sidebar row. Off, it isn't measured.",
+    keywords: ["cpu", "performance", "load", "processor", "meter", "sidebar"],
+  },
   chatSounds: {
     sectionId: "general",
     title: "Chat Sounds",

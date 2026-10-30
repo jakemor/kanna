@@ -2923,3 +2923,61 @@ describe("transcript windows", () => {
     }
   })
 })
+
+describe("ws-router chat-cpu", () => {
+  function createFakeChatCpu() {
+    const listeners = new Set<() => void>()
+    const fake = {
+      snapshot: { chats: { "chat-1": 12 }, cores: 8 } as { chats: Record<string, number>; cores: number },
+      active: [] as boolean[],
+      getSnapshot: () => fake.snapshot,
+      onChange: (listener: () => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      setActive: (active: boolean) => {
+        fake.active.push(active)
+      },
+      emit: () => {
+        for (const listener of listeners) listener()
+      },
+    }
+    return fake
+  }
+
+  test("sampling runs only while a socket holds the topic, and changes are pushed", async () => {
+    const chatCpu = createFakeChatCpu()
+    const router = createTestRouter({ chatCpu })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    // Nothing subscribed to chat-cpu yet, so nothing is sampling.
+    expect(chatCpu.active).toEqual([])
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "subscribe", id: "cpu", topic: { type: "chat-cpu" } }),
+    )
+    expect(ws.sent[0]).toMatchObject({ type: "snapshot", id: "cpu", snapshot: { type: "chat-cpu", data: { chats: { "chat-1": 12 } } } })
+    expect(chatCpu.active.at(-1)).toBe(true)
+
+    chatCpu.snapshot = { chats: { "chat-1": 40 }, cores: 8 }
+    chatCpu.emit()
+    expect(ws.sent.at(-1)).toMatchObject({ type: "snapshot", id: "cpu", snapshot: { type: "chat-cpu", data: { chats: { "chat-1": 40 } } } })
+
+    const sentBefore = ws.sent.length
+    chatCpu.emit()
+    expect(ws.sent.length).toBe(sentBefore)
+
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "unsubscribe", id: "cpu" }))
+    expect(chatCpu.active.at(-1)).toBe(false)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: 1, type: "subscribe", id: "cpu-2", topic: { type: "chat-cpu" } }),
+    )
+    expect(chatCpu.active.at(-1)).toBe(true)
+    router.handleClose(ws as never)
+    expect(chatCpu.active.at(-1)).toBe(false)
+  })
+})

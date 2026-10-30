@@ -69,6 +69,7 @@ interface AppSettingsFile {
   delegatorMode?: unknown
   chatTabsEnabled?: unknown
   widgetsPeekEnabled?: unknown
+  chatCpuEnabled?: unknown
   newProjectsDirectory?: unknown
   setupShown?: unknown
   setupCompleted?: unknown
@@ -195,6 +196,7 @@ function toFilePayload(state: AppSettingsState) {
     ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(state.chatCpuEnabled === true ? { chatCpuEnabled: true } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -228,6 +230,7 @@ function toSnapshot(
     ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(state.chatCpuEnabled === true ? { chatCpuEnabled: true } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -318,6 +321,7 @@ function normalizeAppSettings(
     ...(source?.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(source?.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(source?.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(source?.chatCpuEnabled === true ? { chatCpuEnabled: true } : {}),
     newProjectsDirectory,
     // Onboarding markers default to false so a machine that has never run the
     // wizard still gets it; once set they stay set for every browser.
@@ -361,6 +365,7 @@ function toComparablePayload(source: AppSettingsFile) {
     delegatorMode: source.delegatorMode,
     chatTabsEnabled: source.chatTabsEnabled,
     widgetsPeekEnabled: source.widgetsPeekEnabled,
+    chatCpuEnabled: source.chatCpuEnabled,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"
       ? source.newProjectsDirectory.trim()
       : source.newProjectsDirectory,

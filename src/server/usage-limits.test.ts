@@ -6,6 +6,7 @@ import {
   UsageLimitsManager,
   mergeClaudeRateLimitPush,
   mergeCodexRateLimitPush,
+  mergeUsageWindows,
   normalizeClaudeUsage,
   normalizeCodexRateLimits,
   normalizeGrokAccountUsage,
@@ -113,6 +114,37 @@ describe("normalizeClaudeUsage", () => {
   })
 })
 
+describe("mergeUsageWindows", () => {
+  const window = (id: string, usedPercent: number | null, resetsAt: string | null, recordedAt = "2026-07-22T09:00:00.000Z") => ({
+    id, label: id, usedPercent, resetsAt, recordedAt, source: "on_demand" as const,
+  })
+
+  test("keeps windows a partial read omits, in their old order", () => {
+    const prev = [window("five_hour", 40, "2026-07-22T14:00:00Z"), window("seven_day", 10, "2026-07-28T08:00:00Z")]
+    const merged = mergeUsageWindows(prev, [window("seven_day", 12, "2026-07-28T08:00:00Z", NOW)], NOW)
+    expect(merged.map((w) => [w.id, w.usedPercent])).toEqual([["five_hour", 40], ["seven_day", 12]])
+  })
+
+  test("a read without a percentage keeps the last known one for the same period", () => {
+    const prev = [window("five_hour", 40, "2026-07-22T14:00:00Z")]
+    const merged = mergeUsageWindows(prev, [window("five_hour", null, "2026-07-22T14:00:00Z", NOW)], NOW)
+    expect(merged[0]).toMatchObject({ usedPercent: 40, recordedAt: "2026-07-22T09:00:00.000Z" })
+  })
+
+  test("a window whose reset has passed reads 0% instead of vanishing", () => {
+    const prev = [window("five_hour", 80, "2026-07-22T09:30:00Z"), window("seven_day", 10, "2026-07-28T08:00:00Z")]
+    const omitted = mergeUsageWindows(prev, [], NOW)
+    expect(omitted[0]).toMatchObject({ id: "five_hour", usedPercent: 0, resetsAt: null })
+    const bare = mergeUsageWindows(prev, [window("five_hour", null, "2026-07-22T14:30:00Z", NOW)], NOW)
+    expect(bare[0]).toMatchObject({ usedPercent: 0, resetsAt: "2026-07-22T14:30:00Z" })
+  })
+
+  test("new windows are appended", () => {
+    const merged = mergeUsageWindows([window("five_hour", 40, null)], [window("seven_day_opus", 5, null, NOW)], NOW)
+    expect(merged.map((w) => w.id)).toEqual(["five_hour", "seven_day_opus"])
+  })
+})
+
 describe("mergeClaudeRateLimitPush", () => {
   test("scales the 0-1 fraction and only touches the binding window", () => {
     const prev = normalizeClaudeUsage(
@@ -141,6 +173,23 @@ describe("mergeClaudeRateLimitPush", () => {
     expect(sevenDay?.usedPercent).toBe(10)
     expect(sevenDay?.recordedAt).toBe("2026-07-22T09:00:00.000Z")
     expect(merged.updatedAt).toBe(NOW)
+  })
+
+  test("a push without utilization keeps the window's last known percentage", () => {
+    // Real sequence: the SDK sends { status: "allowed", rateLimitType, resetsAt }
+    // with no utilization until a limit is near, which used to null the row.
+    const prev = normalizeClaudeUsage(
+      {
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 40, resets_at: "2026-07-22T14:00:00Z" },
+          seven_day: { utilization: 3, resets_at: "2026-07-28T08:00:00Z" },
+        },
+      },
+      "2026-07-22T09:00:00.000Z",
+    )
+    const merged = mergeClaudeRateLimitPush(prev, { status: "allowed", rateLimitType: "five_hour", resetsAt: 1784728800 }, NOW)
+    expect(merged.windows.map((w) => [w.id, w.usedPercent])).toEqual([["five_hour", 40], ["seven_day", 3]])
   })
 
   test("creates the window when there is no previous snapshot", () => {
@@ -357,6 +406,30 @@ describe("UsageLimitsManager", () => {
     expect(claude?.windows).toHaveLength(1)
     expect(claude?.windows[0]?.usedPercent).toBe(42)
     expect(claude?.detail).toContain("probe timed out")
+    manager.dispose()
+  })
+
+  test("a good refresh that omits a window keeps it", async () => {
+    const filePath = await createTempFilePath()
+    let reads = 0
+    const manager = new UsageLimitsManager(filePath, {
+      now: () => new Date(NOW),
+      fetchClaudeUsage: async () => {
+        reads += 1
+        return {
+          rate_limits_available: true,
+          rate_limits: reads === 1
+            ? { five_hour: { utilization: 42, resets_at: "2026-07-22T14:00:00Z" }, seven_day: { utilization: 3, resets_at: "2026-07-28T08:00:00Z" } }
+            : { seven_day: { utilization: 4, resets_at: "2026-07-28T08:00:00Z" } },
+        }
+      },
+    })
+    await manager.initialize()
+    await manager.refresh()
+    await manager.refresh({ force: true })
+
+    const claude = manager.getSnapshot().providers.find((p) => p.provider === "claude")
+    expect(claude?.windows.map((w) => [w.id, w.usedPercent])).toEqual([["five_hour", 42], ["seven_day", 4]])
     manager.dispose()
   })
 

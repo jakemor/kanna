@@ -130,6 +130,41 @@ function latestRecordedAt(snapshot: ProviderUsageSnapshot): string | null {
   return times.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b))
 }
 
+/**
+ * Overlay a newer read of a provider's windows onto the previous one, by id,
+ * so the set of windows only grows: reads and pushes are often partial (a
+ * Claude push names one window, and carries no utilization while the limit is
+ * merely "allowed"). A window the newer read omits, or reports without a
+ * percentage, keeps its last known value until its `resetsAt` passes, then
+ * reads 0%, because the limit has reset. Previous order is kept; new windows
+ * go last.
+ */
+export function mergeUsageWindows(
+  prev: UsageLimitWindow[],
+  next: UsageLimitWindow[],
+  now: string,
+): UsageLimitWindow[] {
+  const nowMs = Date.parse(now)
+  const hasReset = (window: UsageLimitWindow) =>
+    window.resetsAt !== null && Date.parse(window.resetsAt) <= nowMs
+  const nextById = new Map(next.map((window) => [window.id, window]))
+  const merged = prev.map((old) => {
+    const fresh = nextById.get(old.id)
+    if (fresh && fresh.usedPercent !== null) return fresh
+    if (old.usedPercent === null) return fresh ?? old
+    if (hasReset(old)) {
+      return fresh
+        ? { ...fresh, usedPercent: 0 }
+        : { ...old, usedPercent: 0, resetsAt: null }
+    }
+    return fresh
+      ? { ...fresh, usedPercent: old.usedPercent, recordedAt: old.recordedAt, source: old.source }
+      : old
+  })
+  const prevIds = new Set(prev.map((window) => window.id))
+  return [...merged, ...next.filter((window) => !prevIds.has(window.id))]
+}
+
 // ---------------------------------------------------------------------------
 // Normalizers (exported for tests)
 // ---------------------------------------------------------------------------
@@ -224,7 +259,8 @@ const CLAUDE_PUSH_WINDOW_IDS: Record<string, string> = {
  * Merge a single-window sparse push into an existing Claude snapshot. The
  * pushed `utilization` is a 0–1 fraction (from the response header), unlike the
  * 0–100 `get_usage` percentages, so we scale it. Only the binding window is
- * updated; other windows keep their last recordedAt (honest staleness).
+ * updated; other windows keep their last recordedAt (honest staleness). Its
+ * utilization is only sent near a limit, so a bare push keeps the old value.
  */
 export function mergeClaudeRateLimitPush(
   prev: ProviderUsageSnapshot | null,
@@ -252,21 +288,17 @@ export function mergeClaudeRateLimitPush(
     : null
   const resetsAt = unixSecondsToIso(info.resetsAt)
 
-  const windows = [...base.windows]
-  const existingIndex = windows.findIndex((w) => w.id === id)
-  const merged: UsageLimitWindow = {
+  const existing = base.windows.find((w) => w.id === id)
+  const pushed: UsageLimitWindow = {
     id,
     label: claudeWindowLabel(id),
     usedPercent,
-    resetsAt: resetsAt ?? windows[existingIndex]?.resetsAt ?? null,
+    resetsAt: resetsAt ?? existing?.resetsAt ?? null,
     recordedAt: now,
     source: "turn_push",
   }
-  if (existingIndex >= 0) {
-    windows[existingIndex] = merged
-  } else {
-    windows.push(merged)
-  }
+  // A push with no utilization (status "allowed") keeps the last known value.
+  const windows = mergeUsageWindows(base.windows, [pushed], now)
 
   const snapshot: ProviderUsageSnapshot = {
     ...base,
@@ -410,14 +442,11 @@ export function mergeCodexRateLimitPush(
   )
   if (!prev || prev.windows.length === 0) return fresh
 
-  // Overlay fresh windows onto prev by id; keep prev windows the push omitted.
-  const byId = new Map(prev.windows.map((w) => [w.id, w]))
-  for (const w of fresh.windows) byId.set(w.id, w)
   const snapshot: ProviderUsageSnapshot = {
     ...prev,
     status: "ok",
     plan: fresh.plan ?? prev.plan,
-    windows: [...byId.values()],
+    windows: mergeUsageWindows(prev.windows, fresh.windows, now),
     credits: fresh.credits ?? prev.credits,
     detail: null,
   }
@@ -673,12 +702,20 @@ export class UsageLimitsManager {
    * Apply a fresh read, but never let a failed read wipe last-known data: when
    * the fresh snapshot has no windows and the previous one does, keep the
    * previous windows/credits (their recordedAt timestamps communicate the
-   * staleness) and only surface the failure detail.
+   * staleness) and only surface the failure detail. A good read is merged
+   * over a good previous one by window id (`mergeUsageWindows`).
    */
   private applyRefreshed(provider: AgentProvider, fresh: ProviderUsageSnapshot) {
     const prev = this.snapshots.get(provider)
     if (fresh.status !== "ok" && prev && prev.windows.length > 0) {
       this.setProvider(provider, { ...prev, detail: fresh.detail })
+      return
+    }
+    if (fresh.status === "ok" && prev?.status === "ok") {
+      // A read can omit a window or its percentage; keep those rows steady.
+      const merged = { ...fresh, windows: mergeUsageWindows(prev.windows, fresh.windows, this.nowIso()) }
+      merged.updatedAt = latestRecordedAt(merged)
+      this.setProvider(provider, merged)
       return
     }
     this.setProvider(provider, fresh)

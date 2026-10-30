@@ -336,6 +336,25 @@ describe("AppSettingsManager", () => {
     manager.dispose()
   })
 
+  test("the Kanna Cloud setup prompt shows unless dismissed, and the flag is written only when set", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("cloudSetupDismissed")
+    expect((await manager.writePatch({ cloudSetupDismissed: true })).cloudSetupDismissed).toBe(true)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { cloudSetupDismissed?: boolean }).cloudSetupDismissed).toBe(true)
+    expect(await manager.writePatch({ cloudSetupDismissed: false })).not.toHaveProperty("cloudSetupDismissed")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("cloudSetupDismissed")
+
+    // Anything but true shows the prompt.
+    await writeFile(filePath, JSON.stringify({ cloudSetupDismissed: "yes" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot()).not.toHaveProperty("cloudSetupDismissed")
+
+    manager.dispose()
+  })
+
   test("keeps pane visibility per chat by default, and patches one pane without the other", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)

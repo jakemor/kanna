@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
-import { ChevronsUpDown, Cloud, ExternalLink, LaptopMinimal, Loader2, Settings2 } from "lucide-react"
+import { ChevronsUpDown, Cloud, ExternalLink, LaptopMinimal, Loader2, Settings2, X } from "lucide-react"
 import {
   Dialog,
   DialogBody,
@@ -11,6 +11,7 @@ import {
 import { CloudPairPanel } from "../components/cloud/CloudPairPanel"
 import { useCloudPairSession } from "../components/cloud/useCloudPairSession"
 import { InputPopover, PopoverMenuItem } from "../components/chat-ui/ChatPreferenceControls"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { findCurrentMachine, useConnectionStore } from "../stores/connectionStore"
 import { displayClaimUrl } from "../lib/pairSession"
 import { postToMacApp } from "../lib/macApp"
@@ -61,13 +62,14 @@ function OnlineDot({ online }: { online: boolean }) {
  * Mac the app does the switching (this Mac at localhost, the rest at
  * kanna.sh).
  */
-export function MachineSwitcher() {
+export function MachineSwitcher({ onDismissCloudSetup }: { onDismissCloudSetup: () => void }) {
   const mode = useConnectionStore((state) => state.mode)
   const machines = useConnectionStore((state) => state.machines)
   const load = useConnectionStore((state) => state.load)
   const fromMacApp = useConnectionStore((state) => state.fromMacApp)
   const thisMachineSubdomain = useConnectionStore((state) => state.thisMachine)
   const showingMachine = useConnectionStore((state) => state.showingMachine)
+  const cloudSetupDismissed = useAppSettingsStore((state) => state.settings?.cloudSetupDismissed === true)
   const [pairDialogOpen, setPairDialogOpen] = useState(false)
   const { session, starting, begin } = useCloudPairSession({ enabled: mode === "local" })
   const startedRef = useRef(false)
@@ -114,6 +116,8 @@ export function MachineSwitcher() {
 
   if (mode === "local") {
     const pairedOrigin = session.status === "paired" ? session.appOrigin : null
+    // Only the setup prompt can be hidden; a paired machine keeps its link.
+    if (!pairedOrigin && cloudSetupDismissed) return null
     return (
       <MachineSection>
         {pairedOrigin ? (
@@ -125,13 +129,24 @@ export function MachineSwitcher() {
             <ExternalLink className="size-3.5 shrink-0 opacity-60" />
           </a>
         ) : (
-          <button type="button" onClick={() => setPairDialogOpen(true)} className={SIDEBAR_BUTTON_CLASS}>
-            <span className="flex min-w-0 items-center gap-2">
-              <Cloud className="ml-[1px] size-4 shrink-0" />
-              <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
-            </span>
-            <ExternalLink className="size-3.5 shrink-0 opacity-60" />
-          </button>
+          <div className="group relative">
+            <button type="button" onClick={() => setPairDialogOpen(true)} className={SIDEBAR_BUTTON_CLASS}>
+              <span className="flex min-w-0 items-center gap-2">
+                <Cloud className="ml-[1px] size-4 shrink-0" />
+                <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
+              </span>
+              <ExternalLink className="size-3.5 shrink-0 opacity-60 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0" />
+            </button>
+            <button
+              type="button"
+              onClick={onDismissCloudSetup}
+              title="Dismiss"
+              aria-label="Dismiss Kanna Cloud setup"
+              className="absolute right-[7px] top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
         )}
         <Dialog open={pairDialogOpen} onOpenChange={setPairDialogOpen}>
           <DialogContent>

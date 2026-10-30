@@ -1429,6 +1429,12 @@ export interface AppSettingsSnapshot {
    * Off unless true, and absent when off.
    */
   widgetsPeekEnabled?: boolean
+  /**
+   * Hide the sidebar's "Setup Kanna Cloud" prompt, for installs where Kanna
+   * Cloud isn't allowed. Pairing stays reachable from Settings. Off unless
+   * true, and absent when off.
+   */
+  cloudSetupDismissed?: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1484,6 +1490,7 @@ export interface AppSettingsPatch {
   delegatorMode?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
+  cloudSetupDismissed?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean

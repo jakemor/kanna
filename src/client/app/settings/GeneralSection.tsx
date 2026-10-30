@@ -320,6 +320,15 @@ export function GeneralSection({
     }
   }
 
+  async function handleCloudSetupPromptChange(shown: boolean) {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ cloudSetupDismissed: !shown })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save appearance settings.")
+    }
+  }
+
   async function handleAnalyticsPreferenceChange(enabled: boolean) {
     try {
       setAppSettingsError(null)
@@ -426,6 +435,15 @@ export function GeneralSection({
                 void handleWidgetsPeekChange(checked)
               }}
               aria-label={SETTINGS_ROWS.widgetsPeek.title}
+            />
+          </SettingsRow>
+          <SettingsRow def={SETTINGS_ROWS.cloudSetupPrompt}>
+            <Switch
+              checked={appSettings?.cloudSetupDismissed !== true}
+              onCheckedChange={(checked) => {
+                void handleCloudSetupPromptChange(checked)
+              }}
+              aria-label={SETTINGS_ROWS.cloudSetupPrompt.title}
             />
           </SettingsRow>
         </SettingsGroup>

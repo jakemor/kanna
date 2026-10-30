@@ -212,6 +212,40 @@ describe("normalizeCodexRateLimits", () => {
     ])
   })
 
+  test("an Enterprise plan with only a spend cap reads as ok", () => {
+    const snapshot = normalizeCodexRateLimits(
+      {
+        rateLimits: {
+          limitId: "codex",
+          planType: "enterprise",
+          individualLimit: { limit: "1000.00", used: "381.25", remainingPercent: 62, resetsAt: 1785168000 },
+          spendControlReached: true,
+        },
+      },
+      NOW,
+    )
+    expect(snapshot.status).toBe("ok")
+    expect(snapshot.windows).toEqual([])
+    expect(snapshot.credits).toMatchObject({
+      label: "Monthly spend limit",
+      usedPercent: 38.125,
+      usedAmount: 381.25,
+      limitAmount: 1000,
+      currency: "USD",
+      resetsAt: "2026-07-27T16:00:00.000Z",
+      limitReached: true,
+    })
+  })
+
+  test("falls back to remainingPercent when the amounts are missing", () => {
+    const snapshot = normalizeCodexRateLimits(
+      { rateLimits: { limitId: "codex", individualLimit: { limit: "500", remainingPercent: 80 } } },
+      NOW,
+    )
+    expect(snapshot.credits).toMatchObject({ usedPercent: 20, usedAmount: null, limitAmount: 500, resetsAt: null })
+    expect(snapshot.credits?.limitReached).toBeUndefined()
+  })
+
   test("empty response is unavailable", () => {
     expect(normalizeCodexRateLimits({}, NOW).status).toBe("unavailable")
     expect(normalizeCodexRateLimits(null, NOW).status).toBe("unavailable")
@@ -242,6 +276,16 @@ describe("mergeCodexRateLimitPush", () => {
     const secondary = merged.windows.find((w) => w.id === "codex:secondary")
     expect(secondary?.usedPercent).toBe(5)
     expect(secondary?.recordedAt).toBe("2026-07-22T09:00:00.000Z")
+  })
+
+  test("a push without the spend cap keeps the cap already read", () => {
+    const prev = normalizeCodexRateLimits(
+      { rateLimits: { limitId: "codex", individualLimit: { limit: "1000", used: "250", resetsAt: 1785168000 } } },
+      "2026-07-22T09:00:00.000Z",
+    )
+    const merged = mergeCodexRateLimitPush(prev, { limitId: "codex", credits: { hasCredits: true, balance: "5" } }, NOW)
+    expect(merged.status).toBe("ok")
+    expect(merged.credits).toMatchObject({ label: "Monthly spend limit", usedPercent: 25 })
   })
 })
 

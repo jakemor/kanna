@@ -1227,6 +1227,13 @@ export interface SidebarProjectGitState {
   ahead: number
   /** The only changes are untracked files: not `dirty`, but not clean either. */
   untrackedOnly: boolean
+  /**
+   * Lines added and deleted in tracked files against `HEAD` (`git diff
+   * --numstat HEAD`, summed). Untracked files don't count. Absent when not
+   * known, as from a server that predates them.
+   */
+  additions?: number
+  deletions?: number
 }
 
 export interface SidebarProjectGroup {

@@ -1206,6 +1206,8 @@ describe("deriveSidebarData gitState", () => {
   test("states tracked changes, unpushed commits and untracked-only work", () => {
     expect(groupFor(probe({ dirty: true, trackedDirty: true, paths: new Set(["a.ts"]) }))?.gitState)
       .toEqual({ dirty: true, ahead: 0, untrackedOnly: false })
+    expect(groupFor(probe({ dirty: true, trackedDirty: true, additions: 36, deletions: 38 }))?.gitState)
+      .toEqual({ dirty: true, ahead: 0, untrackedOnly: false, additions: 36, deletions: 38 })
     expect(groupFor(probe({ ahead: 3 }))?.gitState).toEqual({ dirty: false, ahead: 3, untrackedOnly: false })
     expect(groupFor(probe({ dirty: true, paths: new Set(["scratch.txt"]) }))?.gitState)
       .toEqual({ dirty: false, ahead: 0, untrackedOnly: true })
@@ -1222,7 +1224,7 @@ describe("deriveSidebarData gitState", () => {
     const snapshot = () => JSON.stringify(deriveSidebarData(state(), new Map(), {
       nowMs: 1_000_000,
       repoLabels: label,
-      workingTrees: probe({ ahead: 1 }),
+      workingTrees: probe({ ahead: 1, dirty: true, trackedDirty: true, additions: 36, deletions: 38 }),
     }))
     expect(snapshot()).toBe(snapshot())
   })

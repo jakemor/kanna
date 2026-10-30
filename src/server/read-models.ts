@@ -347,6 +347,8 @@ export function deriveSidebarData(
               dirty: workingTree.trackedDirty,
               ahead: workingTree.ahead,
               untrackedOnly: workingTree.dirty && !workingTree.trackedDirty,
+              ...(workingTree.additions != null ? { additions: workingTree.additions } : {}),
+              ...(workingTree.deletions != null ? { deletions: workingTree.deletions } : {}),
             },
           }
         : {}),

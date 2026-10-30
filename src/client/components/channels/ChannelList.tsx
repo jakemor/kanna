@@ -11,6 +11,7 @@ import { useChatHasDraft, useDraftStartTimes } from "../../stores/chatInputStore
 import { usePendingSendTimes } from "../../stores/pendingSendStore"
 import { useSectionOverrides } from "../../stores/sidebarSectionStore"
 import { renderChatStatusDot, ThreadRowContent } from "../chat-ui/ThreadRowContent"
+import { DiffFileStat } from "../chat-ui/git/shared"
 import { ProjectSectionMenu } from "../chat-ui/sidebar/Menus"
 import { SectionHeader } from "../chat-ui/sidebar/ThreadSections"
 import { LIST_HOVER_CARD_ROOM_BELOW, ListHoverCard } from "../ui/list-hover-card"
@@ -221,8 +222,46 @@ interface ChannelRowProps {
 }
 
 /**
- * A project as a channel: its mark, its name, and a count of the chats that
- * want you (unread, or waiting on an answer). The mark is the project's icon
+ * The right end of a channel row: its uncommitted changes, then its count of
+ * chats that want you. The name before them is `flex-1`, so with no count the
+ * stat sits at the right edge, and with one it sits just left of it. Neither
+ * shrinks: the name truncates first.
+ */
+export function ChannelRowTrailing({ gitState, attentionCount }: {
+  gitState: SidebarProjectGroup["gitState"]
+  attentionCount: number
+}) {
+  return (
+    <>
+      {/* Tracked changes only, so a tree with nothing but untracked files
+          shows nothing; `DiffFileStat` drops a zero half, and both at zero.
+          Normal weight even on an unread row: it is a count, not the name. */}
+      {gitState?.dirty ? (
+        <DiffFileStat
+          additions={gitState.additions}
+          deletions={gitState.deletions}
+          className="shrink-0 font-normal tabular-nums"
+        />
+      ) : null}
+      {/* Neutral: the mark on the left carries the colour. A tint of the
+          text colour rather than `bg-muted`, which is the selected row's
+          own background and would hide the badge there. */}
+      {attentionCount > 0 ? (
+        <span
+          data-channel-badge
+          className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-foreground/10 px-1 text-[11px] font-bold leading-none text-foreground"
+        >
+          {attentionCount}
+        </span>
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * A project as a channel: its mark, its name, its uncommitted changes as
+ * `+added −deleted` (`gitState`, the git panel's own stat), and a count of
+ * the chats that want you (unread, or waiting on an answer). The mark is the project's icon
  * while every chat in it is idle and read, and otherwise the status glyph of
  * its most pressing chat, in the icon's slot so the name never shifts. Bold
  * means something in it is unread, as a Slack channel's is.
@@ -291,14 +330,7 @@ const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned,
               {statusMark ?? <ProjectIcon name={group.title} iconUrl={group.iconUrl} />}
             </span>
             <span className="min-w-0 flex-1 truncate">{group.title}</span>
-            {/* Neutral: the mark on the left carries the colour. A tint of the
-                text colour rather than `bg-muted`, which is the selected row's
-                own background and would hide the badge there. */}
-            {attentionCount > 0 ? (
-              <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-foreground/10 px-1 text-[11px] font-bold leading-none text-foreground">
-                {attentionCount}
-              </span>
-            ) : null}
+            <ChannelRowTrailing gitState={group.gitState} attentionCount={attentionCount} />
           </span>
         </button>
     </ProjectSectionMenu>

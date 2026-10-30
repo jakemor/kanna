@@ -1239,6 +1239,13 @@ export interface WorkingTreeScan {
    * stands. `upstream` is the short name (`origin/main`), null without one.
    */
   branch?: { upstream: string | null; ahead: number }
+  /**
+   * Lines added and deleted across tracked files against `HEAD` (`git diff
+   * --numstat HEAD`, summed; binary files count nothing). Untracked files are
+   * left out: they aren't in that diff. Absent when the scan didn't count, or
+   * the count couldn't run (an unborn `HEAD`).
+   */
+  lineCounts?: { additions: number; deletions: number }
 }
 
 /** Derived from a `WorkingTreeScan` — see `WorktreeProbe`. */
@@ -1248,6 +1255,9 @@ export interface WorkingTreeProbe {
   trackedDirty: boolean
   /** Commits on the branch that its upstream lacks; 0 with no upstream. */
   ahead: number
+  /** See `WorkingTreeScan.lineCounts`; absent when unknown. */
+  additions?: number
+  deletions?: number
   /** Dirty paths, for intersecting against a chat's touched-path set. */
   paths: ReadonlySet<string>
   /**
@@ -1361,10 +1371,32 @@ export async function probeWorkingTree(repoRoot: string): Promise<WorkingTreeSca
   }
 
   const dirtyPaths = parseStatusPaths(output)
+  const scan = scanOf(dirtyPaths)
+  // A second process, but only where there is something to count: the probe
+  // itself runs only when the git dir's stamp moved, and a tree with no
+  // tracked change has nothing in `git diff HEAD`.
+  const lineCounts = scan.trackedDirty
+    ? await getTrackedDiffStats(repoRoot, "HEAD").then(sumDiffStats, () => undefined)
+    : { additions: 0, deletions: 0 }
   return {
-    ...scanOf(dirtyPaths),
+    ...scan,
     branch: parseStatusBranchHeader(output),
+    ...(lineCounts ? { lineCounts } : {}),
   }
+}
+
+/** Every file's lines added and deleted, summed. A binary file has no lines. */
+export function sumDiffStats(
+  statsByPath: ReadonlyMap<string, { additions: number; deletions: number; binary?: boolean }>
+): { additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const stats of statsByPath.values()) {
+    if (stats.binary) continue
+    additions += stats.additions
+    deletions += stats.deletions
+  }
+  return { additions, deletions }
 }
 
 function scanOf(dirtyPaths: DirtyPathEntry[]): WorkingTreeScan {
@@ -1559,7 +1591,10 @@ async function computeCurrentFiles(
 
   return {
     files: files.filter((file): file is ChatDiffFile => file !== null),
-    scan: scanOf(currentDirtyPaths),
+    // `baseCommit` is HEAD, so the tracked stats are the probe's own count.
+    scan: baseCommit
+      ? { ...scanOf(currentDirtyPaths), lineCounts: sumDiffStats(trackedStatsByPath) }
+      : scanOf(currentDirtyPaths),
     dirtyEntries: currentDirtyPaths,
   }
 }

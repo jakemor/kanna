@@ -118,6 +118,8 @@ function probesEqual(left: WorkingTreeProbe | undefined, right: WorkingTreeProbe
     || left.dirty !== right.dirty
     || left.trackedDirty !== right.trackedDirty
     || left.ahead !== right.ahead
+    || left.additions !== right.additions
+    || left.deletions !== right.deletions
     || left.paths.size !== right.paths.size
   ) return false
   for (const dirtyPath of right.paths) {
@@ -461,6 +463,7 @@ export class WorktreeProbe {
       trackedDirty: scan.trackedDirty ?? scan.dirty,
       // A scan that didn't read the branch leaves the last count standing.
       ahead: scan.branch?.ahead ?? previous?.ahead ?? 0,
+      ...(scan.lineCounts ? scan.lineCounts : {}),
       paths: new Set(scan.paths),
       headBlobs: await this.readHeadBlobs(projectId, scan.paths),
     }

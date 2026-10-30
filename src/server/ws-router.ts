@@ -19,7 +19,7 @@ import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import type { PortTunnelManager } from "./port-tunnels"
 import { cloneRepository, createDirectory, ensureProjectDirectory, initializeProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
 import { listRecentGitHubRepos } from "./github"
-import { SERVER_PROVIDERS, applyPiFaveModels } from "./provider-catalog"
+import { SERVER_PROVIDERS, applyPiFaveModels, getProviderCatalogGeneration } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { buildSecretsList } from "./secrets"
 import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
@@ -271,6 +271,8 @@ export function createWsRouter({
     // A create that failed leaves no chat, and the caller says so in its own words.
     await chatCreations.get(chatId)?.catch(() => {})
   }
+  /** Generation last seen when chat incremental spans were valid for every socket. */
+  let lastPushedProviderCatalogGeneration = 0
   const resolvedAnalytics = analytics ?? NoopAnalyticsReporter
   const chatCommands = providedChatCommands ?? createChatCommands({
     store,
@@ -979,7 +981,30 @@ export function createWsRouter({
     }
   }
 
+  /**
+   * Runtime provider catalogs (Cursor's `cursor-agent --list-models`, Claude's
+   * SDK list, pi fave models) can land after a client has already subscribed.
+   * Incremental chat pushes strip `availableProviders` as unchanged baggage, so
+   * without resetting spans the client would latch the static fallback forever.
+   */
+  function invalidateChatIncrementalStateIfCatalogChanged() {
+    const generation = getProviderCatalogGeneration()
+    if (generation === lastPushedProviderCatalogGeneration) return
+    lastPushedProviderCatalogGeneration = generation
+    for (const ws of sockets) {
+      ws.data.chatEntrySpans?.clear()
+      ws.data.chatOutlineCounts?.clear()
+      const signatures = ensureSnapshotSignatures(ws)
+      for (const [id, topic] of ws.data.subscriptions) {
+        if (topic.type === "chat") {
+          signatures.delete(id)
+        }
+      }
+    }
+  }
+
   async function broadcastSnapshots() {
+    invalidateChatIncrementalStateIfCatalogChanged()
     const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
       await pushSnapshots(ws, { skipPrune: true, cache })
@@ -987,6 +1012,7 @@ export function createWsRouter({
   }
 
   async function broadcastFilteredSnapshots(filter: SnapshotBroadcastFilter) {
+    invalidateChatIncrementalStateIfCatalogChanged()
     const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
       await pushSnapshots(ws, { skipPrune: true, filter, cache })

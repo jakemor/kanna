@@ -66,6 +66,16 @@ interface CodexRateLimitSnapshotRaw {
   secondary?: CodexRateLimitWindowRaw | null
   credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null
   planType?: string | null
+  /** Enterprise spend cap: decimal-string amounts (USD), real reset in Unix seconds. */
+  individualLimit?: CodexIndividualLimitRaw | null
+  spendControlReached?: boolean | null
+}
+
+interface CodexIndividualLimitRaw {
+  limit?: string | null
+  used?: string | null
+  remainingPercent?: number | null
+  resetsAt?: number | null
 }
 
 export interface CodexRateLimitsRaw {
@@ -278,6 +288,55 @@ export function mergeClaudeRateLimitPush(
   return snapshot
 }
 
+function parseDecimal(value: string | number | null | undefined): number | null {
+  if (value == null) return null
+  const parsed = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * A Codex bucket's credits entry: the Enterprise spend cap (`individualLimit`)
+ * when present, else the bare balance/unlimited flags. The cap's reset is the
+ * real one from the API, so it goes in `resetsAt`.
+ */
+function codexCredits(bucket: CodexRateLimitSnapshotRaw, now: string, source: UsageLimitSource): UsageLimitCredits | null {
+  const cap = bucket.individualLimit
+  const limitAmount = parseDecimal(cap?.limit)
+  if (cap && limitAmount !== null) {
+    const usedAmount = parseDecimal(cap.used)
+    // Used/limit is exact where remainingPercent is a rounded integer.
+    const usedPercent = usedAmount !== null && limitAmount > 0
+      ? clampPercent((usedAmount / limitAmount) * 100)
+      : clampPercent(cap.remainingPercent != null ? 100 - cap.remainingPercent : null)
+    return {
+      label: "Monthly spend limit",
+      usedPercent,
+      usedAmount,
+      limitAmount,
+      currency: "USD",
+      detail: null,
+      resetsAt: unixSecondsToIso(cap.resetsAt),
+      ...(bucket.spendControlReached ? { limitReached: true } : {}),
+      recordedAt: now,
+      source,
+    }
+  }
+  if (bucket.credits && (bucket.credits.hasCredits || bucket.credits.unlimited)) {
+    return {
+      label: "Credits",
+      usedPercent: null,
+      usedAmount: null,
+      limitAmount: null,
+      currency: null,
+      // Codex reports balance as an opaque string; pass it through.
+      detail: bucket.credits.unlimited ? "Unlimited" : bucket.credits.balance ?? null,
+      recordedAt: now,
+      source,
+    }
+  }
+  return null
+}
+
 function codexBucketWindows(
   bucket: CodexRateLimitSnapshotRaw,
   keyPrefix: string,
@@ -370,28 +429,22 @@ export function normalizeCodexRateLimits(
           ? "All models"
           : limitId
     windows.push(...codexBucketWindows(bucket, limitId, now, source, suffix))
-    if (!credits && bucket.credits && (bucket.credits.hasCredits || bucket.credits.unlimited)) {
-      credits = {
-        label: "Credits",
-        usedPercent: null,
-        usedAmount: null,
-        limitAmount: null,
-        currency: null,
-        // Codex reports balance as an opaque string; pass it through.
-        detail: bucket.credits.unlimited ? "Unlimited" : bucket.credits.balance ?? null,
-        recordedAt: now,
-        source,
-      }
+    const bucketCredits = codexCredits(bucket, now, source)
+    // A spend cap outranks a bare balance from an earlier bucket.
+    if (bucketCredits && (!credits || (credits.usedPercent === null && bucketCredits.usedPercent !== null))) {
+      credits = bucketCredits
     }
   }
 
+  // Enterprise plans report no windows, only the spend cap.
+  const hasLimits = windows.length > 0 || credits?.usedPercent != null
   const snapshot: ProviderUsageSnapshot = {
     ...base,
-    status: windows.length > 0 ? "ok" : "unavailable",
+    status: hasLimits ? "ok" : "unavailable",
     plan,
     windows,
     credits,
-    detail: windows.length > 0 ? null : "No rate-limit windows reported.",
+    detail: hasLimits ? null : "No rate-limit windows reported.",
   }
   snapshot.updatedAt = latestRecordedAt(snapshot)
   return snapshot
@@ -408,7 +461,13 @@ export function mergeCodexRateLimitPush(
     now,
     "turn_push",
   )
-  if (!prev || prev.windows.length === 0) return fresh
+  if (!prev || (prev.windows.length === 0 && !prev.credits)) return fresh
+
+  // A push without the spend cap (just a balance flag, or nothing) must not
+  // wipe a cap we already read.
+  const credits = fresh.credits && (fresh.credits.usedPercent !== null || prev.credits?.usedPercent == null)
+    ? fresh.credits
+    : prev.credits ?? fresh.credits
 
   // Overlay fresh windows onto prev by id; keep prev windows the push omitted.
   const byId = new Map(prev.windows.map((w) => [w.id, w]))
@@ -418,7 +477,7 @@ export function mergeCodexRateLimitPush(
     status: "ok",
     plan: fresh.plan ?? prev.plan,
     windows: [...byId.values()],
-    credits: fresh.credits ?? prev.credits,
+    credits,
     detail: null,
   }
   snapshot.updatedAt = latestRecordedAt(snapshot)

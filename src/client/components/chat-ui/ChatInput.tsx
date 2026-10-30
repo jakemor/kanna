@@ -266,7 +266,7 @@ interface Props {
   onEditModels?: () => void
   /** Enumerates the selected harness's invocable skills for the "/" menu. */
   onListSkills?: (provider: AgentProvider) => Promise<ChatSkillsSnapshot>
-  /** Said in place of "Build in <project>": whose composer this is, when the page has two. */
+  /** Said in place of the project: whose composer this is, when the page has two. */
   placeholder?: string
   /**
    * A second composer on the page, beside the main one: the previewed
@@ -408,7 +408,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // On one line the model is named only here: the harness button beside the
   // field is its icon alone.
   const modelLabel = resolveModelLabel(composer.models, providerPrefs.model)
-  const placeholder = `${modelLabel} · ${placeholderOverride ?? (projectLabel ? `Build in ${projectLabel}` : "Build something...")}`
+  const placeholder = `${modelLabel} · ${placeholderOverride ?? projectLabel ?? "Build something..."}`
 
   const activeContextWindow = useMemo(() => {
     if (providerPrefs.provider !== "claude") {

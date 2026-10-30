@@ -3,10 +3,14 @@ import { ChevronRight } from "lucide-react"
 import type { ProviderUsageSnapshot, UsageLimitWindow, UsageLimitsSnapshot } from "../../../shared/types"
 import { PROVIDERS } from "../../../shared/types"
 import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
+import { Switch } from "../../components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
 import { formatRelativeTime } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import type { KannaState } from "../useKannaState"
+import { SettingsGroup, SettingsRow } from "./shared"
+import { SETTINGS_ROWS } from "./registry"
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
@@ -58,7 +62,7 @@ function formatCompact(value: number): string {
 }
 
 /** Whole-dollar money, abbreviated above a thousand: "$130", "$1.3k", "$2k", "$1.2m". */
-function formatMoney(amount: number, currency: string | null): string {
+export function formatMoney(amount: number, currency: string | null): string {
   const compact = formatCompact(amount)
   const symbol = currencySymbol(currency)
   // Keep the symbol ahead of the sign: -$5, not $-5.
@@ -417,11 +421,29 @@ export function useUsageLimits(socket: KannaState["socket"], active = true) {
   return { snapshot, refreshing, refresh }
 }
 
-export function UsageSection({ state }: { state: Pick<KannaState, "socket"> }) {
+function SidebarUsageRow({ onWrite }: { onWrite: KannaState["handleWriteAppSettings"] }) {
+  const enabled = useAppSettingsStore((store) => store.settings?.sidebarUsageEnabled === true)
+  return (
+    <SettingsGroup title="Sidebar">
+      <SettingsRow def={SETTINGS_ROWS.sidebarUsage}>
+        <Switch
+          checked={enabled}
+          onCheckedChange={(checked) => {
+            void onWrite({ sidebarUsageEnabled: checked })
+          }}
+          aria-label={SETTINGS_ROWS.sidebarUsage.title}
+        />
+      </SettingsRow>
+    </SettingsGroup>
+  )
+}
+
+export function UsageSection({ state }: { state: Pick<KannaState, "socket" | "handleWriteAppSettings"> }) {
   const { snapshot, refreshing, refresh: runRefresh } = useUsageLimits(state.socket)
 
   return (
     <div className="space-y-4">
+      <SidebarUsageRow onWrite={state.handleWriteAppSettings} />
       {snapshot ? (
         // Always render whatever we have (cached/stale) — the poll swaps in
         // fresh numbers when they land; the header "Updated …" is the control.

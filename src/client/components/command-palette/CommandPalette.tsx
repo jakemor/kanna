@@ -122,7 +122,7 @@ const EMPTY_SEND_TIMES: Readonly<Record<string, number>> = {}
 export const OPEN_COMMAND_PALETTE_EVENT = "kanna:open-command-palette"
 
 /** Palette sub-pages callers may deep-link to when opening the palette. */
-export type CommandPaletteTargetPage = "new-thread" | "project-chats" | "add-project" | "clone-github"
+export type CommandPaletteTargetPage = "new-thread" | "project-chats" | "add-project" | "clone-github" | "usage"
 
 /**
  * Opens the command palette from anywhere. Pass a target page to land directly

@@ -1429,6 +1429,8 @@ export interface AppSettingsSnapshot {
    * Off unless true, and absent when off.
    */
   widgetsPeekEnabled?: boolean
+  /** Show the plan-usage block in the sidebar. Off unless true, and absent when off. */
+  sidebarUsageEnabled?: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1484,6 +1486,7 @@ export interface AppSettingsPatch {
   delegatorMode?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
+  sidebarUsageEnabled?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean

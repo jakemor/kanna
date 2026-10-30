@@ -69,6 +69,7 @@ export interface SettingsCommandInput {
     | "delegatorMode"
     | "chatTabsEnabled"
     | "widgetsPeekEnabled"
+    | "sidebarUsageEnabled"
   > & { terminal: Pick<AppSettingsSnapshot["terminal"], "webglRenderer"> } | null
   /** The saved preference, not the resolved one: "system" is a choice of its own. */
   theme: AppThemePreference
@@ -186,6 +187,15 @@ export function buildSettingsCommands({ appSettings, theme, mac }: SettingsComma
       row: SETTINGS_ROWS.widgetsPeek,
       icon: PanelRight,
       patch: (next) => ({ widgetsPeekEnabled: next }),
+    }))
+    list.push(toggle({
+      id: "toggle-sidebar-usage",
+      on: appSettings.sidebarUsageEnabled === true,
+      onTitle: "Show Plan Usage in the Sidebar",
+      offTitle: "Hide Plan Usage in the Sidebar",
+      row: SETTINGS_ROWS.sidebarUsage,
+      icon: ChartNoAxesColumn,
+      patch: (next) => ({ sidebarUsageEnabled: next }),
     }))
     list.push(toggle({
       id: "toggle-terminal-webgl",

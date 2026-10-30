@@ -263,6 +263,14 @@ export const SETTINGS_ROWS = defineRows({
     keywords: ["fave models", "pi"],
   },
 
+  // Usage
+  sidebarUsage: {
+    sectionId: "usage",
+    title: "Show Plan Usage in the Sidebar",
+    description: "Show your plan usage for each signed-in provider at the bottom of the sidebar. Off, the sidebar doesn't read it.",
+    keywords: ["usage", "limits", "plan", "sidebar", "quota", "claude", "codex"],
+  },
+
   // This Mac (Kanna for Mac)
   openAtLogin: {
     sectionId: "mac",

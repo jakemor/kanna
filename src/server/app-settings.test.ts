@@ -336,6 +336,25 @@ describe("AppSettingsManager", () => {
     manager.dispose()
   })
 
+  test("sidebar plan usage is off unless turned on, and is written only when on", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("sidebarUsageEnabled")
+    expect((await manager.writePatch({ sidebarUsageEnabled: true })).sidebarUsageEnabled).toBe(true)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { sidebarUsageEnabled?: boolean }).sidebarUsageEnabled).toBe(true)
+    expect(await manager.writePatch({ sidebarUsageEnabled: false })).not.toHaveProperty("sidebarUsageEnabled")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("sidebarUsageEnabled")
+
+    // Anything but true is off.
+    await writeFile(filePath, JSON.stringify({ sidebarUsageEnabled: "yes" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot()).not.toHaveProperty("sidebarUsageEnabled")
+
+    manager.dispose()
+  })
+
   test("keeps pane visibility per chat by default, and patches one pane without the other", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)

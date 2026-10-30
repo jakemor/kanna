@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
-import type { UsageLimitsSnapshot } from "../../../shared/types"
+import { useMemo } from "react"
+import { useUsageLimitsSnapshot } from "../../hooks/useUsageLimitsSnapshot"
 import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import type { KannaSocket } from "../socket"
 import { ProviderCard } from "../settings/UsageSection"
-
-let lastUsageSnapshot: UsageLimitsSnapshot | null = null
 
 /**
  * Compact harness usage meters shown on the empty (new chat) page. Renders
@@ -20,16 +18,7 @@ export function EmptyStateUsageCards({
   socket: KannaSocket
   activeChatId: string | null
 }) {
-  // Starts from the last push: each new chat remounts this, and waiting on a
-  // fresh subscription made the cards drop out and pop back in.
-  const [snapshot, setSnapshot] = useState<UsageLimitsSnapshot | null>(() => lastUsageSnapshot)
-
-  useEffect(() => {
-    return socket.subscribe<UsageLimitsSnapshot>({ type: "usage-limits" }, (next) => {
-      lastUsageSnapshot = next
-      setSnapshot(next)
-    })
-  }, [socket])
+  const snapshot = useUsageLimitsSnapshot(socket)
 
   // The composer provider currently chosen for this (new/empty) chat.
   const composerChatId = activeChatId ?? NEW_CHAT_COMPOSER_ID

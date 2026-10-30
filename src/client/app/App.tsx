@@ -339,6 +339,7 @@ function KannaLayout() {
   // snapshot, which moved on every streamed token.
   const sidebarElement = (
     <KannaSidebar
+      socket={state.socket}
       activeChatId={state.activeChatId}
       connectionStatus={state.connectionStatus}
       connectionHealth={state.connectionHealth}

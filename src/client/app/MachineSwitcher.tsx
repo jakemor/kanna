@@ -129,20 +129,19 @@ export function MachineSwitcher({ onDismissCloudSetup }: { onDismissCloudSetup: 
             <ExternalLink className="size-3.5 shrink-0 opacity-60" />
           </a>
         ) : (
-          <div className="group relative">
+          <div className="relative">
             <button type="button" onClick={() => setPairDialogOpen(true)} className={SIDEBAR_BUTTON_CLASS}>
               <span className="flex min-w-0 items-center gap-2">
                 <Cloud className="ml-[1px] size-4 shrink-0" />
                 <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
               </span>
-              <ExternalLink className="size-3.5 shrink-0 opacity-60 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0" />
             </button>
             <button
               type="button"
               onClick={onDismissCloudSetup}
               title="Dismiss"
               aria-label="Dismiss Kanna Cloud setup"
-              className="absolute right-[7px] top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+              className="absolute right-[7px] top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
             >
               <X className="size-3.5" />
             </button>

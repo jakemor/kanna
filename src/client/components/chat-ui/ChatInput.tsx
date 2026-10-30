@@ -63,7 +63,10 @@ const COMPOSER_SURFACE = "border border-border bg-background dark:bg-card"
 /** The one-line shape's separate surfaces, drawn on a phone only. */
 const PHONE_SURFACE = "max-md:border max-md:border-border max-md:bg-background max-md:dark:bg-card"
 const COMPOSER_FIELD = "min-w-0 flex-1 rounded-none text-base resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none placeholder:truncate"
-const ROW_FIELD_PADDING = "py-3 pl-4 pr-1 md:py-4 md:px-2"
+// Desktop's 3px left inset puts the placeholder and caret right against the
+// harness button, which already brings its own round padding. The wrap
+// measure shares this, so the text still wraps where the field does.
+const ROW_FIELD_PADDING = "py-3 pl-4 pr-1 md:py-4 md:pl-[3px] md:pr-2"
 const ROW_GRID: React.CSSProperties = {
   gridTemplateColumns: "auto auto minmax(0, 1fr) auto",
   gridTemplateAreas: '"harness mode capsule right"',

@@ -180,6 +180,18 @@ describe("ChatInput", () => {
     expect(useChatPreferencesStore.getState().getComposerState("deleg-1").model).toBe(back.id)
   })
 
+  test("a phone's placeholder says where to build, without the model; the desktop's leads with the model", () => {
+    const props = { onSubmit: async () => undefined, disabled: false, activeProvider: "claude" as const, availableProviders: PROVIDERS }
+
+    const phone = renderToStaticMarkup(createElement(ChatInput, { ...props, layout: "phone", projectRepoLabel: "kanna/main" }))
+    expect(phone).toContain('placeholder="Build in kanna/main..."')
+    expect(phone).not.toMatch(/placeholder="[^"]* · /)
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, layout: "phone" }))).toContain('placeholder="Build something..."')
+
+    const desktop = renderToStaticMarkup(createElement(ChatInput, { ...props, layout: "desktop", projectRepoLabel: "kanna/main" }))
+    expect(desktop).toMatch(/placeholder="[^"]+ · kanna\/main"/)
+  })
+
   test("the composer is the harness button, the field, + and mic: the row of pills under it is gone", () => {
     const html = renderToStaticMarkup(createElement(ChatInput, {
       onSubmit: async () => undefined,

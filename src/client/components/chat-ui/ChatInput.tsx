@@ -376,13 +376,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   // The label goes into a textarea placeholder, which browsers do not clip
   // or ellipsize the way a span would: a long path runs past the pill. Keep
-  // the path short enough to fit the narrowest composer (a phone) instead,
-  // with the model's name in front of it.
+  // the path short enough to fit the narrowest composer (a phone) instead.
   const projectLabel = projectRepoLabel ?? (projectPath ? abbreviatePathHead(formatPathWithTilde(projectPath), 28) : null)
-  // On one line the model is named only here: the harness button beside the
-  // field is its icon alone.
   const modelLabel = resolveModelLabel(composer.models, providerPrefs.model)
-  const placeholder = `${modelLabel} · ${placeholderOverride ?? projectLabel ?? "Build something..."}`
 
   const activeContextWindow = useMemo(() => {
     if (providerPrefs.provider !== "claude") {
@@ -674,6 +670,13 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const phoneLayout = layout ? layout === "phone" : phoneViewport
   // The desktop records on the one line; a phone is always the card.
   const stacked = phoneLayout || (stackedByText && !recording)
+  // A phone's card names the model beside the harness, so its placeholder
+  // says where the turn goes: "Build in kanna/main...". The desktop's one
+  // line shows the harness's icon alone, so there the model leads it:
+  // "Opus · kanna/main".
+  const placeholder = phoneLayout
+    ? placeholderOverride ?? (projectLabel ? `Build in ${projectLabel}...` : "Build something...")
+    : `${modelLabel} · ${placeholderOverride ?? projectLabel ?? "Build something..."}`
   const phoneBusy = recording || transcribing
   // The new shape changes the field's width and the composer's height.
   useLayoutEffect(() => {

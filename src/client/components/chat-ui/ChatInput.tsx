@@ -36,7 +36,7 @@ import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { resolveModifiedEnter, shouldSteerSubmit } from "../../../shared/submit-mode"
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatModePicker } from "./ChatPreferenceControls"
-import { ComposerHarnessMenu, HARNESS_MENU_ALIGN } from "./ComposerHarnessMenu"
+import { ComposerHarnessMenu } from "./ComposerHarnessMenu"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { getChatViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
 import { activateAttachment } from "../viewer/attachmentActions"
@@ -76,39 +76,13 @@ const STACKED_GRID: React.CSSProperties = {
 }
 
 /**
- * What each slot of the phone-width composer holds. The harness's slot
- * holds the discard while recording; the mic's slot in the capsule is held
- * either way and shows its mic once there is a draft (send has the circle
- * then); until there is one the harness stands in it, shifted right. The
- * card stays a card while recording, and the + stays put, inert.
+ * Phone width is always the card: the field across the top, and under it
+ * [+] [icon model] on the left, [mic] [send] on the right. The middle
+ * column is empty space, or the waveform while recording.
  */
-export function phoneComposerSlots(args: {
-  stackedByText: boolean
-  recording: boolean
-  transcribing: boolean
-  canSubmit: boolean
-}) {
-  const busy = args.recording || args.transcribing
-  return {
-    stacked: args.stackedByText,
-    harnessSlot: args.recording ? "discard" as const : "harness" as const,
-    harnessShifted: !args.stackedByText && !args.canSubmit,
-    capsuleMic: args.canSubmit && !busy,
-    plusInert: busy,
-  }
-}
-
-/**
- * Phone width: + on the left, then the capsule (field, harness, mic), then
- * the send circle; stacked, the row under the field holds the same parts.
- */
-const PHONE_ROW_GRID: React.CSSProperties = {
-  gridTemplateColumns: "auto auto minmax(0, 1fr) auto",
-  gridTemplateAreas: '"plus mode capsule right"',
-}
-const PHONE_STACKED_GRID: React.CSSProperties = {
-  gridTemplateColumns: "auto auto minmax(0, 1fr) auto auto auto",
-  gridTemplateAreas: '"field field field field field field" "plus mode wave harness mic right"',
+const PHONE_GRID: React.CSSProperties = {
+  gridTemplateColumns: "auto auto auto minmax(0, 1fr) auto",
+  gridTemplateAreas: '"field field field field field" "plus harness mode wave right"',
   columnGap: 4,
   rowGap: 2,
 }
@@ -660,9 +634,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const field = textareaRef.current
     const measure = wrapMeasureRef.current
     if (!surface || !field || !measure) return
-    // Hidden while a phone records on one line: nothing to measure, and the
-    // shape holds until it is back.
-    if (field.clientWidth === 0) return
     if (surface.dataset.shape !== "stacked") rowChromeRef.current = surface.clientWidth - field.clientWidth
     if (field.value.length === 0) {
       setStackedByText(false)
@@ -701,10 +672,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const phoneViewport = useMediaQuery("(max-width: 767px)")
   const phoneLayout = layout ? layout === "phone" : phoneViewport
-  const phoneSlots = phoneComposerSlots({ stackedByText, recording, transcribing, canSubmit })
-  // The desktop records on the one line. A phone keeps the shape it was in,
-  // so a long draft keeps its card and nothing moves.
-  const stacked = phoneLayout ? phoneSlots.stacked : stackedByText && !recording
+  // The desktop records on the one line; a phone is always the card.
+  const stacked = phoneLayout || (stackedByText && !recording)
+  const phoneBusy = recording || transcribing
   // The new shape changes the field's width and the composer's height.
   useLayoutEffect(() => {
     autoResize()
@@ -1333,7 +1303,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   />
                 </label>
   )
-  const renderHarnessMenu = (props: { showModel: boolean; className: string; style?: React.CSSProperties; align?: "start" | "end" }) => (
+  const renderHarnessMenu = (props: { showModel: boolean; className: string; style?: React.CSSProperties }) => (
     <ComposerHarnessMenu
       composer={composer}
       availableProviders={availableProviders}
@@ -1571,100 +1541,65 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           */}
           {phoneLayout ? (
           /*
-            Phone width, the same parts swapped round: + is the left circle
-            and the harness sits at the capsule's right end, before the mic
-            and send, as the iOS composer has them. The mic's slot in the
-            capsule is held while it hides, so the text wraps at one width
-            whether it shows or not; until there is a draft the harness
-            stands in that slot, and the first keystroke slides it 32px left
-            to make room (transform only, none with reduced motion). Once the
-            text wraps it is one card: the field on top, [+] on the left of
-            the row under it, [icon model] [mic] [send] on the right.
-            Recording keeps the shape it started in, so a long draft keeps
-            its card: the + stays put, dimmed and inert, and the discard
-            takes the harness's slot.
+            Phone width: always the card, empty or not, since one line left
+            too little room. The field runs across the top; under it [+]
+            [icon model] sit on the left and [mic] [send] on the right.
+            Recording keeps the draft on top and the waveform takes the
+            middle of the row; the discard takes the harness's slot, and the
+            + stays put, dimmed and inert, so nothing moves.
           */
           <div
             ref={surfaceRef}
-            data-shape={stacked ? "stacked" : "row"}
+            data-shape="stacked"
             data-layout="phone"
-            className={cn(
-              "relative grid items-center max-w-[840px] mx-auto",
-              stacked && cn(COMPOSER_SURFACE, "rounded-[24px] p-1.5"),
-            )}
-            style={stacked ? PHONE_STACKED_GRID : PHONE_ROW_GRID}
+            className={cn("relative grid items-center max-w-[840px] mx-auto rounded-[24px] p-1.5", COMPOSER_SURFACE)}
+            style={PHONE_GRID}
           >
-            {renderPlus(stacked ? "h-9 w-9" : cn("h-[50px] w-[50px] mr-2", COMPOSER_SURFACE), phoneSlots.plusInert)}
-            {renderModeTag(!stacked && "mr-2")}
-            <div
-              style={{ gridArea: "capsule" }}
-              className={stacked ? "contents" : cn("flex min-w-0 items-center rounded-[25px] pr-1", COMPOSER_SURFACE)}
-            >
-              {renderField(recording && !stacked ? "hidden" : undefined)}
+            {renderField()}
+            {renderPlus("h-9 w-9", phoneBusy)}
+            <span data-slot="harness" style={{ gridArea: "harness" }} className="flex shrink-0">
               {recording ? (
-                <div
-                  style={{ gridArea: stacked ? "wave" : "field" }}
-                  className={stacked ? "flex min-w-0 items-center px-2" : "flex min-w-0 flex-1 items-center px-4 py-[6px]"}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title="Discard recording"
+                  aria-label="Discard recording"
+                  onPointerDown={(event) => {
+                    event.preventDefault()
+                    discardRecording()
+                  }}
+                  className="h-9 w-9 flex-shrink-0 rounded-full cursor-pointer text-muted-foreground touch-manipulation"
                 >
-                  <RecordingWaveform levels={recorder.levels} />
-                </div>
+                  <Trash2 className="h-5 w-5" />
+                </Button>
+              ) : renderHarnessMenu({ showModel: true, className: "h-9 px-2.5" })}
+            </span>
+            {renderModeTag(false)}
+            {recording ? (
+              <div style={{ gridArea: "wave" }} className="flex min-w-0 items-center px-2">
+                <RecordingWaveform levels={recorder.levels} />
+              </div>
+            ) : null}
+            <div style={{ gridArea: "right" }} className="flex shrink-0 items-center gap-1">
+              {/* With a draft, send has the circle and the mic sits before it. */}
+              {canSubmit && !phoneBusy ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  data-slot="mic"
+                  title="Record voice message"
+                  disabled={disabled}
+                  onPointerDown={(event) => {
+                    event.preventDefault()
+                    void recorder.startRecording()
+                  }}
+                  className="h-9 w-9 flex-shrink-0 rounded-full cursor-pointer text-muted-foreground touch-manipulation"
+                >
+                  <AudioLines className="h-5 w-5" />
+                </Button>
               ) : null}
-              <span
-                data-slot="harness"
-                style={{ gridArea: "harness" }}
-                className={cn(
-                  "flex shrink-0 transition-transform duration-[220ms] ease-[var(--ease-snappy)] motion-reduce:transition-none",
-                  phoneSlots.harnessShifted && "translate-x-8",
-                )}
-              >
-                {phoneSlots.harnessSlot === "discard" ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    title="Discard recording"
-                    aria-label="Discard recording"
-                    onPointerDown={(event) => {
-                      event.preventDefault()
-                      discardRecording()
-                    }}
-                    className={cn("flex-shrink-0 rounded-full cursor-pointer text-muted-foreground touch-manipulation", stacked ? "h-9 w-9" : "h-10 w-10")}
-                  >
-                    <Trash2 className="h-5 w-5" />
-                  </Button>
-                ) : renderHarnessMenu({
-                  showModel: stacked,
-                  align: HARNESS_MENU_ALIGN.phone,
-                  className: stacked ? "h-9 px-2.5" : "h-10 w-10",
-                })}
-              </span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                data-slot="mic"
-                title="Record voice message"
-                aria-hidden={!phoneSlots.capsuleMic}
-                tabIndex={phoneSlots.capsuleMic ? undefined : -1}
-                disabled={disabled}
-                onPointerDown={(event) => {
-                  event.preventDefault()
-                  void recorder.startRecording()
-                }}
-                style={{ gridArea: "mic" }}
-                className={cn(
-                  "flex-shrink-0 w-8 rounded-full cursor-pointer text-muted-foreground touch-manipulation",
-                  stacked ? "h-9" : "h-10",
-                  !phoneSlots.capsuleMic && "invisible",
-                )}
-              >
-                <AudioLines className="h-5 w-5" />
-              </Button>
-            </div>
-            <div
-              style={{ gridArea: "right" }}
-              className={cn("flex shrink-0 items-center gap-1", !stacked && cn("ml-2 rounded-full p-1", COMPOSER_SURFACE))}
-            >
               {renderRightButtons(false)}
             </div>
             {wrapMeasure}

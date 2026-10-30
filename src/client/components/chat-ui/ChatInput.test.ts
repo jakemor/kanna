@@ -4,8 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { PROVIDERS } from "../../../shared/types"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
-import { ChatInput, getClipboardImageFiles, phoneComposerSlots, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
-import { HARNESS_MENU_ALIGN } from "./ComposerHarnessMenu"
+import { ChatInput, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 
 function createClipboardItem(args: {
   kind?: string
@@ -267,56 +266,34 @@ describe("ChatInput phone layout", () => {
     if (draft) useChatInputStore.getState().clearDraft(chatId)
     return html
   }
-  /** The opening tag that carries `needle`. */
-  const tag = (html: string, needle: string) => {
-    const index = html.indexOf(needle)
-    return html.slice(html.lastIndexOf("<", index), html.indexOf(">", index) + 1)
-  }
   const at = (html: string, needle: string) => {
     const index = html.indexOf(needle)
     expect(index).toBeGreaterThanOrEqual(0)
     return index
   }
 
-  test("one line: + is the left circle, then the field, the harness at the capsule's end, then mic", () => {
+  test("empty, it is still the card: the field on top, [+] [icon model] then the mic", () => {
     const html = render("phone-empty")
 
-    expect(html).toContain('data-layout="phone"')
-    expect(at(html, 'aria-label="Add attachment"')).toBeLessThan(at(html, "<textarea"))
-    expect(at(html, "<textarea")).toBeLessThan(at(html, 'data-slot="harness"'))
-    expect(at(html, 'data-slot="harness"')).toBeLessThan(at(html, 'data-slot="mic"'))
-    expect(at(html, 'data-slot="mic"')).toBeLessThan(html.lastIndexOf('title="Record voice message"'))
-    // No draft yet: the capsule's mic slot is held, empty, and the harness stands in it.
-    expect(tag(html, 'data-slot="harness"')).toContain("translate-x-8")
-    expect(tag(html, 'data-slot="mic"')).toContain("invisible")
+    expect(html).toContain('data-shape="stacked" data-layout="phone"')
+    expect(html).toContain('grid-template-areas:&quot;field field field field field&quot; &quot;plus harness mode wave right&quot;')
+    expect(at(html, "<textarea")).toBeLessThan(at(html, 'aria-label="Add attachment"'))
+    expect(at(html, 'aria-label="Add attachment"')).toBeLessThan(at(html, 'data-slot="harness"'))
+    expect(at(html, 'data-slot="harness"')).toBeLessThan(at(html, 'title="Record voice message"'))
+    // The harness control names its model in the card.
+    expect(html).toMatch(/Harness and model"[^>]*>.*?<span class="whitespace-nowrap text-foreground">/)
+    // Nothing left of the one-line layout.
+    expect(html).not.toContain("translate-x-8")
+    // Empty, the mic is the round button itself: no second mic beside it.
+    expect(html).not.toContain('data-slot="mic"')
   })
 
-  test("with a draft: [text] [harness] [mic], then send; the harness has moved left", () => {
+  test("with a draft: [+] [icon model] on the left, [mic] [send] on the right", () => {
     const html = render("phone-draft", "Fix the flaky upload test")
 
-    expect(at(html, "Fix the flaky upload test")).toBeLessThan(at(html, 'data-slot="harness"'))
+    expect(at(html, "Fix the flaky upload test")).toBeLessThan(at(html, 'aria-label="Add attachment"'))
+    expect(at(html, 'aria-label="Add attachment"')).toBeLessThan(at(html, 'data-slot="harness"'))
     expect(at(html, 'data-slot="harness"')).toBeLessThan(at(html, 'data-slot="mic"'))
     expect(at(html, 'data-slot="mic"')).toBeLessThan(at(html, 'aria-label="Send message"'))
-    expect(tag(html, 'data-slot="harness"')).not.toContain("translate-x-8")
-    expect(tag(html, 'data-slot="mic"')).not.toContain("invisible")
-    // The ring badge and the staged dot ride on the button wherever it sits.
-    expect(html).toContain("Harness and model")
-  })
-
-  test("the harness menu lines up with the button's right edge", () => {
-    expect(HARNESS_MENU_ALIGN.phone).toBe("end")
-    expect(HARNESS_MENU_ALIGN.desktop).toBe("start")
-  })
-
-  test("two lines keep the card, recording or not; recording swaps the harness for discard and dims +", () => {
-    const idle = phoneComposerSlots({ stackedByText: true, recording: false, transcribing: false, canSubmit: true })
-    expect(idle).toEqual({ stacked: true, harnessSlot: "harness", harnessShifted: false, capsuleMic: true, plusInert: false })
-
-    const recording = phoneComposerSlots({ stackedByText: true, recording: true, transcribing: false, canSubmit: true })
-    expect(recording).toEqual({ stacked: true, harnessSlot: "discard", harnessShifted: false, capsuleMic: false, plusInert: true })
-
-    // One line, recording from an empty composer: discard sits where the harness did.
-    const empty = phoneComposerSlots({ stackedByText: false, recording: true, transcribing: false, canSubmit: false })
-    expect(empty).toEqual({ stacked: false, harnessSlot: "discard", harnessShifted: true, capsuleMic: false, plusInert: true })
   })
 })

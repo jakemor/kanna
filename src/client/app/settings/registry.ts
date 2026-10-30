@@ -1,4 +1,4 @@
-import { BookText, Command, FlaskConical, Gauge, KeyRound, LaptopMinimal, MessageSquareQuote, ScrollText, Settings2, type LucideIcon } from "lucide-react"
+import { BookText, Cloud, Command, FlaskConical, Gauge, KeyRound, LaptopMinimal, MessageSquareQuote, ScrollText, Settings2, type LucideIcon } from "lucide-react"
 import { macSetupAvailable } from "../../lib/macApp"
 
 /**
@@ -47,6 +47,12 @@ export const SETTINGS_SECTIONS = [
     label: "Keybindings",
     icon: Command as LucideIcon,
     subtitle: "Edit global app shortcuts stored in the active keybindings file.",
+  },
+  {
+    id: "cloud",
+    label: "Kanna Cloud",
+    icon: Cloud as LucideIcon,
+    subtitle: "Use this machine from anywhere with a personal URL.",
   },
   {
     id: "usage",
@@ -136,12 +142,6 @@ export const SETTINGS_ROWS = defineRows({
     description: "Show the closed widget column over the chat while the mouse is at the window's right edge.",
     keywords: ["widgets", "right sidebar", "hover", "edge", "popout", "overlay", "slideover", "peek"],
   },
-  cloudSetupPrompt: {
-    sectionId: "general",
-    title: "Kanna Cloud Setup Prompt",
-    description: "Show \"Setup Kanna Cloud\" in the sidebar. Turn it off if Kanna Cloud isn't allowed where you work.",
-    keywords: ["kanna cloud", "cloud", "pair", "pairing", "sidebar", "setup", "enterprise", "hide", "dismiss"],
-  },
   chatSounds: {
     sectionId: "general",
     title: "Chat Sounds",
@@ -217,6 +217,20 @@ export const SETTINGS_ROWS = defineRows({
     title: "Anonymous Analytics",
     description: "Help improve Kanna with anonymous product analytics.",
     keywords: ["telemetry", "privacy", "tracking"],
+  },
+
+  // Kanna Cloud
+  cloudPairing: {
+    sectionId: "cloud",
+    title: "Kanna Cloud",
+    description: "Use this machine from anywhere with a personal URL.",
+    keywords: ["cloud", "pair", "pairing", "remote", "url", "link", "fleet", "setup", "connect"],
+  },
+  cloudSetupPrompt: {
+    sectionId: "cloud",
+    title: "Show Setup Prompt in the Sidebar",
+    description: "Show \"Setup Kanna Cloud\" in the sidebar. Turn it off if Kanna Cloud isn't allowed where you work.",
+    keywords: ["cloud", "pair", "remote", "url", "sidebar", "setup", "enterprise", "hide", "dismiss", "prompt"],
   },
 
   // Providers

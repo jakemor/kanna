@@ -28,6 +28,10 @@ import {
   type CodexModelSummary,
   type CodexRateLimitSnapshot,
   type CodexRequestId,
+  type ConfigReadParams,
+  type ConfigReadResponse,
+  type ListMcpServerStatusParams,
+  type ListMcpServerStatusResponse,
   type GetAccountRateLimitsResponse,
   type CodexSkillMetadata,
   type CodexUserInput,
@@ -180,6 +184,8 @@ interface SessionContext {
   runningItems: Set<string>
   stderrLines: string[]
   closed: boolean
+  /** The thread was started with the user's MCP servers off (`StartCodexSessionArgs.disablePreconfiguredMcp`). */
+  disablePreconfiguredMcp: boolean
 }
 
 export interface StartCodexSessionArgs {
@@ -192,6 +198,8 @@ export interface StartCodexSessionArgs {
   pendingForkSessionToken?: string | null
   /** The source's last turn the fork keeps (`ChatRecord.pendingForkAt`). */
   pendingForkAt?: string | null
+  /** Start the thread with only Kanna's MCP server (`AppSettingsSnapshot.disablePreconfiguredMcp`). */
+  disablePreconfiguredMcp?: boolean
 }
 
 export interface StartCodexTurnArgs {
@@ -228,6 +236,39 @@ export interface GenerateStructuredArgs {
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
 }
+
+/**
+ * Thread config that turns off every MCP server Codex would load on its own,
+ * for "Disable pre-configured MCP servers". `mcp_servers = {}` cannot: Codex
+ * merges config tables, so an empty one leaves the user's servers in place.
+ * Each is turned off by name instead, where it comes from. A config.toml
+ * server (any layer, project ones included) is `mcp_servers.<name>`; a
+ * plugin's is `plugins.<plugin id>.mcp_servers.<name>`, which keeps the
+ * plugin's skills. Naming a plugin's server under `mcp_servers` fails the
+ * thread start ("invalid transport"), so only config.toml names go there.
+ * `features.apps` removes ChatGPT apps (the built-in `codex_apps` server).
+ * A dotted key cannot quote a segment, so a name with a dot in it is left on.
+ */
+export function buildCodexMcpIsolationConfig(args: {
+  configServerNames: string[]
+  servers: ListMcpServerStatusResponse["data"]
+}): Record<string, unknown> {
+  const config: Record<string, unknown> = { "features.apps": false }
+  // Kanna's own server goes in under this name after; never turn it off.
+  const nameable = (name: string) => name !== "kanna" && !name.includes(".")
+  for (const name of args.configServerNames) {
+    if (nameable(name)) config[`mcp_servers.${name}.enabled`] = false
+  }
+  for (const server of args.servers) {
+    if (!server.pluginId || !nameable(server.name) || server.pluginId.includes(".")) continue
+    config[`plugins.${server.pluginId}.mcp_servers.${server.name}.enabled`] = false
+  }
+  return config
+}
+
+// Long enough for the local reads behind both lists (about 300 ms measured);
+// past it the thread starts with whatever was found rather than not at all.
+const MCP_DISCOVERY_TIMEOUT_MS = 5_000
 
 function codexSystemInitEntry(model: string): TranscriptEntry {
   return timestamped({
@@ -957,6 +998,7 @@ export class CodexAppServerManager {
       runningItems: new Set(),
       stderrLines: [],
       closed: false,
+      disablePreconfiguredMcp: false,
     }
     this.attachListeners(context)
     try {
@@ -978,7 +1020,16 @@ export class CodexAppServerManager {
 
   async startSession(args: StartCodexSessionArgs) {
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken) {
+    const disablePreconfiguredMcp = Boolean(args.disablePreconfiguredMcp)
+    // A thread's MCP servers are fixed when it starts, so a flip of the
+    // setting restarts the process; the new one resumes the same thread.
+    if (
+      existing
+      && !existing.closed
+      && existing.cwd === args.cwd
+      && existing.disablePreconfiguredMcp === disablePreconfiguredMcp
+      && !args.pendingForkSessionToken
+    ) {
       return
     }
 
@@ -1001,6 +1052,7 @@ export class CodexAppServerManager {
       runningItems: new Set(),
       stderrLines: [],
       closed: false,
+      disablePreconfiguredMcp,
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
@@ -1020,16 +1072,21 @@ export class CodexAppServerManager {
         method: "initialized",
       })
 
+      const isolationConfig = disablePreconfiguredMcp
+        ? await this.discoverMcpIsolationConfig(context)
+        : {}
       // Resume and fork accept MCP config, but this CLI only accepts dynamic tools on thread/start.
-      const toolConfig = customTools ? {
-        config: {
+      const mcpConfig = {
+        ...isolationConfig,
+        ...(customTools ? {
           "mcp_servers.kanna": {
             url: customTools.url,
             http_headers: customTools.headers,
             tool_timeout_sec: 86400,
           },
-        },
-      } : {}
+        } : {}),
+      }
+      const toolConfig = Object.keys(mcpConfig).length > 0 ? { config: mcpConfig } : {}
       // Standard speed is an explicit null. An omitted tier inherits the
       // user's config.toml (`service_tier = "priority"` runs fast while the
       // UI shows "Standard"), and on turn/start it keeps the thread's tier, so
@@ -2030,6 +2087,56 @@ export class CodexAppServerManager {
       codexPendingRequests: [...this.sessions.values()].reduce((sum, session) => sum + session.pendingRequests.size, 0),
       codexStderrChars: [...this.sessions.values()].reduce((sum, session) => sum + session.stderrLines.reduce((total, line) => total + line.length, 0), 0),
     }
+  }
+
+  /**
+   * Names the MCP servers this process would load for the chat's cwd and
+   * turns them off (`buildCodexMcpIsolationConfig`). `config/read` gives the
+   * config.toml ones; `mcpServerStatus/list` without a thread lists the rest,
+   * plugin servers with their plugin, without connecting to any. A remote
+   * plugin syncs in later and is not listed yet, so its servers stay on. A
+   * list that fails or runs late counts as empty: apps still go off.
+   */
+  private async discoverMcpIsolationConfig(context: SessionContext) {
+    const withTimeout = async <T,>(promise: Promise<T>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("timed out")), MCP_DISCOVERY_TIMEOUT_MS)
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    const readConfigNames = async () => {
+      const response = await this.sendRequest<ConfigReadResponse>(context, "config/read", {
+        cwd: context.cwd,
+      } satisfies ConfigReadParams)
+      return Object.keys(response.config?.mcp_servers ?? {})
+    }
+    const listServers = async () => {
+      const servers: ListMcpServerStatusResponse["data"] = []
+      let cursor: string | null = null
+      // Bounded: a cursor that never ends must not hold the turn.
+      for (let page = 0; page < 20; page += 1) {
+        const response: ListMcpServerStatusResponse = await this.sendRequest(context, "mcpServerStatus/list", {
+          cursor,
+          detail: "toolsAndAuthOnly",
+        } satisfies ListMcpServerStatusParams)
+        servers.push(...(response.data ?? []))
+        cursor = response.nextCursor ?? null
+        if (!cursor) break
+      }
+      return servers
+    }
+    const [configServerNames, servers] = await Promise.all([
+      withTimeout(readConfigNames()).catch(() => []),
+      withTimeout(listServers()).catch(() => []),
+    ])
+    return buildCodexMcpIsolationConfig({ configServerNames, servers })
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {

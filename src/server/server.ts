@@ -297,6 +297,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     grokManager: machine.grokManager,
     piManager: machine.piManager,
     startClaudeSession: machine.startClaudeSession,
+    disablePreconfiguredMcp: () => appSettings.getSnapshot().disablePreconfiguredMcp === true,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {

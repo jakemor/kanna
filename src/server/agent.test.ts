@@ -8,6 +8,7 @@ import {
   buildConcurrentAgentsNotice,
   buildPromptText,
   buildSteeredMessageContent,
+  claudeLaunchOptions,
   claudeSystemPrompt,
   claudeToolset,
   formatQuestionAnswersFollowUp,
@@ -4004,6 +4005,132 @@ describe("a chat made a delegator, or an ordinary chat again, mid-conversation",
     await waitFor(() => store.turnFinishedCount === 1)
     expect(coordinator.isBusy("chat-1")).toBe(false)
     queues[1]!.close()
+    coordinator.dispose()
+  })
+})
+
+describe("disable pre-configured MCP servers", () => {
+  test("claude: off, the launch keeps the user's MCP config and connectors", () => {
+    const options = claudeLaunchOptions({ env: { PATH: "/bin", CLAUDECODE: "1" } })
+    expect(options).toEqual({
+      settings: { enableWorkflows: true, fastMode: false },
+      env: { PATH: "/bin" },
+    })
+  })
+
+  test("claude: on, the launch is strict and skips claude.ai connectors", () => {
+    const options = claudeLaunchOptions({
+      serviceTier: "fast",
+      disablePreconfiguredMcp: true,
+      env: { PATH: "/bin", CLAUDECODE: "1" },
+    })
+    expect(options).toEqual({
+      settings: { enableWorkflows: true, fastMode: true, disableClaudeAiConnectors: true },
+      env: { PATH: "/bin", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+      strictMcpConfig: true,
+    })
+  })
+
+  test("claude: a flip during a turn leaves the session alone, and the next turn restarts with the setting and resumes", async () => {
+    const queues: AsyncEventQueue<any>[] = []
+    const promptIds: string[][] = []
+    const starts: Array<{ disablePreconfiguredMcp?: boolean; sessionToken: string | null; mcpServers: boolean }> = []
+    let disable = false
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      disablePreconfiguredMcp: () => disable,
+      startClaudeSession: async (args) => {
+        starts.push({
+          disablePreconfiguredMcp: args.disablePreconfiguredMcp,
+          sessionToken: args.sessionToken,
+          // Kanna's own server is handed over either way.
+          mcpServers: Boolean(args.customTools),
+        })
+        const events = new AsyncEventQueue<any>()
+        const index = queues.push(events) - 1
+        promptIds.push([])
+        return {
+          provider: "claude",
+          echoesPromptIds: true,
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => events.close(),
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (_content: string, promptId?: string) => { promptIds[index]!.push(promptId!) },
+        }
+      },
+    })
+    const result = (index: number, prompt: number) => queues[index]!.push({
+      type: "transcript",
+      entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+      promptIds: [promptIds[index]![prompt]],
+    })
+
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "one", model: "claude-opus-4-1" })
+    queues[0]!.push({ type: "session_token", sessionToken: "claude-session-1" })
+    await waitFor(() => store.chat.sessionToken === "claude-session-1")
+
+    disable = true
+    await coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "two" })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(starts).toHaveLength(1)
+
+    result(0, 0)
+    await waitFor(() => starts.length === 2)
+    expect(starts.map(({ disablePreconfiguredMcp, sessionToken }) => ({ disablePreconfiguredMcp, sessionToken }))).toEqual([
+      { disablePreconfiguredMcp: undefined, sessionToken: null },
+      { disablePreconfiguredMcp: true, sessionToken: "claude-session-1" },
+    ])
+    expect(starts[1]!.mcpServers).toBe(starts[0]!.mcpServers)
+
+    // Unchanged, the next turn reuses the session.
+    result(1, 0)
+    await waitFor(() => store.turnFinishedCount === 2)
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "three", model: "claude-opus-4-1" })
+    expect(starts).toHaveLength(2)
+    result(1, 1)
+    await waitFor(() => store.turnFinishedCount === 3)
+    coordinator.dispose()
+  })
+
+  test("codex: the setting reaches the session start of each turn", async () => {
+    const sessionArgs: Array<{ disablePreconfiguredMcp?: boolean }> = []
+    const store = createFakeStore()
+    const turn = (): HarnessTurn => ({
+      provider: "codex",
+      stream: (async function* () {
+        yield { type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }) }
+      })() as never,
+      interrupt: async () => {},
+      close: () => {},
+    })
+    let disable = true
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      disablePreconfiguredMcp: () => disable,
+      codexManager: {
+        getSessionPids: () => new Map<string, number>(),
+        async startSession(args: { disablePreconfiguredMcp?: boolean }) {
+          sessionArgs.push({ disablePreconfiguredMcp: args.disablePreconfiguredMcp })
+          return { sessionToken: "thread-1", resumeFellBack: false }
+        },
+        async startTurn() { return turn() },
+        stopSession() {},
+        stopAll() {},
+      } as never,
+    })
+
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "one", model: "gpt-5.5" })
+    await waitFor(() => store.turnFinishedCount === 1)
+    disable = false
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "two", model: "gpt-5.5" })
+    await waitFor(() => store.turnFinishedCount === 2)
+    expect(sessionArgs).toEqual([{ disablePreconfiguredMcp: true }, { disablePreconfiguredMcp: false }])
     coordinator.dispose()
   })
 })

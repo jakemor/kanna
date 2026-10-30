@@ -1429,6 +1429,13 @@ export interface AppSettingsSnapshot {
    * Off unless true, and absent when off.
    */
   widgetsPeekEnabled?: boolean
+  /**
+   * Start agents without the MCP servers the user configured outside Kanna
+   * (Claude's `~/.claude.json`, `.mcp.json`, plugins and claude.ai connectors;
+   * Codex's `mcp_servers`, plugin servers and apps). Kanna's own tools stay.
+   * Read when a turn starts. Off unless true, and absent when off.
+   */
+  disablePreconfiguredMcp?: boolean
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1484,6 +1491,7 @@ export interface AppSettingsPatch {
   delegatorMode?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
+  disablePreconfiguredMcp?: boolean
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean

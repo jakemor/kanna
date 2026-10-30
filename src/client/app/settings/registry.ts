@@ -160,6 +160,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "New chats hand their work to sub-chats and report back. Only affects chats created from now on; each chat's menu can still switch it.",
     keywords: ["delegator", "delegate", "delegation", "sub-chats", "subchats", "hand off", "orchestrate", "coordinate", "work directly"],
   },
+  disablePreconfiguredMcp: {
+    sectionId: "general",
+    title: "Disable Pre-configured MCP Servers",
+    description: "Claude and Codex start without the MCP servers you set up outside Kanna: config files, plugins, claude.ai connectors and Codex apps. Kanna's own tools stay available. Applies to new turns. Cursor and Grok always load theirs.",
+    keywords: ["mcp", "mcp servers", "connectors", "claude.ai", "plugins", "tools", "strict", "mcp.json", "config.toml", "codex", "claude"],
+  },
   submitWhileRunning: {
     sectionId: "general",
     title: "Enter While Running",

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
-import { CodexAppServerManager } from "./codex-app-server"
+import { buildCodexMcpIsolationConfig, CodexAppServerManager } from "./codex-app-server"
 
 class FakeCodexProcess extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -2900,6 +2900,160 @@ describe("Codex spawned agents", () => {
     await settle()
     expect(manager.hasPendingBackgroundWork("chat-1")).toBe(false)
     expect(manager.hasPendingBackgroundWork("chat-unknown")).toBe(false)
+    manager.stopAll()
+  })
+})
+
+describe("disable pre-configured MCP servers", () => {
+  test("turns off config.toml servers by name, plugin servers under their plugin, and apps", () => {
+    expect(buildCodexMcpIsolationConfig({
+      configServerNames: ["node_repl", "kanna", "has.dot"],
+      servers: [
+        { name: "node_repl", pluginId: null },
+        // The built-in apps server: off through features.apps, never by name.
+        { name: "codex_apps", pluginId: null },
+        { name: "cua_repl", pluginId: "unified-computer-use@openai-bundled" },
+        { name: "code-review", pluginId: "code-review@openai-bundled" },
+        { name: "x", pluginId: "dotted.plugin@market" },
+      ],
+    })).toEqual({
+      "features.apps": false,
+      "mcp_servers.node_repl.enabled": false,
+      "plugins.unified-computer-use@openai-bundled.mcp_servers.cua_repl.enabled": false,
+      "plugins.code-review@openai-bundled.mcp_servers.code-review.enabled": false,
+    })
+  })
+
+  function isolatingProcess(options: { failDiscovery?: boolean } = {}) {
+    return new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "config/read") {
+        child.writeServerMessage(options.failDiscovery
+          ? { id: message.id, error: { message: "unknown method" } }
+          : { id: message.id, result: { config: { mcp_servers: { node_repl: { command: "node_repl" } } } } })
+      } else if (message.method === "mcpServerStatus/list") {
+        if (options.failDiscovery) {
+          child.writeServerMessage({ id: message.id, error: { message: "unknown method" } })
+        } else if (!message.params.cursor) {
+          child.writeServerMessage({
+            id: message.id,
+            result: { data: [{ name: "node_repl", pluginId: null }], nextCursor: "page-2" },
+          })
+        } else {
+          child.writeServerMessage({
+            id: message.id,
+            result: { data: [{ name: "cua_repl", pluginId: "unified-computer-use@openai-bundled" }], nextCursor: null },
+          })
+        }
+      } else if (message.method === "thread/start" || message.method === "thread/resume") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      }
+    })
+  }
+
+  test("on: lists the servers for the chat's cwd and starts the thread with them off", async () => {
+    const process = isolatingProcess()
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+
+    await manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken: null,
+      disablePreconfiguredMcp: true,
+    })
+
+    const methods = process.messages.map((message: any) => message.method)
+    expect(methods.slice(0, 2)).toEqual(["initialize", "initialized"])
+    expect(methods.slice(2, -1).sort()).toEqual(["config/read", "mcpServerStatus/list", "mcpServerStatus/list"])
+    expect(methods.at(-1)).toBe("thread/start")
+    expect((process.messages.find((message: any) => message.method === "config/read") as any).params.cwd).toBe("/tmp/project")
+    expect((process.messages.at(-1) as any).params.config).toEqual({
+      "features.apps": false,
+      "mcp_servers.node_repl.enabled": false,
+      "plugins.unified-computer-use@openai-bundled.mcp_servers.cua_repl.enabled": false,
+    })
+    manager.stopAll()
+  })
+
+  test("on: a resumed thread gets the same overrides", async () => {
+    const process = isolatingProcess()
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+
+    await manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken: "thread-1",
+      disablePreconfiguredMcp: true,
+    })
+
+    const resume = process.messages.at(-1) as any
+    expect(resume.method).toBe("thread/resume")
+    expect(resume.params.config["mcp_servers.node_repl.enabled"]).toBe(false)
+    expect(resume.params.config["features.apps"]).toBe(false)
+    manager.stopAll()
+  })
+
+  test("on: a server that cannot list its MCP servers still starts, with apps off", async () => {
+    const process = isolatingProcess({ failDiscovery: true })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+
+    await manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken: null,
+      disablePreconfiguredMcp: true,
+    })
+
+    expect((process.messages.at(-1) as any).params.config).toEqual({ "features.apps": false })
+    manager.stopAll()
+  })
+
+  test("off: no discovery and no MCP config", async () => {
+    const process = isolatingProcess()
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    expect(process.messages.map((message: any) => message.method)).toEqual(["initialize", "initialized", "thread/start"])
+    expect((process.messages.at(-1) as any).params.config).toBeUndefined()
+    manager.stopAll()
+  })
+
+  test("a flip restarts the process and resumes the thread; no flip keeps it", async () => {
+    const processes: FakeCodexProcess[] = []
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => {
+        const process = isolatingProcess()
+        processes.push(process)
+        return process as never
+      },
+    })
+    const start = (disablePreconfiguredMcp: boolean, sessionToken: string | null) => manager.startSession({
+      chatId: "chat-1",
+      cwd: "/tmp/project",
+      model: "gpt-5.4",
+      sessionToken,
+      disablePreconfiguredMcp,
+    })
+
+    await start(false, null)
+    await start(false, "thread-1")
+    expect(processes).toHaveLength(1)
+
+    await start(true, "thread-1")
+    expect(processes).toHaveLength(2)
+    expect(processes[0]!.killed).toBe(true)
+    expect((processes[1]!.messages.at(-1) as any).method).toBe("thread/resume")
+
+    await start(true, "thread-1")
+    expect(processes).toHaveLength(2)
     manager.stopAll()
   })
 })

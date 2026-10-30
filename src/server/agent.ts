@@ -169,6 +169,34 @@ export function claudeSystemPrompt(model: string, delegator: boolean | undefined
   }
 }
 
+/**
+ * The launch options that decide which MCP servers a Claude session loads.
+ * With pre-configured servers off, `strictMcpConfig` (`--strict-mcp-config`)
+ * drops the ones in `~/.claude.json`, `.mcp.json`, plugins and agent
+ * frontmatter, and keeps only the SDK `mcpServers` Kanna passes, so its own
+ * tools stay. claude.ai connectors are fetched apart from that config: the
+ * CLI skips them for the `disableClaudeAiConnectors` setting or for
+ * `ENABLE_CLAUDEAI_MCP_SERVERS=false`, and both are set.
+ */
+export function claudeLaunchOptions(args: {
+  serviceTier?: "fast"
+  disablePreconfiguredMcp?: boolean
+  env: NodeJS.ProcessEnv
+}): { settings: Record<string, boolean>; env: NodeJS.ProcessEnv; strictMcpConfig?: boolean } {
+  const { CLAUDECODE: _, ...env } = args.env
+  // fastMode must go through the flag-settings layer: the CLI only allows
+  // fast mode in Agent SDK sessions when flagSettings.fastMode is true,
+  // and an explicit false keeps a user-level settings.json from silently
+  // enabling it while the UI shows "Standard".
+  const settings = { enableWorkflows: true, fastMode: args.serviceTier === "fast" }
+  if (!args.disablePreconfiguredMcp) return { settings, env }
+  return {
+    settings: { ...settings, disableClaudeAiConnectors: true },
+    env: { ...env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+    strictMcpConfig: true,
+  }
+}
+
 interface PendingToolRequest {
   toolUseId: string
   tool: HarnessToolRequest["tool"]
@@ -274,6 +302,8 @@ interface ClaudeSessionState {
   autoPlan: boolean
   /** Baked into the system-prompt append, like `promptAgentId`. */
   delegator: boolean
+  /** Fixed at `query()` time like the toolset: which MCP servers the process loaded. */
+  disablePreconfiguredMcp: boolean
   sessionToken: string | null
   /** Crons and wakeups the CLI holds in memory for the model. Absent on test doubles. */
   scheduledJobs?: ClaudeScheduledJobs
@@ -325,6 +355,7 @@ export interface AgentCoordinatorArgs {
     planMode: boolean
     autoPlan: boolean
     delegator?: boolean
+    disablePreconfiguredMcp?: boolean
     sessionToken: string | null
     forkSession: boolean
     resumeSessionAt?: string
@@ -334,6 +365,12 @@ export interface AgentCoordinatorArgs {
     onSubagentActivity?: (update: SubagentActivityUpdate) => void
     onScheduledJob?: (report: ClaudeScheduledJobReport) => void
   }) => Promise<ClaudeSessionHandle>
+  /**
+   * App settings' "Disable pre-configured MCP servers"
+   * (`AppSettingsSnapshot.disablePreconfiguredMcp`). Read when a turn starts,
+   * so a running turn keeps the servers it started with. Off when absent.
+   */
+  disablePreconfiguredMcp?: () => boolean
   /**
    * Probe whether a provider's native session artifact still exists on disk.
    * Injectable so tests can force a "missing" session without touching the
@@ -995,6 +1032,8 @@ async function startClaudeSession(args: {
   autoPlan: boolean
   /** The chat is a delegator, which its system prompt says. See `ChatRecord.delegator`. */
   delegator?: boolean
+  /** Load only Kanna's MCP server (`AppSettingsSnapshot.disablePreconfiguredMcp`). */
+  disablePreconfiguredMcp?: boolean
   sessionToken: string | null
   forkSession: boolean
   /**
@@ -1099,13 +1138,12 @@ async function startClaudeSession(args: {
       forwardSubagentText: true,
       settingSources: ["user", "project", "local"],
       systemPrompt: claudeSystemPrompt(args.model, args.delegator),
-      // fastMode must go through the flag-settings layer: the CLI only allows
-      // fast mode in Agent SDK sessions when flagSettings.fastMode is true,
-      // and an explicit false keeps a user-level settings.json from silently
-      // enabling it while the UI shows "Standard".
-      settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
+      ...claudeLaunchOptions({
+        serviceTier: args.serviceTier,
+        disablePreconfiguredMcp: args.disablePreconfiguredMcp,
+        env: process.env,
+      }),
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
   })
 
@@ -1200,6 +1238,7 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
+  private readonly disablePreconfiguredMcp: () => boolean
   private secretsService: SecretsService | null
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
@@ -1278,6 +1317,7 @@ export class AgentCoordinator {
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
+    this.disablePreconfiguredMcp = args.disablePreconfiguredMcp ?? (() => false)
     this.secretsService = args.secrets ?? null
   }
 
@@ -2461,6 +2501,10 @@ export class AgentCoordinator {
     // Read at each turn start, so a chat made a delegator mid-way is told on
     // its next turn. Grok has no chat tools, so it is told nothing of it.
     const delegator = Boolean(this.store.getChat(args.chatId)?.delegator)
+    // Also read here, so the setting reaches the next turn and never a running
+    // one. Only Claude and Codex can be started without the user's servers:
+    // cursor-agent and grok have no launch option for it, and Pi has no MCP.
+    const disablePreconfiguredMcp = this.disablePreconfiguredMcp()
     let turn: HarnessTurn
     if (args.provider === "claude") {
       turn = await this.startClaudeTurn({
@@ -2472,6 +2516,7 @@ export class AgentCoordinator {
         planMode: args.planMode,
         autoPlan: args.autoPlan,
         delegator,
+        disablePreconfiguredMcp,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
         ...(chat.pendingForkSessionToken && chat.pendingForkAt ? { resumeSessionAt: chat.pendingForkAt } : {}),
@@ -2541,6 +2586,7 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
         pendingForkAt: chat.pendingForkAt,
+        disablePreconfiguredMcp,
       })
       if (chat.pendingForkSessionToken && started?.sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
@@ -2650,6 +2696,7 @@ export class AgentCoordinator {
     planMode: boolean
     autoPlan: boolean
     delegator: boolean
+    disablePreconfiguredMcp?: boolean
     sessionToken: string | null
     forkSession: boolean
     resumeSessionAt?: string
@@ -2666,13 +2713,16 @@ export class AgentCoordinator {
     // conversation carries over. The delegator instructions are part of the
     // system prompt, fixed at the same time, so a chat that became a
     // delegator or stopped being one restarts the same way, and the resumed
-    // session hears the new prompt (see claudeSystemPrompt).
+    // session hears the new prompt (see claudeSystemPrompt). The MCP servers
+    // are fixed at launch too (claudeLaunchOptions).
+    const disablePreconfiguredMcp = Boolean(args.disablePreconfiguredMcp)
     if (
       !session
       || session.localPath !== args.localPath
       || session.effort !== args.effort
       || session.autoPlan !== args.autoPlan
       || session.delegator !== args.delegator
+      || session.disablePreconfiguredMcp !== disablePreconfiguredMcp
       || args.forkSession
     ) {
       if (session) {
@@ -2689,6 +2739,7 @@ export class AgentCoordinator {
         planMode: args.planMode,
         autoPlan: args.autoPlan,
         delegator: args.delegator,
+        ...(disablePreconfiguredMcp ? { disablePreconfiguredMcp: true } : {}),
         sessionToken: args.sessionToken,
         forkSession: args.forkSession,
         ...(args.resumeSessionAt ? { resumeSessionAt: args.resumeSessionAt } : {}),
@@ -2716,6 +2767,7 @@ export class AgentCoordinator {
         planMode: args.planMode,
         autoPlan: args.autoPlan,
         delegator: args.delegator,
+        disablePreconfiguredMcp,
         sessionToken: args.sessionToken,
         scheduledJobs,
         accountInfoLoaded: false,

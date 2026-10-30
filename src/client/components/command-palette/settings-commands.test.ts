@@ -68,6 +68,15 @@ describe("buildSettingsCommands", () => {
     expect(byId(on, "toggle-project-icons-in-chats").title).toBe("Show Project Icons in Chats")
   })
 
+  test("the MCP toggle names what choosing it does, though the setting is a disable", () => {
+    const off = build()
+    expect(byId(off, "toggle-disable-preconfigured-mcp").title).toBe("Disable Pre-configured MCP Servers")
+    expect(byId(off, "toggle-disable-preconfigured-mcp").effect).toEqual({ type: "patch", patch: { disablePreconfiguredMcp: true } })
+    const on = build({ appSettings: { ...appSettings, disablePreconfiguredMcp: true } })
+    expect(byId(on, "toggle-disable-preconfigured-mcp").title).toBe("Enable Pre-configured MCP Servers")
+    expect(byId(on, "toggle-disable-preconfigured-mcp").effect).toEqual({ type: "patch", patch: { disablePreconfiguredMcp: false } })
+  })
+
   test("Delegator Mode is on unless turned off", () => {
     expect(byId(build(), "toggle-delegator-mode").title).toBe("Disable Delegator Mode")
     expect(byId(build(), "toggle-delegator-mode").effect).toEqual({ type: "patch", patch: { delegatorMode: false } })

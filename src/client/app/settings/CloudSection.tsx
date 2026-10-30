@@ -63,7 +63,7 @@ export function CloudSection() {
       ) : (
         <>
           <SettingsRow def={SETTINGS_ROWS.cloudPairing}>{null}</SettingsRow>
-          <div className={`${SETTINGS_INSET_X_CLASS} pb-4`}>
+          <div className={`${SETTINGS_INSET_X_CLASS} py-4`}>
             <CloudPairPanel session={session} starting={starting} onRetry={begin} />
           </div>
         </>

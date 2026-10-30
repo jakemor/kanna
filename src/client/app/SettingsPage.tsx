@@ -352,7 +352,7 @@ export function SettingsPage() {
                 ) : selectedPage === "secrets" ? (
                   <SecretsSection state={state} />
                 ) : selectedPage === "cloud" ? (
-                  <CloudSection state={state} />
+                  <CloudSection />
                 ) : selectedPage === "usage" ? (
                   <UsageSection state={state} />
                 ) : selectedPage === "labs" ? (

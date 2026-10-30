@@ -336,6 +336,21 @@ describe("AppSettingsManager", () => {
     manager.dispose()
   })
 
+  test("usageResetDay is clamped to 1-28 and written only when it is not the default", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("usageResetDay")
+    expect((await manager.writePatch({ usageResetDay: 15 })).usageResetDay).toBe(15)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { usageResetDay?: number }).usageResetDay).toBe(15)
+    expect((await manager.writePatch({ usageResetDay: 31 })).usageResetDay).toBe(28)
+    expect(await manager.writePatch({ usageResetDay: 1 })).not.toHaveProperty("usageResetDay")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("usageResetDay")
+
+    manager.dispose()
+  })
+
   test("keeps pane visibility per chat by default, and patches one pane without the other", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)

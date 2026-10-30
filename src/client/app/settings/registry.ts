@@ -250,6 +250,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Defaults for new Pi chats. Pi connects through the Model Registry.",
     keywords: ["model"],
   },
+  usageResetDay: {
+    sectionId: "usage",
+    title: "Monthly Reset Day",
+    description: "The day of the month your Claude spend limit resets. Claude's usage data doesn't say, so this is an assumption: the usage card counts down to it. Uses this computer's time zone.",
+    keywords: ["usage", "spend", "limit", "reset", "monthly", "enterprise", "extra usage", "billing"],
+  },
   modelRegistry: {
     sectionId: "providers",
     title: "Model Registry",

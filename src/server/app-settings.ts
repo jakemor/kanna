@@ -18,6 +18,9 @@ import {
 } from "../shared/provider-preferences"
 import {
   DEFAULT_NEW_PROJECTS_DIRECTORY,
+  DEFAULT_USAGE_RESET_DAY,
+  MAX_USAGE_RESET_DAY,
+  MIN_USAGE_RESET_DAY,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
@@ -69,6 +72,7 @@ interface AppSettingsFile {
   delegatorMode?: unknown
   chatTabsEnabled?: unknown
   widgetsPeekEnabled?: unknown
+  usageResetDay?: unknown
   newProjectsDirectory?: unknown
   setupShown?: unknown
   setupCompleted?: unknown
@@ -195,6 +199,7 @@ function toFilePayload(state: AppSettingsState) {
     ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(state.usageResetDay !== undefined ? { usageResetDay: state.usageResetDay } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -228,6 +233,7 @@ function toSnapshot(
     ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(state.usageResetDay !== undefined ? { usageResetDay: state.usageResetDay } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -265,6 +271,7 @@ function normalizeAppSettings(
   }
 
   // New Sidebar ships enabled; an explicit false opts back into the legacy sidebar.
+  const usageResetDay = clampNumber(source?.usageResetDay, DEFAULT_USAGE_RESET_DAY, MIN_USAGE_RESET_DAY, MAX_USAGE_RESET_DAY)
   const newSidebarEnabled = typeof source?.newSidebarEnabled === "boolean"
     ? source.newSidebarEnabled
     : true
@@ -318,6 +325,7 @@ function normalizeAppSettings(
     ...(source?.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(source?.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(source?.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(usageResetDay !== DEFAULT_USAGE_RESET_DAY ? { usageResetDay } : {}),
     newProjectsDirectory,
     // Onboarding markers default to false so a machine that has never run the
     // wizard still gets it; once set they stay set for every browser.
@@ -361,6 +369,7 @@ function toComparablePayload(source: AppSettingsFile) {
     delegatorMode: source.delegatorMode,
     chatTabsEnabled: source.chatTabsEnabled,
     widgetsPeekEnabled: source.widgetsPeekEnabled,
+    usageResetDay: source.usageResetDay,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"
       ? source.newProjectsDirectory.trim()
       : source.newProjectsDirectory,

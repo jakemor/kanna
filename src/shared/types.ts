@@ -1349,6 +1349,14 @@ export interface FsListResult {
 /** Default for `newProjectsDirectory` — expanded server-side at use time. */
 export const DEFAULT_NEW_PROJECTS_DIRECTORY = "~/Kanna"
 
+/**
+ * Day of the month (local time) Claude's monthly spend cap is assumed to reset
+ * on. The usage API reports no reset date for it, so this is the user's guess.
+ */
+export const DEFAULT_USAGE_RESET_DAY = 1
+export const MIN_USAGE_RESET_DAY = 1
+export const MAX_USAGE_RESET_DAY = 28
+
 /** One repository from the signed-in user's GitHub account (via the local `gh` CLI). */
 export interface GitHubRepoSummary {
   /** e.g. "owner/repo". */
@@ -1429,6 +1437,8 @@ export interface AppSettingsSnapshot {
    * Off unless true, and absent when off.
    */
   widgetsPeekEnabled?: boolean
+  /** Assumed monthly reset day of Claude's spend cap, 1–28. Absent when it is the default. */
+  usageResetDay?: number
   /** Base directory where cloned and newly created projects are placed. */
   newProjectsDirectory: string
   /**
@@ -1484,6 +1494,7 @@ export interface AppSettingsPatch {
   delegatorMode?: boolean
   chatTabsEnabled?: boolean
   widgetsPeekEnabled?: boolean
+  usageResetDay?: number
   newProjectsDirectory?: string
   setupShown?: boolean
   setupCompleted?: boolean
@@ -1540,7 +1551,7 @@ export interface UsageLimitWindow {
 
 /** Pay-per-use credit balance (Codex PAYG, Claude extra usage). */
 export interface UsageLimitCredits {
-  /** Human label (e.g. "Credits", "Extra usage"). */
+  /** Human label (e.g. "Credits", "Monthly spend limit"). */
   label: string
   /** Percentage consumed of a cap, 0–100, or null when there is no cap/unknown. */
   usedPercent: number | null
@@ -1552,6 +1563,10 @@ export interface UsageLimitCredits {
   currency: string | null
   /** Free-form fallback description when amounts aren't numeric (e.g. "Unlimited"). */
   detail: string | null
+  /** The cap's real next reset, ISO 8601, when the provider reports one (Codex). Claude's is assumed client-side. */
+  resetsAt?: string | null
+  /** The provider says the cap is hit, whatever the percent reads. */
+  limitReached?: boolean
   recordedAt: string
   source: UsageLimitSource
 }

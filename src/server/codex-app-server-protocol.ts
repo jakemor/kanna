@@ -589,6 +589,14 @@ export interface CodexRateLimitSnapshot {
   secondary?: CodexRateLimitWindow | null
   credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null
   planType?: string | null
+  /** Enterprise spend cap: decimal-string amounts, `resetsAt` in Unix seconds. */
+  individualLimit?: {
+    limit?: string | null
+    used?: string | null
+    remainingPercent?: number | null
+    resetsAt?: number | null
+  } | null
+  spendControlReached?: boolean | null
 }
 
 export interface AccountRateLimitsUpdatedNotification {

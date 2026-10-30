@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react"
 import { ChevronRight } from "lucide-react"
 import type { ProviderUsageSnapshot, UsageLimitWindow, UsageLimitsSnapshot } from "../../../shared/types"
-import { PROVIDERS } from "../../../shared/types"
+import { DEFAULT_USAGE_RESET_DAY, MAX_USAGE_RESET_DAY, MIN_USAGE_RESET_DAY, PROVIDERS } from "../../../shared/types"
 import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
+import { Input } from "../../components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
 import { formatRelativeTime } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import type { KannaState } from "../useKannaState"
+import { handleSettingsInputKeyDown, SETTINGS_NUMBER_INPUT_CLASS, SettingsField, SettingsGroup, SettingsRow } from "./shared"
+import { SETTINGS_ROWS } from "./registry"
 
 const MINUTE_MS = 60_000
 const HOUR_MS = 60 * MINUTE_MS
@@ -65,13 +69,27 @@ function formatMoney(amount: number, currency: string | null): string {
   return compact.startsWith("-") ? `-${symbol}${compact.slice(1)}` : `${symbol}${compact}`
 }
 
-function creditsSummary(credits: NonNullable<ProviderUsageSnapshot["credits"]>): string | null {
+/** The next time the monthly cap resets on `day` of the month, local time, as ISO 8601. */
+export function nextMonthlyReset(day: number, now = new Date()): string {
+  const thisMonth = new Date(now.getFullYear(), now.getMonth(), day)
+  return (thisMonth.getTime() > now.getTime() ? thisMonth : new Date(now.getFullYear(), now.getMonth() + 1, day)).toISOString()
+}
+
+/**
+ * `assumedReset` is for a cap whose provider reports no reset (Claude's), so
+ * the row says it is a guess; a reset the provider reports reads plainly.
+ */
+function creditsSummary(credits: NonNullable<ProviderUsageSnapshot["credits"]>, assumedReset: string | null = null): string | null {
   const parts: string[] = []
   if (credits.usedAmount != null) {
     const used = formatMoney(credits.usedAmount, credits.currency)
     parts.push(credits.limitAmount != null ? `${used} of ${formatMoney(credits.limitAmount, credits.currency)} used` : `${used} used`)
   }
   if (credits.usedPercent != null) parts.push(`${formatPercent(credits.usedPercent)} used`)
+  if (credits.limitReached) parts.push("Limit reached")
+  const resetsAt = credits.resetsAt ?? assumedReset
+  const until = resetsAt ? formatUntil(resetsAt) : null
+  if (until) parts.push(`Resets ${until}${credits.resetsAt ? "" : " (assumed)"}`)
   if (credits.detail) {
     // Codex reports its prepaid balance as a bare numeric string ("1000");
     // render it as a remaining count. Non-numeric details ("Unlimited") pass through.
@@ -186,6 +204,11 @@ export function UsageWindowRows({ snapshot, compact = false, className }: {
   compact?: boolean
   className?: string
 }) {
+  const resetDay = useAppSettingsStore((store) => store.settings?.usageResetDay) ?? DEFAULT_USAGE_RESET_DAY
+  // Claude reports a spend cap but no date it resets; that comes from the setting.
+  const assumedReset = snapshot.provider === "claude" && snapshot.credits?.limitAmount != null
+    ? nextMonthlyReset(resetDay)
+    : null
   return (
     <div className={cn("space-y-2.5", className)}>
       {snapshot.windows.map((window) => (
@@ -194,7 +217,7 @@ export function UsageWindowRows({ snapshot, compact = false, className }: {
       {snapshot.credits ? (
         <div className="flex items-baseline justify-between gap-3 border-t border-border pt-3 text-sm">
           <span className="text-foreground">{snapshot.credits.label}</span>
-          <span className="text-muted-foreground">{creditsSummary(snapshot.credits)}</span>
+          <span className="text-muted-foreground">{creditsSummary(snapshot.credits, assumedReset)}</span>
         </div>
       ) : null}
       {snapshot.detail ? (
@@ -417,8 +440,47 @@ export function useUsageLimits(socket: KannaState["socket"], active = true) {
   return { snapshot, refreshing, refresh }
 }
 
-export function UsageSection({ state }: { state: Pick<KannaState, "socket"> }) {
+/** The assumed monthly reset day of Claude's spend cap (the API reports none). */
+function UsageResetDayRow({ onWrite }: { onWrite: KannaState["handleWriteAppSettings"] }) {
+  const resetDay = useAppSettingsStore((store) => store.settings?.usageResetDay) ?? DEFAULT_USAGE_RESET_DAY
+  const [draft, setDraft] = useState(String(resetDay))
+  useEffect(() => {
+    setDraft(String(resetDay))
+  }, [resetDay])
+
+  function commit() {
+    const next = Math.round(Number(draft))
+    if (draft.trim() === "" || !Number.isFinite(next)) {
+      setDraft(String(resetDay))
+      return
+    }
+    void onWrite({ usageResetDay: next }).catch(() => setDraft(String(resetDay)))
+  }
+
+  return (
+    <SettingsGroup title="Spend limit">
+      <SettingsRow def={SETTINGS_ROWS.usageResetDay} wideControl>
+        <SettingsField hint={`Day of the month, ${MIN_USAGE_RESET_DAY}–${MAX_USAGE_RESET_DAY}. An assumption, not read from Claude${resetDay === DEFAULT_USAGE_RESET_DAY ? ` (default ${DEFAULT_USAGE_RESET_DAY})` : ""}`}>
+          <Input
+            type="number"
+            min={MIN_USAGE_RESET_DAY}
+            max={MAX_USAGE_RESET_DAY}
+            step={1}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => handleSettingsInputKeyDown(event, commit)}
+            className={SETTINGS_NUMBER_INPUT_CLASS}
+          />
+        </SettingsField>
+      </SettingsRow>
+    </SettingsGroup>
+  )
+}
+
+export function UsageSection({ state }: { state: Pick<KannaState, "socket" | "handleWriteAppSettings"> }) {
   const { snapshot, refreshing, refresh: runRefresh } = useUsageLimits(state.socket)
+  const claudeHasSpendCap = snapshot?.providers.some((provider) => provider.provider === "claude" && provider.credits?.limitAmount != null) ?? false
 
   return (
     <div className="space-y-4">
@@ -440,6 +502,7 @@ export function UsageSection({ state }: { state: Pick<KannaState, "socket"> }) {
           Loading usage…
         </div>
       )}
+      {claudeHasSpendCap ? <UsageResetDayRow onWrite={state.handleWriteAppSettings} /> : null}
     </div>
   )
 }

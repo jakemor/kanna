@@ -35,6 +35,29 @@ export function resolveStop(cascadingSubchats: number, via: "button" | "keyboard
   return { kind: "ask", count: cascadingSubchats }
 }
 
+/**
+ * What a press on the composer's round button does. Anything sendable makes
+ * it Send, mid-turn and with sub-chats running too: the send queues or
+ * interrupts by Enter While Running (`shouldSteerSubmit`), and an interrupt
+ * is a steer, which ends only this chat's turn. Only with nothing to send is
+ * it Stop, the one press that can ask which to stop (`resolveStop`). Under a
+ * held Escape it reads Stop either way, so that is the stop it does.
+ */
+export type PrimaryAction = "send" | "stop" | "stop-held" | "close-stop-choice" | "none"
+
+export function resolvePrimaryAction(state: {
+  sendable: boolean
+  canCancel: boolean
+  holdEngaged: boolean
+  stopChoiceOpen: boolean
+}): PrimaryAction {
+  if (state.holdEngaged && state.canCancel) return "stop-held"
+  if (state.sendable) return "send"
+  if (!state.canCancel) return "none"
+  // A second press on Stop while it asks puts the question away.
+  return state.stopChoiceOpen ? "close-stop-choice" : "stop"
+}
+
 /** The label of the stop that takes the sub-chats with it. */
 export function cascadeStopLabel(count: number) {
   return `Stop this turn and ${count} ${count === 1 ? "sub-chat" : "sub-chats"}`

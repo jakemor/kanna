@@ -27,7 +27,7 @@ import { ATTACH_FILES_EVENT, CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_A
 import { isEscapeClaimed, isViewerPaneOpen, resolveEscapePress } from "../../lib/escape-key"
 import { HoldToStopHint, HoldToStopRing, useHoldToStop } from "./HoldToStop"
 import { StopChoicePopover } from "./StopChoicePopover"
-import { resolveStop } from "../../../shared/stop-turn"
+import { resolvePrimaryAction, resolveStop } from "../../../shared/stop-turn"
 import { abbreviatePathHead, formatPathWithTilde } from "../../lib/pathUtils"
 import { copyTextToClipboard } from "../../lib/clipboard"
 import { buildUploadErrorReport, simpleUploadError, type UploadErrorReport } from "../../lib/uploadError"
@@ -546,21 +546,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const showStop = Boolean(canCancel) && (!canSubmit || holdToStop.engaged)
   /** What the round button does. Stop is immediate here; only the key is held. */
   function runPrimaryAction(withModifier: boolean) {
-    // Under a hold the button reads Stop, so that is what a click on it
-    // does: the stop the held key was counting down to.
-    if (holdToStop.engaged && canCancel) {
-      stop("keyboard")
-      return
-    }
-    // Anything sendable (text or attachments alone) wins over cancel, so a
-    // file-only message queues instead of stopping the running turn.
-    if (!disabled && canSubmit && !hasPendingUploads) {
-      void handleSubmit({ withModifier })
-    } else if (canCancel) {
-      // A second press on Stop while it asks puts the question away.
-      if (stopChoiceOpen) setStopChoiceOpen(false)
-      else stop("button")
-    }
+    // A file-only message is sendable too, so it queues instead of
+    // stopping the running turn.
+    const action = resolvePrimaryAction({
+      sendable: !disabled && canSubmit && !hasPendingUploads,
+      canCancel: Boolean(canCancel),
+      holdEngaged: holdToStop.engaged,
+      stopChoiceOpen,
+    })
+    if (action === "stop-held") stop("keyboard")
+    else if (action === "send") void handleSubmit({ withModifier })
+    else if (action === "close-stop-choice") setStopChoiceOpen(false)
+    else if (action === "stop") stop("button")
   }
   const recorder = useVoiceRecorder()
   const [transcribing, setTranscribing] = useState(false)

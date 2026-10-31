@@ -2781,6 +2781,36 @@ describe("stopping a chat with sub-chats", () => {
     expect(codex.turn(root).content).toContain("Found two bugs.")
   })
 
+  test("a send to a chat waiting on its sub-chats starts its turn and leaves them running", async () => {
+    const { orchestrator, codex, store, agent, commands, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "run the benchmarks" })
+    codex.finish(root, "Benchmarks are running.")
+    await until(() => agent.getChatStatuses().get(root) === "waiting_on_subagent", "the parent to wait")
+
+    await commands.send({ type: "chat.send", chatId: root, provider: "codex", content: "and the cold start" })
+    await until(() => codex.turnsFor(root).length === 2, "the user's turn")
+    expect(codex.turnsFor(child.chatId)[0]!.open).toBe(true)
+    expect(store.getChat(child.chatId)?.reportOwed).toBe(true)
+  })
+
+  test("a send that interrupts the turn stops only the turn: the sub-chats go on and report", async () => {
+    const { orchestrator, codex, store, commands, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "audit the parser" })
+
+    await commands.enqueue({ type: "message.enqueue", chatId: root, provider: "codex", content: "look at the lexer first", steer: true })
+    await until(() => codex.turnsFor(root).length === 2, "the steered turn")
+    expect(codex.turnsFor(root)[0]!.open).toBe(false)
+    expect(codex.turnsFor(child.chatId)[0]!.open).toBe(true)
+    expect(store.getChat(child.chatId)?.reportOwed).toBe(true)
+
+    codex.finish(root, "Looking at the lexer.")
+    codex.finish(child.chatId, "Found two bugs.")
+    await until(() => codex.turnsFor(root).length === 3, "the report")
+    expect(codex.turn(root).content).toContain("Found two bugs.")
+  })
+
   test("cancel_chat without cascade stops the chat and not the chats under it", async () => {
     const { orchestrator, codex, userChat } = await setup()
     const root = await userChat()

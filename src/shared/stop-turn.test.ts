@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { cascadeStopLabel, countCascadingSubchats, resolveStop } from "./stop-turn"
+import { cascadeStopLabel, countCascadingSubchats, resolvePrimaryAction, resolveStop } from "./stop-turn"
+import { shouldSteerSubmit } from "./submit-mode"
 import type { SubagentActivity } from "./types"
 
 function row(overrides: Partial<SubagentActivity>): SubagentActivity {
@@ -31,5 +32,32 @@ describe("stop", () => {
   test("names how many go with it", () => {
     expect(cascadeStopLabel(1)).toBe("Stop this turn and 1 sub-chat")
     expect(cascadeStopLabel(3)).toBe("Stop this turn and 3 sub-chats")
+  })
+})
+
+describe("the round button", () => {
+  const midTurn = { canCancel: true, holdEngaged: false, stopChoiceOpen: false }
+
+  test("with something to send it sends, mid-turn with sub-chats running too, and never asks", () => {
+    expect(resolvePrimaryAction({ ...midTurn, sendable: true })).toBe("send")
+    // Waiting on sub-chats there is no turn to stop, so nothing to choose either.
+    expect(resolvePrimaryAction({ ...midTurn, canCancel: false, sendable: true })).toBe("send")
+    // The send queues or interrupts by Enter While Running, and the modifier does the other.
+    expect(shouldSteerSubmit("queue", false)).toBe(false)
+    expect(shouldSteerSubmit("queue", true)).toBe(true)
+    expect(shouldSteerSubmit("steer", false)).toBe(true)
+    expect(shouldSteerSubmit("steer", true)).toBe(false)
+  })
+
+  test("with nothing to send it is Stop, the press that asks while sub-chats run", () => {
+    expect(resolvePrimaryAction({ ...midTurn, sendable: false })).toBe("stop")
+    expect(resolveStop(2, "button")).toEqual({ kind: "ask", count: 2 })
+    expect(resolvePrimaryAction({ ...midTurn, sendable: false, stopChoiceOpen: true })).toBe("close-stop-choice")
+    expect(resolvePrimaryAction({ ...midTurn, canCancel: false, sendable: false })).toBe("none")
+  })
+
+  test("under a held Escape it is the held stop, which asks nothing", () => {
+    expect(resolvePrimaryAction({ ...midTurn, sendable: true, holdEngaged: true })).toBe("stop-held")
+    expect(resolveStop(2, "keyboard")).toEqual({ kind: "stop", cascade: false })
   })
 })

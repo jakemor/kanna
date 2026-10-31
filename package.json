@@ -22,7 +22,7 @@
   "bin": {
     "kanna": "./bin/kanna"
   },
-  "packageManager": "bun@1.3.5",
+  "packageManager": "bun@1.4.4",
   "files": [
     "bin/",
     "dist/server/",

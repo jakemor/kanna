@@ -40,8 +40,8 @@ const result = await Bun.build({
   outdir: OUT_DIR,
   target: "bun",
   format: "esm",
-  // One file, not chunks: Bun 1.3.5 (packageManager, so CI's build) writes
-  // split chunks that export the same name twice, which fails to parse.
+  // One file, not chunks: Bun 1.3.5 (packageManager then, so CI's build)
+  // wrote split chunks that export the same name twice, which fails to parse.
   splitting: false,
   // Stack traces in logs and bug reports keep pointing at src/server.
   sourcemap: "linked",

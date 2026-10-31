@@ -1,4 +1,5 @@
 import { Check, Circle, ListChecks, Loader2 } from "lucide-react"
+import { normalizeTodoStatus } from "../../../shared/tools"
 import { cn } from "../../lib/utils"
 import type { ProcessedToolCall } from "./types"
 
@@ -27,7 +28,10 @@ export function TodoWriteMessage({ message }: Props) {
         <div>
           {todos.map((todo, index) => {
             const isLast = index === todos.length - 1
-            const { Icon, iconClass, textClass } = STATUS_CONFIG[todo.status]
+            // Old transcripts can contain Cursor's `TODO_STATUS_*` enum names,
+            // so keep the persisted-data render path defensive too.
+            const status = normalizeTodoStatus(todo.status)
+            const { Icon, iconClass, textClass } = STATUS_CONFIG[status]
             return (
               <div
                 key={index}
@@ -38,7 +42,7 @@ export function TodoWriteMessage({ message }: Props) {
               >
                 <Icon className={cn("h-4 w-4 flex-shrink-0", iconClass)} />
                 <span className={cn("text-sm", textClass)}>
-                  {todo.status === "in_progress" ? (todo.activeForm || todo.content) : todo.content}
+                  {status === "in_progress" ? todo.activeForm || todo.content : todo.content}
                 </span>
               </div>
             )

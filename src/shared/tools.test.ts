@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { hydrateToolResult, normalizeToolCall } from "./tools"
+import { hydrateToolResult, normalizeToolCall, normalizeTodoStatus } from "./tools"
 
 describe("normalizeToolCall", () => {
   test("maps AskUserQuestion input to typed questions", () => {
@@ -59,6 +59,29 @@ describe("normalizeToolCall", () => {
     expect(tool.input.runInBackground).toBe(true)
   })
 
+  test("normalizes provider-specific TodoWrite statuses and fills active text", () => {
+    const tool = normalizeToolCall({
+      toolName: "TodoWrite",
+      toolId: "tool-todos",
+      input: {
+        todos: [
+          { content: "Current step", status: "TODO_STATUS_IN_PROGRESS" },
+          { content: "Finished step", status: "TODO_STATUS_COMPLETED", activeForm: "Finishing step" },
+          { content: "Future step", status: "unexpected_future_value" },
+          null,
+        ],
+      },
+    })
+
+    expect(tool.toolKind).toBe("todo_write")
+    if (tool.toolKind !== "todo_write") throw new Error("unexpected tool kind")
+    expect(tool.input.todos).toEqual([
+      { content: "Current step", status: "in_progress", activeForm: "Current step" },
+      { content: "Finished step", status: "completed", activeForm: "Finishing step" },
+      { content: "Future step", status: "pending", activeForm: "Future step" },
+    ])
+  })
+
   test("maps unknown MCP tools to mcp_generic", () => {
     const tool = normalizeToolCall({
       toolName: "mcp__sentry__search_issues",
@@ -70,6 +93,20 @@ describe("normalizeToolCall", () => {
     if (tool.toolKind !== "mcp_generic") throw new Error("unexpected tool kind")
     expect(tool.input.server).toBe("sentry")
     expect(tool.input.tool).toBe("search_issues")
+  })
+})
+
+describe("normalizeTodoStatus", () => {
+  test("accepts canonical, Cursor enum, and punctuation variants", () => {
+    expect(normalizeTodoStatus("pending")).toBe("pending")
+    expect(normalizeTodoStatus("TODO_STATUS_IN_PROGRESS")).toBe("in_progress")
+    expect(normalizeTodoStatus("TODO_STATUS_COMPLETED")).toBe("completed")
+    expect(normalizeTodoStatus("in-progress")).toBe("in_progress")
+  })
+
+  test("falls back to pending for unknown or malformed values", () => {
+    expect(normalizeTodoStatus("TODO_STATUS_BLOCKED")).toBe("pending")
+    expect(normalizeTodoStatus(null)).toBe("pending")
   })
 })
 

@@ -102,6 +102,13 @@ export function buildTranscriptTurns(rows: ResolvedTranscriptRow[]): TranscriptT
       continue
     }
 
+    // A closed fold still did what it hides.
+    if (row.kind === "fold-header") {
+      const current = turns[turns.length - 1]
+      if (current) current.agentMessageCount += row.hiddenAgentCount
+      continue
+    }
+
     if (row.message.kind === "user_prompt") {
       const previous = turns[turns.length - 1]
       if (previous) previous.endRowIndex = index - 1

@@ -824,7 +824,7 @@ export class GrokCliManager {
     let heldResult: HarnessEvent | null = null
 
     const emit = (event: HarnessEvent) => {
-      if (event.type === "transcript" && event.entry.kind === "result" && !event.entry.durationMs) {
+      if (event.type === "transcript" && event.entry?.kind === "result" && !event.entry.durationMs) {
         event = { ...event, entry: { ...event.entry, durationMs: Date.now() - startedAt } }
       }
       const entry = event.type === "transcript" ? event.entry : undefined

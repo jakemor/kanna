@@ -2675,7 +2675,7 @@ describe("CodexAppServerManager", () => {
     const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
     await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
 
-    const turn = await manager.startTurn({ chatId: "chat-1", model: "gpt-5.4", content: "hi", planMode: false })
+    const turn = await manager.startTurn({ chatId: "chat-1", model: "gpt-5.4", content: "hi", planMode: false, onToolRequest: async () => ({}) })
     const entries = (await collectStream(turn.stream)).flatMap((event) => event.type === "transcript" ? [event.entry] : [])
     const result = entries.find((entry) => entry.kind === "result")
     expect(result?.kind === "result" ? result.durationMs : 0).toBeGreaterThanOrEqual(30)

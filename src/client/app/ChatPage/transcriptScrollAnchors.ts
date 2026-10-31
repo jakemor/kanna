@@ -17,10 +17,12 @@ export function isOptimisticMessageId(messageId: string) {
 
 /**
  * The message id a row should be remembered by. For a tool group we use its
- * first member, which is also what the row id embeds.
+ * first member, which is also what the row id embeds. A fold's header is no
+ * message; the reader's place is taken from the rows around it instead.
  */
 export function getRowAnchorMessageId(row: ResolvedTranscriptRow): string | null {
   if (row.kind === "single") return row.message.id
+  if (row.kind === "fold-header") return null
   return row.messages[0]?.id ?? null
 }
 
@@ -38,6 +40,7 @@ export function buildRowIndexByMessageId(rows: ResolvedTranscriptRow[]): Map<str
       map.set(row.message.id, index)
       return
     }
+    if (row.kind === "fold-header") return
     for (const message of row.messages) {
       map.set(message.id, index)
     }
@@ -48,7 +51,9 @@ export function buildRowIndexByMessageId(rows: ResolvedTranscriptRow[]): Map<str
 /** Index of the row rendering a tool call (its own row, or its tool group's), or null. */
 export function findToolCallRowIndex(rows: ResolvedTranscriptRow[], toolId: string): number | null {
   const isCall = (message: HydratedTranscriptMessage) => message.kind === "tool" && message.toolId === toolId
-  const index = rows.findIndex((row) => (row.kind === "single" ? isCall(row.message) : row.messages.some(isCall)))
+  const index = rows.findIndex((row) => (
+    row.kind === "single" ? isCall(row.message) : row.kind === "tool-group" && row.messages.some(isCall)
+  ))
   return index === -1 ? null : index
 }
 

@@ -10,6 +10,8 @@ interface Props {
   nextPromptTimestamp?: string
   /** Who sent that prompt, when it was not the user. See `promptOriginLabel`. */
   nextPromptOrigin?: string
+  /** It closes a folded turn, whose header already says how long it took. */
+  endsFold?: boolean
 }
 
 /**
@@ -98,7 +100,7 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`
 }
 
-export function ResultMessage({ message, nextPromptTimestamp, nextPromptOrigin }: Props) {
+export function ResultMessage({ message, nextPromptTimestamp, nextPromptOrigin, endsFold }: Props) {
   if (!message.success) {
     return (
       <div className="px-4 py-3 mx-2 my-1 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
@@ -109,7 +111,9 @@ export function ResultMessage({ message, nextPromptTimestamp, nextPromptOrigin }
 
   const label = nextPromptTimestamp
     ? formatPromptBoundary(nextPromptTimestamp, nextPromptOrigin)
-    : `${formatPromptTimestamp(message.timestamp)} · Worked for ${formatDuration(message.durationMs)}`
+    : endsFold
+      ? formatPromptTimestamp(message.timestamp)
+      : `${formatPromptTimestamp(message.timestamp)} · Worked for ${formatDuration(message.durationMs)}`
 
   return <TimeBoundary label={label} />
 }

@@ -1,0 +1,1687 @@
+{
+ "cases": [
+  {
+   "name": "A finished turn folds its work and keeps its reply",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "s1",
+     "kind": "system_init",
+     "createdAt": 10,
+     "provider": "claude",
+     "model": "opus",
+     "tools": [],
+     "agents": [],
+     "slashCommands": [],
+     "mcpServers": []
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 3000,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 4000,
+     "text": "Done."
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 5000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 5000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 5000,
+     "label": "Worked for 5s",
+     "roles": {
+      "a1": "folded",
+      "c1": "folded",
+      "a2": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A turn with nothing to hide gets no fold",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 2000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
+     "roles": {
+      "a1": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "What survives the fold",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "edit_file",
+      "toolName": "Edit",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 1001,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "c2",
+     "kind": "tool_call",
+     "createdAt": 1100,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "display",
+      "toolName": "show_visualization",
+      "toolId": "tool-c2",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r2",
+     "kind": "tool_result",
+     "createdAt": 1101,
+     "toolId": "tool-c2",
+     "content": "ok"
+    },
+    {
+     "_id": "c3",
+     "kind": "tool_call",
+     "createdAt": 1200,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "todo_write",
+      "toolName": "TodoWrite",
+      "toolId": "tool-c3",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r3",
+     "kind": "tool_result",
+     "createdAt": 1201,
+     "toolId": "tool-c3",
+     "content": "ok"
+    },
+    {
+     "_id": "c4",
+     "kind": "tool_call",
+     "createdAt": 1300,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "ask_user_question",
+      "toolName": "AskUserQuestion",
+      "toolId": "tool-c4",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r4",
+     "kind": "tool_result",
+     "createdAt": 1301,
+     "toolId": "tool-c4",
+     "content": "ok"
+    },
+    {
+     "_id": "c5",
+     "kind": "tool_call",
+     "createdAt": 1400,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "subagent_task",
+      "toolName": "Agent",
+      "toolId": "tool-c5",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r5",
+     "kind": "tool_result",
+     "createdAt": 1401,
+     "toolId": "tool-c5",
+     "content": "ok"
+    },
+    {
+     "_id": "c6",
+     "kind": "tool_call",
+     "createdAt": 1500,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "read_file",
+      "toolName": "Read",
+      "toolId": "tool-c6",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r6",
+     "kind": "tool_result",
+     "createdAt": 1501,
+     "toolId": "tool-c6",
+     "content": "ok"
+    },
+    {
+     "_id": "c7",
+     "kind": "tool_call",
+     "createdAt": 1600,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "create_chat",
+      "toolId": "tool-c7",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r7",
+     "kind": "tool_result",
+     "createdAt": 1601,
+     "toolId": "tool-c7",
+     "content": "ok"
+    },
+    {
+     "_id": "c8",
+     "kind": "tool_call",
+     "createdAt": 1700,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "schedule",
+      "toolName": "set_schedule",
+      "toolId": "tool-c8",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r8",
+     "kind": "tool_result",
+     "createdAt": 1701,
+     "toolId": "tool-c8",
+     "content": "ok"
+    },
+    {
+     "_id": "c9",
+     "kind": "tool_call",
+     "createdAt": 1800,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "unknown_tool",
+      "toolName": "send_message",
+      "toolId": "tool-c9",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r9",
+     "kind": "tool_result",
+     "createdAt": 1801,
+     "toolId": "tool-c9",
+     "content": "ok"
+    },
+    {
+     "_id": "c10",
+     "kind": "tool_call",
+     "createdAt": 1900,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "request_secrets",
+      "toolName": "request_secrets",
+      "toolId": "tool-c10",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r10",
+     "kind": "tool_result",
+     "createdAt": 1901,
+     "toolId": "tool-c10",
+     "content": "ok"
+    },
+    {
+     "_id": "c11",
+     "kind": "tool_call",
+     "createdAt": 1950,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "display",
+      "toolName": "send_attachments",
+      "toolId": "tool-c11",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r11",
+     "kind": "tool_result",
+     "createdAt": 1951,
+     "toolId": "tool-c11",
+     "content": "ok"
+    },
+    {
+     "_id": "c12",
+     "kind": "tool_call",
+     "createdAt": 1960,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c12",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r12",
+     "kind": "tool_result",
+     "createdAt": 1961,
+     "toolId": "tool-c12",
+     "content": "ok"
+    },
+    {
+     "_id": "c13",
+     "kind": "tool_call",
+     "createdAt": 1970,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "grep",
+      "toolName": "Grep",
+      "toolId": "tool-c13",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r13",
+     "kind": "tool_result",
+     "createdAt": 1971,
+     "toolId": "tool-c13",
+     "content": "ok"
+    },
+    {
+     "_id": "cb",
+     "kind": "compact_boundary",
+     "createdAt": 2000
+    },
+    {
+     "_id": "cs",
+     "kind": "compact_summary",
+     "createdAt": 2001,
+     "summary": "earlier"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c14",
+     "kind": "tool_call",
+     "createdAt": 4000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "exit_plan_mode",
+      "toolName": "ExitPlanMode",
+      "toolId": "tool-c14",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r14",
+     "kind": "tool_result",
+     "createdAt": 4001,
+     "toolId": "tool-c14",
+     "content": "ok"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 134000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 0,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 134000,
+     "label": "Worked for 2m 14s",
+     "roles": {
+      "c1": "folded",
+      "c2": "kept",
+      "c3": "folded",
+      "c4": "folded",
+      "c5": "folded",
+      "c6": "folded",
+      "c7": "kept",
+      "c8": "kept",
+      "c9": "kept",
+      "c10": "folded",
+      "c11": "kept",
+      "c12": "folded",
+      "c13": "folded",
+      "cb": "kept",
+      "cs": "kept",
+      "a1": "reply",
+      "c14": "kept",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A plan with text after it folds",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "exit_plan_mode",
+      "toolName": "ExitPlanMode",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 2000,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 4000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 4000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 4000,
+     "label": "Worked for 4s",
+     "roles": {
+      "c1": "folded",
+      "a1": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A failed turn keeps its error",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 1500,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 3000,
+     "subtype": "error",
+     "isError": true,
+     "durationMs": 3000,
+     "result": "boom"
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "failed",
+     "workedMs": 3000,
+     "label": "Failed after 3s",
+     "roles": {
+      "c1": "folded",
+      "res1": "kept"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A stopped turn reads Stopped after, timed to the stop",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "int1",
+     "kind": "interrupted",
+     "createdAt": 61000
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": true,
+     "folds": true,
+     "outcome": "stopped",
+     "workedMs": 61000,
+     "label": "Stopped after 1m 1s",
+     "roles": {
+      "a1": "reply",
+      "c1": "folded",
+      "int1": "folded"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A cancelled result reads Stopped",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 2000,
+     "subtype": "cancelled",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "stopped",
+     "workedMs": 2000,
+     "label": "Stopped after 2s",
+     "roles": {
+      "c1": "folded",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A steered turn reads Worked for, and the steer opens the next",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "int1",
+     "kind": "interrupted",
+     "createdAt": 65000,
+     "hidden": true
+    },
+    {
+     "_id": "p2",
+     "kind": "user_prompt",
+     "createdAt": 65001,
+     "content": "do it",
+     "steered": true
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 70000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res2",
+     "kind": "result",
+     "createdAt": 71000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 4000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 65000,
+     "label": "Worked for 1m 5s",
+     "roles": {
+      "a1": "reply",
+      "c1": "folded",
+      "int1": "folded"
+     }
+    },
+    {
+     "id": "p2",
+     "header": "a2",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 4000,
+     "label": "Worked for 4s",
+     "roles": {
+      "a2": "reply",
+      "res2": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A delegator's turn waits unfolded on its sub-chats",
+   "atRest": false,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "cc1",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "create_chat",
+      "toolId": "tool-cc1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "rc1",
+     "kind": "tool_result",
+     "createdAt": 2100,
+     "toolId": "tool-cc1",
+     "content": "ok"
+    },
+    {
+     "_id": "cc2",
+     "kind": "tool_call",
+     "createdAt": 2200,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "create_chat",
+      "toolId": "tool-cc2",
+      "input": {}
+     }
+    },
+    {
+     "_id": "rc2",
+     "kind": "tool_result",
+     "createdAt": 2300,
+     "toolId": "tool-cc2",
+     "content": "ok"
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "Started two chats."
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 4000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": false,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
+     "roles": {
+      "a1": "folded",
+      "cc1": "kept",
+      "cc2": "kept",
+      "a2": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A delegator's exchange folds around its chat cards and reports",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "cc1",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "create_chat",
+      "toolId": "tool-cc1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "rc1",
+     "kind": "tool_result",
+     "createdAt": 2100,
+     "toolId": "tool-cc1",
+     "content": "ok"
+    },
+    {
+     "_id": "cc2",
+     "kind": "tool_call",
+     "createdAt": 2200,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "create_chat",
+      "toolId": "tool-cc2",
+      "input": {}
+     }
+    },
+    {
+     "_id": "rc2",
+     "kind": "tool_result",
+     "createdAt": 2300,
+     "toolId": "tool-cc2",
+     "content": "ok"
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "Started two chats."
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 4000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    },
+    {
+     "_id": "rp1",
+     "kind": "user_prompt",
+     "createdAt": 60000,
+     "content": "report",
+     "source": {
+      "kind": "report",
+      "chatIds": [
+       "x"
+      ]
+     }
+    },
+    {
+     "_id": "a3",
+     "kind": "assistant_text",
+     "createdAt": 61000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 62000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 62500,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "cc3",
+     "kind": "tool_call",
+     "createdAt": 63000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "send_message",
+      "toolId": "tool-cc3",
+      "input": {}
+     }
+    },
+    {
+     "_id": "rc3",
+     "kind": "tool_result",
+     "createdAt": 63100,
+     "toolId": "tool-cc3",
+     "content": "ok"
+    },
+    {
+     "_id": "res2",
+     "kind": "result",
+     "createdAt": 64000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 3000,
+     "result": ""
+    },
+    {
+     "_id": "rp2",
+     "kind": "user_prompt",
+     "createdAt": 120000,
+     "content": "report",
+     "source": {
+      "kind": "report",
+      "chatIds": [
+       "y"
+      ]
+     }
+    },
+    {
+     "_id": "a4",
+     "kind": "assistant_text",
+     "createdAt": 121000,
+     "text": "All done."
+    },
+    {
+     "_id": "res3",
+     "kind": "result",
+     "createdAt": 122000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 7000,
+     "label": "Worked for 7s",
+     "roles": {
+      "a1": "folded",
+      "cc1": "kept",
+      "cc2": "kept",
+      "a2": "folded",
+      "res1": "folded",
+      "rp1": "kept",
+      "a3": "folded",
+      "c1": "folded",
+      "cc3": "kept",
+      "res2": "folded",
+      "rp2": "kept",
+      "a4": "reply",
+      "res3": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A running turn is not settled; the one before it is",
+   "atRest": false,
+   "entries": [
+    {
+     "_id": "p0",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a0",
+     "kind": "assistant_text",
+     "createdAt": 500,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c0",
+     "kind": "tool_call",
+     "createdAt": 600,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c0",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r0",
+     "kind": "tool_result",
+     "createdAt": 700,
+     "toolId": "tool-c0",
+     "content": "ok"
+    },
+    {
+     "_id": "a00",
+     "kind": "assistant_text",
+     "createdAt": 800,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res0",
+     "kind": "result",
+     "createdAt": 1000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 1000,
+     "result": ""
+    },
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 5000,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 6000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 7000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    }
+   ],
+   "folds": [
+    {
+     "id": "p0",
+     "header": "a0",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 1000,
+     "label": "Worked for 1s",
+     "roles": {
+      "a0": "folded",
+      "c0": "folded",
+      "a00": "reply",
+      "res0": "end"
+     }
+    },
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": false,
+     "folds": false,
+     "outcome": "stopped",
+     "workedMs": null,
+     "label": "Stopped",
+     "roles": {
+      "a1": "reply",
+      "c1": "folded"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A question still waiting on the user holds the turn open",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "ask_user_question",
+      "toolName": "AskUserQuestion",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": false,
+     "folds": false,
+     "outcome": "stopped",
+     "workedMs": null,
+     "label": "Stopped",
+     "roles": {
+      "a1": "reply",
+      "c1": "folded"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A window that cuts a turn folds what it holds, timed by the provider",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "a0",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c0",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c0",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r0",
+     "kind": "tool_result",
+     "createdAt": 2500,
+     "toolId": "tool-c0",
+     "content": "ok"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res0",
+     "kind": "result",
+     "createdAt": 4000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 9000,
+     "result": ""
+    },
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 10000,
+     "content": "do it"
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 11000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 12000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "partial:a0",
+     "header": "a0",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 9000,
+     "label": "Worked for 9s",
+     "roles": {
+      "a0": "folded",
+      "c0": "folded",
+      "a1": "reply",
+      "res0": "end"
+     }
+    },
+    {
+     "id": "p1",
+     "header": "a2",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
+     "roles": {
+      "a2": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A window that cuts a turn with no reported duration says Show work",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "a0",
+     "kind": "assistant_text",
+     "createdAt": 1000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c0",
+     "kind": "tool_call",
+     "createdAt": 2000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c0",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r0",
+     "kind": "tool_result",
+     "createdAt": 2500,
+     "toolId": "tool-c0",
+     "content": "ok"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res0",
+     "kind": "result",
+     "createdAt": 4000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 0,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "partial:a0",
+     "header": "a0",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": null,
+     "label": "Show work",
+     "roles": {
+      "a0": "folded",
+      "c0": "folded",
+      "a1": "reply",
+      "res0": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Hidden prompts carry the exchange on; a schedule opens a new one",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 100,
+     "text": "\u2026"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 200,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 300,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 400,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 1000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 1000,
+     "result": ""
+    },
+    {
+     "_id": "ph",
+     "kind": "user_prompt",
+     "createdAt": 5000,
+     "content": "do it",
+     "hidden": true
+    },
+    {
+     "_id": "a3",
+     "kind": "assistant_text",
+     "createdAt": 5100,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res2",
+     "kind": "result",
+     "createdAt": 5500,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 500,
+     "result": ""
+    },
+    {
+     "_id": "ps",
+     "kind": "user_prompt",
+     "createdAt": 9000,
+     "content": "do it",
+     "source": {
+      "kind": "schedule",
+      "scheduleId": "s"
+     }
+    },
+    {
+     "_id": "a4",
+     "kind": "assistant_text",
+     "createdAt": 9100,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res3",
+     "kind": "result",
+     "createdAt": 9500,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 500,
+     "result": ""
+    },
+    {
+     "_id": "pa",
+     "kind": "user_prompt",
+     "createdAt": 20000,
+     "content": "do it",
+     "source": {
+      "kind": "agent",
+      "chatId": "c"
+     }
+    },
+    {
+     "_id": "c2",
+     "kind": "tool_call",
+     "createdAt": 20100,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c2",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r2",
+     "kind": "tool_result",
+     "createdAt": 20200,
+     "toolId": "tool-c2",
+     "content": "ok"
+    },
+    {
+     "_id": "a5",
+     "kind": "assistant_text",
+     "createdAt": 20300,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res4",
+     "kind": "result",
+     "createdAt": 21000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 1000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 1500,
+     "label": "Worked for 1s",
+     "roles": {
+      "a1": "folded",
+      "c1": "folded",
+      "a2": "folded",
+      "res1": "folded",
+      "ph": "folded",
+      "a3": "reply",
+      "res2": "end"
+     }
+    },
+    {
+     "id": "ps",
+     "header": "a4",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 500,
+     "label": "Worked for <1s",
+     "roles": {
+      "a4": "reply",
+      "res3": "end"
+     }
+    },
+    {
+     "id": "pa",
+     "header": "c2",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 1000,
+     "label": "Worked for 1s",
+     "roles": {
+      "c2": "folded",
+      "a5": "reply",
+      "res4": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "A subagent's own rows are not the turn's",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "subagent_task",
+      "toolName": "Agent",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "x1",
+     "kind": "assistant_text",
+     "createdAt": 1100,
+     "text": "\u2026",
+     "parentToolUseId": "tool-c1"
+    },
+    {
+     "_id": "x2",
+     "kind": "tool_call",
+     "createdAt": 1200,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-x2",
+      "input": {}
+     },
+     "parentToolUseId": "tool-c1"
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 5000,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 6000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 7000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 7000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 7000,
+     "label": "Worked for 7s",
+     "roles": {
+      "c1": "folded",
+      "a1": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  },
+  {
+   "name": "Hours read with minutes and seconds",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 2000,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 3000,
+     "text": "\u2026"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 4000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 23012000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 23012000,
+     "label": "Worked for 6h 23m 32s",
+     "roles": {
+      "c1": "folded",
+      "a1": "reply",
+      "res1": "end"
+     }
+    }
+   ]
+  }
+ ]
+}

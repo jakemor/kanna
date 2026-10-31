@@ -66,3 +66,9 @@ export const LEGACY_SETUP_COMPLETED_STORAGE_KEY = "kanna:setup-completed"
 
 /** localStorage (legacy): the setup wizard was dismissed ("Set up later"). */
 export const LEGACY_SETUP_DISMISSED_STORAGE_KEY = "kanna:setup-dismissed"
+
+/**
+ * localStorage: the turn folds opened or closed by hand in this browser, by
+ * chat and fold, with when. See lib/turn-fold-state.ts.
+ */
+export const TURN_FOLDS_STORAGE_KEY = "kanna:turn-folds"

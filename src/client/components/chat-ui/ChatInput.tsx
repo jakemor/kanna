@@ -1434,7 +1434,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   return (
     <div>
-      <div className={cn("px-3 pt-0 pb-3", isStandalone && "px-5 pb-5")}>
+      {/* The safe area is the page's own padding (ChatPage), so this is only
+          the gap above it; the transcript measures the composer, padding and
+          all, to keep the last message clear. */}
+      <div className={cn("px-3 pt-0 pb-6", isStandalone && "px-5 pb-8")}>
         <div className="relative max-w-[840px] mx-auto rounded-[32px]">
           {skillMenuOpen ? (
             <div

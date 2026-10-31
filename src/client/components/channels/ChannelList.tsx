@@ -11,7 +11,6 @@ import { useChatHasDraft, useDraftStartTimes } from "../../stores/chatInputStore
 import { usePendingSendTimes } from "../../stores/pendingSendStore"
 import { useSectionOverrides } from "../../stores/sidebarSectionStore"
 import { renderChatStatusDot, ThreadRowContent } from "../chat-ui/ThreadRowContent"
-import { DiffFileStat } from "../chat-ui/git/shared"
 import { ProjectSectionMenu } from "../chat-ui/sidebar/Menus"
 import { SectionHeader } from "../chat-ui/sidebar/ThreadSections"
 import { LIST_HOVER_CARD_ROOM_BELOW, ListHoverCard } from "../ui/list-hover-card"
@@ -221,65 +220,24 @@ interface ChannelRowProps {
   onSelect: (projectId: string) => void
 }
 
-/**
- * The right end of a channel row: its uncommitted changes, then its count of
- * chats that want you.
- *
- * The changes show only while the row is hovered, focused from the keyboard,
- * has its menu up, or is the open channel: on every row at once they were too
- * much. Laid over the end of the name rather than beside it, so appearing
- * moves nothing and a hidden stat takes no room from the name. They sit just
- * left of the badge, or at the right edge without one, on a fade into the
- * row's own hover background so the name runs out under them. Hover is gated
- * to pointers that hover, so a tap on a touch screen doesn't flash it.
- */
-export function ChannelRowTrailing({ gitState, attentionCount, active = false }: {
-  gitState: SidebarProjectGroup["gitState"]
-  attentionCount: number
-  /** The open channel: its changes stay shown. */
-  active?: boolean
-}) {
-  // Tracked changes only, so a tree with nothing but untracked files shows
-  // nothing, nor one whose counts are zero or unknown.
-  const showChanges = Boolean(gitState?.dirty && ((gitState.additions ?? 0) > 0 || (gitState.deletions ?? 0) > 0))
-  if (!showChanges && attentionCount === 0) return null
+/** The right end of a channel row: its count of chats that want you. */
+export function ChannelRowTrailing({ attentionCount }: { attentionCount: number }) {
+  if (attentionCount === 0) return null
+  // Neutral: the mark on the left carries the colour. A tint of the text
+  // colour rather than `bg-muted`, which is the selected row's own
+  // background and would hide the badge there.
   return (
-    // Zero wide without a badge, so the changes' right edge is the row's.
-    <span className="relative flex shrink-0 items-center">
-      {showChanges ? (
-        <span
-          data-channel-changes
-          className={cn(
-            "pointer-events-none absolute right-full top-1/2 flex -translate-y-1/2 items-center pl-4",
-            "bg-[linear-gradient(to_right,transparent,var(--color-muted)_12px)]",
-            attentionCount > 0 && "pr-2",
-            active
-              ? "opacity-100"
-              : "opacity-0 transition-opacity duration-150 ease-out motion-reduce:transition-none [@media(hover:hover)]:group-hover/channel:opacity-100 group-focus-visible/channel:opacity-100 group-data-[hover-card-open]/channel:opacity-100",
-          )}
-        >
-          {/* Normal weight even on an unread row: it is a count, not the name. */}
-          <DiffFileStat additions={gitState?.additions} deletions={gitState?.deletions} className="font-normal tabular-nums" />
-        </span>
-      ) : null}
-      {/* Neutral: the mark on the left carries the colour. A tint of the
-          text colour rather than `bg-muted`, which is the selected row's
-          own background and would hide the badge there. */}
-      {attentionCount > 0 ? (
-        <span
-          data-channel-badge
-          className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-foreground/10 px-1 text-[11px] font-bold leading-none text-foreground"
-        >
-          {attentionCount}
-        </span>
-      ) : null}
+    <span
+      data-channel-badge
+      className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-foreground/10 px-1 text-[11px] font-bold leading-none text-foreground"
+    >
+      {attentionCount}
     </span>
   )
 }
 
 /**
- * A project as a channel: its mark, its name, its uncommitted changes as
- * `+added −deleted` on hover (`ChannelRowTrailing`), and a count of the chats
+ * A project as a channel: its mark, its name, and a count of the chats
  * that want you (unread, or waiting on an answer). The mark is the project's icon
  * while every chat in it is idle and read, and otherwise the status glyph of
  * its most pressing chat, in the icon's slot so the name never shifts. Bold
@@ -349,7 +307,7 @@ const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned,
               {statusMark ?? <ProjectIcon name={group.title} iconUrl={group.iconUrl} />}
             </span>
             <span className="min-w-0 flex-1 truncate">{group.title}</span>
-            <ChannelRowTrailing gitState={group.gitState} attentionCount={attentionCount} active={active} />
+            <ChannelRowTrailing attentionCount={attentionCount} />
           </span>
         </button>
     </ProjectSectionMenu>

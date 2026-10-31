@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, parseStatusBranchHeader, probeWorkingTree, resolveWorkingTreeLocation, sumDiffStats } from "./diff-store"
+import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, parseStatusBranchHeader, probeWorkingTree, resolveWorkingTreeLocation } from "./diff-store"
 import { KANNA_COMMIT_FOOTER, KANNA_COMMIT_TRAILER } from "./attribution"
 
 async function run(command: string[], cwd: string) {
@@ -1293,20 +1293,14 @@ describe("probeWorkingTree", () => {
   test("reports a clean tree as not dirty", async () => {
     const repoRoot = await createCommittedRepo()
 
-    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: false, trackedDirty: false, paths: [], branch: { upstream: null, ahead: 0 }, lineCounts: { additions: 0, deletions: 0 } })
+    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: false, trackedDirty: false, paths: [], branch: { upstream: null, ahead: 0 } })
   })
 
   test("reports a modified file's path", async () => {
     const repoRoot = await createCommittedRepo()
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
 
-    expect(await probeWorkingTree(repoRoot)).toEqual({
-      dirty: true,
-      trackedDirty: true,
-      paths: ["app.txt"],
-      branch: { upstream: null, ahead: 0 },
-      lineCounts: { additions: 1, deletions: 1 },
-    })
+    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: true, trackedDirty: true, paths: ["app.txt"], branch: { upstream: null, ahead: 0 } })
   })
 
   test("reports untracked files too", async () => {
@@ -1316,9 +1310,8 @@ describe("probeWorkingTree", () => {
     const scan = await probeWorkingTree(repoRoot)
 
     expect(scan.paths).toEqual(["scratch.txt"])
-    // Dirty, but not with anything git tracks, so nothing to count either.
+    // Dirty, but not with anything git tracks.
     expect(scan.trackedDirty).toBe(false)
-    expect(scan.lineCounts).toEqual({ additions: 0, deletions: 0 })
   })
 
   test("reports every dirty path, regardless of age", async () => {
@@ -1341,13 +1334,7 @@ describe("probeWorkingTree", () => {
 
     // The old version stat'ed each dirty file and so dropped deletions
     // entirely; a chat that deleted a file had changed it all the same.
-    expect(await probeWorkingTree(repoRoot)).toEqual({
-      dirty: true,
-      trackedDirty: true,
-      paths: ["app.txt"],
-      branch: { upstream: null, ahead: 0 },
-      lineCounts: { additions: 0, deletions: 1 },
-    })
+    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: true, trackedDirty: true, paths: ["app.txt"], branch: { upstream: null, ahead: 0 } })
   })
 
   test("reports both sides of a rename", async () => {
@@ -1376,33 +1363,11 @@ describe("probeWorkingTree", () => {
     expect(scan).toMatchObject({ dirty: false, paths: [] })
   })
 
-  test("sums the lines changed in tracked files, staged or not, leaving untracked files out", async () => {
-    const repoRoot = await createCommittedRepo()
-    await writeFile(path.join(repoRoot, "app.txt"), "one\ntwo\nthree\n", "utf8")
-    await writeFile(path.join(repoRoot, "staged.txt"), "a\nb\n", "utf8")
-    await run(["git", "add", "staged.txt"], repoRoot)
-    await writeFile(path.join(repoRoot, "scratch.txt"), "x\ny\nz\nw\n", "utf8")
-
-    // app.txt: +3 -1. staged.txt: +2. scratch.txt: untracked, not counted.
-    expect((await probeWorkingTree(repoRoot)).lineCounts).toEqual({ additions: 5, deletions: 1 })
-  })
-
   test("reports not dirty outside a repo instead of throwing", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "kanna-probe-no-repo-"))
     tempDirs.push(root)
 
     expect(await probeWorkingTree(root)).toEqual({ dirty: false, paths: [] })
-  })
-})
-
-describe("sumDiffStats", () => {
-  test("adds every file's lines, and none for a binary file", () => {
-    expect(sumDiffStats(new Map([
-      ["a.ts", { additions: 30, deletions: 2 }],
-      ["b.ts", { additions: 6, deletions: 36 }],
-      ["logo.png", { additions: 0, deletions: 0, binary: true }],
-    ]))).toEqual({ additions: 36, deletions: 38 })
-    expect(sumDiffStats(new Map())).toEqual({ additions: 0, deletions: 0 })
   })
 })
 

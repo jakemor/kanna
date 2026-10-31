@@ -105,7 +105,7 @@ describe("WorktreeProbe", () => {
 
     expect(probe.getStates().get("project-1")).toBeUndefined()
     await probe.refreshForChat("chat-1")
-    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, additions: 0, deletions: 0, paths: new Set(), headBlobs: new Map() })
+    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, paths: new Set(), headBlobs: new Map() })
 
     await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
     await probe.refreshForChat("chat-1")
@@ -167,7 +167,7 @@ describe("WorktreeProbe", () => {
     await run(["git", "commit", "-am", "external"], repoRoot)
     await tick(probe)
 
-    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, additions: 0, deletions: 0, paths: new Set(), headBlobs: new Map() })
+    expect(probe.getStates().get("project-1")).toEqual({ dirty: false, trackedDirty: false, ahead: 0, paths: new Set(), headBlobs: new Map() })
   })
 
   test("the tick probes projects whose chats never finished a turn", async () => {
@@ -180,30 +180,6 @@ describe("WorktreeProbe", () => {
 
     // No chat there can dot, but the channel's place in Relevant reads the repo.
     expect(probe.getStates().get("project-1")?.trackedDirty).toBe(true)
-  })
-
-  test("notifies when the line counts move, and only then", async () => {
-    const repoRoot = await createRepo()
-    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
-    let changes = 0
-    const probe = new WorktreeProbe(() => state, () => {
-      changes += 1
-    })
-
-    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
-    await probe.refreshForChat("chat-1")
-    expect(probe.getStates().get("project-1")).toMatchObject({ additions: 1, deletions: 1 })
-    changes = 0
-
-    // Same paths, same counts: nothing for the sidebar to push.
-    await probe.refreshForChat("chat-1")
-    expect(changes).toBe(0)
-
-    // Same dirty path, more lines in it: the counts alone are a change.
-    await writeFile(path.join(repoRoot, "app.txt"), "changed\nmore\n", "utf8")
-    await probe.refreshForChat("chat-1")
-    expect(probe.getStates().get("project-1")).toMatchObject({ additions: 2, deletions: 1 })
-    expect(changes).toBe(1)
   })
 
   test("tells tracked changes from untracked files", async () => {

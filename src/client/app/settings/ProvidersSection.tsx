@@ -272,8 +272,6 @@ export function ProvidersSection({
               onModelOptionChange={(change) => {
                 if (change.type === "claudeReasoningEffort") {
                   handleProviderDefaultModelOptionsChange("claude", { reasoningEffort: change.effort })
-                } else if (change.type === "contextWindow") {
-                  handleProviderDefaultModelOptionsChange("claude", { contextWindow: change.contextWindow })
                 } else if (change.type === "fastMode") {
                   handleProviderDefaultModelOptionsChange("claude", { fastMode: change.fastMode })
                 }

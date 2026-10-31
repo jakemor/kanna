@@ -1,4 +1,4 @@
-import { BookText, Command, FlaskConical, Gauge, LaptopMinimal, MessageSquareQuote, ScrollText, Settings2, type LucideIcon } from "lucide-react"
+import { BookText, Command, FlaskConical, Gauge, KeyRound, LaptopMinimal, MessageSquareQuote, ScrollText, Settings2, type LucideIcon } from "lucide-react"
 import { macSetupAvailable } from "../../lib/macApp"
 
 /**
@@ -35,6 +35,12 @@ export const SETTINGS_SECTIONS = [
     label: "Skills",
     icon: BookText as LucideIcon,
     subtitle: "Global agent skills from the active skill lock file.",
+  },
+  {
+    id: "secrets",
+    label: "Secrets",
+    icon: KeyRound as LucideIcon,
+    subtitle: "API keys and tokens agents asked you for, by project. Kept in this machine's keychain; agents never see the values.",
   },
   {
     id: "keybindings",
@@ -148,10 +154,22 @@ export const SETTINGS_ROWS = defineRows({
     description: "Show a system notification when a chat starts waiting on you or turns unread.",
     keywords: ["notifications", "browser", "desktop", "system", "popup", "permission", "chat notifications"],
   },
+  delegatorMode: {
+    sectionId: "general",
+    title: "Delegator Mode",
+    description: "New chats hand their work to sub-chats and report back. Only affects chats created from now on; each chat's menu can still switch it.",
+    keywords: ["delegator", "delegate", "delegation", "sub-chats", "subchats", "hand off", "orchestrate", "coordinate", "work directly"],
+  },
+  disablePreconfiguredMcp: {
+    sectionId: "general",
+    title: "Disable Pre-configured MCP Servers",
+    description: "Claude and Codex start without the MCP servers you set up outside Kanna: config files, plugins, claude.ai connectors and Codex apps. Kanna's own tools stay available. Applies to new turns. Cursor and Grok always load theirs.",
+    keywords: ["mcp", "mcp servers", "connectors", "claude.ai", "plugins", "tools", "strict", "mcp.json", "config.toml", "codex", "claude"],
+  },
   submitWhileRunning: {
     sectionId: "general",
     title: "Enter While Running",
-    description: "What Enter does while an agent is working. ⌘Enter always does the other one.",
+    description: "What Enter does while an agent is working. ⌘Enter always does the other one. With nothing typed, ⌘Enter sends the oldest queued message now.",
     keywords: ["queue", "steer", "interrupt", "enter", "send", "composer"],
   },
   widgetsVisibility: {
@@ -281,6 +299,14 @@ export const SETTINGS_ROWS = defineRows({
     title: "Full Disk Access",
     description: "Lets agents work on projects anywhere in your home folder without macOS asking about each protected folder.",
     keywords: ["privacy", "permission", "tcc", "desktop", "documents", "downloads", "icloud"],
+  },
+
+  // Secrets
+  savedSecrets: {
+    sectionId: "secrets",
+    title: "Saved Secrets",
+    description: "Replace or delete the API keys and tokens agents asked for, by project.",
+    keywords: ["secrets", "api key", "token", "password", "credentials", "keychain", "request_secrets", "env", "environment"],
   },
 
   // Labs

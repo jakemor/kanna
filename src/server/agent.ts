@@ -20,7 +20,6 @@ import type {
   ContextWindowUsageSnapshot,
   HarnessSkill,
   ModelOptions,
-  NormalizedToolCall,
   PendingToolSnapshot,
   KannaStatus,
   QueuedChatMessage,
@@ -31,9 +30,12 @@ import type {
 } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
+import type { RequestSecretsToolResult } from "../shared/secrets"
 import { AsyncQueue } from "./async-queue"
 import { resolveClaudeExecutable } from "./claude-executable"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
+import type { KannaToolGateway } from "./kanna-tool-gateway"
+import { SecretsService } from "./secrets"
 import type { ChatOrchestrator } from "./orchestrator"
 import { createClaudeKannaTools } from "./kanna-tool-adapters"
 import { EventStore } from "./event-store"
@@ -79,7 +81,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
-import { resolveClaudeApiModelId } from "../shared/types"
+import { providerHasKannaTools, resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
 import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
@@ -95,6 +97,11 @@ import {
   type SubagentActivityUpdate,
   type TaskStart,
 } from "./background-tasks"
+import {
+  CLAUDE_SCHEDULED_JOB_TOOLS,
+  ClaudeScheduledJobs,
+  type ClaudeScheduledJobReport,
+} from "./claude-scheduled-jobs"
 
 export type { SubagentActivityUpdate } from "./background-tasks"
 
@@ -163,12 +170,42 @@ export function claudeSystemPrompt(model: string, delegator: boolean | undefined
   }
 }
 
+/**
+ * The launch options that decide which MCP servers a Claude session loads.
+ * With pre-configured servers off, `strictMcpConfig` (`--strict-mcp-config`)
+ * drops the ones in `~/.claude.json`, `.mcp.json`, plugins and agent
+ * frontmatter, and keeps only the SDK `mcpServers` Kanna passes, so its own
+ * tools stay. claude.ai connectors are fetched apart from that config: the
+ * CLI skips them for the `disableClaudeAiConnectors` setting or for
+ * `ENABLE_CLAUDEAI_MCP_SERVERS=false`, and both are set.
+ */
+export function claudeLaunchOptions(args: {
+  serviceTier?: "fast"
+  disablePreconfiguredMcp?: boolean
+  env: NodeJS.ProcessEnv
+}): { settings: Record<string, boolean>; env: NodeJS.ProcessEnv; strictMcpConfig?: boolean } {
+  const { CLAUDECODE: _, ...env } = args.env
+  // fastMode must go through the flag-settings layer: the CLI only allows
+  // fast mode in Agent SDK sessions when flagSettings.fastMode is true,
+  // and an explicit false keeps a user-level settings.json from silently
+  // enabling it while the UI shows "Standard".
+  const settings = { enableWorkflows: true, fastMode: args.serviceTier === "fast" }
+  if (!args.disablePreconfiguredMcp) return { settings, env }
+  return {
+    settings: { ...settings, disableClaudeAiConnectors: true },
+    env: { ...env, ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+    strictMcpConfig: true,
+  }
+}
+
 interface PendingToolRequest {
   toolUseId: string
-  tool: NormalizedToolCall & { toolKind: "ask_user_question" | "exit_plan_mode" }
+  tool: HarnessToolRequest["tool"]
   resolve: (result: unknown) => void
   resultOwner?: "tool"
   validateResult?: (result: unknown) => void
+  /** A `secrets.submit` is storing values for it; a second one waits its turn by being refused. */
+  submitting?: boolean
 }
 
 function normalizePreviewText(text: string) {
@@ -185,6 +222,11 @@ function getToolRequestPreview(tool: PendingToolRequest["tool"]) {
       .map((question) => normalizePreviewText(question.question))
       .filter(Boolean)
     if (questions.length > 0) return questions.join(" ")
+  }
+
+  if (tool.toolKind === "request_secrets") {
+    const reason = normalizePreviewText(tool.input.reason)
+    if (reason) return reason
   }
 
   if (tool.toolKind === "exit_plan_mode") {
@@ -261,7 +303,15 @@ interface ClaudeSessionState {
   autoPlan: boolean
   /** Baked into the system-prompt append, like `promptAgentId`. */
   delegator: boolean
+  /** Fixed at `query()` time like the toolset: which MCP servers the process loaded. */
+  disablePreconfiguredMcp: boolean
   sessionToken: string | null
+  /** Crons and wakeups the CLI holds in memory for the model. Absent on test doubles. */
+  scheduledJobs?: ClaudeScheduledJobs
+  /** Closed by `closeIdleSession`; its stream's end is not the chat settling. */
+  idleClosed?: boolean
+  /** Called once this session's stream has ended and its cleanup is done. */
+  onStreamEnd?: () => void
   accountInfoLoaded: boolean
   nextPromptSeq: number
   /** Prompts sent and not yet answered, oldest first. */
@@ -286,8 +336,10 @@ interface ClaudeSessionState {
   cancelledPromptSeqs: Set<number>
 }
 
-interface AgentCoordinatorArgs {
+export interface AgentCoordinatorArgs {
   store: EventStore
+  /** Where `request_secrets` answers are stored. Defaults to this machine's keychain under the store's data dir. */
+  secrets?: SecretsService
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
@@ -304,14 +356,28 @@ interface AgentCoordinatorArgs {
     planMode: boolean
     autoPlan: boolean
     delegator?: boolean
+    disablePreconfiguredMcp?: boolean
     sessionToken: string | null
     forkSession: boolean
     resumeSessionAt?: string
     customTools?: KannaToolHost
+    env?: Record<string, string>
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
     onSubagentActivity?: (update: SubagentActivityUpdate) => void
+    onScheduledJob?: (report: ClaudeScheduledJobReport) => void
   }) => Promise<ClaudeSessionHandle>
+  /**
+   * App settings' "Disable pre-configured MCP servers"
+   * (`AppSettingsSnapshot.disablePreconfiguredMcp`). Read when a turn starts,
+   * so a running turn keeps the servers it started with. Off when absent.
+   */
+  disablePreconfiguredMcp?: () => boolean
+  /**
+   * Serves each chat's Kanna tools to `kanna <tool>` in its agent's shell.
+   * Without it (tests), harnesses get no tool credential in their environment.
+   */
+  toolGateway?: KannaToolGateway
   /**
    * Probe whether a provider's native session artifact still exists on disk.
    * Injectable so tests can force a "missing" session without touching the
@@ -334,6 +400,27 @@ function tracksSubagentsFromTranscript(provider: AgentProvider) {
 
 function isClaudeSteerLoggingEnabled() {
   return process.env.KANNA_LOG_CLAUDE_STEER === "1"
+}
+
+/** How long a new turn waits for an idle-closed `claude` to exit before resuming anyway. */
+const IDLE_CLOSE_WAIT_MS = 5_000
+/** How long a settled chat's agent process stays up with nothing to do: T3 Code's value, for parity. */
+export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
+/**
+ * How long background work (a shell, a subagent) may hold an idle process
+ * with nothing heard from the provider. Work that keeps reporting is never cut
+ * off, but a shell that hangs would otherwise keep a few hundred MB alive for
+ * good. T3 Code's value. Scheduled jobs are exempt: the model asked to be
+ * woken then, however far off it is.
+ */
+export const MAX_IDLE_BACKGROUND_WAIT_MS = 4 * 60 * 60_000
+/** Longest single wait on a scheduled job, well under setTimeout's 24.8-day ceiling. */
+const MAX_SCHEDULED_JOB_WAIT_MS = 24 * 60 * 60_000
+
+function logIdleClose(stage: "closed" | "skipped" | "deferred" | "wait-expired", details: Record<string, unknown>) {
+  const line = `[kanna/idle-close] ${JSON.stringify({ stage, ...details })}`
+  if (stage === "wait-expired") console.warn(line)
+  else console.log(line)
 }
 
 function logClaudeSteer(stage: string, details?: Record<string, unknown>) {
@@ -374,6 +461,8 @@ interface StartTurnArgs {
   steered?: boolean
   /** Who sent the prompt, when not the user. Stamped on the transcript entry. */
   source?: MessageSource
+  /** When a queued message was sent. Absent for one that starts as it is sent. */
+  sentAt?: number
 }
 
 interface SendMessageOptions {
@@ -484,7 +573,7 @@ export function formatQuestionAnswersFollowUp(questions: AskUserQuestionItem[], 
 }
 
 function discardedToolResult(
-  tool: NormalizedToolCall & { toolKind: "ask_user_question" | "exit_plan_mode" }
+  tool: HarnessToolRequest["tool"]
 ) {
   if (tool.toolKind === "ask_user_question") {
     return {
@@ -880,10 +969,16 @@ async function* createClaudeHarnessStream(
  * the same id, with its tool call. The hook also fires for every agent a
  * workflow runs, which belong on the workflow's card, not as rows of their own.
  *
+ * The same two report the model's scheduled jobs (claude-scheduled-jobs.ts):
+ * `PostToolUse`, which fires only for a call that succeeded, for each
+ * `CronCreate` / `CronDelete` / `ScheduleWakeup`, and `Stop`'s
+ * `session_crons`, the CLI's own list of them.
+ *
  * Every hook returns `{}`: these observe, they never block or steer the model.
  */
-function subagentHooks(
-  onActivity: (update: SubagentActivityUpdate) => void
+export function subagentHooks(
+  onActivity: (update: SubagentActivityUpdate) => void,
+  onScheduledJob?: (report: ClaudeScheduledJobReport) => void
 ): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   const one = (hook: HookCallback): HookCallbackMatcher[] => [{ hooks: [hook] }]
 
@@ -907,8 +1002,31 @@ function subagentHooks(
     Stop: one(async (input) => {
       if (input.hook_event_name !== "Stop") return {}
       sweep(input)
+      // Absent from CLIs older than the field: keep what PostToolUse gave.
+      if (Array.isArray(input.session_crons)) {
+        onScheduledJob?.({
+          kind: "sessionCrons",
+          crons: input.session_crons.map((cron) => ({ id: cron.id, schedule: cron.schedule, recurring: cron.recurring })),
+        })
+      }
       return {}
     }),
+    ...(onScheduledJob ? {
+      PostToolUse: [{
+        matcher: `^(${CLAUDE_SCHEDULED_JOB_TOOLS.join("|")})$`,
+        hooks: [async (input) => {
+          if (input.hook_event_name !== "PostToolUse") return {}
+          onScheduledJob({
+            kind: "toolSucceeded",
+            toolName: input.tool_name,
+            toolUseId: input.tool_use_id,
+            input: input.tool_input,
+            response: input.tool_response,
+          })
+          return {}
+        }],
+      }],
+    } : {}),
   }
 }
 
@@ -921,6 +1039,8 @@ async function startClaudeSession(args: {
   autoPlan: boolean
   /** The chat is a delegator, which its system prompt says. See `ChatRecord.delegator`. */
   delegator?: boolean
+  /** Load only Kanna's MCP server (`AppSettingsSnapshot.disablePreconfiguredMcp`). */
+  disablePreconfiguredMcp?: boolean
   sessionToken: string | null
   forkSession: boolean
   /**
@@ -930,6 +1050,8 @@ async function startClaudeSession(args: {
    */
   resumeSessionAt?: string
   customTools?: KannaToolHost
+  /** Added to the CLI's environment, for its shell: the chat's `kanna <tool>` credential (kanna-tool-gateway.ts). */
+  env?: Record<string, string>
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
   /**
@@ -938,6 +1060,8 @@ async function startClaudeSession(args: {
    * (background-tasks.ts) and SDK hooks (`subagentHooks`).
    */
   onSubagentActivity?: (update: SubagentActivityUpdate) => void
+  /** A cron or wakeup made or removed, or the CLI's list of them at a Stop. */
+  onScheduledJob?: (report: ClaudeScheduledJobReport) => void
 }): Promise<ClaudeSessionHandle> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
@@ -1015,7 +1139,7 @@ async function startClaudeSession(args: {
         mcpServers: { kanna: createClaudeKannaTools(args.customTools) },
       } : {}),
       tools: claudeToolset(args.autoPlan),
-      ...(args.onSubagentActivity ? { hooks: subagentHooks(args.onSubagentActivity) } : {}),
+      ...(args.onSubagentActivity ? { hooks: subagentHooks(args.onSubagentActivity, args.onScheduledJob) } : {}),
       // By default the SDK forwards only a subagent's tool calls. Its text
       // (what it is doing, and its final report) completes the nested view
       // under the Agent row; the normalizer stamps it with parent_tool_use_id
@@ -1023,13 +1147,12 @@ async function startClaudeSession(args: {
       forwardSubagentText: true,
       settingSources: ["user", "project", "local"],
       systemPrompt: claudeSystemPrompt(args.model, args.delegator),
-      // fastMode must go through the flag-settings layer: the CLI only allows
-      // fast mode in Agent SDK sessions when flagSettings.fastMode is true,
-      // and an explicit false keeps a user-level settings.json from silently
-      // enabling it while the UI shows "Standard".
-      settings: { enableWorkflows: true, fastMode: args.serviceTier === "fast" },
+      ...claudeLaunchOptions({
+        serviceTier: args.serviceTier,
+        disablePreconfiguredMcp: args.disablePreconfiguredMcp,
+        env: { ...process.env, ...args.env },
+      }),
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
   })
 
@@ -1124,6 +1247,9 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
+  private readonly disablePreconfiguredMcp: () => boolean
+  private readonly toolGateway: KannaToolGateway | null
+  private secretsService: SecretsService | null
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
@@ -1158,6 +1284,19 @@ export class AgentCoordinator {
    * those, and a chat read as idle inside one would be reported finished.
    */
   private readonly startingTurns = new Map<string, number>()
+  /** Per chat: the timer that closes its agent process once it has sat idle. */
+  private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * Per chat: an idle close whose Claude stream has not ended yet. A turn that
+   * arrives meanwhile waits on it, so the resumed process never overlaps the
+   * one that is exiting.
+   */
+  private readonly idleClosing = new Map<string, Promise<void>>()
+  /**
+   * Per chat: when an idle check first found background work holding the
+   * process, with nothing heard from the provider since (T3's `pinnedSinceMs`).
+   */
+  private readonly idleWaitingSince = new Map<string, number>()
   private shuttingDown = false
   /**
    * Chats, schedules and the links between them. Set after construction,
@@ -1180,6 +1319,7 @@ export class AgentCoordinator {
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     // Optional: test stand-ins for the manager predate it.
     this.codexManager.setTaskActivityListener?.((chatId, update) => this.applySubagentActivity(chatId, update))
+    this.codexManager.setProviderActivityListener?.((chatId) => this.touchIdleClose(chatId))
     this.cursorManager = args.cursorManager ?? new CursorCliManager()
     this.grokManager = args.grokManager ?? new GrokCliManager()
     this.piManager = args.piManager ?? new PiAgentManager()
@@ -1187,6 +1327,15 @@ export class AgentCoordinator {
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
+    this.disablePreconfiguredMcp = args.disablePreconfiguredMcp ?? (() => false)
+    this.toolGateway = args.toolGateway ?? null
+    this.secretsService = args.secrets ?? null
+  }
+
+  /** Made on first use, so a coordinator that never sees a secret never touches a keychain. */
+  get secrets(): SecretsService {
+    this.secretsService ??= new SecretsService({ dataDir: this.store.dataDir })
+    return this.secretsService
   }
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
@@ -1267,6 +1416,8 @@ export class AgentCoordinator {
   }
 
   dispose() {
+    for (const timer of this.idleCloseTimers.values()) clearTimeout(timer)
+    this.idleCloseTimers.clear()
     for (const session of this.claudeSessions.values()) session.session.close()
     this.claudeSessions.clear()
     for (const stream of this.drainingStreams.values()) stream.turn.close()
@@ -1410,6 +1561,8 @@ export class AgentCoordinator {
   }
 
   private markStarting(chatId: string) {
+    this.cancelIdleClose(chatId)
+    this.idleWaitingSince.delete(chatId)
     this.startingTurns.set(chatId, (this.startingTurns.get(chatId) ?? 0) + 1)
   }
 
@@ -1421,7 +1574,175 @@ export class AgentCoordinator {
 
   private notifySettled(chatId: string) {
     if (this.shuttingDown || this.isBusy(chatId)) return
+    this.scheduleIdleClose(chatId)
     this.onChatSettled?.(chatId)
+  }
+
+  // ── Idle sessions ──────────────────────────────────────────────────────
+  //
+  // A chat's agent process (Claude's `claude`, Codex's `codex app-server`)
+  // outlives its turn so the next message skips the startup. Each holds a few
+  // hundred MB, so one left idle is closed after IDLE_SESSION_TIMEOUT_MS. The
+  // next turn resumes it by `sessionToken`, the same way every chat comes
+  // back after Kanna restarts. Cursor and Grok spawn a process per turn and
+  // Pi runs in this process, so they have nothing to close.
+  //
+  // This follows T3 Code's ProviderSessionManager: the timer starts when a
+  // turn ends and restarts on every provider event; when it fires, the
+  // provider is asked whether background work is still running in the
+  // process, and if so the check comes round again after another timeout,
+  // until the provider has been silent for MAX_IDLE_BACKGROUND_WAIT_MS.
+  // Unlike T3, a Claude process holding a scheduled job is never closed for
+  // being idle.
+
+  /** Whether the chat has an agent process this can close. */
+  private hasIdleClosableSession(chatId: string) {
+    return this.claudeSessions.has(chatId) || (this.codexManager.getSessionPids().has(chatId) ?? false)
+  }
+
+  /**
+   * (Re)starts the chat's idle timer. Called whenever the chat settles and on
+   * provider activity after that; a turn starting cancels it.
+   */
+  private scheduleIdleClose(chatId: string, delayMs = IDLE_SESSION_TIMEOUT_MS, then: "check" | "restart" = "check") {
+    this.cancelIdleClose(chatId)
+    if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return
+    const timer = setTimeout(() => {
+      if (this.idleCloseTimers.get(chatId) !== timer) return
+      this.idleCloseTimers.delete(chatId)
+      if (then === "restart") this.scheduleIdleClose(chatId)
+      else void this.closeIdleSession(chatId, "idle")
+    }, delayMs)
+    timer.unref?.()
+    this.idleCloseTimers.set(chatId, timer)
+  }
+
+  private cancelIdleClose(chatId: string) {
+    const timer = this.idleCloseTimers.get(chatId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.idleCloseTimers.delete(chatId)
+  }
+
+  /**
+   * The provider said something about a settled chat: its idle wait starts
+   * over, and so does the time its background work has been silent.
+   */
+  private touchIdleClose(chatId: string) {
+    this.idleWaitingSince.delete(chatId)
+    if (this.idleCloseTimers.has(chatId)) this.scheduleIdleClose(chatId)
+  }
+
+  /** A turn is using the process: running, about to, or still answering a prompt. */
+  private idleCloseBusy(chatId: string): string | null {
+    if (this.isBusy(chatId)) return "turn running"
+    if (this.drainingStreams.has(chatId)) return "stream draining"
+    if (this.claudeSessions.get(chatId)?.pendingPrompts.length) return "prompts pending"
+    return null
+  }
+
+  /**
+   * Work still running in the chat's process, which closing it would kill:
+   * T3's `hasPendingBackgroundWork`, asked of the provider. For Claude that
+   * is the task log the CLI keeps us told of (subagents, workflows, and the
+   * shells and monitors left running); Codex answers from its own manager.
+   */
+  private pendingBackgroundWork(chatId: string): string | null {
+    const claude = this.claudeSessions.get(chatId)
+    if (claude) {
+      for (const activity of this.subagents.get(chatId)?.values() ?? []) {
+        if (activity.status === "running") return `${activity.type} running`
+      }
+      if (this.foregroundTasks.get(chatId)?.size) return "shell running"
+    }
+    if (this.codexManager.getSessionPids().has(chatId) && this.codexManager.hasPendingBackgroundWork?.(chatId)) {
+      return "codex work running"
+    }
+    return null
+  }
+
+  /**
+   * Closes the chat's agent process if nothing needs it.
+   *
+   * `idle` is the timer. A turn still using the process, or a scheduled job
+   * still pending, keeps it for as long as that lasts; background work keeps
+   * it until the provider has been silent for MAX_IDLE_BACKGROUND_WAIT_MS.
+   *
+   * `archived` and `done` close at once, as T3's archive and settle do, even
+   * with background work running; only a turn or a scheduled job stops them,
+   * and they do not retry.
+   */
+  async closeIdleSession(chatId: string, reason: "idle" | "archived" | "done") {
+    this.cancelIdleClose(chatId)
+    if (this.shuttingDown || !this.hasIdleClosableSession(chatId)) return false
+    const busy = this.idleCloseBusy(chatId)
+    if (busy) {
+      // The turn's end restarts the timer; this check is for one that ends
+      // without the chat settling.
+      if (reason === "idle") this.scheduleIdleClose(chatId)
+      else logIdleClose("skipped", { chatId, reason, blocker: busy })
+      return false
+    }
+
+    const now = Date.now()
+    const claude = this.claudeSessions.get(chatId)
+    const jobsHeldUntil = claude?.scheduledJobs?.heldUntil(now) ?? null
+    if (jobsHeldUntil !== null) {
+      if (reason === "idle") {
+        // Checked again when the next job is due to end; once none is left
+        // the idle timeout counts from then.
+        this.scheduleIdleClose(chatId, Math.min(jobsHeldUntil - now, MAX_SCHEDULED_JOB_WAIT_MS), "restart")
+        logIdleClose("deferred", { chatId, blocker: "scheduled job", jobs: claude?.scheduledJobs?.size, checkAt: new Date(Math.min(jobsHeldUntil, now + MAX_SCHEDULED_JOB_WAIT_MS)).toISOString() })
+      } else {
+        logIdleClose("skipped", { chatId, reason, blocker: "scheduled job" })
+      }
+      return false
+    }
+
+    if (reason === "idle") {
+      const work = this.pendingBackgroundWork(chatId)
+      if (work) {
+        const since = this.idleWaitingSince.get(chatId) ?? now
+        if (now - since < MAX_IDLE_BACKGROUND_WAIT_MS) {
+          this.idleWaitingSince.set(chatId, since)
+          this.scheduleIdleClose(chatId)
+          logIdleClose("deferred", { chatId, blocker: work, waitedMs: now - since })
+          return false
+        }
+        logIdleClose("wait-expired", { chatId, blocker: work, waitedMs: now - since })
+      }
+    }
+    this.idleWaitingSince.delete(chatId)
+
+    if (claude) {
+      // Out of the map before close(), so a turn arriving now starts a fresh
+      // session instead of reusing this one; it waits on `idleClosing` first.
+      this.claudeSessions.delete(chatId)
+      claude.idleClosed = true
+      const ended = new Promise<void>((resolve) => {
+        claude.onStreamEnd = resolve
+      })
+      const tracked = ended.finally(() => {
+        if (this.idleClosing.get(chatId) === tracked) this.idleClosing.delete(chatId)
+      })
+      this.idleClosing.set(chatId, tracked)
+      claude.session.close()
+      logIdleClose("closed", { chatId, provider: "claude", reason, sessionToken: claude.sessionToken })
+    }
+    const codexPid = this.codexManager.getSessionPids().get(chatId)
+    if (codexPid !== undefined) {
+      this.codexManager.stopSession(chatId)
+      logIdleClose("closed", { chatId, provider: "codex", reason, pid: codexPid })
+    }
+    this.emitStateChange(chatId)
+    return true
+  }
+
+  /** A turn about to start a Claude session waits out an idle close still exiting. */
+  private async awaitIdleClosing(chatId: string) {
+    const closing = this.idleClosing.get(chatId)
+    if (!closing) return
+    await Promise.race([closing, new Promise<void>((resolve) => setTimeout(resolve, IDLE_CLOSE_WAIT_MS).unref?.())])
   }
 
   /**
@@ -1719,13 +2040,23 @@ export class AgentCoordinator {
     return options.provider ?? currentProvider ?? "claude"
   }
 
-  private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
+  /** `chatId` names the chat whose live session a turn without options carries on. */
+  private getProviderSettings(provider: AgentProvider, options: SendMessageOptions, chatId?: string) {
     const catalog = getServerProviderCatalog(provider)
     if (provider === "claude") {
       const model = normalizeServerModel(provider, options.model)
-      const modelOptions = normalizeClaudeModelOptions(model, options.modelOptions, options.effort)
+      // A turn nobody picked options for (a report, a message from another
+      // chat, a schedule) keeps the live session's effort and fast mode.
+      // Falling back to the defaults instead would restart a session that runs
+      // at another effort, and switch back on the user's next turn.
+      const live = options.modelOptions?.claude || !chatId ? undefined : this.claudeSessions.get(chatId)
+      const modelOptions = normalizeClaudeModelOptions(
+        model,
+        live ? { claude: { fastMode: live.serviceTier === "fast" } } : options.modelOptions,
+        options.effort ?? live?.effort,
+      )
       return {
-        model: resolveClaudeApiModelId(model, modelOptions.contextWindow),
+        model: resolveClaudeApiModelId(model),
         effort: modelOptions.reasoningEffort,
         serviceTier: serviceTierFromModelOptions(modelOptions),
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
@@ -1800,9 +2131,12 @@ export class AgentCoordinator {
 
   private async dequeueAndStartQueuedMessage(chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean }) {
     await this.store.removeQueuedMessage(chatId, queuedMessage.id)
+    // Before the turn starts, as a send from the parent arms it: a stop since
+    // the message was queued may have released the report it was owed.
+    await this.orchestration?.armReportForQueuedMessage(chatId, queuedMessage.source)
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
-    const settings = this.getProviderSettings(provider, queuedMessage)
+    const settings = this.getProviderSettings(provider, queuedMessage, chatId)
     await this.startTurnForChat({
       chatId,
       provider,
@@ -1816,6 +2150,7 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       steered: options?.steered,
       source: queuedMessage.source,
+      sentAt: queuedMessage.createdAt,
     })
   }
 
@@ -2016,6 +2351,13 @@ export class AgentCoordinator {
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
     await this.store.setAutoPlan(args.chatId, args.autoPlan)
+    // Staged settings were for the first message sent after them, which is
+    // this one. A message queued before they were set ran with its own, and
+    // leaves them for the next; a tie counts as before, since one queued
+    // after them was sent with them and leaving them changes nothing.
+    if (chat.nextRun && (args.sentAt === undefined || args.sentAt > chat.nextRun.setAt)) {
+      await this.store.setChatNextRun(args.chatId, null)
+    }
 
     // Lazy: `getMessages` reads the whole payload sidecar (its own docstring
     // says it is "for export, handoff and fork, not for anything that runs per
@@ -2108,14 +2450,18 @@ export class AgentCoordinator {
           },
           requestInput: (request, callSignal) => this.requestToolInput(args.chatId, request, callSignal),
           orchestration: this.orchestration ?? undefined,
+          projectId: project.id,
+          secrets: this.secrets,
         })
         return active.customTools.execute(name, input, signal)
       },
     }
+    // The same tools for `kanna <tool>` in the agent's shell, as this chat.
+    const toolEnv = this.toolGateway?.register(args.chatId, customTools)
 
     // Wire-only injections. The transcript above stores the user's typed text
     // verbatim; anything Kanna adds for the harness is applied here and never
-    // persisted (the `steered` flag on the entry drives the UI affordance).
+    // persisted (the entry records the steer in its `steered` flag instead).
     //
     // Steer: prefix the mid-turn <system-message> block — or suffix it when
     // the message is a slash invocation, since claude/pi only expand a message
@@ -2166,8 +2512,12 @@ export class AgentCoordinator {
     }
 
     // Read at each turn start, so a chat made a delegator mid-way is told on
-    // its next turn. Grok has no chat tools, so it is told nothing of it.
+    // its next turn.
     const delegator = Boolean(this.store.getChat(args.chatId)?.delegator)
+    // Also read here, so the setting reaches the next turn and never a running
+    // one. Only Claude and Codex can be started without the user's servers:
+    // cursor-agent and grok have no launch option for it, and Pi has no MCP.
+    const disablePreconfiguredMcp = this.disablePreconfiguredMcp()
     let turn: HarnessTurn
     if (args.provider === "claude") {
       turn = await this.startClaudeTurn({
@@ -2179,11 +2529,13 @@ export class AgentCoordinator {
         planMode: args.planMode,
         autoPlan: args.autoPlan,
         delegator,
+        disablePreconfiguredMcp,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
         ...(chat.pendingForkSessionToken && chat.pendingForkAt ? { resumeSessionAt: chat.pendingForkAt } : {}),
         onToolRequest,
         customTools,
+        env: toolEnv,
       })
     } else if (args.provider === "cursor") {
       // Refresh the model catalog off the turn's critical path if a previous
@@ -2200,6 +2552,7 @@ export class AgentCoordinator {
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
         customTools,
+        env: toolEnv,
         content: cursorContent,
         model: args.model,
         sessionToken: chat.sessionToken,
@@ -2209,11 +2562,12 @@ export class AgentCoordinator {
       let grokContent = buildPromptText(wireContent, args.attachments)
       grokContent = appendSystemMessageBlock(
         grokContent,
-        // Grok is not handed the Kanna tools, so it is not told about them.
-        buildKannaSystemMessage(buildKannaAgentId("grok", args.model), { tools: false }),
+        // Grok takes no MCP tools, so it reaches Kanna's through its shell.
+        buildKannaSystemMessage(buildKannaAgentId("grok", args.model), toolEnv ? { tools: "cli", delegator } : { tools: false }),
       )
       turn = await this.grokManager.startTurn({
         cwd: project.localPath,
+        env: toolEnv,
         content: grokContent,
         model: args.model,
         effort: args.effort,
@@ -2230,6 +2584,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         cwd: project.localPath,
         customTools,
+        env: toolEnv,
         content: buildPromptText(wireContent, args.attachments),
         model: args.model,
         effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
@@ -2243,11 +2598,13 @@ export class AgentCoordinator {
         chatId: args.chatId,
         cwd: project.localPath,
         customTools,
+        env: toolEnv,
         model: args.model,
         serviceTier: args.serviceTier,
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
         pendingForkAt: chat.pendingForkAt,
+        disablePreconfiguredMcp,
       })
       if (chat.pendingForkSessionToken && started?.sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
@@ -2357,12 +2714,16 @@ export class AgentCoordinator {
     planMode: boolean
     autoPlan: boolean
     delegator: boolean
+    disablePreconfiguredMcp?: boolean
     sessionToken: string | null
     forkSession: boolean
     resumeSessionAt?: string
     customTools?: KannaToolHost
+    env?: Record<string, string>
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }): Promise<HarnessTurn> {
+    this.cancelIdleClose(args.chatId)
+    await this.awaitIdleClosing(args.chatId)
     let session = this.claudeSessions.get(args.chatId)
 
     // autoPlan changes the SDK's `tools` allowlist, which is fixed at query()
@@ -2371,13 +2732,16 @@ export class AgentCoordinator {
     // conversation carries over. The delegator instructions are part of the
     // system prompt, fixed at the same time, so a chat that became a
     // delegator or stopped being one restarts the same way, and the resumed
-    // session hears the new prompt (see claudeSystemPrompt).
+    // session hears the new prompt (see claudeSystemPrompt). The MCP servers
+    // are fixed at launch too (claudeLaunchOptions).
+    const disablePreconfiguredMcp = Boolean(args.disablePreconfiguredMcp)
     if (
       !session
       || session.localPath !== args.localPath
       || session.effort !== args.effort
       || session.autoPlan !== args.autoPlan
       || session.delegator !== args.delegator
+      || session.disablePreconfiguredMcp !== disablePreconfiguredMcp
       || args.forkSession
     ) {
       if (session) {
@@ -2385,6 +2749,7 @@ export class AgentCoordinator {
         this.claudeSessions.delete(args.chatId)
       }
 
+      const scheduledJobs = new ClaudeScheduledJobs()
       const started = await this.startClaudeSessionFn({
         localPath: args.localPath,
         model: args.model,
@@ -2393,13 +2758,20 @@ export class AgentCoordinator {
         planMode: args.planMode,
         autoPlan: args.autoPlan,
         delegator: args.delegator,
+        ...(disablePreconfiguredMcp ? { disablePreconfiguredMcp: true } : {}),
         sessionToken: args.sessionToken,
         forkSession: args.forkSession,
         ...(args.resumeSessionAt ? { resumeSessionAt: args.resumeSessionAt } : {}),
         onToolRequest: args.onToolRequest,
         customTools: args.customTools,
+        ...(args.env ? { env: args.env } : {}),
         onRateLimitEvent: (info) => this.onClaudeRateLimit?.(info),
-        onSubagentActivity: (update) => this.applySubagentActivity(args.chatId, update),
+        onSubagentActivity: (update) => {
+          this.applySubagentActivity(args.chatId, update)
+          this.touchIdleClose(args.chatId)
+        },
+        // This process's own: a restart's replacement starts with none.
+        onScheduledJob: (report) => scheduledJobs.apply(report, Date.now()),
       })
       this.refreshClaudeModelCatalog(started)
 
@@ -2415,7 +2787,9 @@ export class AgentCoordinator {
         planMode: args.planMode,
         autoPlan: args.autoPlan,
         delegator: args.delegator,
+        disablePreconfiguredMcp,
         sessionToken: args.sessionToken,
+        scheduledJobs,
         accountInfoLoaded: false,
         nextPromptSeq: 0,
         pendingPrompts: [],
@@ -2457,17 +2831,9 @@ export class AgentCoordinator {
    * transcript entry.
    */
   async send(command: Extract<ClientCommand, { type: "chat.send" }>, extras?: { source?: MessageSource }) {
-    let chatId = command.chatId
-
-
-    if (!chatId) {
-      if (!command.projectId) {
-        throw new Error("Missing projectId for new chat")
-      }
-      const created = await this.store.createChat(command.projectId, undefined, { delegator: command.delegator })
-      chatId = created.id
-      this.analytics.track("chat_created")
-    }
+    // A send that makes its chat goes through `ChatCommands.send`, which makes it first.
+    const chatId = command.chatId
+    if (!chatId) throw new Error("Missing chatId")
 
     const chat = this.store.requireChat(chatId)
     // Sending a message to an archived chat resurrects it (viewing alone
@@ -2493,7 +2859,13 @@ export class AgentCoordinator {
     }
 
     const provider = this.resolveProvider(command, chat.provider)
-    const settings = this.getProviderSettings(provider, command)
+    // The first send is when a new chat gets its provider. One without the
+    // Kanna tools has nothing to delegate with, so it starts as a normal chat
+    // whatever Delegator mode made it (see `ChatCommands.create`).
+    if (!chat.provider && chat.delegator && !providerHasKannaTools(provider)) {
+      await this.store.setChatDelegator(chatId, false)
+    }
+    const settings = this.getProviderSettings(provider, command, chatId)
     // The count is of messages people send.
     if (!extras?.source) this.analytics.track("message_sent")
     await this.startTurnForChat({
@@ -2766,7 +3138,7 @@ export class AgentCoordinator {
     return true
   }
 
-  async forkChat(chatId: string, lineage?: { parentChatId?: string; createdByChatId?: string }) {
+  async forkChat(chatId: string, lineage?: { parentChatId?: string; createdByChatId?: string }, options?: { hidden?: boolean }) {
     const chat = this.store.requireChat(chatId)
     if (!chat.provider) {
       throw new Error("Chat must have a provider before forking")
@@ -2780,7 +3152,7 @@ export class AgentCoordinator {
     // tool calls whose results have not arrived. Nothing here touches the
     // source's turn — it keeps running.
     const running = this.activeTurns.has(chatId) || this.drainingStreams.has(chatId)
-    const forked = await this.store.forkChat(chatId, { atLastCompletedTurn: running, ...lineage })
+    const forked = await this.store.forkChat(chatId, { atLastCompletedTurn: running, ...lineage, ...options })
     this.analytics.track("chat_created")
     return { chatId: forked.id }
   }
@@ -2828,6 +3200,7 @@ export class AgentCoordinator {
    * normal completion path in runClaudeSession.
    */
   private async resumeBackgroundTurn(session: ClaudeSessionState) {
+    this.cancelIdleClose(session.chatId)
     const active: ActiveTurn = {
       chatId: session.chatId,
       provider: "claude",
@@ -2862,6 +3235,7 @@ export class AgentCoordinator {
     const customToolEvents = new KannaToolEventFilter()
     try {
       for await (const event of session.session.stream) {
+        if (this.claudeSessions.get(session.chatId) === session) this.touchIdleClose(session.chatId)
         if (event.type === "session_token" && event.sessionToken) {
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
@@ -3017,8 +3391,11 @@ export class AgentCoordinator {
         this.foregroundTasks.delete(session.chatId)
       }
       session.session.close()
+      session.onStreamEnd?.()
       this.emitStateChange(session.chatId)
-      this.notifySettled(session.chatId)
+      // An idle close ends a chat that had already settled; telling the
+      // orchestrator again would read as a new turn's end.
+      if (!session.idleClosed) this.notifySettled(session.chatId)
     }
   }
 
@@ -3187,12 +3564,16 @@ export class AgentCoordinator {
     }
   }
 
-  async cancel(chatId: string, options?: { hideInterrupted?: boolean }) {
+  /**
+   * `cascade: false` is "Stop this turn": the sub-chats this chat started go
+   * on, and still report here when they finish. Without it they stop too.
+   */
+  async cancel(chatId: string, options?: { hideInterrupted?: boolean; cascade?: boolean }) {
     // A steer hides its interrupt and replaces the turn, and a shutdown brings
     // it back, so neither is a stop. Fired even when nothing is running here:
     // an idle chat can still have sub-chats to stop.
     const stopped = !options?.hideInterrupted && !this.shuttingDown
-    if (stopped) this.onChatStopped?.(chatId)
+    if (stopped && options?.cascade !== false) this.onChatStopped?.(chatId)
 
     // Also clean up any draining stream for this chat.
     const draining = this.drainingStreams.get(chatId)
@@ -3320,6 +3701,47 @@ export class AgentCoordinator {
     })
   }
 
+  /**
+   * The user's answer to a `request_secrets` form. The values are stored
+   * here and go no further: the waiting tool is handed the names, which are
+   * all the agent and the transcript ever see.
+   */
+  async submitSecrets(command: Extract<ClientCommand, { type: "secrets.submit" }>): Promise<RequestSecretsToolResult> {
+    const active = this.activeTurns.get(command.chatId)
+    const pending = active?.pendingTool
+    if (!active || !pending) throw new Error("No pending tool request")
+    if (pending.toolUseId !== command.toolUseId || pending.tool.toolKind !== "request_secrets") {
+      throw new Error("Tool response does not match active request")
+    }
+    if (pending.submitting) throw new Error("These secrets are already being saved")
+    const chat = this.store.requireChat(command.chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error("Project not found")
+
+    pending.submitting = true
+    let result: RequestSecretsToolResult
+    try {
+      result = await this.secrets.submitRequest({
+        project: { id: project.id, localPath: project.localPath },
+        chatId: command.chatId,
+        fields: pending.tool.input.fields,
+        values: command.values,
+        cancel: command.cancel,
+      })
+    } finally {
+      pending.submitting = false
+    }
+
+    // Stopped while the values were being stored: they are saved, and the
+    // tool has already been told it was cancelled.
+    if (active.pendingTool !== pending) return result
+    active.pendingTool = null
+    active.status = "running"
+    pending.resolve(result)
+    this.emitStateChange(command.chatId)
+    return result
+  }
+
   async respondTool(command: Extract<ClientCommand, { type: "chat.respondTool" }>) {
     const active = this.activeTurns.get(command.chatId)
     if (!active || !active.pendingTool) {
@@ -3329,6 +3751,9 @@ export class AgentCoordinator {
     const pending = active.pendingTool
     if (pending.toolUseId !== command.toolUseId) {
       throw new Error("Tool response does not match active request")
+    }
+    if (pending.tool.toolKind === "request_secrets") {
+      throw new Error("Answer request_secrets with secrets.submit")
     }
     pending.validateResult?.(command.result)
 

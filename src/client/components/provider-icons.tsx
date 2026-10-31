@@ -46,6 +46,11 @@ export function CursorIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+/**
+ * The Grok mark (xAI), from lobehub's icon set:
+ * https://unpkg.com/@lobehub/icons-static-svg@latest/icons/grok.svg
+ * The iOS asset (provider-grok.pdf) is the same path, scaled into a 36pt box.
+ */
 export function GrokIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   return (
     <svg

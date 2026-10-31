@@ -66,8 +66,10 @@ interface AppSettingsFile {
   }
   newSidebarEnabled?: unknown
   projectIconsInChats?: unknown
+  delegatorMode?: unknown
   chatTabsEnabled?: unknown
   widgetsPeekEnabled?: unknown
+  disablePreconfiguredMcp?: unknown
   newProjectsDirectory?: unknown
   setupShown?: unknown
   setupCompleted?: unknown
@@ -191,8 +193,10 @@ function toFilePayload(state: AppSettingsState) {
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
     ...(state.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
+    ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(state.disablePreconfiguredMcp === true ? { disablePreconfiguredMcp: true } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -223,8 +227,10 @@ function toSnapshot(
     providerDefaults: state.providerDefaults,
     newSidebarEnabled: state.newSidebarEnabled,
     ...(state.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
+    ...(state.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(state.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(state.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(state.disablePreconfiguredMcp === true ? { disablePreconfiguredMcp: true } : {}),
     newProjectsDirectory: state.newProjectsDirectory,
     setupShown: state.setupShown,
     setupCompleted: state.setupCompleted,
@@ -312,8 +318,10 @@ function normalizeAppSettings(
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     newSidebarEnabled,
     ...(source?.projectIconsInChats === false ? { projectIconsInChats: false } : {}),
+    ...(source?.delegatorMode === false ? { delegatorMode: false } : {}),
     ...(source?.chatTabsEnabled === true ? { chatTabsEnabled: true } : {}),
     ...(source?.widgetsPeekEnabled === true ? { widgetsPeekEnabled: true } : {}),
+    ...(source?.disablePreconfiguredMcp === true ? { disablePreconfiguredMcp: true } : {}),
     newProjectsDirectory,
     // Onboarding markers default to false so a machine that has never run the
     // wizard still gets it; once set they stay set for every browser.
@@ -354,8 +362,10 @@ function toComparablePayload(source: AppSettingsFile) {
     providerDefaults: source.providerDefaults,
     newSidebarEnabled: source.newSidebarEnabled,
     projectIconsInChats: source.projectIconsInChats,
+    delegatorMode: source.delegatorMode,
     chatTabsEnabled: source.chatTabsEnabled,
     widgetsPeekEnabled: source.widgetsPeekEnabled,
+    disablePreconfiguredMcp: source.disablePreconfiguredMcp,
     newProjectsDirectory: typeof source.newProjectsDirectory === "string"
       ? source.newProjectsDirectory.trim()
       : source.newProjectsDirectory,

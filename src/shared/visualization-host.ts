@@ -50,8 +50,10 @@ export function prepareVisualizationDocument(html: string, theme: VisualizationT
     .filter(([key, value]) => /^--[a-z0-9-]+$/.test(key) && value.length < 300 && !/[;{}<>]|url\s*\(/i.test(value))
     .map(([key, value]) => `${key}:${value}`).join(";")
   // Documents saved while the base size was 14px carry it in their own
-  // stylesheet. This sits after that and before anything authored.
-  const css = `${fontCss}:root{color-scheme:${theme.appearance};${variables}}html{-webkit-font-smoothing:antialiased}${VISUALIZATION_BASE_SIZE_CSS}${VISUALIZATION_HIDDEN_SCROLLBAR_CSS}${VISUALIZATION_CONTROLS_CSS}`
+  // stylesheet. This sits after that and before anything authored. The font
+  // is on :root, past an authored `html{font:inherit}`, for documents saved
+  // before the saved stylesheet put it there.
+  const css = `${fontCss}:root{color-scheme:${theme.appearance};font-family:var(--font-sans);${variables}}html{-webkit-font-smoothing:antialiased}${VISUALIZATION_BASE_SIZE_CSS}${VISUALIZATION_HIDDEN_SCROLLBAR_CSS}${VISUALIZATION_CONTROLS_CSS}`
   // A key pressed in the frame never reaches the page around it. Escape is
   // the page's way out of a pane, so one the visualization has no use for is
   // passed up. Heard last, so the page's own handlers answer it first.

@@ -146,10 +146,12 @@ export function MetaText({ children }: { children: ReactNode }) {
 interface ExpandableRowProps {
   children: ReactNode
   expandedContent: ReactNode
+  /** Beside the chevron while open, mounted only then, as `expandedContent` is. */
+  expandedMeta?: ReactNode
   defaultExpanded?: boolean
 }
 
-export function ExpandableRow({ children, expandedContent, defaultExpanded = false }: ExpandableRowProps) {
+export function ExpandableRow({ children, expandedContent, expandedMeta, defaultExpanded = false }: ExpandableRowProps) {
   const [expanded, setExpanded] = useState(defaultExpanded)
 
   return (
@@ -162,9 +164,12 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
         <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
           {children}
         </div>
-        <ChevronRight
-          className={`h-4.5 w-4.5 text-muted-icon translate-y-[0.5px] transition-all duration-200 opacity-0 group-hover/expandable-row:opacity-100 ${expanded ? "rotate-90 opacity-100" : ""}`}
-        />
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ChevronRight
+            className={`h-4.5 w-4.5 shrink-0 text-muted-icon translate-y-[0.5px] transition-all duration-200 opacity-0 group-hover/expandable-row:opacity-100 ${expanded ? "rotate-90 opacity-100" : ""}`}
+          />
+          {expanded && expandedMeta}
+        </span>
       </button>
       {expanded && expandedContent}
     </div>

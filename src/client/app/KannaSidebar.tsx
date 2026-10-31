@@ -24,6 +24,7 @@ import { useSidebarViewStore } from "../stores/sidebarViewStore"
 import { useChatTabsStore } from "../stores/chatTabsStore"
 import { isBackgroundOpenClick } from "../lib/background-open"
 import { MachineSwitcher } from "./MachineSwitcher"
+import { SidebarExpandControls } from "./SidebarExpandControls"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { useIsStandalone } from "../hooks/useIsStandalone"
 import { useHasFinePointer } from "../lib/pointer"
@@ -31,6 +32,7 @@ import { isMacApp } from "../lib/macApp"
 import type { ChatPreview, ChatTouchedFilesResult, KeybindingsSnapshot, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import { isNightlyVersion } from "../../shared/types"
 import type { SocketStatus } from "./socket"
+import type { ConnectionHealth } from "./connectionHealth"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -80,6 +82,7 @@ function persistSidebarWidth(width: number) {
 interface KannaSidebarProps {
   activeChatId: string | null
   connectionStatus: SocketStatus
+  connectionHealth: ConnectionHealth
   ready: boolean
   collapsed: boolean
   /** Mobile only: a floating back-to-`/` button for pages with no header. */
@@ -87,7 +90,7 @@ interface KannaSidebarProps {
   onCollapse: () => void
   onExpand: () => void
   onCreateChat: (projectId: string) => void
-  /** A click on a channel: its delegator, or its new chat page (the one being written if there is one). */
+  /** A click on a channel: its chat last viewed here, or its new chat page (the one being written if there is one). */
   onOpenProjectNewChat: (projectId: string) => void
   /** The New Chat row: a chat in the current project, no picker. */
   onCompose: () => void
@@ -327,6 +330,7 @@ function useFocusMotion(focused: boolean) {
 function KannaSidebarImpl({
   activeChatId,
   connectionStatus,
+  connectionHealth,
   ready,
   collapsed,
   showMobileBackButton,
@@ -832,10 +836,10 @@ function KannaSidebarImpl({
 
   // The peek (useEdgePeek): the collapsed card shown over the chat while the
   // mouse is at the window's left edge. Nothing is expanded: the chat keeps
-  // its width under the card. 8px is both how near the edge opens it and the
-  // card's left margin once it is there.
+  // its width under the card. 8px is how near the edge opens it; the card
+  // comes in against the edge, where the open sidebar sits.
   const sidebarCardRef = useRef<HTMLDivElement>(null)
-  const peeking = useEdgePeek({ side: "left", enabled: collapsed, panelRef: sidebarCardRef, edgePx: 8, insetPx: 8 })
+  const peeking = useEdgePeek({ side: "left", enabled: collapsed, panelRef: sidebarCardRef, edgePx: 8 })
 
   const hasVisibleChats = activeVisibleCount > 0
   // `/` is the sidebar itself on mobile; the projects page lives at `/home`
@@ -882,10 +886,15 @@ function KannaSidebarImpl({
   }, [data.projectGroups, focusedProjectGroup, newSidebarProjectsView])
 
   const isSettingsActive = location.pathname.startsWith("/settings")
-  const isUtilityPageActive = isLocalProjectsActive || isSettingsActive
   const isConnecting = connectionStatus === "connecting" || !ready
-  const statusLabel = isConnecting ? "Connecting" : connectionStatus === "connected" ? "Connected" : "Disconnected"
-  const statusDotClass = connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"
+  // A drop reads as "Reconnecting" with a spinner until it has really failed
+  // (`connectionHealth.ts`); only then "Disconnected".
+  const isConnectionLost = connectionHealth === "lost"
+  const isStatusSettled = isConnectionLost || (connectionHealth === "connected" && ready)
+  const statusLabel = isConnectionLost
+    ? "Disconnected"
+    : isStatusSettled ? "Connected" : connectionHealth === "reconnecting" ? "Reconnecting" : "Connecting"
+  const statusDotClass = isConnectionLost ? "bg-amber-500" : "bg-emerald-500"
   const showNightlyUpdate = isNightlyVersion(updateSnapshot?.currentVersion ?? "")
     && updateSnapshot?.nightly?.status === "available"
   const showUpdateButton = showNightlyUpdate || updateSnapshot?.updateAvailable === true
@@ -930,20 +939,15 @@ function KannaSidebarImpl({
         </Button>
       )}
 
-      {collapsed && isUtilityPageActive && (
-        <div className="hidden md:flex fixed left-0 top-0 h-full z-40 items-start pt-4 pl-5 border-l border-border/0 mac-app:!hidden transition-opacity duration-200 ease-out starting:opacity-0">
-          <div className="flex items-center gap-1">
-            <Flower className="size-6 text-logo" />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onExpand}
-              title="Expand sidebar"
-              className="hover:!border-border/0 hover:!bg-transparent"
-            >
-              <PanelLeft className="h-5 w-5" />
-            </Button>
-          </div>
+      {/* Floated over the projects page, whose content starts well below
+          them. The settings page draws its own in its column, so its
+          heading starts under them; the chat navbar draws its own in its row. */}
+      {collapsed && isLocalProjectsActive && (
+        // pl-3 pt-[6.5px] puts the 24px flower's center where the open
+        // sidebar's logo has its own: 24px in, 24.5px down (6.5px + half the
+        // 36px button row).
+        <div className="hidden md:flex fixed left-0 top-0 h-full z-40 items-start pt-[6.5px] pl-3 mac-app:!hidden">
+          <SidebarExpandControls onExpand={onExpand} />
         </div>
       )}
 
@@ -952,9 +956,10 @@ function KannaSidebarImpl({
         data-sidebar="open"
         className={cn(
           "fixed inset-0 z-50 bg-background dark:bg-card flex flex-col h-[100dvh] select-none",
-          "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
-          // Inset 8px from the window's edges, so concentric with its corners.
-          "mac-app:md:rounded-[calc(var(--mac-window-radius)-8px)]",
+          // Against the window's top, left and bottom edges, with nothing
+          // between them and the contents. Its one border is the divider
+          // against the chat.
+          "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:mr-0 md:border-r md:border-r-border",
           isRootActive ? "flex" : "hidden md:flex",
           // Collapsing slides the card out by its own margin: at -width it sits
           // just off the left edge and takes no room, so the chat widens in
@@ -971,32 +976,36 @@ function KannaSidebarImpl({
           // sits, and on the same clock and curve as the margin. Expanding
           // from a peek therefore runs the two against each other and they
           // cancel: the card holds still while the chat makes room for it.
-          peeking && "md:translate-x-[calc(var(--sidebar-width)+8px)] md:shadow-2xl"
+          peeking && "md:translate-x-[var(--sidebar-width)] md:shadow-2xl"
         )}
         inert={collapsed && !peeking}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        {/* In the Mac app this row is the window's title bar: it drags the
+        {/* On the web the bar's content centers 24.5px down, 2.5px over the
+            navbar's line (27px: its 9px top padding and half its 36px row),
+            where it reads as level with it. Centered by the height alone: the
+            1px divider sits inside the 50px, so the content runs 0–49, center
+            24.5. The Mac app takes neither: its row centers on the traffic
+            lights.
+
+            In the Mac app this row is the window's title bar: it drags the
             window, has no divider under it (a title bar runs into the
-            content), and its content centers on the traffic lights. The card
-            starts 9px down (8px margin, 1px border), so a center C needs a
-            height of 2 × (C − 9). The traffic lights, the sidebar toggle and
-            back/forward (below) take the left end. */}
+            content), and its content centers on the traffic lights' center C.
+            It keeps the height it had when the sidebar was an inset card,
+            ending 2C − 9 down, so the list under it holds still: 9px on top,
+            then 2(C − 9), center C. The traffic lights, the sidebar toggle
+            and back/forward (below) take the left end: 3 × 28px and an 8px
+            gap past the lights' inset. */}
         {/* The sidebar's page: the bar and everything that scrolls under it.
             Focus mode pushes a new one over it (`useFocusMotion`); the frame
             around it clips the page in transit and holds the outgoing copy.
             Settings and the machine switcher stay put below, as a tab bar
-            does under a navigation stack.
-
-            The frame takes the card's top corners, one pixel tighter for the
-            card's border, which it sits inside. Without them the page in
-            transit, opaque and square, paints over the card's rounded
-            corners. */}
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden md:rounded-t-[15px] mac-app:md:rounded-t-[calc(var(--mac-window-radius)-9px)]">
+            does under a navigation stack. */}
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <div ref={pageMotionRef} className="relative flex min-h-0 flex-1 flex-col">
         <div
           data-window-drag
-          className="px-2.5 h-[64px] md:h-auto md:py-1 border-b grid grid-cols-[84px_minmax(0,1fr)_84px] items-center md:pl-3 md:pr-1 md:flex md:justify-between mac-app:md:h-[calc(var(--mac-traffic-lights-center)*2-18px)] mac-app:md:border-b-0 mac-app:md:py-0 mac-app:md:pl-[calc(var(--mac-traffic-lights-inset)+83px)]"
+          className="px-2.5 h-[64px] md:h-[50px] border-b grid grid-cols-[84px_minmax(0,1fr)_84px] items-center md:pl-3 md:pr-1 md:flex md:justify-between mac-app:md:h-[calc(var(--mac-traffic-lights-center)*2-9px)] mac-app:md:border-b-0 mac-app:md:pt-[9px] mac-app:md:pb-0 mac-app:md:pl-[calc(var(--mac-traffic-lights-inset)+92px)]"
         >
           {/* A phone's bar is a navigation bar: what leads it is the way back
               when there is one, and the title sits in the middle as a title.
@@ -1381,7 +1390,7 @@ function KannaSidebarImpl({
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>{statusLabel}</span>
-                {isConnecting ? (
+                {!isStatusSettled ? (
                   <Loader2 className="h-2 w-2 animate-spin" />
                 ) : (
                   <span className={cn("h-2 w-2 rounded-full", statusDotClass)} />

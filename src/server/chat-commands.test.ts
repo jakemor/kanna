@@ -24,9 +24,12 @@ async function setup() {
     enqueue: async () => { calls.push("enqueue"); return { queuedMessageId: "q" } },
     steer: async () => { calls.push("steer") },
     dequeue: async () => { calls.push("dequeue") },
-    cancel: async (chatId: string) => { calls.push(`cancel:${chatId}`) },
+    cancel: async (chatId: string, options?: { cascade?: boolean }) => {
+      calls.push(options?.cascade === false ? `cancel:${chatId}:turn-only` : `cancel:${chatId}`)
+    },
     closeChat: async (chatId: string) => { calls.push(`close:${chatId}`) },
     forkChat: async () => ({ chatId: "fork" }),
+    closeIdleSession: async (chatId: string, reason: string) => { calls.push(`closeIdle:${chatId}:${reason}`); return true },
   }
   const commands = createChatCommands({
     store,
@@ -94,6 +97,17 @@ describe("chat commands", () => {
     expect(store.getChat(used)?.archivedAt).toBeDefined()
   })
 
+  test("archiving a chat or marking it done closes its agent process at once", async () => {
+    const { commands, project, store, calls } = await setup()
+    const chatId = (await commands.create(project.id)).result.chatId
+    await store.appendMessage(chatId, timestamped({ kind: "user_prompt", content: "hello" }))
+    await commands.setDone(chatId, false)
+    expect(calls).toEqual([])
+    await commands.setDone(chatId, true)
+    await commands.archive(chatId)
+    expect(calls).toEqual([`closeIdle:${chatId}:done`, `closeIdle:${chatId}:archived`])
+  })
+
   test("restoring a chat marks it done", async () => {
     const { commands, project, store } = await setup()
     const chatId = (await commands.create(project.id)).result.chatId
@@ -118,5 +132,13 @@ describe("chat commands", () => {
     expect((await commands.send({ type: "chat.send", chatId: "c", content: "hi" })).changed).toBeNull()
     expect((await commands.cancel("c")).changed).toBeNull()
     expect((await commands.enqueue({ type: "message.enqueue", chatId: "c", content: "hi" })).changed).toEqual({ sidebar: true, chatIds: ["c"] })
+  })
+
+  test("a stop takes its sub-chats unless it says cascade: false", async () => {
+    const { commands, calls } = await setup()
+    await commands.cancel("c")
+    await commands.cancel("c", { cascade: true })
+    await commands.cancel("c", { cascade: false })
+    expect(calls).toEqual(["cancel:c", "cancel:c", "cancel:c:turn-only"])
   })
 })

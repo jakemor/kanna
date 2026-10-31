@@ -11,10 +11,10 @@ import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/ter
 import { useEffectiveEditorPreset } from "../components/open-external-menu"
 import { useChatInputStore } from "../stores/chatInputStore"
 import { generateUUID } from "../lib/utils"
+import { getViewedChatIds } from "../lib/lastViewedChats"
 import { resolveProjectNewChat } from "../lib/new-chat-resume"
 import { resolveForkBoundary, type ForkBoundary } from "../lib/fork-boundary"
 import { flattenSidebarThreads } from "../lib/thread-sections"
-import { useDelegateStore } from "../stores/delegateStore"
 import {
   findSidebarChat,
   getSidebarProjectGroups,
@@ -65,12 +65,14 @@ import {
 import { DEFAULT_TRANSCRIPT_WINDOW_ASSISTANT_MESSAGES } from "../../shared/transcript-window"
 import { CLOUD_WS_ENDPOINT_PATH, type CloudWsEndpointResponse } from "../../shared/cloud-api"
 import { KannaSocket, type SocketStatus } from "./socket"
+import { visibleCommandError, type ConnectionHealth } from "./connectionHealth"
 import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../lib/storageKeys"
 import { useAppSettingsSync } from "./useAppSettingsSync"
 import { useBackgroundChatSubscriptions } from "./useBackgroundChatSubscriptions"
 import { useChatCommands } from "./useChatCommands"
 import { useChatReadAnchor, type ChatReadAnchorState, type ReadAnchorLayoutSource } from "./useChatReadAnchor"
 import { useSendMessage } from "./useSendMessage"
+import { useTakeUpNextRun } from "../hooks/useComposer"
 import { useShareExport } from "./useShareExport"
 import { useUpdateRestart } from "./useUpdateRestart"
 import type { EditorOpenSettings, OpenExternalAction, TerminalPreset } from "../../shared/protocol"
@@ -196,6 +198,8 @@ export interface KannaState {
   appSettings: AppSettingsSnapshot | null
   llmProvider: LlmProviderSnapshot | null
   connectionStatus: SocketStatus
+  /** What to tell a person about the connection: quiet while reconnecting, loud once lost. */
+  connectionHealth: ConnectionHealth
   sidebarReady: boolean
   localProjectsReady: boolean
   commandError: string | null
@@ -234,10 +238,10 @@ export interface KannaState {
   activeChatStarted: boolean
   handleCreateChat: (projectId: string) => Promise<void>
   /**
-   * A click on a project, as against on something that says New Chat: its
-   * delegator if it has one, and otherwise its new chat page, which is the
-   * one already being written if there is one (`resolveProjectNewChat`), and
-   * a fresh chat if not.
+   * A click on a project, as against on something that says New Chat: the
+   * chat in it last viewed here, and failing that its new chat page, which
+   * is the one already being written if there is one
+   * (`resolveProjectNewChat`), and a fresh chat if not.
    */
   handleOpenProjectNewChat: (projectId: string) => void
   handleForkChat: (chat: SidebarChatRow) => Promise<void>
@@ -257,7 +261,7 @@ export interface KannaState {
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
-  handleCancel: () => Promise<void>
+  handleCancel: (options?: { cascade?: boolean }) => Promise<void>
   handleStopDraining: () => Promise<void>
   handleRenameChat: (chat: SidebarChatRow) => Promise<void>
   handleRenameProject: (target: string | { localPath: string }, sidebarTitle: string | undefined, realTitle: string) => Promise<void>
@@ -307,6 +311,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const transcriptCacheWriter = useMemo(() => createTranscriptCacheWriter(), [])
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
+  const [connectionHealth, setConnectionHealth] = useState<ConnectionHealth>("connecting")
   const sidebarReady = useSidebarReady()
   const [localProjectsReady, setLocalProjectsReady] = useState(false)
   const [chatReady, setChatReady] = useState(false)
@@ -352,6 +357,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   )
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
+  useEffect(() => socket.onHealth(setConnectionHealth), [socket])
 
   // Straight into the store, never into React state: a running turn moves a
   // sidebar field several times a second, and holding the snapshot here would
@@ -783,6 +789,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const previousPrompt = useMemo(() => getPreviousPrompt(messages), [messages])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
   const runtime = activeChatSnapshot?.runtime ?? null
+  useTakeUpNextRun(runtime)
   const forkBoundary = useMemo(
     () => (activeChatSnapshot
       ? resolveForkBoundary(activeChatSnapshot.runtime.forkedFrom, activeChatSnapshot.messages, activeChatSnapshot.startIndex, messages)
@@ -910,9 +917,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
   // `carryDraftFrom` names a new chat that is gone and left a draft behind
   // (`resolveProjectNewChat`). The draft, and the model it was being written
   // for, come over to this chat before its page is up, so the composer mounts
-  // holding them. With `background` the chat is made for the draft alone and
-  // not gone to: a click on a project with a delegator opens the delegator.
-  const createChatForProject = useCallback((projectId: string, options?: { carryDraftFrom?: string; background?: boolean }) => {
+  // holding them.
+  const createChatForProject = useCallback((projectId: string, options?: { carryDraftFrom?: string }) => {
     const chatPreferences = useChatPreferencesStore.getState()
     const chatInput = useChatInputStore.getState()
     const carriedFrom = options?.carryDraftFrom
@@ -949,13 +955,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
     startingChatIdsRef.current.add(chatId)
     chatPreferences.initializeComposerForChat(chatId, { sourceState: sourceComposerState })
-    if (!options?.background) {
-      setSelectedProjectId(projectId)
-      setPendingChatId(chatId)
-      setStartedChat({ chatId, projectId })
-      navigate(`/chat/${chatId}`)
-      setCommandError(null)
-    }
+    setSelectedProjectId(projectId)
+    setPendingChatId(chatId)
+    setStartedChat({ chatId, projectId })
+    navigate(`/chat/${chatId}`)
+    setCommandError(null)
     created.then(() => {
       startingChatIdsRef.current.delete(chatId)
     }, (error) => {
@@ -1028,8 +1032,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_id", projectId })
   }, [startChatFromIntent])
 
-  // A click on a project opens its delegator if it has one. Otherwise,
-  // clicking away from a new chat and clicking its project again comes back
+  // A click on a project goes back to the chat in it last viewed here.
+  // Clicking away from a new chat and clicking its project again comes back
   // to what was being written. Nothing is made when the chat is still there,
   // and the page is drawn from what the sidebar already says of it. See
   // `resolveProjectNewChat` for which chat, and for what makes one instead.
@@ -1041,7 +1045,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       entry: "project",
       projectId,
       projectThreads: group ? flattenSidebarThreads({ projectGroups: [group] }) : [],
-      delegatorViewedAt: useDelegateStore.getState().viewedAt,
       isListed: sidebar.ready
         ? (chatId) => getProjectIdForChat(sidebar.data.projectGroups, chatId) !== null
         : null,
@@ -1053,15 +1056,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
       },
       startedChats: chatInput.startedChats,
       startingChatIds: startingChatIdsRef.current,
+      viewedChatIds: getViewedChatIds(projectId),
     })
-    if (decision.kind === "delegator") {
-      // An ordinary chat open: the tab bar picks up the chat as for any
-      // other, and the page opens where the delegator was left.
-      if (decision.restoreDraftFrom) createChatForProject(projectId, { carryDraftFrom: decision.restoreDraftFrom, background: true })
-      navigate(`/chat/${decision.chatId}`)
-      setCommandError(null)
-      return
-    }
     if (decision.kind !== "open") {
       createChatForProject(projectId, decision.kind === "carry" ? { carryDraftFrom: decision.fromChatId } : undefined)
       return
@@ -1356,9 +1352,10 @@ export function useKannaState(activeChatId: string | null): KannaState {
     appSettings,
     llmProvider,
     connectionStatus,
+    connectionHealth,
     sidebarReady,
     localProjectsReady,
-    commandError,
+    commandError: visibleCommandError(commandError, connectionHealth),
     startingLocalPath,
     sidebarCollapsed,
     messages,

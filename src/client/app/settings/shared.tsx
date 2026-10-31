@@ -61,17 +61,22 @@ export function SettingsSelect({
   onValueChange,
   disabled,
   children,
+  open,
+  onOpenChange,
   "aria-label": ariaLabel,
 }: {
   value: string
   onValueChange: (value: string) => void
   disabled?: boolean
+  /** Controlled open state, for a row that opens the picker from anywhere on it. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
   /** The SelectItems. */
   children: ReactNode
   "aria-label"?: string
 }) {
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+    <Select value={value} onValueChange={onValueChange} disabled={disabled} open={open} onOpenChange={onOpenChange}>
       <SelectTrigger aria-label={ariaLabel} className={SETTINGS_SELECT_TRIGGER_CLASS}>
         <SelectValue />
       </SelectTrigger>

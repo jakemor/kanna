@@ -10,7 +10,6 @@ import {
   getRecentThreads,
   getRelevantThreads,
   getReviewThreads,
-  isSubChat,
   isUnreadForUser,
   listedThreads,
   mergeRelevantThreads,
@@ -33,43 +32,39 @@ function makeChatRow(overrides: Partial<SidebarChatRow> & Pick<SidebarChatRow, "
   }
 }
 
-describe("sub-chats", () => {
+describe("hidden chats", () => {
   test("stay findable in the flattened threads but are left out of what a list shows", () => {
     const data = makeSidebarData()
-    data.projectGroups[0]!.chats.push(makeChatRow({ chatId: "child", title: "Parser audit", parentChatId: "chat-1", lastMessageAt: 950 }))
+    data.projectGroups[0]!.chats.push(makeChatRow({ chatId: "child", title: "Parser audit", parentChatId: "chat-1", hidden: true, lastMessageAt: 950 }))
     const threads = flattenSidebarThreads(data)
     expect(threads.some((thread) => thread.chatId === "child")).toBe(true)
     expect(listedThreads(threads).some((thread) => thread.chatId === "child")).toBe(false)
-    expect(isSubChat(threads.find((thread) => thread.chatId === "child")!.row)).toBe(true)
     // With none to drop, the same array comes back, so nothing downstream re-derives.
     const plain = flattenSidebarThreads(makeSidebarData())
     expect(listedThreads(plain)).toBe(plain)
   })
 
-  test("a chat an agent adopted stays in every list, whoever started it", () => {
+  test("the field decides, not the parent link", () => {
     const data = makeSidebarData()
     data.projectGroups[0]!.chats.push(
-      makeChatRow({ chatId: "mine", title: "Release notes", parentChatId: "chat-1", adopted: true, lastMessageAt: 960 }),
-      makeChatRow({ chatId: "child", title: "Parser audit", parentChatId: "chat-1", lastMessageAt: 950 }),
+      // A sub-chat an agent listed, and a chat with no parent that is hidden.
+      makeChatRow({ chatId: "listed-child", title: "Release notes", parentChatId: "chat-1", hidden: false, lastMessageAt: 960 }),
+      makeChatRow({ chatId: "hidden-own", title: "Parser audit", hidden: true, lastMessageAt: 950 }),
     )
     const listed = listedThreads(flattenSidebarThreads(data)).map((thread) => thread.chatId)
-    expect(listed).toContain("mine")
-    expect(listed).not.toContain("child")
-    expect(isSubChat(data.projectGroups[0]!.chats.find((chat) => chat.chatId === "mine")!)).toBe(false)
+    expect(listed).toContain("listed-child")
+    expect(listed).not.toContain("hidden-own")
   })
 })
 
 describe("isUnreadForUser", () => {
   // One rule for every count of chats that want you: the window title, the
   // chime, the notification and a channel's badge.
-  test("counts an unread chat at rest, and no sub-chat or chat still working", () => {
+  test("counts an unread chat at rest, and no chat still working", () => {
     const unread = (overrides: Partial<SidebarChatRow> = {}) => makeChatRow({ chatId: "c", title: "C", unread: true, ...overrides })
     expect(isUnreadForUser(unread())).toBe(true)
     expect(isUnreadForUser(unread({ status: "failed" }))).toBe(true)
     expect(isUnreadForUser(unread({ status: "waiting_for_user" }))).toBe(true)
-    expect(isUnreadForUser(unread({ parentChatId: "parent" }))).toBe(false)
-    // An adopted chat is in the lists, so its mark is the user's to hear about.
-    expect(isUnreadForUser(unread({ parentChatId: "parent", adopted: true }))).toBe(true)
     expect(isUnreadForUser(unread({ status: "waiting_on_subagent" }))).toBe(false)
     expect(isUnreadForUser(unread({ status: "running" }))).toBe(false)
     expect(isUnreadForUser(unread({ unread: false }))).toBe(false)
@@ -435,113 +430,25 @@ describe("computeThreadDateBuckets", () => {
 
 describe("computeSidebarThreadSections: delegators", () => {
   const NOW_MS = at(2026, 7, 15, 12)
-  const sectionsOf = (chats: SidebarChatRow[], archived: SidebarChatRow[] = []) => {
-    const sections = computeSidebarThreadSections(flattenSidebarThreads(makeData(chats, archived)), NOW_MS)
-    const ids = (threads: { chatId: string }[]) => threads.map((thread) => thread.chatId)
-    return {
-      pinned: ids(sections.pinned),
-      delegators: ids(sections.delegators),
-      inProgress: ids(sections.inProgress),
-      review: ids(sections.review),
-      relevant: ids(sections.relevant),
-      dated: ids(sections.buckets.flatMap((bucket) => bucket.threads)),
-      archived: ids(sections.archived),
-    }
-  }
-  const delegator = (chatId: string, overrides: Partial<SidebarChatRow> = {}) => (
-    makeChatRow({ chatId, title: chatId, delegator: true, lastMessageAt: at(2026, 7, 15), ...overrides })
-  )
-  const plain = (chatId: string, overrides: Partial<SidebarChatRow> = {}) => (
-    makeChatRow({ chatId, title: chatId, lastMessageAt: at(2026, 7, 15), ...overrides })
-  )
-
-  test("a delegator is under Delegators whatever state it is in, and in no section below", () => {
-    expect(sectionsOf([
-      delegator("d-running", { status: "running", lastMessageAt: at(2026, 7, 15, 9) }),
-      delegator("d-unread", { unread: true, lastMessageAt: at(2026, 7, 14) }),
-      delegator("d-waiting", { status: "waiting_for_user", lastMessageAt: at(2026, 7, 13) }),
-      delegator("d-relevant", { uncommittedWork: true, lastMessageAt: at(2026, 7, 12) }),
+  // With Delegator mode most chats are delegators, so a delegator is filed
+  // like any other chat: there is no section of its own.
+  test("a delegator is filed by its state like any chat, and an empty one is not listed", () => {
+    const delegator = (chatId: string, overrides: Partial<SidebarChatRow> = {}) => (
+      makeChatRow({ chatId, title: chatId, delegator: true, lastMessageAt: at(2026, 7, 15), ...overrides })
+    )
+    const sections = computeSidebarThreadSections(flattenSidebarThreads(makeData([
+      delegator("d-running", { status: "running" }),
+      delegator("d-unread", { unread: true }),
+      delegator("d-pinned", { pinnedAt: 1 }),
       delegator("d-old", { lastMessageAt: at(2026, 5, 1) }),
-      // The same states in ordinary chats, each where it always was.
-      plain("running", { status: "running" }),
-      plain("unread", { unread: true }),
-      plain("relevant", { uncommittedWork: true }),
-      plain("old", { lastMessageAt: at(2026, 5, 1) }),
-    ])).toEqual({
-      pinned: [],
-      // Most recently active first.
-      delegators: ["d-running", "d-unread", "d-waiting", "d-relevant", "d-old"],
-      inProgress: ["running"],
-      review: ["unread"],
-      relevant: ["relevant"],
-      dated: ["old"],
-      archived: [],
-    })
-  })
-
-  test("a pinned delegator is Pinned's, and not listed twice", () => {
-    expect(sectionsOf([
-      delegator("d-pinned", { pinnedAt: 5, status: "running" }),
-      delegator("d"),
-      plain("pinned", { pinnedAt: 9 }),
-    ])).toMatchObject({ pinned: ["d-pinned", "pinned"], delegators: ["d"], inProgress: [], dated: [] })
-  })
-
-  test("a delegator with no message yet is listed, where an empty chat is not", () => {
-    // New Delegator makes a chat that is empty until it is first sent to, and
-    // this section is the only place it can be found.
-    expect(sectionsOf([
-      delegator("d-empty", { lastMessageAt: undefined, _creationTime: at(2026, 7, 15, 11) }),
-      delegator("d-used", { lastMessageAt: at(2026, 7, 14) }),
-      plain("empty", { lastMessageAt: undefined }),
-    ])).toMatchObject({ delegators: ["d-empty", "d-used"], inProgress: [], review: [], relevant: [], dated: [] })
-  })
-
-  test("an archived delegator is with the archive, like any archived chat", () => {
-    expect(sectionsOf([delegator("d")], [delegator("d-archived")]))
-      .toMatchObject({ delegators: ["d"], archived: ["d-archived"] })
-  })
-
-  test("a draft does not move a delegator to Relevant", () => {
-    const threads = flattenSidebarThreads(makeData([delegator("d", { lastMessageAt: at(2026, 6, 1) }), plain("p", { lastMessageAt: at(2026, 6, 1) })]))
-    const sections = computeSidebarThreadSections(threads, NOW_MS, new Map([["d", NOW_MS], ["p", NOW_MS]]))
-    expect(sections.delegators.map((thread) => thread.chatId)).toEqual(["d"])
-    expect(sections.relevant.map((thread) => thread.chatId)).toEqual(["p"])
-  })
-
-  test("no chat is in two sections, whatever it is", () => {
-    const states: Partial<SidebarChatRow>[] = [
-      {},
-      { status: "running" },
-      { status: "waiting_for_user" },
-      { status: "waiting_on_subagent", unread: true },
-      { unread: true },
-      { uncommittedWork: true },
-      { lastMessageAt: at(2026, 5, 1) },
-      { lastMessageAt: undefined },
-    ]
-    // Every state, as an ordinary chat and as a delegator, pinned and not.
-    const chats = states.flatMap((state, index) => [
-      plain(`plain-${index}`, state),
-      plain(`pinned-${index}`, { ...state, pinnedAt: index + 1 }),
-      delegator(`delegator-${index}`, state),
-      delegator(`pinned-delegator-${index}`, { ...state, pinnedAt: 100 + index }),
-    ])
-    const archived = [plain("archived"), delegator("archived-delegator", { pinnedAt: 500 })]
-    const drafts = new Map(chats.map((chat) => [chat.chatId, NOW_MS]))
-    const sections = computeSidebarThreadSections(flattenSidebarThreads(makeData(chats, archived)), NOW_MS, drafts)
-    const placed = [
-      ...sections.pinned, ...sections.delegators, ...sections.inProgress, ...sections.review, ...sections.relevant,
-      ...sections.buckets.flatMap((bucket) => bucket.threads), ...sections.archived,
-    ].map((thread) => thread.chatId)
-    expect(placed.length).toBe(new Set(placed).size)
-    // With a draft in each, every chat is somewhere: none is dropped either.
-    expect(new Set(placed)).toEqual(new Set([...chats, ...archived].map((chat) => chat.chatId)))
-    expect(sections.delegators.every((thread) => thread.row.delegator && thread.row.pinnedAt == null)).toBe(true)
-  })
-
-  test("a list with no delegators has no such section", () => {
-    expect(sectionsOf([plain("a")]).delegators).toEqual([])
+      delegator("d-empty", { lastMessageAt: undefined }),
+    ])), NOW_MS)
+    const ids = (threads: { chatId: string }[]) => threads.map((thread) => thread.chatId)
+    expect(Object.keys(sections)).not.toContain("delegators")
+    expect(ids(sections.pinned)).toEqual(["d-pinned"])
+    expect(ids(sections.inProgress)).toEqual(["d-running"])
+    expect(ids(sections.review)).toEqual(["d-unread"])
+    expect(ids(sections.buckets.flatMap((bucket) => bucket.threads))).toEqual(["d-old"])
   })
 })
 

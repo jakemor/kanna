@@ -18,7 +18,6 @@ import type { ProjectRepoLabel } from "./worktree-probe"
 import type { ChatRecord, StoreState, TouchedFile } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
-import { isSubChat } from "../shared/sub-chat"
 import { buildTranscriptOutline } from "../shared/transcript-window"
 import type { TranscriptOutlineEntry } from "../shared/types"
 
@@ -307,6 +306,9 @@ export function deriveSidebarData(
           canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
           ...(chat.parentChatId ? { parentChatId: chat.parentChatId } : {}),
           ...(chat.parentChatId && chat.adopted ? { adopted: true as const } : {}),
+          // Stated on every row, false included, so a client can tell a
+          // server that sends it from one that predates it.
+          hidden: Boolean(chat.hidden),
           ...(chat.delegator ? { delegator: true as const } : {}),
         }
       })
@@ -317,9 +319,13 @@ export function deriveSidebarData(
     const iconUrl = options?.projectIcons?.get(project.localPath)
     const chats = toSidebarChatRows(project, chatsByProjectId.get(project.id) ?? [])
     const archivedChats = toSidebarChatRows(project, archivedChatsByProjectId.get(project.id) ?? [])
-    // The lists a project shows leave sub-chats out; `chats` keeps them for lookups.
-    const listedChats = chats.filter((chat) => !isSubChat(chat))
+    // The lists a project shows leave hidden chats out; `chats` keeps them for lookups.
+    const listedChats = chats.filter((chat) => !chat.hidden)
     const { previewChats, olderChats } = getSidebarChatBuckets(listedChats, nowMs)
+    // Only for a project known to be in a repo: a probe for one that isn't
+    // reads as a clean tree, which would say "clean" about a folder git has
+    // never seen.
+    const workingTree = repoLabel ? options?.workingTrees?.get(project.id) : undefined
 
     return {
       groupKey: project.id,
@@ -335,6 +341,17 @@ export function deriveSidebarData(
         : options?.projectsWithoutRepo?.has(project.id)
           ? { hasGitRepo: false }
           : {}),
+      ...(workingTree
+        ? {
+            gitState: {
+              dirty: workingTree.trackedDirty,
+              ahead: workingTree.ahead,
+              untrackedOnly: workingTree.dirty && !workingTree.trackedDirty,
+              ...(workingTree.additions != null ? { additions: workingTree.additions } : {}),
+              ...(workingTree.deletions != null ? { deletions: workingTree.deletions } : {}),
+            },
+          }
+        : {}),
       ...(repoLabel?.branchName ? { branchName: repoLabel.branchName } : {}),
       ...(repoLabel?.repoOwner ? { repoOwner: repoLabel.repoOwner } : {}),
       ...(repoLabel?.repoUrl ? { repoUrl: repoLabel.repoUrl } : {}),
@@ -464,6 +481,12 @@ export function deriveChatSnapshot(
     .sort((a, b) => a.createdAt - b.createdAt)
 
   const status = deriveStatus(chat, activeStatuses.get(chat.id))
+  // The same rule as `ChatOrchestrator.isQueuePaused`, from what this has:
+  // a chat with a turn of its own going reads one of these statuses.
+  const turnGoing = status === "starting" || status === "running" || status === "waiting_for_user"
+  const queuePaused = chat.lastTurnOutcome === "cancelled"
+    && !turnGoing
+    && (state.queuedMessagesByChatId.get(chat.id)?.length ?? 0) > 0
   const runtime: ChatRuntime = {
     chatId: chat.id,
     projectId: project.id,
@@ -471,6 +494,7 @@ export function deriveChatSnapshot(
     title: chat.title,
     status,
     ...waitingOnField(status, waitingOn),
+    ...(queuePaused ? { queuePaused: true as const } : {}),
     isDraining: drainingChatIds.has(chat.id),
     provider: chat.provider,
     planMode: chat.planMode,
@@ -478,7 +502,9 @@ export function deriveChatSnapshot(
     sessionToken: chat.sessionToken,
     ...(chat.parentChatId ? { parentChatId: chat.parentChatId } : {}),
     ...(chat.parentChatId && chat.adopted ? { adopted: true as const } : {}),
+    ...(chat.hidden ? { hidden: true as const } : {}),
     ...(chat.delegator ? { delegator: true as const } : {}),
+    ...(chat.nextRun ? { nextRun: chat.nextRun } : {}),
     ...(subagents?.length ? { subagents: [...subagents] } : {}),
     ...(schedules.length ? { schedules } : {}),
   }

@@ -7,7 +7,7 @@ import { getDataDir, LOG_PREFIX } from "../shared/branding"
 import { toMessagePreview } from "../shared/message-preview"
 import { buildTranscriptOutline, findTranscriptWindowStart } from "../shared/transcript-window"
 import type { TranscriptOutlineEntry } from "../shared/types"
-import type { AgentProvider, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatNextRun, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -23,6 +23,7 @@ import {
   cloneTranscriptEntries,
   cloneTranscriptEntriesForClient,
   createEmptyState,
+  tracksUnread,
 } from "./events"
 import { resolveLocalPath } from "./paths"
 // The sidebar's own quantization, imported rather than duplicated so the two
@@ -314,7 +315,9 @@ function getReplayEventPriority(event: StoreEvent) {
     case "chat_last_message_at_set":
     case "chat_report_owed_set":
     case "chat_parent_set":
+    case "chat_hidden_set":
     case "chat_delegator_set":
+    case "chat_next_run_set":
       return 9
     case "chat_pin_set":
     case "chat_deleted":
@@ -358,6 +361,8 @@ export class EventStore {
   private readonly transcriptsDir: string
   /** Written once `slimTranscripts` has swept this data dir. */
   private readonly slimMarkerPath: string
+  /** Written once `migrateSidebarVisibility` has run on this data dir. */
+  private readonly visibilityMarkerPath: string
   private readonly sidebarProjectOrderPath: string
   private legacyMessagesByChatId = new Map<string, TranscriptEntry[]>()
   private legacySidebarProjectOrder: string[] = []
@@ -398,6 +403,7 @@ export class EventStore {
     this.schedulesLogPath = path.join(this.dataDir, "schedules.jsonl")
     this.transcriptsDir = path.join(this.dataDir, "transcripts")
     this.slimMarkerPath = path.join(this.dataDir, "transcripts-slim.json")
+    this.visibilityMarkerPath = path.join(this.dataDir, "sidebar-visibility.json")
     this.sidebarProjectOrderPath = path.join(this.dataDir, SIDEBAR_PROJECT_ORDER_FILE)
   }
 
@@ -421,6 +427,7 @@ export class EventStore {
     await this.loadSnapshot()
     await this.replayLogs()
     await this.hydrateChatMetadataFromTranscripts()
+    await this.migrateSidebarVisibility()
     await this.loadSidebarProjectOrder()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
       await this.compact()
@@ -526,7 +533,8 @@ export class EventStore {
         const { touchedPaths, ...rest } = chat
         this.state.chatsById.set(chat.id, {
           ...rest,
-          unread: chat.unread ?? false,
+          // A snapshot from before `tracksUnread` can hold a mark on a sub-chat.
+          unread: (chat.unread ?? false) && tracksUnread(chat),
           readAnchor: chat.readAnchor ?? null,
           pendingForkSessionToken: chat.pendingForkSessionToken ?? null,
           // Snapshots written before base blobs carry bare paths; they keep
@@ -810,8 +818,26 @@ export class EventStore {
           ...(event.forkedFromChatId && event.forkedEntryCount != null ? { forkedEntryCount: event.forkedEntryCount } : {}),
           ...(event.createdByChatId ? { createdByChatId: event.createdByChatId } : {}),
           ...(event.delegator ? { delegator: true as const } : {}),
+          ...(event.hidden ? { hidden: true as const } : {}),
         }
         this.state.chatsById.set(chat.id, chat)
+        break
+      }
+      case "chat_hidden_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        // Where the chat is shown, not activity in it: `updatedAt` stays put.
+        if (event.hidden) chat.hidden = true
+        else delete chat.hidden
+        if (!tracksUnread(chat)) chat.unread = false
+        break
+      }
+      case "chat_next_run_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        // A setting, not activity: `updatedAt` stays put so the sidebar does not reorder.
+        if (event.nextRun) chat.nextRun = event.nextRun
+        else delete chat.nextRun
         break
       }
       case "chat_delegator_set": {
@@ -844,6 +870,7 @@ export class EventStore {
         else delete chat.parentChatId
         if (event.parentChatId && event.adopted) chat.adopted = true
         else delete chat.adopted
+        if (!tracksUnread(chat)) chat.unread = false
         break
       }
       case "schedule_set": {
@@ -916,7 +943,7 @@ export class EventStore {
       case "chat_read_state_set": {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
-        chat.unread = event.unread
+        chat.unread = event.unread && tracksUnread(chat)
         chat.updatedAt = event.timestamp
         break
       }
@@ -1015,7 +1042,7 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
-        chat.unread = true
+        chat.unread = tracksUnread(chat)
         chat.lastTurnOutcome = "success"
         chat.lastTurnEndedAt = event.timestamp
         break
@@ -1024,7 +1051,7 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
-        chat.unread = true
+        chat.unread = tracksUnread(chat)
         chat.lastTurnOutcome = "failed"
         chat.lastTurnEndedAt = event.timestamp
         break
@@ -1469,7 +1496,7 @@ export class EventStore {
   async createChat(
     projectId: string,
     lineage?: { parentChatId?: string; createdByChatId?: string },
-    options?: { delegator?: boolean; chatId?: string },
+    options?: { delegator?: boolean; chatId?: string; hidden?: boolean },
   ) {
     const project = this.state.projectsById.get(projectId)
     if (!project || project.deletedAt) {
@@ -1494,6 +1521,8 @@ export class EventStore {
       ...(lineage?.parentChatId ? { parentChatId: lineage.parentChatId } : {}),
       ...(lineage?.createdByChatId ? { createdByChatId: lineage.createdByChatId } : {}),
       ...(options?.delegator ? { delegator: true } : {}),
+      // A chat started under another is shown with it unless told otherwise.
+      ...((options?.hidden ?? Boolean(lineage?.parentChatId)) ? { hidden: true } : {}),
     }
     await this.append(this.chatsLogPath, event)
     return this.state.chatsById.get(chatId)!
@@ -1509,7 +1538,7 @@ export class EventStore {
    */
   async forkChat(
     sourceChatId: string,
-    options?: { atLastCompletedTurn?: boolean; parentChatId?: string; createdByChatId?: string },
+    options?: { atLastCompletedTurn?: boolean; parentChatId?: string; createdByChatId?: string; hidden?: boolean },
   ) {
     const sourceChat = this.requireChat(sourceChatId)
     const sourceSessionToken = sourceChat.sessionToken ?? sourceChat.pendingForkSessionToken ?? null
@@ -1567,6 +1596,9 @@ export class EventStore {
       ...(sourceChat.delegator ? { delegator: true as const } : {}),
       ...(options?.parentChatId ? { parentChatId: options.parentChatId } : {}),
       ...(options?.createdByChatId ? { createdByChatId: options.createdByChatId } : {}),
+      // The source's visibility is not inherited: the fork is a new chat, and
+      // where it is shown depends on who made it, as for `createChat`.
+      ...((options?.hidden ?? Boolean(options?.parentChatId)) ? { hidden: true } : {}),
     }
     await this.append(this.chatsLogPath, createEvent)
     // The fork carries the same conversation, so it carries the same claim on
@@ -1711,8 +1743,6 @@ export class EventStore {
       if (chat.deletedAt || chat.archivedAt || chat.pinnedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
       if (chat.hasMessages) continue
-      // Made empty on purpose, to be sent to later.
-      if (chat.delegator) continue
       // Peek without inserting into the transcript cache — the prune sweep
       // must not evict actively streaming chats.
       const entries = this.transcriptCache.get(chat.id)
@@ -1971,6 +2001,53 @@ export class EventStore {
       adopted,
     }
     await this.append(this.chatsLogPath, event)
+  }
+
+  /** Lists a chat, or leaves it out of the lists. See `ChatRecord.hidden`. */
+  async setChatHidden(chatId: string, hidden: boolean) {
+    const chat = this.requireChat(chatId)
+    if (Boolean(chat.hidden) === hidden) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_hidden_set",
+      timestamp: Date.now(),
+      chatId,
+      hidden,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
+  /** Stages run settings for a chat's next turn, or clears them. See `ChatNextRun`. */
+  async setChatNextRun(chatId: string, nextRun: ChatNextRun | null) {
+    const chat = this.requireChat(chatId)
+    if (!chat.nextRun && !nextRun) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_next_run_set",
+      timestamp: Date.now(),
+      chatId,
+      nextRun,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
+  /**
+   * Writes `ChatRecord.hidden` for the chats made before it was stored, from
+   * the rule that decided it until then: a chat is hidden when it has a parent
+   * that started it rather than adopted it. Every chat starts listed, so only
+   * those get an event.
+   *
+   * Runs once per data dir, recorded by a marker file written after the
+   * events. A boot cut short between the two runs it again, which changes
+   * nothing: each event is skipped when the chat already holds its value.
+   */
+  private async migrateSidebarVisibility() {
+    if (existsSync(this.visibilityMarkerPath)) return
+    for (const chat of this.state.chatsById.values()) {
+      if (chat.deletedAt || chat.parentChatId == null || chat.adopted) continue
+      await this.setChatHidden(chat.id, true)
+    }
+    await writeFile(this.visibilityMarkerPath, `${JSON.stringify({ version: 1, completedAt: Date.now() })}\n`, "utf8")
   }
 
   /** Creates the schedule, or replaces the one with the same id. */

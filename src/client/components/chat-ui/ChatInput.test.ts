@@ -124,7 +124,7 @@ describe("trimTrailingPastedNewlines", () => {
 })
 
 describe("ChatInput", () => {
-  test("renders the mobile attachment trigger as a native file input target in the controls row", () => {
+  test("renders + as a native file input target after the field, on every width", () => {
     const html = renderToStaticMarkup(createElement(ChatInput, {
       onSubmit: async () => undefined,
       disabled: false,
@@ -136,7 +136,11 @@ describe("ChatInput", () => {
     expect(html).toContain('aria-label="Add attachment"')
     expect(html).toContain('type="file"')
     expect(html).toContain("absolute inset-0 h-full w-full cursor-pointer opacity-0")
-    expect(html.indexOf('aria-label="Add attachment"')).toBeGreaterThan(html.indexOf('placeholder="Build something..."'))
+    expect(html.indexOf('aria-label="Add attachment"')).toBeGreaterThan(html.indexOf("Build something...\""))
+    // No longer a phone-only control.
+    expect(html).not.toContain("md:hidden")
+    // + only attaches: it opens no menu of its own.
+    expect(html).not.toMatch(/aria-label="Add attachment"[^>]*aria-haspopup/)
     expect(html).not.toContain('type="file" multiple="" class="hidden"')
   })
 
@@ -163,17 +167,173 @@ describe("ChatInput", () => {
     useChatPreferencesStore.getState().setChatComposerModel("deleg-1", chosen.id)
     const second = renderToStaticMarkup(createElement(ChatInput, { ...props, draftKey: "second:deleg-1" }))
     const chat = renderToStaticMarkup(createElement(ChatInput, props))
-    expect(second).toContain(`>${chosen.label}<`)
-    expect(chat).toContain(`>${chosen.label}<`)
+    // On one line the model is named in the placeholder.
+    expect(second).toContain(`placeholder="${chosen.label} · `)
+    expect(chat).toContain(`placeholder="${chosen.label} · `)
     // A chat with no setting of its own shows its default, not this one.
-    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, chatId: "another-chat" }))).not.toContain(`>${chosen.label}<`)
-    // The options row is there, with Attach where it always is.
-    expect(second).toContain("<span>Attach</span>")
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, chatId: "another-chat" }))).not.toContain(`placeholder="${chosen.label} · `)
 
     // And the other way round: what the chat's composer sets, the second shows.
     const back = claude.models.find((model) => model.id !== chosen.id)!
     useChatPreferencesStore.getState().setChatComposerModel("deleg-1", back.id)
-    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, draftKey: "second:deleg-1" }))).toContain(`>${back.label}<`)
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, draftKey: "second:deleg-1" }))).toContain(`placeholder="${back.label} · `)
     expect(useChatPreferencesStore.getState().getComposerState("deleg-1").model).toBe(back.id)
+  })
+
+  test("a phone's placeholder says where to build, without the model; the desktop's leads with the model", () => {
+    const props = { onSubmit: async () => undefined, disabled: false, activeProvider: "claude" as const, availableProviders: PROVIDERS }
+
+    const phone = renderToStaticMarkup(createElement(ChatInput, { ...props, layout: "phone", projectRepoLabel: "kanna/main" }))
+    expect(phone).toContain('placeholder="Build in kanna/main..."')
+    expect(phone).not.toMatch(/placeholder="[^"]* · /)
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...props, layout: "phone" }))).toContain('placeholder="Build something..."')
+
+    const desktop = renderToStaticMarkup(createElement(ChatInput, { ...props, layout: "desktop", projectRepoLabel: "kanna/main" }))
+    expect(desktop).toMatch(/placeholder="[^"]+ · kanna\/main"/)
+  })
+
+  test("the composer is the harness button, the field, + and mic: the row of pills under it is gone", () => {
+    const html = renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: "claude",
+      availableProviders: PROVIDERS,
+      chatId: "pills-1",
+    }))
+
+    expect(html).toContain("Harness and model")
+    expect(html).toContain('title="Record voice message"')
+    // Effort and speed live in the harness menu now.
+    expect(html).not.toContain("Standard")
+    expect(html).not.toContain('aria-label="Effort"')
+    // And Full Access, the default mode, says nothing.
+    expect(html).not.toContain("Full Access")
+    expect(html).not.toContain("Plan Mode")
+  })
+
+  test("the plan tag shows only while plan mode is on", () => {
+    const store = useChatPreferencesStore.getState()
+    const props = { onSubmit: async () => undefined, disabled: false, activeProvider: "claude" as const, availableProviders: PROVIDERS, chatId: "plan-1" }
+    store.setComposerState("plan-1", { ...store.getComposerState("plan-1"), planMode: true, autoPlan: false })
+
+    expect(renderToStaticMarkup(createElement(ChatInput, props))).toContain("Plan Mode")
+
+    store.setComposerState("plan-1", { ...store.getComposerState("plan-1"), planMode: false, autoPlan: false })
+    expect(renderToStaticMarkup(createElement(ChatInput, props))).not.toContain("Plan Mode")
+  })
+
+  test("from 90% of the context window the harness button carries the warning", () => {
+    const render = (usedPercentage: number) => renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: "codex",
+      availableProviders: PROVIDERS,
+      chatId: "context-1",
+      contextWindowSnapshot: {
+        usedTokens: usedPercentage * 1000,
+        maxTokens: 100_000,
+        usedPercentage,
+        remainingTokens: (100 - usedPercentage) * 1000,
+        remainingPercentage: 100 - usedPercentage,
+        updatedAt: new Date(0).toISOString(),
+      },
+    }))
+
+    expect(render(90)).toContain("context nearly full")
+    expect(render(89)).not.toContain("context nearly full")
+  })
+})
+
+// The phone-width swap must leave desktop alone: these snapshots were taken
+// from the desktop composer before the swap landed. Tests render without a
+// window, so they always get the desktop layout.
+describe("ChatInput desktop layout", () => {
+  const base = { onSubmit: async () => undefined, disabled: false, availableProviders: PROVIDERS }
+
+  test("empty, on a new chat", () => {
+    expect(renderToStaticMarkup(createElement(ChatInput, { ...base, activeProvider: null }))).toMatchSnapshot()
+  })
+
+  test("with a draft and plan mode on", () => {
+    useChatInputStore.getState().setDraft("desktop-snap", "Fix the flaky upload test")
+    const store = useChatPreferencesStore.getState()
+    store.setComposerState("desktop-snap", { ...store.getComposerState("desktop-snap"), planMode: true, autoPlan: false })
+    const html = renderToStaticMarkup(createElement(ChatInput, { ...base, activeProvider: "claude", chatId: "desktop-snap", canCancel: true }))
+    useChatInputStore.getState().clearDraft("desktop-snap")
+    expect(html).toMatchSnapshot()
+  })
+})
+
+describe("ChatInput phone layout", () => {
+  const render = (chatId: string, draft?: string) => {
+    if (draft) useChatInputStore.getState().setDraft(chatId, draft)
+    const html = renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: "claude",
+      availableProviders: PROVIDERS,
+      chatId,
+      layout: "phone",
+    }))
+    if (draft) useChatInputStore.getState().clearDraft(chatId)
+    return html
+  }
+  const at = (html: string, needle: string) => {
+    const index = html.indexOf(needle)
+    expect(index).toBeGreaterThanOrEqual(0)
+    return index
+  }
+
+  test("empty, it is still the card: the field on top, [+] [icon model] then the mic", () => {
+    const html = render("phone-empty")
+
+    expect(html).toContain('data-shape="stacked" data-layout="phone"')
+    expect(html).toContain('grid-template-areas:&quot;field field field field field&quot; &quot;plus harness mode wave right&quot;')
+    expect(at(html, "<textarea")).toBeLessThan(at(html, 'aria-label="Add attachment"'))
+    expect(at(html, 'aria-label="Add attachment"')).toBeLessThan(at(html, 'data-slot="harness"'))
+    expect(at(html, 'data-slot="harness"')).toBeLessThan(at(html, 'title="Record voice message"'))
+    // The harness control names its model in the card.
+    expect(html).toContain('<span class="min-w-0 truncate text-foreground">Opus</span>')
+    // Then the effort, faintly, with no separator; it truncates before the model does.
+    expect(html).toMatch(/text-foreground">Opus<\/span><span data-part="effort" class="[^"]*shrink-\[1000\][^"]*text-muted-foreground\/70">High<\/span>/)
+    // Nothing left of the one-line layout.
+    expect(html).not.toContain("translate-x-8")
+    // Empty, the mic is the round button itself: no second mic beside it.
+    expect(html).not.toContain('data-slot="mic"')
+  })
+
+  test("with a draft: [+] [icon model] on the left, [mic] [send] on the right", () => {
+    const html = render("phone-draft", "Fix the flaky upload test")
+
+    expect(at(html, "Fix the flaky upload test")).toBeLessThan(at(html, 'aria-label="Add attachment"'))
+    expect(at(html, 'aria-label="Add attachment"')).toBeLessThan(at(html, 'data-slot="harness"'))
+    expect(at(html, 'data-slot="harness"')).toBeLessThan(at(html, 'data-slot="mic"'))
+    expect(at(html, 'data-slot="mic"')).toBeLessThan(at(html, 'aria-label="Send message"'))
+  })
+})
+
+describe("ChatInput effort after the model", () => {
+  const render = (chatId: string, provider: "claude" | "cursor", layout: "phone" | "desktop") =>
+    renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: provider,
+      availableProviders: PROVIDERS,
+      chatId,
+      layout,
+    }))
+
+  test("follows the effort the menu sets", () => {
+    const store = useChatPreferencesStore.getState()
+    const state = store.getComposerState("effort-1")
+    store.setComposerState("effort-1", { ...state, modelOptions: { ...state.modelOptions, reasoningEffort: "low" } })
+    expect(render("effort-1", "claude", "phone")).toContain('data-part="effort" class="min-w-0 shrink-[1000] truncate text-muted-foreground/70">Low<')
+  })
+
+  test("says nothing for a harness without efforts, or on desktop's one line", () => {
+    const store = useChatPreferencesStore.getState()
+    store.setComposerState("effort-2", { ...store.getComposerState("effort-2"), provider: "cursor", model: "composer-2.5", modelOptions: { fastMode: false } } as never)
+    expect(render("effort-2", "cursor", "phone")).not.toContain('data-part="effort"')
+    expect(render("effort-3", "claude", "desktop")).not.toContain('data-part="effort"')
   })
 })

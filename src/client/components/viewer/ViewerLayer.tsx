@@ -1,13 +1,15 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react"
 import { PANE_CLOSE_MS, prefersReducedMotion } from "../../app/paneAnimation"
 import type { ChatViewerState } from "../../stores/rightSidebarStore"
-import { isChatTrailItem, useChatViewer, useViewerStore, type ViewerItem } from "../../stores/viewerStore"
+import { isChatTrailItem, useChatViewer, useViewerStore, type ViewerAttachment, type ViewerItem } from "../../stores/viewerStore"
 import type { DiffViewerContext } from "../chat-ui/git/DiffViewer"
 import type { ChatPreviewContext } from "../../app/ChatPage/ChatPreview"
 import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../messages/shared"
 import { cn } from "../../lib/utils"
 import { viewerLevelBelow } from "../../lib/viewer-levels"
 import { viewerCardEnters, viewerPaneState, type ViewerPaneState } from "../../lib/viewer-split"
+import { attachmentStepMotion, clearGhosts, isHeldKeyRepeat, leaveAsGhost, playNudge, type AttachmentStepMotion } from "./attachmentMotion"
+import { attachmentNavigation } from "./attachmentSequence"
 import { ViewerCardPlaceholder, ViewerFloorProvider, ViewerMotionProvider, ViewerPlacementProvider, type ViewerFloorState, type ViewerMotion, type ViewerPlacement } from "./ViewerSurface"
 
 // Each view loads with its first use: the diff renderer (shiki grammars),
@@ -49,10 +51,13 @@ function showsOn(item: ViewerItem | null, projectId: string | null | undefined) 
  * transcript's do. `placement` is given where the page has a pane for it.
  * `chat` is what the page knows about talking to a chat; a page without it
  * never previews one, and a chat clicked there is navigated to.
+ * `attachments` is the chat's attachments in order (`chatAttachmentSequence`),
+ * for an attachment's card to step through.
  */
-export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement, presented, layerRef }: {
+export function ViewerLayer({ diff, chat, attachments, className, onOpenLocalLink, placement, presented, layerRef }: {
   diff?: DiffViewerContext
   chat?: ChatPreviewContext
+  attachments?: readonly ViewerAttachment[]
   className?: string
   onOpenLocalLink?: (target: OpenLocalLinkTarget) => void
   placement?: ViewerPlacement
@@ -112,10 +117,45 @@ export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement,
     setWas(paneState)
   }, [paneState])
   const changedByKey = useViewerStore((store) => store.changedByKey)
+  const replace = useViewerStore((store) => store.replace)
+  const currentAttachment = item?.kind === "attachment" ? item.attachment : null
+
+  // A step through the chat's attachments (`attachmentMotion`): the body
+  // that's leaving is copied into `ghostHostRef` to slide out, and the card
+  // mounted for the next one is told, through `motion`, which way to slide
+  // in. Kept by the attachment it was for, so only that card's mount plays it.
+  const ghostHostRef = useRef<HTMLDivElement | null>(null)
+  const stepRef = useRef<{ url: string; motion: Extract<AttachmentStepMotion, { kind: "slide" | "fade" }> } | null>(null)
+  const step = stepRef.current && stepRef.current.url === currentAttachment?.url ? stepRef.current.motion : null
+  useLayoutEffect(() => {
+    stepRef.current = null
+  }, [currentAttachment?.url])
   const motion = useMemo<ViewerMotion>(
-    () => ({ cardEnters, bodyEnters: !cardEnters && !changedByKey }),
-    [cardEnters, changedByKey],
+    () => ({ cardEnters, bodyEnters: !cardEnters && !changedByKey, step }),
+    [cardEnters, changedByKey, step],
   )
+  const navigation = useMemo(() => {
+    if (!currentAttachment || !attachments) return undefined
+    const currentBody = () => ghostHostRef.current?.parentElement?.querySelector<HTMLElement>("[data-viewer-body]") ?? null
+    return attachmentNavigation(
+      attachments,
+      currentAttachment,
+      (attachment, direction) => {
+        const plan = attachmentStepMotion({ direction, blocked: false, repeat: isHeldKeyRepeat(), reducedMotion: prefersReducedMotion() })
+        const host = ghostHostRef.current
+        const body = currentBody()
+        if (host && plan.kind === "instant") clearGhosts(host)
+        if (host && body && plan.kind === "slide") leaveAsGhost(body, host, direction)
+        stepRef.current = plan.kind === "slide" || plan.kind === "fade" ? { url: attachment.url, motion: plan } : null
+        replace({ kind: "attachment", attachment })
+      },
+      (direction) => {
+        const plan = attachmentStepMotion({ direction, blocked: true, repeat: isHeldKeyRepeat(), reducedMotion: prefersReducedMotion() })
+        const body = currentBody()
+        if (body && plan.kind === "nudge") playNudge(body, plan.offsetPx)
+      },
+    )
+  }, [attachments, currentAttachment, replace])
   if (!item || !shown) return null
   // In a pane, the pane closes around it. Over the chat it leaves the way it
   // came, faded and a touch small, quicker than it came.
@@ -146,7 +186,9 @@ export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement,
               onClose={close}
             />
           ) : item.kind === "attachment" ? (
-            <AttachmentViewer attachment={item.attachment} onClose={close} />
+            // Keyed so each attachment starts over: its own scroll, its own
+            // Preview/Original, and a zip's opened entry left behind with it.
+            <AttachmentViewer key={item.attachment.url} attachment={item.attachment} onClose={close} navigation={navigation} />
           ) : item.kind === "file" && diff ? (
             // Keyed so a new file or line starts over: its own view, its own jump.
             <FileViewer key={`${item.path}:${item.line ?? ""}`} projectId={item.projectId} path={item.path} line={item.line} context={diff} onClose={close} />
@@ -164,6 +206,8 @@ export function ViewerLayer({ diff, chat, className, onOpenLocalLink, placement,
       </ViewerMotionProvider>
       </ViewerFloorProvider>
       </ViewerPlacementProvider>
+      {/* Where a stepped-from attachment's copy slides out, over the card. React puts nothing here. */}
+      <div ref={ghostHostRef} aria-hidden inert className="pointer-events-none absolute inset-0 z-10" />
     </div>
   )
 }

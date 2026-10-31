@@ -26,6 +26,18 @@ describe("viewerStore", () => {
     expect(getChatViewer()).toEqual({ item: FILE, expanded: true })
   })
 
+  test("stepping to another attachment keeps the pane as it is: expanded, with its way back", () => {
+    const NEXT = { kind: "attachment", attachment: { url: "/media/b.png", name: "b.png", mimeType: "image/png", size: 1 } } as const
+    openViewer(CHAT)
+    openViewer(IMAGE, { expanded: true })
+    const before = getChatViewer()
+    useViewerStore.getState().replace(NEXT)
+    expect(getChatViewer()).toEqual({ ...before!, item: NEXT })
+    expect(useViewerStore.getState().changedByKey).toBe(true)
+    useViewerStore.getState().close()
+    expect(getChatViewer()).toEqual({ item: CHAT, expanded: false })
+  })
+
   test("a width dragged in one chat is the width in every chat, and stays when the pane is shut", () => {
     openViewer(FILE)
     useViewerStore.getState().setWidth(700)
@@ -183,19 +195,19 @@ describe("viewerStore", () => {
 
   describe("on a delegator, whose pane has a floor", () => {
     const LIST = { kind: "delegated", chatId: "chat-1" } as const
-    const openOnList = () => useViewerStore.getState().setFloor(LIST, { openByDefault: true })
+    // The page sets the floor, and the navbar's button opens the list.
+    const openOnList = () => {
+      useViewerStore.getState().setFloor(LIST)
+      openViewer(LIST)
+    }
 
-    test("the list is put in an empty pane only when asked to open by default", () => {
+    test("setting the floor leaves the pane as it was", () => {
       useViewerStore.getState().setFloor(LIST)
       expect(getChatViewer()).toBeNull()
 
-      openOnList()
-      expect(getChatViewer()).toEqual({ item: LIST, expanded: false })
-    })
-
-    test("a pane already showing something is left alone", () => {
       openViewer(FILE)
-      openOnList()
+      useViewerStore.getState().setFloor(null)
+      useViewerStore.getState().setFloor(LIST)
       expect(getChatViewer()?.item).toEqual(FILE)
     })
 

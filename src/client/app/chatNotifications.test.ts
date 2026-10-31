@@ -20,18 +20,9 @@ function sidebar(chats: SidebarChatRow[]): SidebarData {
   return { projectGroups: [{ groupKey: "p", title: "P", realTitle: "P", localPath: "/tmp/p", chats, previewChats: [], olderChats: [], defaultCollapsed: false }] }
 }
 
+// A sub-chat finishing is never announced: the server never marks it unread
+// (`tracksUnread`), and its parent's report is the news.
 describe("chat notifications and sub-chats", () => {
-  // A sub-chat finishes for its parent, which reports the result in its own
-  // turn. Telling the user as well would announce the same news twice, about
-  // a chat the sidebar does not list.
-  test("a sub-chat finishing is not counted or announced", () => {
-    const before = sidebar([row({ chatId: "parent" }), row({ chatId: "child", parentChatId: "parent" })])
-    const after = sidebar([row({ chatId: "parent" }), row({ chatId: "child", parentChatId: "parent", unread: true })])
-    expect(getNotificationTitleCount(after)).toBe(0)
-    expect(getChatNotificationSnapshot(after).unreadCount).toBe(0)
-    expect(getChatNotificationEvents(before, after)).toEqual([])
-  })
-
   test("an adopted chat finishing is, like any chat the sidebar lists", () => {
     const before = sidebar([row({ chatId: "parent" }), row({ chatId: "mine", parentChatId: "parent", adopted: true })])
     const after = sidebar([row({ chatId: "parent" }), row({ chatId: "mine", parentChatId: "parent", adopted: true, unread: true })])
@@ -41,16 +32,16 @@ describe("chat notifications and sub-chats", () => {
   })
 
   test("its parent finishing still is", () => {
-    const before = sidebar([row({ chatId: "parent" }), row({ chatId: "child", parentChatId: "parent" })])
-    const after = sidebar([row({ chatId: "parent", unread: true }), row({ chatId: "child", parentChatId: "parent" })])
+    const before = sidebar([row({ chatId: "parent" }), row({ chatId: "child", parentChatId: "parent", hidden: true })])
+    const after = sidebar([row({ chatId: "parent", unread: true }), row({ chatId: "child", parentChatId: "parent", hidden: true })])
     expect(getNotificationTitleCount(after)).toBe(1)
     expect(getChatNotificationEvents(before, after).map((event) => event.chatId)).toEqual(["parent"])
   })
 
   // The one thing a sub-chat does want the user for.
   test("a sub-chat that stops to ask something is announced", () => {
-    const before = sidebar([row({ chatId: "child", parentChatId: "parent", status: "running" })])
-    const after = sidebar([row({ chatId: "child", parentChatId: "parent", status: "waiting_for_user" })])
+    const before = sidebar([row({ chatId: "child", parentChatId: "parent", hidden: true, status: "running" })])
+    const after = sidebar([row({ chatId: "child", parentChatId: "parent", hidden: true, status: "waiting_for_user" })])
     expect(getNotificationTitleCount(after)).toBe(1)
     expect(getChatNotificationEvents(before, after).map((event) => event.chatId)).toEqual(["child"])
   })

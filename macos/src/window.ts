@@ -13,6 +13,7 @@ import {
 import { signIn } from "./app-auth"
 import { fleet, type Machine } from "./fleet"
 import { FALLBACK_SHAPE, shapeWindow, type WindowShape } from "./native-window"
+import { pageChrome } from "./page-chrome"
 import { builtFile, panelPreload, registerPanel, staticFile } from "./panels"
 import { readPrefs, writePrefs } from "./prefs"
 import { agent, isLoopback, type AgentState } from "./server-agent"
@@ -43,7 +44,9 @@ interface OverlayState {
  * corners concentric to the window's, and its header row is the title bar.
  * The page learns the real numbers (preload.ts) because they differ between
  * macOS versions and in full screen; src/index.css keys its `mac-app:`
- * variant off them.
+ * variant off them. They reach it in CSS pixels at the page's zoom
+ * (page-chrome.ts), since zoom moves the page under the lights but not the
+ * lights, so they are sent again whenever the zoom changes.
  */
 export class MainWindow {
   readonly win: BrowserWindow
@@ -57,6 +60,8 @@ export class MainWindow {
    *  Mac: whatever the server agent runs, at its local address. */
   remoteMachine: Machine | null = null
   private shape: WindowShape = FALLBACK_SHAPE
+  /** Whether the page showing has had the saved zoom put on it (dom-ready). */
+  private zoomApplied = false
   private readonly shaped: Promise<void>
   onChange: (() => void) | null = null
 
@@ -115,8 +120,13 @@ export class MainWindow {
     })
 
     contents.on("did-change-theme-color", (_event, color) => this.applyTheme(color))
+    contents.on("did-start-navigation", (details) => {
+      if (details.isMainFrame && !details.isSameDocument) this.zoomApplied = false
+    })
     contents.on("dom-ready", () => {
       contents.setZoomFactor(readPrefs().pageZoom ?? 1)
+      this.zoomApplied = true
+      this.applyChrome()
     })
     contents.on("did-finish-load", () => {
       this.applyChrome()
@@ -185,17 +195,13 @@ export class MainWindow {
   // Chrome
 
   private chrome() {
-    const fullScreen = this.win.isFullScreen()
-    // Full screen has no lights to clear and square corners; these put the
-    // sidebar back to its browser look (16px corners, 12px padding).
-    return {
-      fullScreen,
-      vars: {
-        "--mac-traffic-lights-inset": `${fullScreen ? 20 : this.shape.trafficLightsInset}px`,
-        "--mac-traffic-lights-center": `${this.shape.trafficLightsCenter}px`,
-        "--mac-window-radius": `${fullScreen ? 24 : this.shape.cornerRadius}px`,
-      },
-    }
+    return pageChrome(this.shape, { fullScreen: this.win.isFullScreen(), zoom: this.zoom() })
+  }
+
+  /** The saved zoom until dom-ready puts it on a new page: the preload's
+   *  first ask comes before that, while Chromium may still report 1. */
+  private zoom() {
+    return this.zoomApplied ? this.win.webContents.getZoomFactor() : (readPrefs().pageZoom ?? 1)
   }
 
   /** For the page preload's first, synchronous ask. */
@@ -487,6 +493,7 @@ export class MainWindow {
     const clamped = Math.min(Math.max(Math.round(zoom * 10) / 10, 0.5), 2)
     this.win.webContents.setZoomFactor(clamped)
     writePrefs({ pageZoom: clamped })
+    this.applyChrome()
   }
 
   reload() {

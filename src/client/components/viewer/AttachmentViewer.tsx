@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronsUpDown, ExternalLink, File, FileImage, FileJson, FileText, FileVideo, Link2, Sheet } from "lucide-react"
+import { ArrowDown, ArrowUp, ChevronsUpDown, Download, ExternalLink, File, FileImage, FileJson, FileText, FileVideo, Link2, Sheet } from "lucide-react"
 import { memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { cn } from "../../lib/utils"
 import { formatAttachmentSize } from "../messages/AttachmentCard"
@@ -15,7 +15,11 @@ import { FileContentView } from "../messages/FileContentView"
 import { TranscriptMarkdown } from "../messages/shared"
 import { Skeleton } from "../ui/skeleton"
 import type { ViewerAttachment } from "../../stores/viewerStore"
-import { ViewerIconButton, ViewerPanes, ViewerSurface, ViewerToggle } from "./ViewerSurface"
+import { downloadAttachment, openAttachmentInNewTab, openInBrowserLabel, opensInBrowser } from "./attachmentActions"
+import { pdfPreviewUrl, servedInline } from "./attachmentOpenAction"
+import { ViewerIconButton, ViewerPanes, ViewerSurface, ViewerToggle, type ViewerNavigation } from "./ViewerSurface"
+import { isZipAttachment } from "../../../shared/zip-preview"
+import { ZipPreview } from "./ZipPreview"
 
 /** Rows and columns the table view reads: the viewer has the room, and a sort wants the rows. */
 const VIEWER_TABLE_LIMITS = { rows: 1_000, columns: 50 }
@@ -103,11 +107,21 @@ export function hasRenderedView(attachment: ViewerAttachment) {
   return kind === "markdown" || kind === "table"
 }
 
-/** An attachment at full size: images and video fit, PDFs fill, text reads. */
-export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAttachment; onClose: () => void }) {
+/**
+ * An attachment at full size: images and video fit, PDFs fill, text reads.
+ * `navigation` steps through the chat's other attachments.
+ */
+export function AttachmentViewer({ attachment, onClose, navigation }: {
+  attachment: ViewerAttachment
+  onClose: () => void
+  navigation?: ViewerNavigation
+}) {
   const kind = previewKind(attachment)
   const content = useTextContent(attachment, kind)
   const [view, setView] = useState<RenderView>("rendered")
+  // After the hooks, which read nothing for a zip, so their order holds when
+  // the viewer goes from a zip to another file.
+  if (isZipAttachment(attachment)) return <ZipPreview attachment={attachment} onClose={onClose} navigation={navigation} />
   const Icon = KIND_ICONS[kind]
   // What was left out leads the subtitle, before type and size, rather than
   // taking a row of the body: it's the part of the file's description that
@@ -125,6 +139,7 @@ export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAt
       title={attachment.name}
       subtitle={subtitle}
       onClose={onClose}
+      navigation={navigation}
       center={hasRenderedView(attachment) ? (
         <ViewerToggle
           value={view}
@@ -135,7 +150,11 @@ export function AttachmentViewer({ attachment, onClose }: { attachment: ViewerAt
       toolbar={(
         <>
           <ViewerIconButton label="Copy link" onClick={() => void navigator.clipboard?.writeText(absoluteUrl(attachment.url))}><Link2 /></ViewerIconButton>
-          <ViewerIconButton label="Open in new tab" onClick={() => window.open(absoluteUrl(attachment.url), "_blank", "noopener,noreferrer")}><ExternalLink /></ViewerIconButton>
+          {/* No "open" for a file whose tab would only download it. */}
+          {opensInBrowser(attachment) ? (
+            <ViewerIconButton label={openInBrowserLabel()} onClick={() => openAttachmentInNewTab(kind === "pdf" ? { url: pdfPreviewUrl(attachment.url) } : attachment)}><ExternalLink /></ViewerIconButton>
+          ) : null}
+          <ViewerIconButton label="Download" onClick={() => downloadAttachment(attachment)}><Download /></ViewerIconButton>
         </>
       )}
       bodyClassName={kind === "image" || kind === "video" ? "bg-muted/30" : undefined}
@@ -182,7 +201,10 @@ function AttachmentBody({ attachment, kind, content, view }: {
   if (kind === "image") {
     return (
       <div className="flex min-h-full items-center justify-center p-6">
-        <img src={attachment.url} alt={attachment.name} className="max-h-full max-w-full rounded-lg object-contain shadow-sm" />
+        {/* 80vh, not max-h-full: the body only has a min-height, so a
+            percentage cap resolves to nothing and a tall phone screenshot
+            ran far below the fold. Auto width/height never upscale. */}
+        <img src={attachment.url} alt={attachment.name} className="h-auto max-h-[80vh] w-auto max-w-full rounded-lg object-contain shadow-sm" />
       </div>
     )
   }
@@ -193,24 +215,9 @@ function AttachmentBody({ attachment, kind, content, view }: {
       </div>
     )
   }
-  if (kind === "pdf") {
-    return <iframe src={attachment.url} title={attachment.name} className="size-full border-0" />
-  }
-  if (kind === "external") {
-    return (
-      <div className="flex min-h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <File className="size-8 text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">No preview for this kind of file.</p>
-        <button
-          type="button"
-          onClick={() => window.open(absoluteUrl(attachment.url), "_blank", "noopener,noreferrer")}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
-        >
-          <ExternalLink className="size-3.5" /> Open in new tab
-        </button>
-      </div>
-    )
-  }
+  if (kind === "pdf") return <PdfFrame attachment={attachment} />
+  // Never opened for these: `activateAttachment` sends them to a tab or a download.
+  if (kind === "external") return null
   if (!content || content.status === "loading") return kind === "table" && view === "rendered" ? <TableSkeleton /> : <TextSkeleton />
   if (content.status === "error") {
     return <div className="flex min-h-full items-center justify-center p-6 text-sm text-destructive">{content.message}</div>
@@ -233,6 +240,46 @@ function AttachmentBody({ attachment, kind, content, view }: {
   return (
     <div className="p-4">
       <FileContentView content={content.content} />
+    </div>
+  )
+}
+
+/**
+ * A PDF in an iframe, mounted only once the server has said it shows it.
+ * An iframe on a URL served as `attachment` (an older server sent agents'
+ * PDFs that way) is a download: the frame stays blank, and the file is
+ * saved again each time the frame mounts, which a viewer restored on reload
+ * does with no click. A fetch never downloads, and the check stops at the
+ * headers. It skips the cache, which may hold an answer from before the
+ * server changed (`pdfPreviewUrl`), and so clears it for the frame.
+ */
+function PdfFrame({ attachment }: { attachment: ViewerAttachment }) {
+  const url = pdfPreviewUrl(attachment.url)
+  const [state, setState] = useState<{ url: string; inline: boolean } | null>(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch(url, { signal: controller.signal, cache: "reload" })
+      .then((response) => {
+        setState({ url, inline: response.ok && servedInline(response.headers, "application/pdf") })
+        controller.abort()
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setState({ url, inline: false })
+      })
+    return () => controller.abort()
+  }, [url])
+  if (state?.url !== url) return null
+  if (state.inline) return <iframe src={url} title={attachment.name} className="size-full border-0" />
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm text-muted-foreground">This PDF can't be shown here.</p>
+      <button
+        type="button"
+        onClick={() => downloadAttachment(attachment)}
+        className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition-colors hover:bg-muted"
+      >
+        <Download className="size-3.5" /> Download
+      </button>
     </div>
   )
 }

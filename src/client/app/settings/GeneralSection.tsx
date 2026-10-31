@@ -293,6 +293,24 @@ export function GeneralSection({
     }
   }
 
+  async function handleDelegatorModeChange(enabled: boolean) {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ delegatorMode: enabled })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save chat settings.")
+    }
+  }
+
+  async function handleDisablePreconfiguredMcpChange(enabled: boolean) {
+    try {
+      setAppSettingsError(null)
+      await handleWriteAppSettings({ disablePreconfiguredMcp: enabled })
+    } catch (error) {
+      setAppSettingsError(error instanceof Error ? error.message : "Unable to save chat settings.")
+    }
+  }
+
   async function handleChatTabsChange(enabled: boolean) {
     try {
       setAppSettingsError(null)
@@ -465,6 +483,24 @@ export function GeneralSection({
         </SettingsGroup>
 
         <SettingsGroup title="Chats">
+          <SettingsRow def={SETTINGS_ROWS.delegatorMode}>
+            <Switch
+              checked={appSettings?.delegatorMode !== false}
+              onCheckedChange={(checked) => {
+                void handleDelegatorModeChange(checked)
+              }}
+              aria-label={SETTINGS_ROWS.delegatorMode.title}
+            />
+          </SettingsRow>
+          <SettingsRow def={SETTINGS_ROWS.disablePreconfiguredMcp}>
+            <Switch
+              checked={appSettings?.disablePreconfiguredMcp === true}
+              onCheckedChange={(checked) => {
+                void handleDisablePreconfiguredMcpChange(checked)
+              }}
+              aria-label={SETTINGS_ROWS.disablePreconfiguredMcp.title}
+            />
+          </SettingsRow>
           <SettingsRow def={SETTINGS_ROWS.submitWhileRunning}>
             <SettingsSelect
               value={submitWhileRunning}

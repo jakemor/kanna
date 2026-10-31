@@ -52,7 +52,6 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         model: "opus",
         modelOptions: {
           reasoningEffort: "high",
-          contextWindow: "1m",
           fastMode: false,
         },
         planMode: false,
@@ -314,6 +313,44 @@ describe("AppSettingsManager", () => {
     await writeFile(filePath, JSON.stringify({ submitWhileRunning: "yolo" }), "utf8")
     await manager.reload()
     expect(manager.getSnapshot().submitWhileRunning).toBe("queue")
+
+    manager.dispose()
+  })
+
+  test("Delegator mode is on unless turned off, and is written only when off", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("delegatorMode")
+    expect((await manager.writePatch({ delegatorMode: false })).delegatorMode).toBe(false)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { delegatorMode?: boolean }).delegatorMode).toBe(false)
+    expect(await manager.writePatch({ delegatorMode: true })).not.toHaveProperty("delegatorMode")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("delegatorMode")
+
+    // Anything but false is on.
+    await writeFile(filePath, JSON.stringify({ delegatorMode: "no" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot()).not.toHaveProperty("delegatorMode")
+
+    manager.dispose()
+  })
+
+  test("Disable pre-configured MCP is off unless turned on, and is written only when on", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+
+    expect(manager.getSnapshot()).not.toHaveProperty("disablePreconfiguredMcp")
+    expect((await manager.writePatch({ disablePreconfiguredMcp: true })).disablePreconfiguredMcp).toBe(true)
+    expect((JSON.parse(await readFile(filePath, "utf8")) as { disablePreconfiguredMcp?: boolean }).disablePreconfiguredMcp).toBe(true)
+    expect(await manager.writePatch({ disablePreconfiguredMcp: false })).not.toHaveProperty("disablePreconfiguredMcp")
+    expect(JSON.parse(await readFile(filePath, "utf8"))).not.toHaveProperty("disablePreconfiguredMcp")
+
+    // Anything but true is off.
+    await writeFile(filePath, JSON.stringify({ disablePreconfiguredMcp: "yes" }), "utf8")
+    await manager.reload()
+    expect(manager.getSnapshot()).not.toHaveProperty("disablePreconfiguredMcp")
 
     manager.dispose()
   })

@@ -1,4 +1,5 @@
 import {
+  Download,
   File,
   FileArchive,
   FileAudio,
@@ -93,7 +94,11 @@ export function AttachmentFileCard({
   onClick,
   onRemove,
   className,
-}: BaseAttachmentCardProps) {
+  downloads = false,
+}: BaseAttachmentCardProps & {
+  /** A click saves the file rather than showing it: the card says so. */
+  downloads?: boolean
+}) {
   const Icon = getAttachmentIcon(classifyAttachmentIcon(attachment))
 
   return (
@@ -106,12 +111,13 @@ export function AttachmentFileCard({
         <div className="flex min-h-10 min-w-10 items-center justify-center rounded-lg border border-border bg-muted text-muted-foreground">
           <Icon className="size-5" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="max-w-[150px] truncate text-[13px] font-medium text-foreground">{attachment.displayName}</div>
           <div className="truncate text-[11px] text-muted-foreground">
             {attachment.mimeType} · {formatAttachmentSize(attachment.size)}
           </div>
         </div>
+        {downloads ? <Download aria-label="Download" className="size-4 shrink-0 text-muted-foreground" /> : null}
       </button>
       {onRemove ? <RemoveButton displayName={attachment.displayName} onRemove={onRemove} /> : null}
     </div>

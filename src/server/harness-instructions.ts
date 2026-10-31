@@ -1,5 +1,6 @@
 import { KANNA_CHAT_LINK_INSTRUCTIONS } from "../shared/chat-links"
 import { buildKannaAttributionInstructions } from "./attribution"
+import { kannaCliCommand } from "./secrets"
 import { KANNA_VISUALIZATION_CONTRACT, KANNA_VISUALIZATION_ROUTING, KANNA_VISUALIZATION_SKILL_INSTRUCTIONS } from "./visualization-instructions"
 
 /**
@@ -13,15 +14,20 @@ export const KANNA_ORCHESTRATION_INSTRUCTIONS = [
   "The `kanna` tools let you do what the user can do in Kanna: start chats, message them, read them, stop them, and schedule messages. Tool names may carry a prefix such as `mcp__kanna__`.",
   "",
   "- A sub-chat is a chat you start with `create_chat`. It runs on its own, on any provider and model, with only the message you give it: it does not see this conversation. Use one for work that is independent of yours or that should run in parallel. For small same-model help, your own subagent tool is cheaper.",
+  "- `create_chat` needs a choice of `delegator: false` for a chat that does the work itself, almost always the right one, or `delegator: true` for one that coordinates sub-chats of its own and does none of the work. So does `set_schedule` with `newChat`.",
   "- Sub-chats are asynchronous. `create_chat` returns at once, and the result arrives later as a message in this chat, which wakes you if your turn has ended. So you can start several, finish your turn, and be called back.",
   "- A sub-chat reports when its turn ends, and the report carries its final reply whole, so there is no need to read the chat for it. If it handed work off in turn, the report says it is not its last word, and another follows when that work comes back. Read the first as progress, not as the result. `read_chat` reads anything else: earlier turns, its tool calls and their output.",
   "- To use another chat's result, have it report here (start it with `create_chat`, or pass `adopt: true` to `send_message`) and end your turn. Its reply arrives as a message and wakes this chat. Do not poll it with `read_chat` meanwhile.",
   "- Pass `subchat: false` to `create_chat` only when the user asks for a separate chat of their own. It reports nothing back.",
+  "- A sub-chat is shown under this chat, not in the user's sidebar. Pass `showInSidebar: true` only when the user asks to see it there. It still reports here.",
+  "- A chat's settings (its title, where it is shown, and the provider, model, effort and plan mode of its next turn) can change with the message you send it, or on their own with `update_chat`, without sending one.",
   "- `fork_chat` copies a conversation, context included. `create_chat` starts empty.",
   "- Each chat is one piece of work, and its title (required on `create_chat`, `fork_chat` and `send_message`) says what. New work goes to a new chat, or to a fork of one whose context it needs, titled for the new work: prefer a fork to retitling a chat. `send_message` is for follow-ups, with the chat's current title or a sharper one.",
   "- `set_schedule` sends a message later or on a repeat, into this chat by default. Use it to check on something in a while instead of sleeping.",
   "- `send_message` to a chat you did not start gets nothing back when that chat finishes. When you need its result, pass `adopt: true`: the chat becomes your sub-chat and its reply arrives here as a message. An adopted chat is still the user's, so it stays in their sidebar.",
-  "- Stopping this chat stops the sub-chats it started, not ones it adopted. Stop one yourself with `cancel_chat` when it is no longer needed.",
+  "- When the user stops this chat's turn while sub-chats it started are running, they choose whether those stop too. Adopted ones never do. Stop one yourself with `cancel_chat` when it is no longer needed.",
+  "- A stopped chat holds its queue (`queuePaused`): nothing waiting in it starts until it is delivered with `update_queued_message` (action send_now), or another message is sent.",
+  "- When a task needs credentials (API keys, tokens, passwords), ask with `request_secrets`. Never ask the user to paste one into the chat or to run the security command themselves. You never see the values: use them by name with `kanna secret exec KEY -- <command>`.",
 ].join("\n")
 
 /**
@@ -45,15 +51,37 @@ export const KANNA_DELEGATOR_INSTRUCTIONS = [
   "",
   "Each chat under this one is a self-contained timeline of one piece of work, and its title says what that work is. The chat list is the user's record of what was worked on: keep it one chat per piece of work, each titled for it.",
   "",
-  "- New work goes to a new chat: `create_chat`, titled for that work.",
-  "- To reuse a chat's context for new work, fork it: `fork_chat`, titled for the new work. This is the default way to reuse a chat. Never point an existing chat at different work.",
+  "- New work goes to a new chat: `create_chat`, titled for that work, with `delegator: false` unless it should run chats of its own.",
+  "- To reuse a chat's context for new work, fork it: `fork_chat`, titled for the new work. Never point an existing chat at different work.",
   "- Follow-ups on a chat's own work go to it with `send_message`, passing its current title, or a sharper one for the same work.",
   "- If you find yourself retitling a chat because its work changed, fork it instead.",
-  "- The chats under this one: `list_chats` with `parentChatId` set to this chat's id, which `get_context` gives.",
+  "- The chats under this one: `list_chats` with `parentChatId` set to this chat's id (`get_context` gives it).",
   "- Several unrelated tasks in one message go to several chats.",
   "- Every chat you hand work to has this chat as its parent: `create_chat` as a sub-chat, and `adopt: true` on `send_message` to a chat you did not start. Kanna applies both here whatever you pass.",
+  "- They are shown under this chat, not in the user's sidebar. When the user asks for one there, or a chat of their own, pass `showInSidebar: true` (for one that exists: on `send_message`, or `update_chat`). It is listed there and still reports here.",
   "- Tell the user which chat each task went to, and link it. When a chat reports, tell the user briefly what came back. Do not redo or re-check its work yourself.",
+  "",
+  "## Automations",
+  "",
+  "Almost always give each automation its own chat: a sub-chat from `create_chat`, titled for it (\"Daily churn-risk sweep\"), with `set_schedule`'s `chatId` pointed at it. Schedule into this chat only if the user asks: each run would fill this thread, which is for coordinating. `newChat` (which also needs a `delegator:` choice) suits runs that are each independent and start fresh; those chats go in the user's sidebar.",
 ].join("\n")
+
+/**
+ * Every Kanna tool is a shell command too (kanna-tool-cli.ts), so an agent can
+ * loop over chats or chain tools in one script. `cli` is this install's
+ * `kanna`, as `kanna secret` is given: one on PATH may be another install.
+ */
+export function buildKannaToolCliInstructions(cli: string = kannaCliCommand()): string {
+  return [
+    "# Kanna tools as commands",
+    "",
+    `Every Kanna tool is also a shell command, for scripts and loops: \`${cli} <tool>\`, with its parameters as flags (arrays and objects as JSON) or \`--json '{...}'\`, and the result as JSON on stdout. \`${cli} tools list\` names them; \`--help\` after a tool gives its parameters. For example:`,
+    `\`for id in $(${cli} list_chats --status running | jq -r '.chats[].chatId'); do ${cli} read_chat --chatId "$id" --lastTurns 1 --kinds '["reply"]'; done\``,
+  ].join("\n")
+}
+
+/** For a harness that takes no MCP tools from Kanna (grok): the commands are how it reaches them. */
+const KANNA_CLI_ONLY_NOTE = "You have no Kanna tools to call directly. Where the sections below name one, run it as this command."
 
 export const KANNA_VISUALIZATION_INSTRUCTIONS = [
   "# Kanna visualizations",
@@ -70,26 +98,32 @@ export const KANNA_VISUALIZATION_INSTRUCTIONS = [
  * Only notices that change turn to turn (skills, concurrent agents, steer)
  * belong on the user-text path. See attribution.ts for the per-provider hooks.
  *
- * `tools: false` is for a harness that is not handed the Kanna tools, which
- * must not be told to call them.
+ * `tools: false` is for a harness that can reach no Kanna tools, which must
+ * not be told to call them. `tools: "cli"` is for one that reaches them only
+ * as commands from its shell: it is told so first, then everything else.
  *
  * `delegator` adds what a delegator chat is told. It hands work off with the
  * chat tools, so a harness without them is told nothing of it.
  */
 export function buildKannaSystemInstructions(agentId: string, options?: KannaInstructionOptions): string {
-  const tools = options?.tools !== false
+  const tools = options?.tools ?? true
+  const cli = buildKannaToolCliInstructions(options?.cliCommand)
   return [
     buildKannaAttributionInstructions(agentId),
     KANNA_CHAT_LINK_INSTRUCTIONS,
+    ...(tools === "cli" ? [`${cli}\n\n${KANNA_CLI_ONLY_NOTE}`] : []),
     ...(tools ? [KANNA_ORCHESTRATION_INSTRUCTIONS] : []),
     ...(tools && options?.delegator ? [KANNA_DELEGATOR_INSTRUCTIONS] : []),
     ...(tools ? [KANNA_VISUALIZATION_INSTRUCTIONS] : []),
+    ...(tools === true ? [cli] : []),
   ].join("\n\n")
 }
 
 export interface KannaInstructionOptions {
-  tools?: boolean
+  tools?: boolean | "cli"
   delegator?: boolean
+  /** How the agent runs `kanna`. Defaults to this install's (`kannaCliCommand`). */
+  cliCommand?: string
 }
 
 /** Wrapped for the providers that have no system-prompt append hook (cursor, grok). */

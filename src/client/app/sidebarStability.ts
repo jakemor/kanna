@@ -48,6 +48,7 @@ function sameChatRow(left: SidebarChatRow, right: SidebarChatRow): boolean {
     && left.canFork === right.canFork
     && left.parentChatId === right.parentChatId
     && left.adopted === right.adopted
+    && left.hidden === right.hidden
 }
 
 /**
@@ -96,6 +97,11 @@ function sameGroupFields(left: SidebarProjectGroup, right: SidebarProjectGroup):
     && left.pinnedAt === right.pinnedAt
     && left.repoName === right.repoName
     && left.hasGitRepo === right.hasGitRepo
+    && left.gitState?.dirty === right.gitState?.dirty
+    && left.gitState?.ahead === right.gitState?.ahead
+    && left.gitState?.untrackedOnly === right.gitState?.untrackedOnly
+    && left.gitState?.additions === right.gitState?.additions
+    && left.gitState?.deletions === right.gitState?.deletions
     && left.branchName === right.branchName
     && left.repoOwner === right.repoOwner
     && left.repoUrl === right.repoUrl

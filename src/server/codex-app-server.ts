@@ -28,6 +28,10 @@ import {
   type CodexModelSummary,
   type CodexRateLimitSnapshot,
   type CodexRequestId,
+  type ConfigReadParams,
+  type ConfigReadResponse,
+  type ListMcpServerStatusParams,
+  type ListMcpServerStatusResponse,
   type GetAccountRateLimitsResponse,
   type CodexSkillMetadata,
   type CodexUserInput,
@@ -78,6 +82,8 @@ interface CodexAppServerProcess {
   stdin: Writable
   stdout: Readable
   stderr: Readable
+  /** Absent on test doubles. */
+  pid?: number
   killed?: boolean
   kill(signal?: NodeJS.Signals | number): void
   on(event: "close", listener: (code: number | null) => void): this
@@ -86,7 +92,7 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
+type SpawnCodexAppServer = (cwd: string, env?: Record<string, string>) => CodexAppServerProcess
 
 interface PendingRequest<TResult> {
   method: string
@@ -170,12 +176,26 @@ interface SessionContext {
    * other, and not always in the same order.
    */
   unclaimedTurns: Map<string, string>
+  /**
+   * Commands and dynamic tool calls on the chat's thread that started and have
+   * not completed, by item id. One can outlive its turn (a background
+   * terminal), and dies with the process.
+   */
+  runningItems: Set<string>
   stderrLines: string[]
   closed: boolean
+  /** The thread was started with the user's MCP servers off (`StartCodexSessionArgs.disablePreconfiguredMcp`). */
+  disablePreconfiguredMcp: boolean
 }
 
 export interface StartCodexSessionArgs {
   customTools?: KannaToolHost
+  /**
+   * Added to the app server's environment, which its shell commands inherit:
+   * the chat's `kanna <tool>` credential (kanna-tool-gateway.ts). Stable for
+   * the chat, so a process kept across turns still holds a good one.
+   */
+  env?: Record<string, string>
   chatId: string
   cwd: string
   model: string
@@ -184,6 +204,8 @@ export interface StartCodexSessionArgs {
   pendingForkSessionToken?: string | null
   /** The source's last turn the fork keeps (`ChatRecord.pendingForkAt`). */
   pendingForkAt?: string | null
+  /** Start the thread with only Kanna's MCP server (`AppSettingsSnapshot.disablePreconfiguredMcp`). */
+  disablePreconfiguredMcp?: boolean
 }
 
 export interface StartCodexTurnArgs {
@@ -220,6 +242,39 @@ export interface GenerateStructuredArgs {
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
 }
+
+/**
+ * Thread config that turns off every MCP server Codex would load on its own,
+ * for "Disable pre-configured MCP servers". `mcp_servers = {}` cannot: Codex
+ * merges config tables, so an empty one leaves the user's servers in place.
+ * Each is turned off by name instead, where it comes from. A config.toml
+ * server (any layer, project ones included) is `mcp_servers.<name>`; a
+ * plugin's is `plugins.<plugin id>.mcp_servers.<name>`, which keeps the
+ * plugin's skills. Naming a plugin's server under `mcp_servers` fails the
+ * thread start ("invalid transport"), so only config.toml names go there.
+ * `features.apps` removes ChatGPT apps (the built-in `codex_apps` server).
+ * A dotted key cannot quote a segment, so a name with a dot in it is left on.
+ */
+export function buildCodexMcpIsolationConfig(args: {
+  configServerNames: string[]
+  servers: ListMcpServerStatusResponse["data"]
+}): Record<string, unknown> {
+  const config: Record<string, unknown> = { "features.apps": false }
+  // Kanna's own server goes in under this name after; never turn it off.
+  const nameable = (name: string) => name !== "kanna" && !name.includes(".")
+  for (const name of args.configServerNames) {
+    if (nameable(name)) config[`mcp_servers.${name}.enabled`] = false
+  }
+  for (const server of args.servers) {
+    if (!server.pluginId || !nameable(server.name) || server.pluginId.includes(".")) continue
+    config[`plugins.${server.pluginId}.mcp_servers.${server.name}.enabled`] = false
+  }
+  return config
+}
+
+// Long enough for the local reads behind both lists (about 300 ms measured);
+// past it the thread starts with whatever was found rather than not at all.
+const MCP_DISCOVERY_TIMEOUT_MS = 5_000
 
 function codexSystemInitEntry(model: string): TranscriptEntry {
   return timestamped({
@@ -821,13 +876,14 @@ export class CodexAppServerManager {
   private readonly spawnProcess: SpawnCodexAppServer
   private onRateLimits: ((snapshot: CodexRateLimitSnapshot) => void) | null = null
   private onTaskActivity: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
+  private onProviderActivity: ((chatId: string) => void) | null = null
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.spawnProcess = args.spawnProcess ?? ((cwd) =>
+    this.spawnProcess = args.spawnProcess ?? ((cwd, env) =>
       spawn("codex", ["app-server"], {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
+        env: { ...process.env, ...env },
       }) as unknown as CodexAppServerProcess)
   }
 
@@ -844,6 +900,30 @@ export class CodexAppServerManager {
    */
   setTaskActivityListener(listener: ((chatId: string, update: SubagentActivityUpdate) => void) | null) {
     this.onTaskActivity = listener
+  }
+
+  /**
+   * Register a sink called for every notification a chat's process sends.
+   * The idle close counts silence from the last one (`AgentCoordinator.closeIdleSession`).
+   */
+  setProviderActivityListener(listener: ((chatId: string) => void) | null) {
+    this.onProviderActivity = listener
+  }
+
+  /**
+   * Work still running in the chat's process that its end would kill, after
+   * the turn that started it: an agent it spawned, mid-turn, and a command or
+   * dynamic tool call started and not finished. T3 Code's
+   * `CodexAdapterV2.hasPendingBackgroundWork`, which the idle close asks.
+   */
+  hasPendingBackgroundWork(chatId: string) {
+    const context = this.sessions.get(chatId)
+    if (!context || context.closed) return false
+    if (context.runningItems.size > 0 || context.unclaimedTurns.size > 0) return true
+    for (const agent of context.agents.values()) {
+      if (agent.turnId !== null) return true
+    }
+    return false
   }
 
   /**
@@ -924,8 +1004,10 @@ export class CodexAppServerManager {
       sessionToken: null,
       agents: new Map(),
       unclaimedTurns: new Map(),
+      runningItems: new Set(),
       stderrLines: [],
       closed: false,
+      disablePreconfiguredMcp: false,
     }
     this.attachListeners(context)
     try {
@@ -947,7 +1029,16 @@ export class CodexAppServerManager {
 
   async startSession(args: StartCodexSessionArgs) {
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken) {
+    const disablePreconfiguredMcp = Boolean(args.disablePreconfiguredMcp)
+    // A thread's MCP servers are fixed when it starts, so a flip of the
+    // setting restarts the process; the new one resumes the same thread.
+    if (
+      existing
+      && !existing.closed
+      && existing.cwd === args.cwd
+      && existing.disablePreconfiguredMcp === disablePreconfiguredMcp
+      && !args.pendingForkSessionToken
+    ) {
       return
     }
 
@@ -955,7 +1046,7 @@ export class CodexAppServerManager {
       this.stopSession(args.chatId)
     }
 
-    const child = this.spawnProcess(args.cwd)
+    const child = this.spawnProcess(args.cwd, args.env)
     const customTools = args.customTools ? createKannaMcpServer(args.customTools) : undefined
     const context: SessionContext = {
       customTools,
@@ -967,8 +1058,10 @@ export class CodexAppServerManager {
       sessionToken: null,
       agents: new Map(),
       unclaimedTurns: new Map(),
+      runningItems: new Set(),
       stderrLines: [],
       closed: false,
+      disablePreconfiguredMcp,
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
@@ -988,16 +1081,21 @@ export class CodexAppServerManager {
         method: "initialized",
       })
 
+      const isolationConfig = disablePreconfiguredMcp
+        ? await this.discoverMcpIsolationConfig(context)
+        : {}
       // Resume and fork accept MCP config, but this CLI only accepts dynamic tools on thread/start.
-      const toolConfig = customTools ? {
-        config: {
+      const mcpConfig = {
+        ...isolationConfig,
+        ...(customTools ? {
           "mcp_servers.kanna": {
             url: customTools.url,
             http_headers: customTools.headers,
             tool_timeout_sec: 86400,
           },
-        },
-      } : {}
+        } : {}),
+      }
+      const toolConfig = Object.keys(mcpConfig).length > 0 ? { config: mcpConfig } : {}
       // Standard speed is an explicit null. An omitted tier inherits the
       // user's config.toml (`service_tier = "priority"` runs fast while the
       // UI shows "Standard"), and on turn/start it keeps the thread's tier, so
@@ -1506,6 +1604,9 @@ export class CodexAppServerManager {
       return
     }
 
+    // After rate limits, which are the account's and not this chat's doing.
+    if (this.sessions.get(context.chatId) === context) this.onProviderActivity?.(context.chatId)
+
     // Everything past here is about one thread, and the threads of the agents
     // a chat spawns report on this connection too. Read as the chat's own, an
     // agent's `turn/completed` ended the chat's turn while it was still
@@ -1521,6 +1622,15 @@ export class CodexAppServerManager {
     // thread, and can come after the turn that spawned it is over.
     if (notification.method === "item/started" || notification.method === "item/completed") {
       this.trackSpawnedAgents(context, notification.params.item)
+      const item = notification.params.item
+      if (item.type === "commandExecution" || item.type === "dynamicToolCall") {
+        if (notification.method === "item/started") context.runningItems.add(item.id)
+        else context.runningItems.delete(item.id)
+      }
+    }
+    // An interrupt kills the turn's commands without completing their items.
+    if (notification.method === "turn/completed" && notification.params.turn.status === "interrupted") {
+      context.runningItems.clear()
     }
 
     const pendingTurn = context.pendingTurn
@@ -1966,12 +2076,76 @@ export class CodexAppServerManager {
     }
   }
 
+  /**
+   * Each chat's own app-server pid. Every session spawns its own process
+   * (`startSession`), so a pid here is that chat's alone; the short-lived
+   * probes `readAccountRateLimits` spawns are not sessions and are not listed.
+   */
+  getSessionPids(): Map<string, number> {
+    const pids = new Map<string, number>()
+    for (const [chatId, context] of this.sessions) {
+      if (context.closed || context.child.killed || typeof context.child.pid !== "number") continue
+      pids.set(chatId, context.child.pid)
+    }
+    return pids
+  }
+
   getResourceCounts() {
     return {
       codexSessions: this.sessions.size,
       codexPendingRequests: [...this.sessions.values()].reduce((sum, session) => sum + session.pendingRequests.size, 0),
       codexStderrChars: [...this.sessions.values()].reduce((sum, session) => sum + session.stderrLines.reduce((total, line) => total + line.length, 0), 0),
     }
+  }
+
+  /**
+   * Names the MCP servers this process would load for the chat's cwd and
+   * turns them off (`buildCodexMcpIsolationConfig`). `config/read` gives the
+   * config.toml ones; `mcpServerStatus/list` without a thread lists the rest,
+   * plugin servers with their plugin, without connecting to any. A remote
+   * plugin syncs in later and is not listed yet, so its servers stay on. A
+   * list that fails or runs late counts as empty: apps still go off.
+   */
+  private async discoverMcpIsolationConfig(context: SessionContext) {
+    const withTimeout = async <T,>(promise: Promise<T>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("timed out")), MCP_DISCOVERY_TIMEOUT_MS)
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    const readConfigNames = async () => {
+      const response = await this.sendRequest<ConfigReadResponse>(context, "config/read", {
+        cwd: context.cwd,
+      } satisfies ConfigReadParams)
+      return Object.keys(response.config?.mcp_servers ?? {})
+    }
+    const listServers = async () => {
+      const servers: ListMcpServerStatusResponse["data"] = []
+      let cursor: string | null = null
+      // Bounded: a cursor that never ends must not hold the turn.
+      for (let page = 0; page < 20; page += 1) {
+        const response: ListMcpServerStatusResponse = await this.sendRequest(context, "mcpServerStatus/list", {
+          cursor,
+          detail: "toolsAndAuthOnly",
+        } satisfies ListMcpServerStatusParams)
+        servers.push(...(response.data ?? []))
+        cursor = response.nextCursor ?? null
+        if (!cursor) break
+      }
+      return servers
+    }
+    const [configServerNames, servers] = await Promise.all([
+      withTimeout(readConfigNames()).catch(() => []),
+      withTimeout(listServers()).catch(() => []),
+    ])
+    return buildCodexMcpIsolationConfig({ configServerNames, servers })
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {

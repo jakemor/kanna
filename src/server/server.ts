@@ -19,7 +19,8 @@ import { createFleetCache } from "./cloud/fleet"
 import { writeCloudIdentity } from "./cloud/identity"
 import { createPairSessionManager, type PairSessionSnapshot } from "./cloud/pair-session"
 import { EventStore } from "./event-store"
-import { AgentCoordinator } from "./agent"
+import { AgentCoordinator, type AgentCoordinatorArgs } from "./agent"
+import { createKannaToolGateway } from "./kanna-tool-gateway"
 import { CodexAppServerManager } from "./codex-app-server"
 import { isAnalyticsDisabledByEnv, KannaAnalyticsReporter, NoopAnalyticsReporter } from "./analytics"
 import { AppSettingsManager } from "./app-settings"
@@ -54,9 +55,14 @@ import { createWsRouter, type ClientState } from "./ws-router"
 import { instanceFingerprint } from "./instance"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
+import { zipPreviewResponse } from "./zip-preview"
 import { inheritShellPath } from "./process-utils"
 
 const MAX_UPLOAD_FILES = 50
+// Lower than an agent's attachments (kanna-display-tools.ts) for two reasons.
+// Cloudflare rejects request bodies over 100 MB, and cloud and --share uploads
+// ride its tunnel. And `req.formData()` holds the whole body in memory, inside
+// Bun's default 128 MB `maxRequestBodySize`. Raising it means streaming the body.
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
 const STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -138,12 +144,28 @@ export interface StartKannaServerOptions {
    * through the app-settings snapshot to unlock dev-box-only UI.
    */
   directCloud?: boolean
+  /**
+   * What the server reaches outside its data dir for: the agent CLIs and
+   * Claude sessions it starts, the login shell it takes PATH from, and the
+   * LLM provider file. Each defaults to this machine's real one. Booting
+   * runs `codex`, `cursor-agent` and `grok` for their model lists and seeds
+   * Pi's picker from the file, all into the process-wide provider catalog, so
+   * tests pass stand-ins (`__fixtures__/test-server.ts`).
+   */
+  machine?: Pick<AgentCoordinatorArgs, "codexManager" | "cursorManager" | "grokManager" | "piManager" | "startClaudeSession"> & {
+    inheritShellPath?: () => Promise<void>
+    llmProviderFile?: string
+  }
+  /** The built web client. Defaults to `dist/client`; tests point it at a fixture. */
+  clientDistDir?: string
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
     fetchLatestVersion: (packageName: string) => Promise<string>
     installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
     installNightly?: () => Promise<NightlyInstallResult>
+    /** Fire-and-forget cloudflared update, run next to each update check. */
+    checkCloudflared?: () => void
   }
 }
 
@@ -154,7 +176,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const runtimeProfile = getRuntimeProfile()
   // Runs alongside the store setup below (~0.5 s for a zsh with nvm) and is
   // awaited before anything can start an agent.
-  const shellPathReady = inheritShellPath()
+  const machine = options.machine ?? {}
+  const shellPathReady = (machine.inheritShellPath ?? inheritShellPath)()
+  const readLlmProvider = () => readLlmProviderSnapshot(machine.llmProviderFile)
+  const writeLlmProvider = (value: Parameters<typeof writeLlmProviderSnapshot>[0]) =>
+    writeLlmProviderSnapshot(value, machine.llmProviderFile)
   const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
   const diagnostics = new PerformanceLog(options.dataDir ?? getDataDir(homedir()), undefined, options.update?.version)
   const store = new EventStore(options.dataDir, diagnostics)
@@ -260,13 +286,22 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       installNightly: options.update.installNightly,
       devMode: runtimeProfile === "dev",
       trackEvent: analytics.track.bind(analytics),
+      onCheck: options.update.checkCloudflared,
     })
     : null
-  const codexManager = new CodexAppServerManager()
+  const codexManager = machine.codexManager ?? new CodexAppServerManager()
+  // `kanna <tool>` in an agent's shell reaches its chat's tools here.
+  const toolGateway = createKannaToolGateway({ isLive: (chatId) => Boolean(store.getChat(chatId)) })
   const agent = new AgentCoordinator({
     store,
+    toolGateway,
     analytics,
     codexManager,
+    cursorManager: machine.cursorManager,
+    grokManager: machine.grokManager,
+    piManager: machine.piManager,
+    startClaudeSession: machine.startClaudeSession,
+    disablePreconfiguredMcp: () => appSettings.getSnapshot().disablePreconfiguredMcp === true,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {
@@ -283,7 +318,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   // Its pushes go through `router`, which exists by the time anything can fire.
   // One set of chat actions for both callers: the router runs them for the
   // user, the orchestrator for an agent.
-  const chatCommands = createChatCommands({ store, agent, analytics })
+  const chatCommands = createChatCommands({
+    store,
+    agent,
+    analytics,
+    delegatorMode: () => appSettings.getSnapshot().delegatorMode !== false,
+  })
   const orchestrator = new ChatOrchestrator({
     store,
     agent,
@@ -307,8 +347,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   const providerAuth = new ProviderAuthManager({
     ...createProcessAuthDeps(),
-    readLlmProvider: readLlmProviderSnapshot,
-    writeLlmProvider: writeLlmProviderSnapshot,
+    readLlmProvider,
+    writeLlmProvider,
     fetchLatestNpmVersion: fetchLatestPackageVersion,
     trackEvent: analytics.track.bind(analytics),
     onSignedIn: (service) => {
@@ -347,8 +387,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     analytics,
     usageLimits,
     llmProvider: {
-      read: readLlmProviderSnapshot,
-      write: writeLlmProviderSnapshot,
+      read: readLlmProvider,
+      write: writeLlmProvider,
       validate: validateLlmProviderCredentials,
     },
     refreshDiscovery,
@@ -368,7 +408,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   void agent.refreshGrokModelCatalog()
   // Seed the pi provider's model picker from saved fave models before the
   // first snapshots go out.
-  void readLlmProviderSnapshot()
+  void readLlmProvider()
     .then((snapshot) => {
       if (applyPiFaveModels(snapshot.faveModels)) {
         return router.broadcastSnapshots()
@@ -461,7 +501,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       console.warn(`${LOG_PREFIX} touched-file backfill failed:`, error)
     })
 
-  const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
+  const distDir = options.clientDistDir ?? path.join(import.meta.dir, "..", "..", "dist", "client")
 
   const MAX_PORT_ATTEMPTS = 20
   let actualPort = port
@@ -707,7 +747,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return withOriginAgentCluster(uploadResponse)
           }
 
-          const transcribeResponse = await handleTranscribe(req, url, readLlmProviderSnapshot)
+          const transcribeResponse = await handleTranscribe(req, url, readLlmProvider)
           if (transcribeResponse) {
             return withOriginAgentCluster(transcribeResponse)
           }
@@ -822,6 +862,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     // restarts the work instead of leaving it interrupted (see resume-turns.ts).
     orchestrator.dispose()
     try { await agent.interruptForShutdown() } finally { agent.dispose() }
+    toolGateway.close()
     router.dispose()
     providerAuth.dispose()
     usageLimits.dispose()
@@ -988,6 +1029,10 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
     return Response.json({ error: "Attachment not found" }, { status: 404 })
   }
 
+  // A zip's listing or one of its text files, past the same checks.
+  const zipResponse = await zipPreviewResponse(url, filePath)
+  if (zipResponse) return zipResponse
+
   return new Response(file, {
     headers: {
       "Content-Type": inferAttachmentContentType(storedName, file.type),
@@ -1025,11 +1070,21 @@ async function handleTranscriptMediaContent(req: Request, url: URL, store: Event
     return Response.json({ error: "Media not found" }, { status: 404 })
   }
 
+  // A zip's listing or one of its text files, past the same checks.
+  const zipResponse = await zipPreviewResponse(url, filePath)
+  if (zipResponse) return zipResponse
+
+  // PDFs show inline too: the viewer draws one in an iframe, and with the
+  // download headers that iframe stayed empty. Not sandboxed, because
+  // Chrome's PDF viewer won't load in a sandboxed document; a PDF's own
+  // script runs in the viewer's engine, not in this origin. Uploads serve
+  // PDFs the same way. The client's copy of this list is
+  // `TRANSCRIPT_MEDIA_INLINE` in src/client/components/viewer/attachmentActions.ts.
   return new Response(file, {
     headers: {
       "Content-Type": file.type || "application/octet-stream",
       "X-Content-Type-Options": "nosniff",
-      ...(!/^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|quicktime|ogg))$/.test(file.type)
+      ...(!/^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|quicktime|ogg)|application\/pdf)$/.test(file.type)
         ? { "Content-Disposition": "attachment", "Content-Security-Policy": "sandbox; default-src 'none'" } : {}),
       "Cache-Control": "private, max-age=31536000, immutable",
     },

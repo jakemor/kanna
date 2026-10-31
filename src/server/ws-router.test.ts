@@ -38,6 +38,7 @@ function withSidebarGroupDefaults(group: {
     lastMessageAt?: number
     canFork?: boolean
     hasAutomation: boolean
+    hidden?: boolean
   }>
 }) {
   return {
@@ -111,7 +112,6 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       model: "claude-opus-4-8",
       modelOptions: {
         reasoningEffort: "high",
-        contextWindow: "1m",
         fastMode: false,
       },
       planMode: false,
@@ -1668,6 +1668,7 @@ describe("ws-router", () => {
               localPath: "/tmp/project",
               provider: null,
               hasAutomation: false,
+              hidden: false,
             }],
           })],
         },
@@ -1694,6 +1695,7 @@ describe("ws-router", () => {
               localPath: "/tmp/project",
               provider: null,
               hasAutomation: false,
+              hidden: false,
             }],
           })],
         },
@@ -1964,6 +1966,7 @@ describe("ws-router", () => {
               provider: "claude",
               canFork: true,
               hasAutomation: false,
+              hidden: false,
             }, {
               _id: "chat-1",
               _creationTime: 1,
@@ -1975,6 +1978,7 @@ describe("ws-router", () => {
               provider: "claude",
               canFork: true,
               hasAutomation: false,
+              hidden: false,
             }],
           })],
         },
@@ -2792,27 +2796,32 @@ describe("transcript windows", () => {
     expect(ws.sent[1]).toEqual({ v: PROTOCOL_VERSION, type: "ack", id: "bg" })
   })
 
-  test("chat.create makes a delegator when asked, and chat.setDelegator changes one", async () => {
+  test("chat.create makes a delegator while Delegator mode is on, and chat.setDelegator changes one", async () => {
     const calls: unknown[] = []
+    const appSettings = createFakeAppSettings()
     const router = createTestRouter({
+      appSettings,
       store: createFakeStore({
         createChat: async (projectId: string, lineage: unknown, options: unknown) => {
           calls.push(["create", projectId, lineage, options])
           return { id: `chat-${calls.length}` }
         },
         setChatDelegator: async (chatId: string, delegator: boolean) => { calls.push(["set", chatId, delegator]) },
+        getChat: () => ({ provider: "codex" }),
       }),
     })
     const ws = new FakeWebSocket()
     const send = (id: string, command: unknown) => router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id, command }))
 
-    await send("a", { type: "chat.create", projectId: "project-1", delegator: true })
-    await send("b", { type: "chat.create", projectId: "project-1" })
+    // On by default. A client that still asks for a delegator is not heard: the mode decides.
+    await send("a", { type: "chat.create", projectId: "project-1" })
+    await appSettings.writePatch({ delegatorMode: false })
+    await send("b", { type: "chat.create", projectId: "project-1", delegator: true })
     await send("c", { type: "chat.setDelegator", chatId: "chat-1", delegator: false })
 
     expect(calls).toEqual([
       ["create", "project-1", undefined, { delegator: true }],
-      ["create", "project-1", undefined, { delegator: undefined }],
+      ["create", "project-1", undefined, { delegator: false }],
       ["set", "chat-1", false],
     ])
     // The new chat's id comes back on the ack, as for any chat.

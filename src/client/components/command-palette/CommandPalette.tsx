@@ -36,12 +36,11 @@ import {
   Settings2,
   Share2,
   Sparkles,
-  SquareMenu,
   SquarePen,
   SquareTerminal,
   Terminal,
 } from "lucide-react"
-import type { ChatMode, ClaudeContextWindow, FsListResult, GitHubRecentReposResult, SidebarData } from "../../../shared/types"
+import type { ChatMode, FsListResult, GitHubRecentReposResult, SidebarData } from "../../../shared/types"
 import { DEFAULT_NEW_PROJECTS_DIRECTORY } from "../../../shared/types"
 import { REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import type { KannaState } from "../../app/useKannaState"
@@ -81,8 +80,6 @@ import { requestChatBrowserNotificationPermission } from "../../lib/chatBrowserN
 import { resolveChatBrowserNotificationPreferenceAfterPermission } from "../../app/settings/shared"
 import type { SidebarView } from "../chat-ui/sidebar/SidebarViewSwitcher"
 import { toggleDelegatedPane } from "../chat-ui/DelegatedListButton"
-import { createDelegator } from "../chat-ui/create-delegator"
-import { useAppDialog } from "../ui/app-dialog"
 import { DelegatorIcon } from "../chat-ui/delegator-icon"
 import { PROVIDER_ICONS } from "../chat-ui/ChatPreferenceControls"
 import { UsageSection } from "../../app/settings/UsageSection"
@@ -96,6 +93,7 @@ import {
   CommandItem,
   CommandList,
 } from "../ui/command"
+import { delegatorToggleTitle } from "../../lib/delegators"
 import { listedThreads } from "../../lib/thread-sections"
 import {
   computeSidebarThreadSections,
@@ -290,7 +288,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
   const pendingSendTimes = usePendingSendStore((store) => (open ? store.sentAt : EMPTY_SEND_TIMES))
 
   const browser = useDirectoryBrowser(state.socket)
-  const dialog = useAppDialog()
 
   const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
   // Editors this machine doesn't have are dropped from the palette rather than
@@ -603,22 +600,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
         // and, unlike the project-picked path, hides its "New Chat" row (the
         // root already offers "New Chat in <current>").
         run: () => pushPage({ page: "project-chats" }),
-      })
-      // Found by typing, as on iOS, so the palette at rest does not offer
-      // it to every project. The new delegator opens once it is made: an
-      // empty chat whose page is where its first message is written.
-      list.push({
-        id: "new-delegator-current",
-        title: currentProjectTitle ? `New Delegator in ${currentProjectTitle}…` : "New Delegator…",
-        keywords: ["delegator", "delegate", "delegation", "delegated", "create delegator", "hand off", "orchestrate", "manager", "sub-chats", "subchats"],
-        icon: <DelegatorIcon className={ICON_CLASS} />,
-        searchOnly: true,
-        run: () => {
-          close()
-          void createDelegator({ projectId, socket: state.socket, dialog }).then((chatId) => {
-            if (chatId) navigate(`/chat/${chatId}`)
-          })
-        },
       })
     }
 
@@ -945,13 +926,13 @@ export function CommandPalette({ state }: { state: KannaState }) {
               .catch((error) => console.warn("[kanna] could not mark the chat done:", error))
           },
         })
-        // As the chat menu's item (ThreadRow): Grok chats aren't given the
-        // chat tools, so one can't start delegating, only stop.
-        if (chatRow.delegator || chatRow.provider !== "grok") {
+        // As the chat menu's item (ThreadRow).
+        const delegatorToggle = delegatorToggleTitle(chatRow)
+        if (delegatorToggle) {
           list.push({
             id: "toggle-delegator",
-            title: chatRow.delegator ? "Stop Delegating" : "Make Delegator",
-            keywords: ["delegator", "delegate", "delegation", "hand off", "orchestrate", "manager", "sub-chats", "subchats", "ordinary chat"],
+            title: delegatorToggle,
+            keywords: ["delegator", "delegate", "delegation", "hand off", "orchestrate", "manager", "sub-chats", "subchats", "ordinary chat", "work directly", "stop delegating"],
             icon: <DelegatorIcon className={ICON_CLASS} />,
             hint: "Next turn",
             searchOnly: true,
@@ -1007,7 +988,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
       // Option controls come from the same central availability registry
       // (lib/composer.ts deriveComposerOptionControls) that drives the chat
       // input's ChatPreferenceControls — nothing unavailable is ever offered.
-      const { mode, fastMode, reasoning, contextWindow } = composer.optionControls
+      const { mode, fastMode, reasoning } = composer.optionControls
       if (mode) {
         for (const option of mode.options) {
           if (option === mode.selected) continue
@@ -1061,23 +1042,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
             run: () => {
               close()
               composer.setReasoningEffort(option.id)
-            },
-          })
-        }
-      }
-      if (contextWindow) {
-        for (const option of contextWindow.options) {
-          const isCurrent = contextWindow.selectedId === option.id
-          list.push({
-            id: `set-context-${option.id}`,
-            title: `Context Window: ${option.label}`,
-            keywords: ["context window", "context length", "tokens", option.id],
-            icon: <SquareMenu className={ICON_CLASS} />,
-            hint: isCurrent ? "Current window" : "Context window",
-            searchOnly: true,
-            run: () => {
-              close()
-              composer.setContextWindow(option.id as ClaudeContextWindow)
             },
           })
         }
@@ -1137,7 +1101,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
   }, [
     close,
     composer,
-    dialog,
     currentChatGroup,
     currentChatRow,
     currentProjectTitle,
@@ -1491,7 +1454,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
         const firstThread = projectChatSections
           ? [
             ...projectChatSections.pinned,
-            ...projectChatSections.delegators,
             ...projectChatSections.inProgress,
             ...projectChatSections.review,
             ...projectChatSections.relevant,
@@ -1604,7 +1566,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
     const projectChatSectionThreads = projectChatSections
       ? [
         ...projectChatSections.pinned,
-        ...projectChatSections.delegators,
         ...projectChatSections.inProgress,
         ...projectChatSections.review,
         ...projectChatSections.relevant,

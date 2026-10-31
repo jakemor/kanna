@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import {
   DEFAULT_RIGHT_SIDEBAR_SIZE,
   migrateRightSidebarStore,
+  persistedChatViewers,
   RIGHT_SIDEBAR_MAX_WIDTH_PX,
   RIGHT_SIDEBAR_MIN_WIDTH_PX,
   useRightSidebarStore,
@@ -186,5 +187,24 @@ describe("rightSidebarStore", () => {
       expect(migrateRightSidebarStore({ size: 44 }, 6).size).toBe(DEFAULT_RIGHT_SIDEBAR_SIZE)
       expect(migrateRightSidebarStore(null).size).toBe(DEFAULT_RIGHT_SIDEBAR_SIZE)
     })
+  })
+})
+
+describe("persistedChatViewers", () => {
+  const attachment = (name: string, mimeType: string) => ({
+    item: { kind: "attachment" as const, attachment: { url: `/api/chats/c1/media/${name}`, name, mimeType, size: 1 } },
+    expanded: false,
+  })
+
+  // A reload must never reopen something that downloads on mount.
+  test("keeps an attachment the viewer shows, and drops one it would only download", () => {
+    const kept = persistedChatViewers({ shot: attachment("a.png", "image/png"), zip: attachment("a.tar.gz", "application/gzip") })
+    expect(Object.keys(kept)).toEqual(["shot"])
+  })
+
+  test("a dropped attachment falls back to what it was opened over", () => {
+    const chat = { item: { kind: "chat" as const, chatId: "sub" }, expanded: false }
+    const kept = persistedChatViewers({ zip: { ...attachment("a.tar.gz", "application/gzip"), returnTo: chat } as never })
+    expect(kept.zip?.item).toEqual(chat.item)
   })
 })

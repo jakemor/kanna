@@ -8,6 +8,7 @@ import {
   buildConcurrentAgentsNotice,
   buildPromptText,
   buildSteeredMessageContent,
+  claudeLaunchOptions,
   claudeSystemPrompt,
   claudeToolset,
   formatQuestionAnswersFollowUp,
@@ -22,6 +23,8 @@ import type { SubagentActivityUpdate } from "./background-tasks"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+import { createKannaToolGateway } from "./kanna-tool-gateway"
+import { runKannaToolCli } from "./kanna-tool-cli"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()
@@ -381,6 +384,7 @@ describe("AgentCoordinator codex integration", () => {
       releaseTitle = resolve
     })
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -452,6 +456,7 @@ describe("AgentCoordinator codex integration", () => {
       releaseTitle = resolve
     })
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -520,6 +525,7 @@ describe("AgentCoordinator codex integration", () => {
 
   test("reports provider failure without a second rename after the optimistic title", async () => {
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -595,6 +601,7 @@ describe("AgentCoordinator codex integration", () => {
     // health-check preflight) no-op instead of re-resuming.
     const openSessions = new Set<string>()
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession(args: { chatId: string; sessionToken: string | null; pendingForkSessionToken?: string | null }) {
         if (openSessions.has(args.chatId) && !args.pendingForkSessionToken) return
         openSessions.add(args.chatId)
@@ -674,6 +681,7 @@ describe("AgentCoordinator codex integration", () => {
     const turnCalls: Array<{ effort?: string; serviceTier?: string }> = []
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession(args: { chatId: string; sessionToken: string | null; serviceTier?: string }) {
         sessionCalls.push({
           chatId: args.chatId,
@@ -754,6 +762,7 @@ describe("AgentCoordinator codex integration", () => {
     let turnCount = 0
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession(args: { chatId: string; sessionToken: string | null }) {
         sessionCalls.push({ chatId: args.chatId, sessionToken: args.sessionToken })
       },
@@ -894,6 +903,7 @@ describe("AgentCoordinator codex integration", () => {
     })
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(args: {
         onToolRequest: (request: any) => Promise<unknown>
@@ -967,6 +977,7 @@ describe("AgentCoordinator codex integration", () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1048,6 +1059,7 @@ describe("AgentCoordinator codex integration", () => {
     let streamClosed = false
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1121,6 +1133,7 @@ describe("AgentCoordinator codex integration", () => {
     let interruptDone = false
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1198,6 +1211,7 @@ describe("AgentCoordinator codex integration", () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1261,6 +1275,7 @@ describe("AgentCoordinator codex integration", () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         async function* stream() {
@@ -1335,6 +1350,7 @@ describe("AgentCoordinator codex integration", () => {
     const startTurnCalls: string[] = []
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(args: {
         content: string
@@ -1424,7 +1440,7 @@ describe("AgentCoordinator codex integration", () => {
 })
 
 describe("AgentCoordinator claude integration", () => {
-  test("tracks analytics for new chats, queued messages, and forks", async () => {
+  test("tracks analytics for sent and queued messages, and forks", async () => {
     const events = new AsyncEventQueue<any>()
     const analyticsEvents: string[] = []
     const store = createFakeStore()
@@ -1463,9 +1479,10 @@ describe("AgentCoordinator claude integration", () => {
       }),
     })
 
+    // A new chat's own count is `ChatCommands.create`'s, which makes it.
     await coordinator.send({
       type: "chat.send",
-      projectId: "project-1",
+      chatId: "chat-1",
       provider: "claude",
       content: "first message",
     })
@@ -1480,7 +1497,6 @@ describe("AgentCoordinator claude integration", () => {
     await coordinator.forkChat("chat-1")
 
     expect(analyticsEvents).toEqual([
-      "chat_created",
       "message_sent",
       "message_sent",
       "chat_created",
@@ -1802,6 +1818,68 @@ describe("AgentCoordinator claude integration", () => {
     queues.forEach((queue) => queue.close())
   })
 
+  test("a turn that names no Claude options keeps the live session's effort and fast mode", async () => {
+    const queues: AsyncEventQueue<any>[] = []
+    const startSessionCalls: Array<{ model: string; effort?: string; serviceTier?: string }> = []
+    const fastModeCalls: boolean[] = []
+
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        startSessionCalls.push({ model: args.model, effort: args.effort, serviceTier: args.serviceTier })
+        const events = new AsyncEventQueue<any>()
+        queues.push(events)
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => events.close(),
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          setFastMode: async (fastMode: boolean) => {
+            fastModeCalls.push(fastMode)
+          },
+          sendPrompt: async () => {
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+            })
+          },
+        }
+      },
+    })
+
+    // The user's turn, at medium in fast mode.
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "go",
+      model: "opus",
+      modelOptions: { claude: { reasoningEffort: "medium", fastMode: true } },
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    // A report names only the model: no restart, no fast-mode flip.
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "report", model: "opus" })
+    await waitFor(() => store.turnFinishedCount === 2)
+
+    // An effort the caller names still wins.
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "go", model: "opus", effort: "low" })
+    await waitFor(() => store.turnFinishedCount === 3)
+
+    expect(startSessionCalls).toEqual([
+      { model: "opus[1m]", effort: "medium", serviceTier: "fast" },
+      { model: "opus[1m]", effort: "low", serviceTier: "fast" },
+    ])
+    expect(fastModeCalls).toEqual([])
+
+    queues.forEach((queue) => queue.close())
+  })
+
   test("claudeToolset only offers EnterPlanMode in auto plan", () => {
     expect(claudeToolset(false)).not.toContain("EnterPlanMode")
     // ExitPlanMode stays available so a mid-session switch into plan mode
@@ -1984,7 +2062,7 @@ describe("AgentCoordinator claude integration", () => {
     expect(prompts[1]).toContain("<system-message>")
     expect(prompts[1]).toContain("</system-message>")
     // The steer block is wire-only: the transcript keeps the user's typed
-    // text verbatim, with the steered flag driving the UI affordance.
+    // text verbatim, with the steered flag recording the steer.
     const steeredEntry = store.messages.find(
       (entry) => entry.kind === "user_prompt" && entry.steered
     ) as Extract<TranscriptEntry, { kind: "user_prompt" }> | undefined
@@ -2476,6 +2554,7 @@ describe("mid-conversation provider switch", () => {
     const sentContents: string[] = []
     const stoppedCodexSessions: string[] = []
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {
         return { sessionToken: "codex-thread-1", resumeFellBack: false }
       },
@@ -2686,6 +2765,7 @@ describe("session restore on lost native session", () => {
     const sentContents: string[] = []
     let resumeFellBack = true
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {
         return { sessionToken: "codex-thread-new", resumeFellBack }
       },
@@ -2748,6 +2828,7 @@ describe("AgentCoordinator restart resume", () => {
   test("shutdown cancels running turns and marks their chats for resume", async () => {
     const events = new AsyncEventQueue<any>()
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         return {
@@ -2790,6 +2871,7 @@ describe("AgentCoordinator restart resume", () => {
     })
 
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(args: { onToolRequest: (request: any) => Promise<unknown> }): Promise<HarnessTurn> {
         async function* stream() {
@@ -2856,6 +2938,7 @@ describe("AgentCoordinator restart resume", () => {
   test("a user-initiated cancel leaves no resume marker", async () => {
     const events = new AsyncEventQueue<any>()
     const fakeCodexManager = {
+      getSessionPids: () => new Map<string, number>(),
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
         return {
@@ -3072,6 +3155,7 @@ describe("shared display tool lifecycle", () => {
       let host: import("./kanna-tools").KannaToolHost | undefined
       const capture = (args: { customTools?: import("./kanna-tools").KannaToolHost }) => { host = args.customTools }
       const manager = {
+        getSessionPids: () => new Map<string, number>(),
         async startSession(args: { customTools?: import("./kanna-tools").KannaToolHost }) { capture(args) },
         async startTurn(args: { customTools?: import("./kanna-tools").KannaToolHost }): Promise<HarnessTurn> {
           if (args.customTools) capture(args)
@@ -3325,7 +3409,7 @@ describe("subagent activity", () => {
         }
       },
     })
-    await coordinator.send({ type: "chat.send", projectId: "project-1", provider: "claude", content: "watch it" })
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "watch it" })
     await waitFor(() => report !== undefined)
 
     report!({ kind: "started", id: "m1", type: "monitor", label: "Watch deploy", stoppable: true })
@@ -3388,6 +3472,58 @@ describe("subagent activity", () => {
     expect(byId.get("a1")?.endedAt).toBeDefined()
     // Work that already finished keeps its outcome.
     expect(byId.get("a2")).toMatchObject({ status: "completed", endedAt: 2000 })
+  })
+})
+
+describe("Kanna tools from the agent's shell", () => {
+  test("grok's shell gets its chat's credential, is told to use it, and calls run as that chat's turn", async () => {
+    let release!: () => void
+    let started: { env?: Record<string, string>; content: string } | undefined
+    const fakeGrokManager = {
+      async startTurn(args: { env?: Record<string, string>; content: string }): Promise<HarnessTurn> {
+        started = args
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({ kind: "system_init", provider: "grok", model: "grok-4", tools: [], agents: [], slashCommands: [], mcpServers: [] }),
+          }
+          await new Promise<void>((resolve) => { release = resolve })
+        }
+        return { provider: "grok", stream: stream(), interrupt: async () => release(), close: () => {} }
+      },
+    }
+    const toolGateway = createKannaToolGateway({ isLive: () => true })
+    const agent = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      grokManager: fakeGrokManager as never,
+      toolGateway,
+    })
+    const call = async (env: Record<string, string>) => {
+      let stdout = "", stderr = ""
+      const code = await runKannaToolCli(["get_context"], { env, stdout: (text) => { stdout += text }, stderr: (text) => { stderr += text }, readStdin: async () => "" })
+      return { code, stdout, stderr }
+    }
+    try {
+      await agent.send({ type: "chat.send", chatId: "chat-1", provider: "grok", content: "work" })
+      await waitFor(() => agent.getActiveStatuses().get("chat-1") === "running")
+      const env = started!.env!
+      expect(env.KANNA_CHAT_ID).toBe("chat-1")
+      expect(env.KANNA_TOOLS_URL).toStartWith("http://127.0.0.1:")
+      expect(env.KANNA_TOOLS_AUTH).toBeString()
+      // Grok takes no MCP tools, so it hears of them as commands.
+      expect(started!.content).toContain("# Kanna tools as commands")
+      expect(started!.content).toContain("You have no Kanna tools to call directly.")
+      expect(started!.content).toContain("`create_chat`")
+
+      // The call reached this chat's own tool runtime. The fake has no orchestrator behind it.
+      expect(await call(env)).toMatchObject({ code: 1, stderr: expect.stringContaining("The chat tools are not available in this session.") })
+
+      await agent.cancel("chat-1")
+      expect(await call(env)).toMatchObject({ code: 1, stderr: expect.stringContaining("Chat turn ended") })
+    } finally {
+      toolGateway.close()
+    }
   })
 })
 
@@ -3528,7 +3664,7 @@ describe("waiting on a subagent", () => {
       },
     })
     agent.onChatSettled = (chatId) => settled.push(chatId)
-    await agent.send({ type: "chat.send", projectId: "project-1", provider: "claude", content: "review this in the background" })
+    await agent.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "review this in the background" })
     await waitFor(() => report !== undefined)
 
     // While the turn runs the chat is running, whatever it has handed off.
@@ -3600,6 +3736,7 @@ describe("waiting on a subagent", () => {
     let report: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
     const stopped: string[] = []
     const manager = {
+      getSessionPids: () => new Map<string, number>(),
       setTaskActivityListener(listener: typeof report) { report = listener },
       async startSession() {},
       async startTurn(): Promise<HarnessTurn> {
@@ -3725,6 +3862,7 @@ describe("a chat made a delegator, or an ordinary chat again, mid-conversation",
       let codexSessionToken: string | null | undefined
       let stream = new AsyncEventQueue<any>()
       const manager = {
+        getSessionPids: () => new Map<string, number>(),
         async startSession(args: { sessionToken: string | null }) {
           codexSessionToken = args.sessionToken
           return { sessionToken: "session-1" }
@@ -3921,6 +4059,132 @@ describe("a chat made a delegator, or an ordinary chat again, mid-conversation",
     await waitFor(() => store.turnFinishedCount === 1)
     expect(coordinator.isBusy("chat-1")).toBe(false)
     queues[1]!.close()
+    coordinator.dispose()
+  })
+})
+
+describe("disable pre-configured MCP servers", () => {
+  test("claude: off, the launch keeps the user's MCP config and connectors", () => {
+    const options = claudeLaunchOptions({ env: { PATH: "/bin", CLAUDECODE: "1" } })
+    expect(options).toEqual({
+      settings: { enableWorkflows: true, fastMode: false },
+      env: { PATH: "/bin" },
+    })
+  })
+
+  test("claude: on, the launch is strict and skips claude.ai connectors", () => {
+    const options = claudeLaunchOptions({
+      serviceTier: "fast",
+      disablePreconfiguredMcp: true,
+      env: { PATH: "/bin", CLAUDECODE: "1" },
+    })
+    expect(options).toEqual({
+      settings: { enableWorkflows: true, fastMode: true, disableClaudeAiConnectors: true },
+      env: { PATH: "/bin", ENABLE_CLAUDEAI_MCP_SERVERS: "false" },
+      strictMcpConfig: true,
+    })
+  })
+
+  test("claude: a flip during a turn leaves the session alone, and the next turn restarts with the setting and resumes", async () => {
+    const queues: AsyncEventQueue<any>[] = []
+    const promptIds: string[][] = []
+    const starts: Array<{ disablePreconfiguredMcp?: boolean; sessionToken: string | null; mcpServers: boolean }> = []
+    let disable = false
+    const store = createFakeStore()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      disablePreconfiguredMcp: () => disable,
+      startClaudeSession: async (args) => {
+        starts.push({
+          disablePreconfiguredMcp: args.disablePreconfiguredMcp,
+          sessionToken: args.sessionToken,
+          // Kanna's own server is handed over either way.
+          mcpServers: Boolean(args.customTools),
+        })
+        const events = new AsyncEventQueue<any>()
+        const index = queues.push(events) - 1
+        promptIds.push([])
+        return {
+          provider: "claude",
+          echoesPromptIds: true,
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => events.close(),
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (_content: string, promptId?: string) => { promptIds[index]!.push(promptId!) },
+        }
+      },
+    })
+    const result = (index: number, prompt: number) => queues[index]!.push({
+      type: "transcript",
+      entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+      promptIds: [promptIds[index]![prompt]],
+    })
+
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "one", model: "claude-opus-4-1" })
+    queues[0]!.push({ type: "session_token", sessionToken: "claude-session-1" })
+    await waitFor(() => store.chat.sessionToken === "claude-session-1")
+
+    disable = true
+    await coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "two" })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(starts).toHaveLength(1)
+
+    result(0, 0)
+    await waitFor(() => starts.length === 2)
+    expect(starts.map(({ disablePreconfiguredMcp, sessionToken }) => ({ disablePreconfiguredMcp, sessionToken }))).toEqual([
+      { disablePreconfiguredMcp: undefined, sessionToken: null },
+      { disablePreconfiguredMcp: true, sessionToken: "claude-session-1" },
+    ])
+    expect(starts[1]!.mcpServers).toBe(starts[0]!.mcpServers)
+
+    // Unchanged, the next turn reuses the session.
+    result(1, 0)
+    await waitFor(() => store.turnFinishedCount === 2)
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "three", model: "claude-opus-4-1" })
+    expect(starts).toHaveLength(2)
+    result(1, 1)
+    await waitFor(() => store.turnFinishedCount === 3)
+    coordinator.dispose()
+  })
+
+  test("codex: the setting reaches the session start of each turn", async () => {
+    const sessionArgs: Array<{ disablePreconfiguredMcp?: boolean }> = []
+    const store = createFakeStore()
+    const turn = (): HarnessTurn => ({
+      provider: "codex",
+      stream: (async function* () {
+        yield { type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }) }
+      })() as never,
+      interrupt: async () => {},
+      close: () => {},
+    })
+    let disable = true
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      disablePreconfiguredMcp: () => disable,
+      codexManager: {
+        getSessionPids: () => new Map<string, number>(),
+        async startSession(args: { disablePreconfiguredMcp?: boolean }) {
+          sessionArgs.push({ disablePreconfiguredMcp: args.disablePreconfiguredMcp })
+          return { sessionToken: "thread-1", resumeFellBack: false }
+        },
+        async startTurn() { return turn() },
+        stopSession() {},
+        stopAll() {},
+      } as never,
+    })
+
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "one", model: "gpt-5.5" })
+    await waitFor(() => store.turnFinishedCount === 1)
+    disable = false
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "two", model: "gpt-5.5" })
+    await waitFor(() => store.turnFinishedCount === 2)
+    expect(sessionArgs).toEqual([{ disablePreconfiguredMcp: true }, { disablePreconfiguredMcp: false }])
     coordinator.dispose()
   })
 })

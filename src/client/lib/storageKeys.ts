@@ -44,8 +44,9 @@ export const CHAT_TABS_STORAGE_KEY = "kanna:chat-tabs"
 /** localStorage: JSON map of sidebar list to whether its Pinned section is expanded, once you have toggled it. */
 export const SIDEBAR_PINNED_EXPANDED_STORAGE_KEY = "kanna:sidebar-pinned-expanded"
 
-/** localStorage: the same for its Delegators section. */
-export const SIDEBAR_DELEGATORS_EXPANDED_STORAGE_KEY = "kanna:sidebar-delegators-expanded"
+
+/** localStorage: JSON map of project id to the chats viewed in it, most recent first. See lib/lastViewedChats.ts. */
+export const LAST_VIEWED_CHATS_STORAGE_KEY = "kanna:last-viewed-chats"
 
 /** localStorage: focus mode is on, so the sidebar shows only the open chat's project. */
 export const SIDEBAR_FOCUS_MODE_STORAGE_KEY = "kanna:sidebar-focus-mode"

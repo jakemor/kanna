@@ -122,6 +122,19 @@ describe("visualization document isolation", () => {
     expect(loaded.indexOf(VISUALIZATION_BASE_SIZE_CSS)).toBeLessThan(loaded.indexOf("<p>Prose</p>"))
   })
 
+  test("the root's font outranks an authored html{font:inherit}, in a new document and an old one", async () => {
+    // Specificity, not order: the authored rule comes later, and an html
+    // selector loses to :root wherever it is.
+    const authored = '<style>html,body{margin:0;font:inherit}</style><p>Prose</p>'
+    const rootFont = /:root\{[^}]*font-family:var\(--font-sans\)/
+    const saved = buildVisualizationDocument(authored, 'Example', 360)
+    expect(decode((await parse(saved)).frames[0]!.srcdoc!)).toMatch(rootFont)
+    const older = saved.replace(/(:root\{color-scheme:light;)font-family:var\(--font-sans\);/, "$1")
+    expect(decode((await parse(older)).frames[0]!.srcdoc!)).not.toMatch(rootFont)
+    const loaded = decode((await parse(prepareVisualizationDocument(older, { appearance: 'light', variables: { '--font-sans': '"Body", sans-serif' } }, ''))).frames[0]!.srcdoc!)
+    expect(loaded).toMatch(rootFont)
+  })
+
   test("the frame hands Escape up unless the visualization used it", async () => {
     const saved = buildVisualizationDocument('<p>Example</p>', 'Example', 360)
     const shell = await parse(prepareVisualizationDocument(saved, { appearance: 'light', variables: {} }, ''))

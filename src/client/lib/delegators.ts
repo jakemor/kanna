@@ -1,24 +1,12 @@
-import { isWorkingStatus, type SidebarChatRow } from "../../shared/types"
-import type { SidebarThread } from "./thread-sections"
+import { providerHasKannaTools, type SidebarChatRow } from "../../shared/types"
+import { isUnreadForUser, type SidebarThread } from "./thread-sections"
 
 /**
  * Delegators on the client: a chat whose job is to hand work to the chats
  * under it (`SidebarChatRow.delegator`). The rules that are not drawing:
- * a project's delegators, which chats a delegator's list holds, and how many
- * of them want the user. React-free for tests.
+ * which chats a delegator's list holds, and how many of them want the user.
+ * React-free for tests.
  */
-
-/**
- * A project's delegators, the one to reach for first at the head: the most
- * recently active. Archived ones are not offered: archiving a delegator is
- * putting it away.
- */
-export function projectDelegators(threads: readonly SidebarThread[], projectId: string | null): SidebarThread[] {
-  if (!projectId) return []
-  return threads
-    .filter((thread) => thread.projectId === projectId && Boolean(thread.row.delegator) && !thread.archived)
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.chatId.localeCompare(right.chatId))
-}
 
 /**
  * The chats a delegator's list holds: the ones directly under it, archived
@@ -37,17 +25,13 @@ export function delegatedThreads(threads: readonly SidebarThread[], delegatorCha
 
 /**
  * Whether a chat under a delegator wants the user: it is waiting on an
- * answer, or it has come to rest with something unread.
- *
- * A channel row's rule (`ChannelList`) without its exception for sub-chats.
- * Elsewhere a sub-chat's unread mark is its parent's business, which is why
- * it makes no sound and adds to no count. This list is made of sub-chats,
- * and the mark is what its rows show, so here it counts: the number is the
- * rows in the list with a mark on them. A chat that finishes therefore stays
- * counted until it is opened. The iOS app counts the same way.
+ * answer, or it has come to rest with something unread. A channel row's rule
+ * (`ChannelList`). Most chats here are never unread: the delegator reports
+ * what they did (`tracksUnread` on the server). An adopted chat still listed
+ * in the sidebar is the user's own, and can be. The iOS app counts the same way.
  */
 export function delegatedChatWantsUser(row: Pick<SidebarChatRow, "status" | "unread">): boolean {
-  return row.status === "waiting_for_user" || (row.unread && !isWorkingStatus(row.status))
+  return row.status === "waiting_for_user" || isUnreadForUser(row)
 }
 
 /** How many of the chats under a delegator want the user. Archived ones are put away, and not counted. */
@@ -75,4 +59,15 @@ export function isUnnamedDelegator(title: string): boolean {
  */
 export function delegatedListTitle(title: string | undefined): string {
   return title === undefined || isUnnamedDelegator(title) ? "Delegator" : title
+}
+
+/**
+ * What the chat menu's role switch says on this chat, or null where it is
+ * not offered: a chat on a provider without the Kanna tools cannot start
+ * delegating, though one that already is can still stop. The command palette
+ * offers the same item.
+ */
+export function delegatorToggleTitle(row: Pick<SidebarChatRow, "delegator" | "provider">): string | null {
+  if (row.delegator) return "Work Here Directly"
+  return providerHasKannaTools(row.provider) ? "Make Delegator" : null
 }

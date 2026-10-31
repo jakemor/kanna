@@ -464,6 +464,13 @@ describe("trimmed tool payloads", () => {
     expect(row?.isError).toBe(false)
   })
 
+  test("a result carries its own stamp beside the call's, trimmed or not", () => {
+    const row = toolRowOf([toolCall({ createdAt: 1_000 }), toolResult({ createdAt: 4_200, trimmed: true })])
+    expect(row?.timestamp).toBe(new Date(1_000).toISOString())
+    expect(row?.resultTimestamp).toBe(new Date(4_200).toISOString())
+    expect(toolRowOf([toolCall()])?.resultTimestamp).toBeUndefined()
+  })
+
   test("a trimmed result is not hydrated from an absent body", () => {
     const row = toolRowOf([toolCall(), toolResult({ trimmed: true })])
 

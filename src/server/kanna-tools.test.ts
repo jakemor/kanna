@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
 import { validateToolArguments } from "@mariozechner/pi-ai"
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises"
+import { mkdtemp, writeFile, readFile, rm, truncate } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -14,6 +14,7 @@ import { createKannaMcpServer } from "./kanna-mcp"
 import { parseTranscriptMediaUrl, getTranscriptMediaDir, retargetEntryMediaUrls } from "./transcript-media"
 import { EventStore } from "./event-store"
 import { splitTranscriptEntry } from "./transcript-payloads"
+import { MAX_ATTACHMENT_BYTES } from "./kanna-display-tools"
 
 const visualization = { title: "Sales", html: '<svg aria-label="Sales"><text>Jan: 10, Feb: 20</text></svg>' }
 let testDataDir: string
@@ -62,6 +63,7 @@ describe("shared Kanna display tools", () => {
       "show_visualization", "send_attachments", "generate_images",
       "get_context", "list_chats", "read_chat", "create_chat", "fork_chat", "send_message",
       "cancel_chat", "update_chat", "update_queued_message", "set_schedule", "list_schedules", "delete_schedule",
+      "request_secrets", "list_secrets",
     ])
     const { runtime, entries } = setup()
     expect(await runtime.execute("show_visualization", visualization)).toMatchObject({ structuredContent: { displayed: true } })
@@ -103,6 +105,22 @@ describe("shared Kanna display tools", () => {
       await rm(path.join(dir, "report.txt"))
       expect(await readFile(path.join(getTranscriptMediaDir(dir, "chat-1"), parsed.name), "utf8")).toBe("Saved report")
       expect(retargetEntryMediaUrls(result, "chat-1", "fork")).toMatchObject({ content: [{ url: attachment!.url.replace("chat-1", "fork") }] })
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
+  test("copies attachments up to 1 GB and names the limit past it", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "kanna-attachments-size-"))
+    try {
+      // Sparse files: the size is real to stat, but no disk is written.
+      for (const [name, size] of [["Kanna.dmg", 134 * 1024 * 1024], ["huge.bin", MAX_ATTACHMENT_BYTES + 1]] as const) {
+        await writeFile(path.join(dir, name), "")
+        await truncate(path.join(dir, name), size)
+      }
+      const { runtime } = setup(dir)
+      expect(await runtime.execute("send_attachments", { attachments: [{ path: "Kanna.dmg" }] }))
+        .toMatchObject({ structuredContent: { attachments: [{ name: "Kanna.dmg", size: 134 * 1024 * 1024 }] } })
+      const rejected = await runtime.execute("send_attachments", { attachments: [{ path: "huge.bin" }] })
+      expect(rejected).toMatchObject({ isError: true })
+      expect(JSON.stringify(rejected.content)).toContain("Attachments must be 1 GB or smaller.")
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
   test("display payloads survive a store restart without extra fetches", async () => {
@@ -195,7 +213,7 @@ describe("shared Kanna display tools", () => {
     expect(validate("read_chat", { chatId: "c", after: -1, textOffset: 50000, lastTurns: 1, kinds: ["reply", "tool_result"], limit: 5 }))
       .toEqual({ chatId: "c", after: -1, textOffset: 50000, lastTurns: 1, kinds: ["reply", "tool_result"], limit: 5 })
     expect(() => validate("read_chat", { chatId: "c", kinds: ["assistant"] })).toThrow("Validation failed")
-    expect(validate("create_chat", { message: "go", title: "Lexer fix" })).toEqual({ message: "go", title: "Lexer fix" })
+    expect(validate("create_chat", { message: "go", title: "Lexer fix", delegator: false })).toEqual({ message: "go", title: "Lexer fix", delegator: false })
     expect(() => validate("create_chat", {})).toThrow("Validation failed")
     // Without a server behind the runtime the tools say so instead of failing oddly.
     expect(await runtime.execute("list_chats", {})).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("not available") }] })
@@ -229,6 +247,37 @@ describe("shared Kanna display tools", () => {
       expect(blank).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("fork_chat needs a title") }] })
       expect((await runtime.execute("create_chat", { message: "go" })).content[0]!.text).toContain("create_chat needs a title")
     } finally { runtime.abort() }
+  })
+
+  test("create_chat makes the agent choose delegator, newChat schedules too, and a fork keeps its source's by default", async () => {
+    const schemaOf = (name: string) => kannaToolSpecs().find((tool) => tool.name === name)!.inputSchema as unknown as { required?: string[]; properties: Record<string, { type?: string; description?: string }> }
+    expect(schemaOf("create_chat").required).toContain("delegator")
+    expect(schemaOf("create_chat").properties.delegator!.description).toContain("false for a chat that does the work itself")
+    expect(schemaOf("create_chat").properties.delegator!.description).toContain("true for a chat that coordinates sub-chats of its own")
+    expect(schemaOf("fork_chat").required ?? []).not.toContain("delegator")
+    expect(schemaOf("fork_chat").properties.delegator!.description).toContain("Defaults to the original's role")
+    expect(schemaOf("fork_chat").properties.delegator!.description).toContain("Pass it to change the role")
+    // Required with newChat only, which the schema cannot say, so the orchestrator checks it.
+    expect(schemaOf("set_schedule").required ?? []).not.toContain("delegator")
+    expect(schemaOf("set_schedule").properties.delegator!.description).toContain("With newChat, required")
+
+    const { runtime } = setup()
+    try {
+      const missing = await runtime.execute("create_chat", { message: "go", title: "Lexer fix" })
+      expect(missing).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("create_chat needs delegator: false for a chat that does the work itself, true for one that coordinates sub-chats of its own") }] })
+    } finally { runtime.abort() }
+  })
+
+  test("create, fork and send take showInSidebar, for when the user asks", () => {
+    for (const name of ["create_chat", "fork_chat", "send_message"]) {
+      const schema = kannaToolSpecs().find((tool) => tool.name === name)!.inputSchema as unknown as { required?: string[]; properties: Record<string, { type?: string; description?: string }> }
+      const field = schema.properties.showInSidebar!
+      expect(field.type).toBe("boolean")
+      expect(schema.required ?? []).not.toContain("showInSidebar")
+      // Hiding delegated work stays the default.
+      expect(field.description).toContain("only when the user asks")
+      expect(field.description!.length).toBeLessThanOrEqual(2_048)
+    }
   })
 
   test("every tool description fits in what Claude Code shows of one (2,048 characters)", () => {

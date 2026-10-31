@@ -2,6 +2,7 @@ import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import type { AgentProvider } from "../../shared/types"
 import type { ViewerItem } from "./viewerStore"
+import { attachmentOpenAction } from "../components/viewer/attachmentOpenAction"
 import { SIDEBAR_MAX_WIDTH_PX } from "../lib/sidebarWidth"
 
 /**
@@ -211,7 +212,10 @@ function withoutTicket(item: ViewerItem): ViewerItem {
 /**
  * What of the chats' viewers outlives the page. A chart is data from the
  * transcript and a `blob:` attachment lives only in this page, so neither
- * would come back; nor does the viewer of a page with no chat. A review
+ * would come back; nor does the viewer of a page with no chat. Nor an
+ * attachment the viewer would not open now (`attachmentOpenAction`): a zip
+ * left open before it downloaded on a click came back as an empty panel,
+ * and a PDF on a download URL saved itself again on every reload. A review
  * is kept at the file it was scrolled to, which is where it reopens. A chat
  * preview is kept as the chat's id, and subscribes again when it reopens.
  */
@@ -220,7 +224,9 @@ export function persistedChatViewers(chatViewers: Record<string, ChatViewerState
   for (const [chatKey, viewer] of Object.entries(chatViewers)) {
     const { item } = viewer
     if (!chatKey) continue
-    if (item.kind === "chart" || (item.kind === "attachment" && item.attachment.url.startsWith("blob:"))) {
+    if (item.kind === "chart" || (item.kind === "attachment" && (
+      item.attachment.url.startsWith("blob:") || attachmentOpenAction(item.attachment) !== "preview"
+    ))) {
       // What it was opened over does come back: the chat preview under it.
       if (viewer.returnTo) kept[chatKey] = { ...viewer.returnTo, expanded: viewer.expandedBefore ?? viewer.expanded }
       continue
@@ -333,6 +339,12 @@ export const useRightSidebarStore = create<RightSidebarState>()(
       version: 11,
       migrate: migrateRightSidebarStore,
       partialize: persistedRightSidebarState,
+      // Filtered on the way in as well as out: what was saved before a rule
+      // in `persistedChatViewers` existed must not reopen either.
+      merge: (persisted, current) => {
+        const state = { ...current, ...(persisted as Partial<RightSidebarState>) }
+        return { ...state, chatViewers: persistedChatViewers(state.chatViewers ?? {}) }
+      },
     }
   )
 )

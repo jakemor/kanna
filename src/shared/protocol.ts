@@ -214,12 +214,16 @@ export type ClientCommand =
       terminal?: TerminalPreset
     }
   /**
-   * `delegator` makes the new chat a delegator. It can be made empty, to be sent to later.
-   * `chatId` is the id the chat is to have, a UUID of the client's making: the
+   * Whether the new chat is a delegator is the server's to decide (Delegator
+   * mode, `ChatCommands.create`). `chatId` is the id the chat is to have, a UUID of the client's making: the
    * web client goes to the chat's page as it sends this, not when it is acked.
    */
-  | { type: "chat.create"; projectId: string; delegator?: boolean; chatId?: string }
-  /** Makes an existing chat a delegator, or an ordinary chat again. */
+  | { type: "chat.create"; projectId: string; chatId?: string }
+  /**
+   * Makes an existing chat a delegator, or an ordinary chat again. It changes
+   * the agent's system prompt, so it takes effect on the chat's next turn,
+   * in a restarted session that carries the conversation over.
+   */
   | { type: "chat.setDelegator"; chatId: string; delegator: boolean }
   | { type: "chat.fork"; chatId: string }
   | { type: "chat.rename"; chatId: string; title: string }
@@ -287,8 +291,6 @@ export type ClientCommand =
       effort?: string
       planMode?: boolean
       autoPlan?: boolean
-      /** With no `chatId`: the chat this send creates is a delegator. Ignored otherwise. */
-      delegator?: boolean
     }
   | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.initGit"; chatId: string }
@@ -323,7 +325,16 @@ export type ClientCommand =
   | { type: "chat.createBranch"; chatId: string; name: string; baseBranchName?: string }
   | { type: "chat.discardDiffFile"; chatId: string; path: string }
   | { type: "chat.ignoreDiffFile"; chatId: string; path: string }
-  | { type: "chat.cancel"; chatId: string }
+  | {
+      type: "chat.cancel"
+      chatId: string
+      /**
+       * Whether the sub-chats this chat started stop with it. Absent is true,
+       * the behaviour before the flag: a client that does not send it still
+       * stops them. "Stop this turn" sends false.
+       */
+      cascade?: boolean
+    }
   | { type: "chat.stopDraining"; chatId: string }
   /** Stops one background task (a monitor, a workflow, a subagent) and leaves the turn running. */
   | { type: "chat.stopTask"; chatId: string; taskId: string }
@@ -335,6 +346,19 @@ export type ClientCommand =
       attachmentMode: StandaloneTranscriptAttachmentMode
     }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
+  /**
+   * Answers a pending `request_secrets` call (`chat.respondTool` refuses one).
+   * `values` is keyed by field key; a key left out or empty is skipped, which
+   * only an optional field may be. `cancel` saves nothing. Acks with the
+   * call's `RequestSecretsToolResult`: names only. See shared/secrets.ts.
+   */
+  | { type: "secrets.submit"; chatId: string; toolUseId: string; values?: Record<string, string>; cancel?: boolean }
+  /** Acks with `SecretsListResult`. */
+  | { type: "secrets.list" }
+  /** Adds or replaces one secret from Settings. Acks with `SecretsListResult`. */
+  | { type: "secrets.set"; projectId: string; key: string; value: string }
+  /** Acks with `SecretsListResult`. */
+  | { type: "secrets.delete"; projectId: string; key: string }
   | {
       type: "message.enqueue"
       chatId: string

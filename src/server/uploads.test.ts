@@ -4,7 +4,8 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
-import { persistUploadedFiles, startKannaServer } from "./server"
+import { persistUploadedFiles } from "./server"
+import { startTestServer } from "./__fixtures__/test-server"
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9sAAAAASUVORK5CYII="
@@ -18,7 +19,7 @@ afterEach(async () => {
 async function startIsolatedServer(options: { port: number; strictPort?: boolean }) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-server-data-"))
   tempDirs.push(dataDir)
-  return startKannaServer({
+  return startTestServer({
     dataDir,
     port: options.port,
     strictPort: options.strictPort ?? true,

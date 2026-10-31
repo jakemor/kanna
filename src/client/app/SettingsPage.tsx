@@ -17,7 +17,9 @@ import { MacSection } from "./settings/MacSection"
 import { ProvidersSection } from "./settings/ProvidersSection"
 import { SETTINGS_SECTIONS, visibleSettingsSections } from "./settings/registry"
 import { SkillsSection } from "./settings/SkillsSection"
+import { SecretsSection } from "./settings/SecretsSection"
 import { UsageSection } from "./settings/UsageSection"
+import { SidebarExpandControls } from "./SidebarExpandControls"
 import { getKeybindingsSubtitle, SETTINGS_INSET_X_CLASS, SettingsActionButton, SettingsNotice, SettingsPlaceholder } from "./settings/shared"
 import type { KannaState } from "./useKannaState"
 
@@ -48,6 +50,33 @@ type SidebarPageId = SidebarItem["id"]
 export function resolveSettingsSectionId(sectionId: string | undefined): SidebarPageId | null {
   if (!sectionId) return null
   return sidebarItems.some((item) => item.id === sectionId) ? (sectionId as SidebarPageId) : null
+}
+
+/**
+ * The "Settings" heading atop the page's own sidebar column. With the app
+ * sidebar collapsed, a browser shows the flower and expand button at the
+ * window's top-left, which is where this heading sits, so they are drawn in
+ * the column above it, as the chat navbar draws them in its row. Pulled out
+ * of the column's px-4 py-6 to 12px in and 6.5px down, they sit where the
+ * projects page floats them (KannaSidebar): the flower's center on the open
+ * sidebar's logo, 24px in and 24.5px down. The Mac app
+ * hides them; its pinned toggle is cleared by the column's mac-app padding.
+ */
+export function SettingsSidebarHeading({
+  sidebarCollapsed,
+  onExpandSidebar,
+}: {
+  sidebarCollapsed: boolean
+  onExpandSidebar: () => void
+}) {
+  return (
+    <>
+      {sidebarCollapsed ? <SidebarExpandControls onExpand={onExpandSidebar} className="-mt-[17.5px] -ml-1" /> : null}
+      <div className="px-3 pb-5 text-[22px] font-extrabold tracking-[-0.5px] text-foreground">
+        Settings
+      </div>
+    </>
+  )
 }
 
 /**
@@ -186,9 +215,10 @@ export function SettingsPage() {
           {/* In the Mac app the traffic lights and the pinned sidebar toggle sit
               over this column's top when the app sidebar is collapsed. */}
           <div className="flex flex-col gap-1 px-4 py-6 mac-app:md:pt-[43px]">
-            <div className="px-3 pb-5 text-[22px] font-extrabold tracking-[-0.5px] text-foreground">
-              Settings
-            </div>
+            <SettingsSidebarHeading
+              sidebarCollapsed={state.sidebarCollapsed}
+              onExpandSidebar={state.expandSidebar}
+            />
             {sidebarItems.map((item) => (
               <button
                 key={item.id}
@@ -318,6 +348,8 @@ export function SettingsPage() {
                   <KeybindingsSection state={state} />
                 ) : selectedPage === "skills" ? (
                   <SkillsSection state={state} />
+                ) : selectedPage === "secrets" ? (
+                  <SecretsSection state={state} />
                 ) : selectedPage === "usage" ? (
                   <UsageSection state={state} />
                 ) : selectedPage === "labs" ? (

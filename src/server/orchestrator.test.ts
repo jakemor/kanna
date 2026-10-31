@@ -31,6 +31,7 @@ interface FakeTurn {
   planMode: boolean
   delegator?: boolean
   model?: string
+  effort?: string
   skipPlanApproval?: boolean
   events: AsyncQueue<HarnessEvent>
   open: boolean
@@ -42,10 +43,11 @@ class FakeCodex {
   async startSession() {}
   stopSession() {}
   stopAll() {}
+  getSessionPids() { return new Map<string, number>() }
   getResourceCounts() { return {} }
 
-  async startTurn(args: { chatId: string; content: string; model?: string; planMode: boolean; delegator?: boolean; skipPlanApproval?: boolean }): Promise<HarnessTurn> {
-    const turn: FakeTurn = { chatId: args.chatId, content: args.content, model: args.model, planMode: args.planMode, delegator: args.delegator, skipPlanApproval: args.skipPlanApproval, events: new AsyncQueue(), open: true }
+  async startTurn(args: { chatId: string; content: string; model?: string; effort?: string; planMode: boolean; delegator?: boolean; skipPlanApproval?: boolean }): Promise<HarnessTurn> {
+    const turn: FakeTurn = { chatId: args.chatId, content: args.content, model: args.model, effort: args.effort, planMode: args.planMode, delegator: args.delegator, skipPlanApproval: args.skipPlanApproval, events: new AsyncQueue(), open: true }
     this.turns.push(turn)
     const end = () => {
       turn.open = false
@@ -99,7 +101,14 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup()
 })
 
-async function setup(options?: { closeOutGraceMs?: number }) {
+/** A Grok harness whose turns end at once: Grok is the provider without the Kanna tools. */
+const fakeGrok = {
+  async startTurn(): Promise<HarnessTurn> {
+    return { provider: "grok", stream: (async function* () {})(), interrupt: async () => {}, close: () => {} }
+  },
+}
+
+async function setup(options?: { closeOutGraceMs?: number; delegatorMode?: boolean }) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "kanna-orchestrator-data-"))
   const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-orchestrator-project-"))
   const store = new EventStore(dataDir)
@@ -110,14 +119,17 @@ async function setup(options?: { closeOutGraceMs?: number }) {
     store,
     onStateChange: () => {},
     codexManager: codex as never,
+    grokManager: fakeGrok as never,
     generateTitle: async () => ({ title: null, usedFallback: true, failureMessage: null }),
   })
   let clock: number | null = null
+  let delegatorMode = options?.delegatorMode ?? false
   const pushes: ChatChange[] = []
+  const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter, delegatorMode: () => delegatorMode })
   const orchestrator = new ChatOrchestrator({
     store,
     agent,
-    commands: createChatCommands({ store, agent, analytics: NoopAnalyticsReporter }),
+    commands,
     push: (change) => { pushes.push(change) },
     now: () => clock ?? Date.now(),
     closeOutGraceMs: options?.closeOutGraceMs,
@@ -147,9 +159,11 @@ async function setup(options?: { closeOutGraceMs?: number }) {
     codex,
     agent,
     orchestrator,
+    commands,
     pushes,
     userChat,
     setClock: (value: number) => { clock = value },
+    setDelegatorMode: (on: boolean) => { delegatorMode = on },
     prompts: (chatId: string) => store.getMessages(chatId).filter((entry) => entry.kind === "user_prompt"),
   }
 }
@@ -1066,7 +1080,7 @@ describe("schedules", () => {
     const { orchestrator, codex, store, project, userChat, setClock } = await setup()
     const root = await userChat()
     setClock(0)
-    const schedule = await orchestrator.setSchedule(root, { name: "Nightly triage", message: "triage new issues", newChat: true, everyMinutes: 60 })
+    const schedule = await orchestrator.setSchedule(root, { name: "Nightly triage", message: "triage new issues", newChat: true, delegator: false, everyMinutes: 60 })
     setClock(60 * 60_000)
     await orchestrator.runDueSchedules()
 
@@ -1078,6 +1092,29 @@ describe("schedules", () => {
     setClock(120 * 60_000)
     await orchestrator.runDueSchedules()
     expect(store.getSchedule(schedule.scheduleId)).toMatchObject({ runCount: 1, lastRunChatId: created })
+  })
+
+  test("a newChat schedule needs delegator, keeps it through changes, and makes its chats that", async () => {
+    const { orchestrator, store, userChat, setClock } = await setup({ delegatorMode: true })
+    const root = await userChat()
+    setClock(0)
+    await expect(orchestrator.setSchedule(root, { message: "sweep", newChat: true, everyMinutes: 60 }))
+      .rejects.toThrow("set_schedule with newChat needs delegator: false for a chat that does the work itself, true for one that coordinates")
+    const worker = await orchestrator.setSchedule(root, { name: "Sweep", message: "sweep", newChat: true, delegator: false, everyMinutes: 60 })
+    expect(store.getSchedule(worker.scheduleId)?.target).toMatchObject({ kind: "new_chat", delegator: false })
+    // A change that does not say keeps the answer.
+    await orchestrator.setSchedule(root, { scheduleId: worker.scheduleId, newChat: true, message: "sweep again" })
+    expect(store.getSchedule(worker.scheduleId)?.target).toMatchObject({ kind: "new_chat", delegator: false })
+    const lead = await orchestrator.setSchedule(root, { name: "Lead", message: "plan the week", newChat: true, delegator: true, everyMinutes: 60 })
+    await expect(orchestrator.setSchedule(root, { message: "x", newChat: true, delegator: true, provider: "grok", everyMinutes: 60 })).rejects.toThrow("cannot be a delegator")
+
+    // With the mode on, the worker schedule's chats are still workers.
+    setClock(60 * 60_000)
+    await orchestrator.runDueSchedules()
+    const workerChat = store.getSchedule(worker.scheduleId)!.lastRunChatId!
+    const leadChat = store.getSchedule(lead.scheduleId)!.lastRunChatId!
+    expect(store.getChat(workerChat)).not.toHaveProperty("delegator")
+    expect(store.getChat(leadChat)).toMatchObject({ delegator: true })
   })
 
   test("a schedule can be changed, paused and deleted", async () => {
@@ -1730,39 +1767,63 @@ describe("delegators", () => {
     return chat.id
   }
 
-  test("the flag is set at creation, empty or by the first send, and reaches the sidebar and the chat's snapshot", async () => {
-    const { store, project, agent, codex } = await setup()
-    const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter })
+  test("Delegator mode makes the user's new chats delegators, and the flag reaches the sidebar and the chat's snapshot", async () => {
+    const { store, project, agent, codex, commands, setDelegatorMode } = await setup({ delegatorMode: true })
     const snapshotOf = (chatId: string) => deriveChatSnapshot(store.state, agent.getChatStatuses(), new Set(), chatId, () => ({ messages: [], startIndex: 0, readAnchor: null }))
     const rowOf = (chatId: string) => deriveSidebarData(store.state, agent.getChatStatuses()).projectGroups[0]!.chats.find((chat) => chat.chatId === chatId)
 
-    // Made empty, to be sent to later.
-    const made = await commands.create(project.id, undefined, { delegator: true })
+    // Made empty, as the web client does, or by the send that starts it, as iOS does.
+    const made = await commands.create(project.id)
     expect(made.changed).toEqual({ sidebar: true, localProjects: true, chatIds: [made.result.chatId] })
-    expect(store.getChat(made.result.chatId)).toMatchObject({ delegator: true, hasMessages: false })
-    expect(rowOf(made.result.chatId)).toMatchObject({ delegator: true })
-    expect(snapshotOf(made.result.chatId)?.runtime).toMatchObject({ delegator: true })
+    const sent = await commands.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "ship the release" })
+    await until(() => codex.turnsFor(sent.result.chatId).length === 1)
+    for (const chatId of [made.result.chatId, sent.result.chatId]) {
+      expect(store.getChat(chatId)).toMatchObject({ delegator: true })
+      expect(rowOf(chatId)).toMatchObject({ delegator: true })
+      expect(snapshotOf(chatId)?.runtime).toMatchObject({ delegator: true })
+    }
+    expect(codex.turn(sent.result.chatId).delegator).toBe(true)
 
-    // Made by the send that starts it.
-    const sent = await agent.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "ship the release", delegator: true })
-    await until(() => codex.turnsFor(sent.chatId).length === 1)
-    expect(store.getChat(sent.chatId)).toMatchObject({ delegator: true })
-
-    // Every other chat has no such field, on the record or on the wire.
+    // With the mode off, a new chat is an ordinary one, with no such field on the record or on the wire.
+    setDelegatorMode(false)
     const plain = (await commands.create(project.id)).result.chatId
-    const plainSent = await agent.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "hi" })
-    // A send to a chat that exists does not change what it is.
-    await agent.send({ type: "chat.send", chatId: plain, provider: "codex", content: "hi", delegator: true })
-    for (const chatId of [plain, plainSent.chatId]) {
+    const plainSent = await commands.send({ type: "chat.send", projectId: project.id, provider: "codex", content: "hi" })
+    await until(() => codex.turnsFor(plainSent.result.chatId).length === 1)
+    expect(codex.turn(plainSent.result.chatId).delegator).toBe(false)
+    for (const chatId of [plain, plainSent.result.chatId]) {
       expect(store.getChat(chatId)).not.toHaveProperty("delegator")
       expect(rowOf(chatId)).not.toHaveProperty("delegator")
       expect(snapshotOf(chatId)?.runtime).not.toHaveProperty("delegator")
     }
+
+    // The mode decides at creation only: chats made before a change keep their role.
+    setDelegatorMode(true)
+    expect(store.getChat(plain)).not.toHaveProperty("delegator")
+    setDelegatorMode(false)
+    expect(store.getChat(made.result.chatId)).toMatchObject({ delegator: true })
+    // And so does a restart: nothing rewrites a role when the store is read back.
+    const reopened = new EventStore(store.dataDir)
+    await reopened.initialize()
+    expect(reopened.getChat(made.result.chatId)).toMatchObject({ delegator: true })
+    expect(reopened.getChat(plain)).not.toHaveProperty("delegator")
   })
 
-  test("the flag can be changed later, survives a restart, and keeps an empty delegator from being cleared away", async () => {
-    const { store, project, agent } = await setup()
-    const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter })
+  test("a chat whose first send is to a provider without the Kanna tools stays an ordinary chat", async () => {
+    const { store, project, commands } = await setup({ delegatorMode: true })
+    const made = (await commands.create(project.id)).result.chatId
+    expect(store.getChat(made)).toMatchObject({ delegator: true })
+    await commands.send({ type: "chat.send", chatId: made, provider: "grok", content: "hi" })
+    expect(store.getChat(made)).not.toHaveProperty("delegator")
+
+    const sent = await commands.send({ type: "chat.send", projectId: project.id, provider: "grok", content: "hi" })
+    expect(store.getChat(sent.result.chatId)).not.toHaveProperty("delegator")
+
+    // And one cannot be made a delegator after.
+    await expect(commands.setDelegator(made, true)).rejects.toThrow("cannot be a delegator")
+  })
+
+  test("a chat's role can be flipped later, and survives a restart", async () => {
+    const { store, project, commands } = await setup()
     const born = (await commands.create(project.id, undefined, { delegator: true })).result.chatId
     const made = (await commands.create(project.id)).result.chatId
     const unmade = (await commands.create(project.id, undefined, { delegator: true })).result.chatId
@@ -1783,12 +1844,9 @@ describe("delegators", () => {
       expect(reopened.getChat(empty)).not.toHaveProperty("delegator")
     }
 
-    // An empty chat left lying is deleted in time. An empty delegator is waiting to be used.
+    // An empty chat left lying is deleted in time, a delegator like any other.
     const pruned = await store.pruneStaleEmptyChats({ now: Date.now() + 24 * 60 * 60_000 })
-    expect(pruned).toContain(empty)
-    expect(pruned).toContain(unmade)
-    expect(pruned).not.toContain(born)
-    expect(pruned).not.toContain(made)
+    expect(pruned.sort()).toEqual([born, made, unmade, empty].sort())
   })
 
   test("a delegator's turns are started with the delegator instructions, and no other chat's are", async () => {
@@ -1975,6 +2033,81 @@ describe("delegators", () => {
     const listed = orchestrator.listChats({}).chats
     expect(listed.find((chat) => chat.chatId === root)).toMatchObject({ delegator: true })
     expect(listed.find((chat) => chat.chatId === other)).not.toHaveProperty("delegator")
+  })
+
+  test("with the mode on, a sub-chat is a worker unless it is asked for as a delegator, and a separate chat follows the mode", async () => {
+    const context = await setup({ delegatorMode: true })
+    const { orchestrator, store, userChat, setDelegatorMode } = context
+    const root = await delegatorChat(context)
+    const worker = await orchestrator.createChat(root, { message: "audit the parser", title: "Parser audit" })
+    expect(store.getChat(worker.chatId)).not.toHaveProperty("delegator")
+    expect(worker).not.toHaveProperty("delegator")
+    const nested = await orchestrator.createChat(root, { message: "run the release", title: "Release", delegator: true })
+    expect(store.getChat(nested.chatId)).toMatchObject({ delegator: true, parentChatId: root })
+
+    // A chat that is not a sub-chat is the user's own, made as theirs are.
+    const other = await userChat("something else")
+    const separate = await orchestrator.createChat(other, { message: "separate work", title: "Separate", subchat: false })
+    expect(store.getChat(separate.chatId)).toMatchObject({ delegator: true })
+    expect(store.getChat(separate.chatId)?.parentChatId).toBeUndefined()
+    const asWorker = await orchestrator.createChat(other, { message: "more work", title: "More", subchat: false, delegator: false })
+    expect(store.getChat(asWorker.chatId)).not.toHaveProperty("delegator")
+    setDelegatorMode(false)
+    const offSeparate = await orchestrator.createChat(other, { message: "and more", title: "And more", subchat: false })
+    expect(store.getChat(offSeparate.chatId)).not.toHaveProperty("delegator")
+
+    // A provider without the Kanna tools cannot be asked for as one.
+    await expect(orchestrator.createChat(root, { message: "x", title: "X", provider: "grok", delegator: true })).rejects.toThrow("cannot be a delegator")
+  })
+
+  test("adopting a chat does not change its role", async () => {
+    const context = await setup({ delegatorMode: true })
+    const { orchestrator, store, codex, userChat } = context
+    const root = await delegatorChat(context)
+    const other = await delegatorChat(context, "another delegator")
+    const plain = await userChat("a chat of the user's")
+    for (const chatId of [other, plain]) codex.finish(chatId, "done")
+    await until(() => [other, plain].every((chatId) => orchestrator.readChat({ chatId }).chat.status === "completed"))
+
+    await orchestrator.sendMessage(root, { chatId: other, message: "take the docs", title: "another delegator" })
+    await orchestrator.sendMessage(root, { chatId: plain, message: "look at this", title: "a chat of the user's" })
+    expect(store.getChat(other)).toMatchObject({ parentChatId: root, adopted: true, delegator: true })
+    expect(store.getChat(plain)).toMatchObject({ parentChatId: root, adopted: true })
+    expect(store.getChat(plain)).not.toHaveProperty("delegator")
+  })
+
+  test("a fork keeps its source's role unless it is asked for another", async () => {
+    const context = await setup({ delegatorMode: true })
+    const { orchestrator, store, codex } = context
+    const root = await delegatorChat(context)
+    const worker = await orchestrator.createChat(root, { message: "audit the parser", title: "Parser audit" })
+    codex.turn(worker.chatId).events.push({ type: "session_token", sessionToken: "thread-worker" })
+    codex.finish(worker.chatId, "Found two bugs.")
+    await until(() => orchestrator.readChat({ chatId: worker.chatId }).chat.status === "completed")
+
+    const workerFork = await orchestrator.forkChat(root, { chatId: worker.chatId, title: "Parser fixes" })
+    expect(store.getChat(workerFork.chatId)).not.toHaveProperty("delegator")
+    const promoted = await orchestrator.forkChat(root, { chatId: worker.chatId, title: "Parser rewrite", delegator: true })
+    expect(store.getChat(promoted.chatId)).toMatchObject({ delegator: true })
+    expect(store.getChat(worker.chatId)).not.toHaveProperty("delegator")
+  })
+
+  test("update_chat flips a chat's role, says when it takes effect, and refuses a provider without the tools", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat("do the thing")
+    const made = await orchestrator.updateChat(root, { delegator: true })
+    expect(store.getChat(root)).toMatchObject({ delegator: true })
+    expect(made).toMatchObject({ delegator: true, roleNote: expect.stringContaining("next turn") })
+    const unmade = await orchestrator.updateChat(root, { delegator: false })
+    expect(store.getChat(root)).not.toHaveProperty("delegator")
+    expect(unmade).toMatchObject({ roleNote: expect.stringContaining("works directly") })
+    // No flip, no note.
+    expect(await orchestrator.updateChat(root, { delegator: false })).not.toHaveProperty("roleNote")
+    // A provider staged for the next turn counts, and nothing is changed when it is refused.
+    await expect(orchestrator.updateChat(root, { delegator: true, provider: "grok" })).rejects.toThrow("cannot be a delegator")
+    expect(store.getChat(root)).not.toHaveProperty("delegator")
+    expect(store.getChat(root)?.nextRun).toBeUndefined()
   })
 })
 
@@ -2291,7 +2424,7 @@ describe("the tools", () => {
     }
 
     expect((await call("get_context", {})).value.chat.chatId).toBe(root)
-    const created = await call("create_chat", { message: "audit", title: "Audit" })
+    const created = await call("create_chat", { message: "audit", title: "Audit", delegator: false })
     expect(created.value).toMatchObject({ title: "Audit", parentChatId: root })
     // What the transcript keeps is what the chat card is drawn from: the
     // call as an inline `chat` tool, and the result as an object naming the chat.
@@ -2318,5 +2451,394 @@ describe("the tools", () => {
     expect(await call("read_chat", { chatId: "nope" })).toMatchObject({ isError: true, value: expect.stringContaining("list_chats") })
     expect(await call("create_chat", { message: "x", extra: 1 })).toMatchObject({ isError: true })
     expect(store.getQueuedMessages(root)).toHaveLength(1)
+  })
+})
+
+describe("sidebar visibility", () => {
+  /** A delegator the user made, with a turn open in it. */
+  async function delegatorChat(context: Awaited<ReturnType<typeof setup>>) {
+    const { store, project, agent, codex } = context
+    const chat = await store.createChat(project.id, undefined, { delegator: true })
+    await agent.send({ type: "chat.send", chatId: chat.id, provider: "codex", content: "ship the release" })
+    await until(() => codex.turnsFor(chat.id).length === 1, "the delegator's turn")
+    return chat.id
+  }
+
+  /** A chat the user started whose turn has ended with a session, so it can be forked. */
+  async function forkable(context: Awaited<ReturnType<typeof setup>>, content = "something to fork") {
+    const { codex, orchestrator, userChat } = context
+    const chatId = await userChat(content)
+    codex.turn(chatId).events.push({ type: "session_token", sessionToken: `thread-${chatId}` })
+    codex.finish(chatId, "done")
+    await until(() => orchestrator.readChat({ chatId }).chat.status === "completed", "the source's turn")
+    return chatId
+  }
+
+  function hidden(context: Awaited<ReturnType<typeof setup>>, chatId: string) {
+    const { store, agent } = context
+    const row = deriveSidebarData(store.state, agent.getChatStatuses()).projectGroups[0]!.chats.find((chat) => chat.chatId === chatId)!
+    // The record, the row and the lists all say the same.
+    expect(row.hidden).toBe(Boolean(store.getChat(chatId)!.hidden))
+    return row.hidden
+  }
+
+  test("each way a chat comes to be gets the place it had before the field", async () => {
+    const context = await setup()
+    const { orchestrator, store, project, agent, userChat } = context
+    const commands = createChatCommands({ store, agent, analytics: NoopAnalyticsReporter })
+    const root = await userChat()
+
+    // The user's own: the store, the command the client sends, a fork from the UI.
+    expect(hidden(context, root)).toBe(false)
+    expect(hidden(context, (await commands.create(project.id)).result.chatId)).toBe(false)
+    const source = await forkable(context)
+    expect(hidden(context, (await commands.fork(source)).result.chatId)).toBe(false)
+
+    // An agent's: a sub-chat by default, a separate chat on request.
+    expect(hidden(context, (await orchestrator.createChat(root, { message: "audit" })).chatId)).toBe(true)
+    expect(hidden(context, (await orchestrator.createChat(root, { message: "separate", subchat: false })).chatId)).toBe(false)
+    // A fork handed work reports back, so it is hidden; one left idle, or made separate, is listed.
+    expect(hidden(context, (await orchestrator.forkChat(root, { chatId: source, message: "go on", title: "Go on" })).chatId)).toBe(true)
+    expect(hidden(context, (await orchestrator.forkChat(root, { chatId: source, title: "Idle copy" })).chatId)).toBe(false)
+    expect(hidden(context, (await orchestrator.forkChat(root, { chatId: source, message: "go on", title: "Mine", subchat: false })).chatId)).toBe(false)
+
+    // A delegator's, whatever it passes about the parent.
+    const delegator = await delegatorChat(context)
+    expect(hidden(context, (await orchestrator.createChat(delegator, { message: "work", subchat: false })).chatId)).toBe(true)
+    expect(hidden(context, (await orchestrator.forkChat(delegator, { chatId: source, title: "Copy", subchat: false })).chatId)).toBe(true)
+  })
+
+  test("adopting keeps a listed chat listed and lists a hidden one, as the parent rule did", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat } = context
+    const root = await userChat()
+    const other = await userChat("something else")
+    const elsewhere = await userChat("a third thing")
+    const theirs = await orchestrator.createChat(elsewhere, { message: "work" })
+    expect(hidden(context, theirs.chatId)).toBe(true)
+
+    await orchestrator.sendMessage(root, { chatId: other, message: "rebase", title: "Rebase", adopt: true })
+    expect(store.getChat(other)).toMatchObject({ parentChatId: root, adopted: true })
+    expect(hidden(context, other)).toBe(false)
+
+    // A failed adoption puts it back under the parent that started it, hidden again.
+    codex.finish(theirs.chatId, "done")
+    await until(() => store.getQueuedMessages(elsewhere).length === 1, "the sub-chat's report")
+    const startTurn = codex.startTurn.bind(codex)
+    codex.startTurn = async () => { throw new Error("provider is down") }
+    await expect(orchestrator.sendMessage(root, { chatId: theirs.chatId, message: "hi", title: "Work", adopt: true })).rejects.toThrow("did not start")
+    codex.startTurn = startTurn
+    expect(store.getChat(theirs.chatId)).toMatchObject({ parentChatId: elsewhere })
+    expect(hidden(context, theirs.chatId)).toBe(true)
+
+    await orchestrator.sendMessage(root, { chatId: theirs.chatId, message: "report to me", title: "Work", adopt: true })
+    expect(hidden(context, theirs.chatId)).toBe(false)
+  })
+
+  test("showInSidebar lists a sub-chat that still reports to its parent, a delegator's included", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat } = context
+    const root = await userChat()
+    const listed = await orchestrator.createChat(root, { message: "audit", showInSidebar: true })
+    expect(listed).toMatchObject({ parentChatId: root })
+    expect(listed).not.toHaveProperty("hidden")
+    expect(hidden(context, listed.chatId)).toBe(false)
+    expect(store.getChat(listed.chatId)).toMatchObject({ reportOwed: true })
+    const source = await forkable(context)
+    expect(hidden(context, (await orchestrator.forkChat(root, { chatId: source, message: "go on", title: "Go on", showInSidebar: true })).chatId)).toBe(false)
+
+    // A chat with no parent has to be listed: nothing else would show it.
+    await expect(orchestrator.createChat(root, { message: "x", subchat: false, showInSidebar: false })).rejects.toThrow("has to be in the sidebar")
+    await expect(orchestrator.forkChat(root, { chatId: source, title: "x", showInSidebar: false })).rejects.toThrow("has to be in the sidebar")
+
+    const delegator = await delegatorChat(context)
+    const visible = await orchestrator.createChat(delegator, { message: "churn risk", title: "Churn risk", showInSidebar: true })
+    expect(visible).toMatchObject({ parentChatId: delegator })
+    expect(hidden(context, visible.chatId)).toBe(false)
+    // Still the delegator's: it reports there.
+    codex.finish(visible.chatId, "Three accounts at risk.")
+    await until(() => store.getQueuedMessages(delegator).length === 1, "the report")
+    expect(store.getQueuedMessages(delegator)[0]).toMatchObject({ source: { kind: "report", chatIds: [visible.chatId] } })
+  })
+
+  test("send_message shows or hides the sender's own sub-chats, and only those", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat, prompts } = context
+    const delegator = await delegatorChat(context)
+    const churn = await orchestrator.createChat(delegator, { message: "churn risk", title: "Churn risk" })
+    expect(hidden(context, churn.chatId)).toBe(true)
+    codex.finish(churn.chatId, "done")
+    await until(() => orchestrator.readChat({ chatId: churn.chatId }).chat.status === "completed")
+
+    // Detached into the sidebar, still the delegator's.
+    await orchestrator.sendMessage(delegator, { chatId: churn.chatId, message: "keep going", title: "Churn risk", showInSidebar: true })
+    expect(hidden(context, churn.chatId)).toBe(false)
+    expect(store.getChat(churn.chatId)).toMatchObject({ parentChatId: delegator })
+    codex.finish(churn.chatId, "done again")
+    await until(() => orchestrator.readChat({ chatId: churn.chatId }).chat.status === "completed")
+    await orchestrator.sendMessage(delegator, { chatId: churn.chatId, message: "tidy up", title: "Churn risk", showInSidebar: false })
+    expect(hidden(context, churn.chatId)).toBe(true)
+
+    // Not a chat of its own: refused before anything is sent.
+    const root = await userChat()
+    const other = await forkable(context, "the user's own")
+    const before = prompts(other).length
+    await expect(orchestrator.sendMessage(root, { chatId: other, message: "hi", title: "Theirs", showInSidebar: false })).rejects.toThrow("only for a sub-chat of this chat")
+    expect(prompts(other)).toHaveLength(before)
+    expect(hidden(context, other)).toBe(false)
+    // Adopted in the same call, it is one.
+    await orchestrator.sendMessage(root, { chatId: other, message: "hi", title: "Theirs", adopt: true, showInSidebar: false })
+    expect(store.getChat(other)).toMatchObject({ parentChatId: root, adopted: true })
+    expect(hidden(context, other)).toBe(true)
+  })
+
+  test("the tools take showInSidebar on create, fork and send", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat()
+    const runtime = new KannaToolRuntime({
+      chatId: root,
+      cwd: "/tmp",
+      emit: async () => {},
+      requestInput: async () => ({}),
+      orchestration: orchestrator,
+    })
+    const call = async (name: string, input: unknown) => {
+      const result = await runtime.execute(name, input)
+      return result.isError ? { error: result.content[0]!.text } : JSON.parse(result.content[0]!.text)
+    }
+    const created = await call("create_chat", { message: "audit", title: "Audit", showInSidebar: true, delegator: false })
+    expect(store.getChat(created.chatId)).toMatchObject({ parentChatId: root })
+    expect(store.getChat(created.chatId)).not.toHaveProperty("hidden")
+    const source = await forkable(context)
+    const forked = await call("fork_chat", { chatId: source, message: "go on", title: "Go on", showInSidebar: true })
+    expect(store.getChat(forked.chatId)).not.toHaveProperty("hidden")
+    await call("send_message", { chatId: created.chatId, message: "more", title: "Audit", showInSidebar: false })
+    expect(store.getChat(created.chatId)?.hidden).toBe(true)
+    expect(await call("send_message", { chatId: source, message: "hi", title: "x", showInSidebar: true })).toMatchObject({ error: expect.stringContaining("adopt") })
+    runtime.abort()
+  })
+})
+
+describe("update_chat settings", () => {
+  /** A sub-chat of `parent` whose first turn has ended. */
+  async function idleSubchat(context: Awaited<ReturnType<typeof setup>>, parent: string) {
+    const { orchestrator, codex } = context
+    const child = await orchestrator.createChat(parent, { message: "audit the parser", title: "Parser audit" })
+    codex.finish(child.chatId, "done")
+    await until(() => orchestrator.readChat({ chatId: child.chatId }).chat.status === "completed", "the sub-chat's turn")
+    return child.chatId
+  }
+
+  test("showInSidebar lists or hides the caller's own sub-chats, without a turn", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat, prompts, pushes } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+    expect(store.getChat(child)?.hidden).toBe(true)
+    const turns = codex.turnsFor(child).length
+    const sent = prompts(child).length
+
+    pushes.length = 0
+    expect(await orchestrator.updateChat(root, { chatId: child, showInSidebar: true })).not.toHaveProperty("hidden")
+    expect(store.getChat(child)).not.toHaveProperty("hidden")
+    expect(pushes).toContainEqual(expect.objectContaining({ sidebar: true, chatIds: [child] }))
+    await orchestrator.updateChat(root, { chatId: child, showInSidebar: false })
+    expect(store.getChat(child)?.hidden).toBe(true)
+    // Still the root's, and nothing was sent.
+    expect(store.getChat(child)).toMatchObject({ parentChatId: root })
+    expect(codex.turnsFor(child)).toHaveLength(turns)
+    expect(prompts(child)).toHaveLength(sent)
+    expect(orchestrator.readChat({ chatId: child }).chat.status).toBe("completed")
+  })
+
+  test("showInSidebar is refused for a chat that is not the caller's, before anything changes", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat, codex } = context
+    const root = await userChat()
+    const other = await userChat("the user's own")
+    codex.finish(other, "done")
+    await until(() => orchestrator.readChat({ chatId: other }).chat.status === "completed", "the user's turn")
+    // Another chat's sub-chat is no more the caller's than the user's own chat is.
+    const elsewhere = await userChat("a third thing")
+    const theirs = await idleSubchat(context, elsewhere)
+
+    await expect(orchestrator.updateChat(root, { chatId: other, title: "Renamed", showInSidebar: false })).rejects.toThrow("only for a sub-chat of this chat")
+    expect(store.getChat(other)).not.toHaveProperty("hidden")
+    expect(store.getChat(other)?.title).not.toBe("Renamed")
+    await expect(orchestrator.updateChat(root, { chatId: theirs, showInSidebar: true })).rejects.toThrow("only for a sub-chat of this chat")
+    expect(store.getChat(theirs)?.hidden).toBe(true)
+
+    // Adopted, it is the caller's.
+    await orchestrator.sendMessage(root, { chatId: other, message: "rebase", title: "Rebase", adopt: true })
+    codex.finish(other, "rebased")
+    await until(() => orchestrator.readChat({ chatId: other }).chat.status === "completed", "the adopted turn")
+    await orchestrator.updateChat(root, { chatId: other, showInSidebar: false })
+    expect(store.getChat(other)?.hidden).toBe(true)
+  })
+
+  test("run settings are staged for the next turn without starting one", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat, prompts } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+    const turns = codex.turnsFor(child).length
+
+    const updated = await orchestrator.updateChat(root, { chatId: child, model: "gpt-5.5", effort: "minimal", planMode: true })
+    expect(updated).toMatchObject({ nextRun: { provider: "codex", model: "gpt-5.5", effort: "minimal", planMode: true } })
+    expect(codex.turnsFor(child)).toHaveLength(turns)
+    expect(prompts(child)).toHaveLength(1)
+    // Staging again changes what is staged, keeping the rest.
+    await orchestrator.updateChat(root, { chatId: child, planMode: false })
+    expect(store.getChat(child)?.nextRun).toMatchObject({ model: "gpt-5.5", effort: "minimal", planMode: false })
+
+    // A message that names nothing runs with them, and uses them up.
+    await orchestrator.sendMessage(root, { chatId: child, message: "carry on", title: "Parser audit" })
+    await until(() => codex.turnsFor(child).length === turns + 1, "the next turn")
+    expect(codex.turn(child)).toMatchObject({ model: "gpt-5.5", effort: "minimal", planMode: false })
+    expect(store.getChat(child)).not.toHaveProperty("nextRun")
+  })
+
+  test("a message queued before the settings were staged keeps its own, and leaves them for the next", async () => {
+    const context = await setup()
+    const { orchestrator, store, codex, userChat } = context
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "audit the parser", title: "Parser audit" })
+    const queued = await orchestrator.sendMessage(root, { chatId: child.chatId, message: "and the lexer", title: "Parser audit" })
+    expect(queued).toMatchObject({ started: false })
+    await orchestrator.updateChat(root, { chatId: child.chatId, model: "gpt-5.4" })
+
+    codex.finish(child.chatId, "parser done")
+    await until(() => codex.turnsFor(child.chatId).length === 2, "the queued turn")
+    expect(codex.turn(child.chatId).model).not.toBe("gpt-5.4")
+    expect(store.getChat(child.chatId)?.nextRun).toMatchObject({ model: "gpt-5.4" })
+
+    codex.finish(child.chatId, "lexer done")
+    await until(() => orchestrator.readChat({ chatId: child.chatId }).chat.status === "completed", "the queued turn's end")
+    await orchestrator.sendMessage(root, { chatId: child.chatId, message: "now the tests", title: "Parser audit" })
+    await until(() => codex.turnsFor(child.chatId).length === 3, "the turn after")
+    expect(codex.turn(child.chatId).model).toBe("gpt-5.4")
+    expect(store.getChat(child.chatId)).not.toHaveProperty("nextRun")
+  })
+
+  test("invalid settings are refused and stage nothing", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+
+    await expect(orchestrator.updateChat(root, { chatId: child, provider: "gemini" as never })).rejects.toThrow("Unknown provider")
+    await expect(orchestrator.updateChat(root, { chatId: child, model: "gpt-9" })).rejects.toThrow("has no model \"gpt-9\"")
+    await expect(orchestrator.updateChat(root, { chatId: child, model: "gpt-5.5", effort: "ultra" })).rejects.toThrow("has no \"ultra\" effort")
+    await expect(orchestrator.updateChat(root, { chatId: child, provider: "cursor", effort: "high" })).rejects.toThrow("no reasoning effort")
+    // The same rules hold on a message.
+    await expect(orchestrator.sendMessage(root, { chatId: child, message: "x", title: "Parser audit", model: "gpt-9" })).rejects.toThrow("has no model")
+    expect(store.getChat(child)).not.toHaveProperty("nextRun")
+
+    // A chat in plan mode keeps the chats it reaches in plan mode.
+    const planner = await userChat("plan it", { planMode: true })
+    const planned = await orchestrator.createChat(planner, { message: "look around", title: "Survey" })
+    await expect(orchestrator.updateChat(planner, { chatId: planned.chatId, planMode: false })).rejects.toThrow("plan mode")
+    expect(store.getChat(planned.chatId)).not.toHaveProperty("nextRun")
+  })
+
+  test("the update_chat tool takes showInSidebar and run settings", async () => {
+    const context = await setup()
+    const { orchestrator, store, userChat } = context
+    const root = await userChat()
+    const child = await idleSubchat(context, root)
+    const runtime = new KannaToolRuntime({
+      chatId: root,
+      cwd: "/tmp",
+      emit: async () => {},
+      requestInput: async () => ({}),
+      orchestration: orchestrator,
+    })
+    const call = async (name: string, input: unknown) => {
+      const result = await runtime.execute(name, input)
+      return result.isError ? { error: result.content[0]!.text } : JSON.parse(result.content[0]!.text)
+    }
+    expect(await call("update_chat", { chatId: child, showInSidebar: true, model: "gpt-5.4", effort: "high" }))
+      .toMatchObject({ chatId: child, nextRun: { provider: "codex", model: "gpt-5.4", effort: "high" } })
+    expect(store.getChat(child)).not.toHaveProperty("hidden")
+    expect(await call("update_chat", { chatId: child, effort: "turbo" })).toMatchObject({ error: expect.stringContaining("turbo") })
+    runtime.abort()
+  })
+})
+
+describe("stopping a chat with sub-chats", () => {
+  test("stopping only the turn leaves the sub-chats running, and their results still come back", async () => {
+    const { orchestrator, codex, store, agent, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "audit the parser" })
+
+    await agent.cancel(root, { cascade: false })
+    expect(codex.turnsFor(child.chatId)[0]!.open).toBe(true)
+    expect(store.getChat(child.chatId)?.reportOwed).toBe(true)
+
+    codex.finish(child.chatId, "Found two bugs.")
+    await until(() => codex.turnsFor(root).length === 2, "the report to wake the stopped parent")
+    expect(codex.turn(root).content).toContain("Found two bugs.")
+  })
+
+  test("cancel_chat without cascade stops the chat and not the chats under it", async () => {
+    const { orchestrator, codex, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "lead the audit" })
+    const grandchild = await orchestrator.createChat(child.chatId, { message: "read the lexer" })
+
+    await orchestrator.cancelChat(root, child.chatId, { cascade: false })
+    expect(codex.turnsFor(child.chatId)[0]!.open).toBe(false)
+    expect(codex.turnsFor(grandchild.chatId)[0]!.open).toBe(true)
+  })
+
+  // What happened in a delegator: the user stopped its turn, the cascade
+  // stopped a sub-chat with the delegator's follow-up queued, and the queue
+  // sat there with nothing to say it would never start.
+  test("a sub-chat stopped with its parent holds its queue, says so, and reports once resumed", async () => {
+    const { orchestrator, codex, store, agent, userChat } = await setup()
+    const root = await userChat()
+    const child = await orchestrator.createChat(root, { message: "ship the toggle" })
+    const queued = await orchestrator.sendMessage(root, { chatId: child.chatId, message: "scope change: only the toggle" })
+    expect(queued.queuedMessageId).toBeDefined()
+
+    await agent.cancel(root)
+    await until(() => store.getChat(child.chatId)?.lastTurnOutcome === "cancelled", "the sub-chat to stop")
+    // Held, not drained: the stop released the report too.
+    expect(codex.turnsFor(child.chatId)).toHaveLength(1)
+    expect(store.getChat(child.chatId)?.reportOwed).toBeFalsy()
+
+    // Shown as paused, to agents and to the user.
+    expect(orchestrator.listChats({ parentChatId: root }).chats[0]).toMatchObject({ status: "cancelled", queuedMessages: 1, queuePaused: true })
+    const snapshot = deriveChatSnapshot(store.state, agent.getChatStatuses(), new Set(), child.chatId, (id) => store.getClientTranscript(id))
+    expect(snapshot?.runtime.queuePaused).toBe(true)
+    // The parent's next turn is told.
+    await agent.send({ type: "chat.send", chatId: root, provider: "codex", content: "where are we?" })
+    await until(() => codex.turnsFor(root).length === 2, "the parent's next turn")
+    expect(codex.turn(root).content).toContain("Their queues are paused")
+    expect(codex.turn(root).content).toContain(`chat id ${child.chatId}`)
+
+    // Sent now, the parent's message runs, and its result is the parent's again.
+    await orchestrator.updateQueuedMessage({ chatId: child.chatId, queuedMessageId: queued.queuedMessageId!, action: "send_now" })
+    await until(() => codex.turnsFor(child.chatId).length === 2, "the queued message's turn")
+    expect(codex.turn(child.chatId).content).toContain("scope change: only the toggle")
+    expect(store.getChat(child.chatId)?.reportOwed).toBe(true)
+    expect(orchestrator.listChats({ parentChatId: root }).chats[0]).not.toHaveProperty("queuePaused")
+
+    codex.finish(child.chatId, "Shipped the toggle.")
+    await until(() => store.getQueuedMessages(root).length === 1, "the report, behind the parent's turn")
+    expect(store.getQueuedMessages(root)[0]!.content).toContain("Shipped the toggle.")
+  })
+
+  test("the task log marks an adopted sub-chat, which a stop leaves running", async () => {
+    const { orchestrator, userChat } = await setup()
+    const root = await userChat()
+    const other = await userChat("something else")
+    const child = await orchestrator.createChat(root, { message: "work" })
+    await orchestrator.sendMessage(root, { chatId: other, message: "rebase", adopt: true })
+
+    const rows = orchestrator.getChildActivities(root)
+    expect(rows.find((row) => row.chatId === child.chatId)).not.toHaveProperty("adopted")
+    expect(rows.find((row) => row.chatId === other)).toMatchObject({ adopted: true, status: "running" })
   })
 })

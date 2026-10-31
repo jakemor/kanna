@@ -187,6 +187,7 @@ function applyToolResult(
   // the call finished, and what the expanded view fetches by.
   hydrated.isError = entry.isError
   hydrated.resultEntryId = entry._id
+  hydrated.resultTimestamp = createTimestamp(entry.createdAt)
   hydrated.resultTrimmed = entry.trimmed
 
   // A trimmed result has no body to hydrate — the expanded view fetches

@@ -1,16 +1,12 @@
+import { CODE_OR_CONFIG_EXTENSIONS } from "../../../shared/text-files"
 import type { ChatAttachment } from "../../../shared/types"
+
+export { CODE_OR_CONFIG_EXTENSIONS }
 
 export const TEXT_PREVIEW_LIMIT_BYTES = 1024 * 1024
 export const JSON_PREVIEW_LIMIT_BYTES = 256 * 1024
 export const TABLE_PREVIEW_ROW_LIMIT = 200
 export const TABLE_PREVIEW_COLUMN_LIMIT = 20
-
-const CODE_OR_CONFIG_EXTENSIONS = new Set([
-  ".c", ".cc", ".cfg", ".conf", ".cpp", ".cs", ".css", ".env", ".go", ".graphql", ".h", ".hpp", ".html",
-  ".ini", ".java", ".js", ".jsonc", ".jsx", ".kt", ".lua", ".mjs", ".php", ".pl", ".properties", ".py",
-  ".rb", ".rs", ".scss", ".sh", ".sql", ".swift", ".toml", ".ts", ".tsx", ".txt", ".vue", ".xml", ".yaml",
-  ".yml", ".zsh",
-])
 
 const ARCHIVE_EXTENSIONS = new Set([".7z", ".bz2", ".gz", ".rar", ".tar", ".tgz", ".xz", ".zip"])
 const AUDIO_EXTENSIONS = new Set([".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"])
@@ -215,7 +211,7 @@ export function parseDelimitedPreview(
   }
 }
 
-function getFileExtension(fileName: string) {
+export function getFileExtension(fileName: string) {
   const index = fileName.lastIndexOf(".")
   return index >= 0 ? fileName.slice(index).toLowerCase() : ""
 }

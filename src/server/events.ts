@@ -1,4 +1,4 @@
-import type { AgentProvider, ChatSchedule, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatNextRun, ChatSchedule, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
   sidebarTitle?: string
@@ -46,6 +46,7 @@ export interface ChatRecord {
   pinnedAt?: number
   /** Set when the user marks the chat done (e.g. drags it to the board's Done column). Cleared when a new turn starts. */
   doneAt?: number
+  /** Never set on a chat `tracksUnread` leaves out. */
   unread: boolean
   /**
    * Where the user last left off reading, anchored to a transcript entry `_id`
@@ -161,12 +162,27 @@ export interface ChatRecord {
    */
   adopted?: true
   /**
+   * Left out of every list of chats (the sidebar, the palette, a project's
+   * page), and never unread (`tracksUnread`). Such a chat is shown with
+   * its parent instead: the parent's task log and the card where it was
+   * started. Never false; absent on a listed chat.
+   *
+   * Stored, not derived from the parent link, so an agent can list a chat it
+   * still owns (`showInSidebar` on the chat tools). It is set when the chat is
+   * created and when its parent changes, with defaults that keep the rule it
+   * replaced: a chat an agent started under it is hidden, an adopted one is
+   * not. `migrateSidebarVisibility` wrote it once for chats made before it.
+   */
+  hidden?: true
+  /**
    * Set on a chat that coordinates work and hands it to other chats instead
    * of doing it. Its agent is told so in its session instructions
    * (`KANNA_DELEGATOR_INSTRUCTIONS`), and every chat it starts or messages
    * becomes its sub-chat (`ChatOrchestrator`). Otherwise an ordinary chat.
    */
   delegator?: true
+  /** Settings an agent staged for the next turn (`update_chat`). See `ChatNextRun`. */
+  nextRun?: ChatNextRun
   /** The chat this one was forked from. */
   forkedFromChatId?: string
   /**
@@ -299,6 +315,24 @@ export type ChatEvent =
       forkedEntryCount?: number
       createdByChatId?: string
       delegator?: boolean
+      /** See `ChatRecord.hidden`. Absent on a listed chat, and on logs from before the field. */
+      hidden?: boolean
+    }
+  | {
+      v: 2
+      /** Lists a chat, or leaves it out of the lists. See `ChatRecord.hidden`. */
+      type: "chat_hidden_set"
+      timestamp: number
+      chatId: string
+      hidden: boolean
+    }
+  | {
+      v: 2
+      /** Stages run settings for the chat's next turn, or clears them (`null`). See `ChatNextRun`. */
+      type: "chat_next_run_set"
+      timestamp: number
+      chatId: string
+      nextRun: ChatNextRun | null
     }
   | {
       v: 2
@@ -528,6 +562,22 @@ export type ScheduleEvent =
 
 export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | QueuedMessageEvent | TurnEvent | ScheduleEvent
 
+/**
+ * Whether a chat can be unread at all. A sub-chat's reply goes to its parent
+ * as a report, and the parent turns unread for it, so a mark on the sub-chat
+ * too would tell the user the same thing twice. The exception is a chat the
+ * user had before an agent adopted it: still listed, it is still theirs to
+ * read. Hidden, it is shown with its parent like any sub-chat.
+ *
+ * Applied where `unread` is written (the store's reducer), so the mark is
+ * never set rather than set and cleared: no read events, no `markRead`.
+ * A chat that leaves the rule (a parent link dropped, an adopted chat listed
+ * again) starts unmarked and turns unread from its next turn on.
+ */
+export function tracksUnread(chat: Pick<ChatRecord, "parentChatId" | "adopted" | "hidden">): boolean {
+  return !chat.hidden && (!chat.parentChatId || Boolean(chat.adopted))
+}
+
 export function createEmptyState(): StoreState {
   return {
     projectsById: new Map(),
@@ -550,7 +600,7 @@ export const STRUCTURED_RESULT_TOOL_KINDS: ReadonlySet<string> = new Set(["ask_u
  * travel with the transcript rather than being fetched when a row is opened —
  * there is no row to open. Superset of the structured-result kinds.
  */
-export const INLINE_TOOL_KINDS: ReadonlySet<string> = new Set([...STRUCTURED_RESULT_TOOL_KINDS, "todo_write", "display", "chat", "schedule"])
+export const INLINE_TOOL_KINDS: ReadonlySet<string> = new Set([...STRUCTURED_RESULT_TOOL_KINDS, "todo_write", "display", "chat", "schedule", "request_secrets"])
 
 /**
  * Tool call input fields that can grow without bound, by kind. The other

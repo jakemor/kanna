@@ -190,20 +190,19 @@ describe("deriveComposerOptionControls", () => {
   const cursorConfig = PROVIDERS.find((provider) => provider.id === "cursor")!
   const codexConfig = PROVIDERS.find((provider) => provider.id === "codex")!
 
-  test("claude exposes reasoning, plan mode, and (per model) context window + fast mode", () => {
-    const modelWithWindow = claudeConfig.models.find((model) => (model.contextWindowOptions?.length ?? 0) > 1)!
+  test("claude exposes reasoning, plan mode, and (per model) fast mode", () => {
+    const opus = claudeConfig.models.find((model) => model.id === "opus")!
     const controls = deriveComposerOptionControls(
-      claudeState({ model: modelWithWindow.id }),
+      claudeState({ model: opus.id }),
       claudeConfig
     )
 
     expect(controls.reasoning).not.toBeNull()
     expect(controls.mode).not.toBeNull()
-    expect(controls.contextWindow?.options.map((option) => option.id)).toEqual(["1m", "200k"])
-    expect(controls.fastMode !== null).toBe(Boolean(modelWithWindow.supportsFastMode))
+    expect(controls.fastMode !== null).toBe(Boolean(opus.supportsFastMode))
     // "Max" reasoning is disabled unless the model supports it.
     const max = controls.reasoning?.options.find((option) => option.id === "max")
-    expect(max?.disabled).toBe(!supportsClaudeMaxReasoningEffort(modelWithWindow.id))
+    expect(max?.disabled).toBe(!supportsClaudeMaxReasoningEffort(opus.id))
   })
 
   test("grok exposes reasoning and plan mode, not auto-plan or fast mode", () => {
@@ -221,7 +220,6 @@ describe("deriveComposerOptionControls", () => {
     expect(controls.reasoning?.options.map((option) => option.id)).toEqual(["low", "medium", "high"])
     expect(controls.mode?.options).toEqual(["full-access", "plan"])
     expect(controls.fastMode).toBeNull()
-    expect(controls.contextWindow).toBeNull()
   })
 
   test("cursor has no reasoning selector", () => {
@@ -237,10 +235,9 @@ describe("deriveComposerOptionControls", () => {
       cursorConfig
     )
     expect(controls.reasoning).toBeNull()
-    expect(controls.contextWindow).toBeNull()
   })
 
-  test("codex reasoning options are model-specific and no context window is offered", () => {
+  test("codex reasoning options are model-specific", () => {
     const controls = deriveComposerOptionControls(
       {
         provider: "codex",
@@ -252,7 +249,6 @@ describe("deriveComposerOptionControls", () => {
       codexConfig
     )
     expect(controls.reasoning?.options.length).toBeGreaterThan(0)
-    expect(controls.contextWindow).toBeNull()
   })
 
   test("only claude offers the third Auto Plan mode", () => {

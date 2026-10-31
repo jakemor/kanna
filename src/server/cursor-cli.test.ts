@@ -172,6 +172,14 @@ describe("CursorCliManager.startTurn", () => {
     expect(await stdinText).toBe("fix the bug")
   })
 
+  test("hands the chat's kanna <tool> credential to the agent's environment", async () => {
+    const fake = makeFakeChild()
+    let captured: { env?: Record<string, string> } | undefined
+    const manager = new CursorCliManager({ spawnProcess: (args) => { captured = args; return fake.child } })
+    await manager.startTurn({ cwd: "/repo", content: "hi", model: "composer-2.5", sessionToken: null, env: { KANNA_TOOLS_AUTH: "abc" } })
+    expect(captured?.env).toEqual({ KANNA_TOOLS_AUTH: "abc" })
+  })
+
   test("omits --resume when there is no session token", async () => {
     const fake = makeFakeChild()
     let captured: { cwd: string; argv: string[] } | undefined

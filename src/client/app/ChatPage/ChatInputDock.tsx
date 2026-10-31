@@ -14,6 +14,8 @@ interface ChatInputDockProps {
   hasSelectedProject: boolean
   runtimeStatus: string | null
   canCancel: boolean
+  /** Running sub-chats a stop could take with it. See `countCascadingSubchats`. */
+  cascadingSubchats?: number
   projectId: string | null
   projectPath: string | null
   projectRepoLabel: string | null
@@ -21,12 +23,15 @@ interface ChatInputDockProps {
   availableProviders: KannaState["availableProviders"]
   contextWindowSnapshot: ContextWindowSnapshot | null
   onSubmit: KannaState["handleSend"]
-  onCancel: () => void
+  onCancel: (options?: { cascade?: boolean }) => void
   onEditModels: () => void
   onListSkills?: (provider: AgentProvider) => Promise<ChatSkillsSnapshot>
   /** See `ChatInput`: the previewed chat's composer passes both. */
   placeholder?: string
   secondary?: boolean
+  /** See `ChatInput`: ⌘/Ctrl+Enter on an empty composer sends this one now. */
+  oldestQueuedMessageId: string | null
+  onSendQueuedNow: (queuedMessageId: string) => Promise<void>
 }
 
 export const ChatInputDock = memo(function ChatInputDock({
@@ -39,6 +44,7 @@ export const ChatInputDock = memo(function ChatInputDock({
   hasSelectedProject,
   runtimeStatus,
   canCancel,
+  cascadingSubchats,
   projectId,
   projectPath,
   projectRepoLabel,
@@ -51,6 +57,8 @@ export const ChatInputDock = memo(function ChatInputDock({
   onListSkills,
   placeholder,
   secondary,
+  oldestQueuedMessageId,
+  onSendQueuedNow,
 }: ChatInputDockProps) {
   return (
     <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
@@ -74,6 +82,7 @@ export const ChatInputDock = memo(function ChatInputDock({
             onCancel={onCancel}
             disabled={!hasSelectedProject}
             canCancel={canCancel}
+            cascadingSubchats={cascadingSubchats}
             chatId={activeChatId}
             projectId={projectId}
             projectPath={projectPath}
@@ -86,6 +95,8 @@ export const ChatInputDock = memo(function ChatInputDock({
             onListSkills={onListSkills}
             placeholder={placeholder}
             secondary={secondary}
+            oldestQueuedMessageId={oldestQueuedMessageId}
+            onSendQueuedNow={onSendQueuedNow}
           />
         </div>
       </div>

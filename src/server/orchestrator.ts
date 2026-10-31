@@ -1,5 +1,6 @@
 import type {
   AgentProvider,
+  ChatNextRun,
   ChatSchedule,
   KannaStatus,
   MessageSource,
@@ -8,12 +9,13 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import { stripSystemMessages } from "../shared/message-preview"
+import { getCodexReasoningOptions, providerHasKannaTools } from "../shared/types"
 import { buildAgentToAgentNote, type AgentToAgentTurn } from "./agent-to-agent"
 import type { ChatChange, ChatCommands } from "./chat-commands"
 import type { EventStore } from "./event-store"
 import type { ChatRecord } from "./events"
 import { renderToolResultContent } from "./handoff"
-import { getServerProviderCatalog, SERVER_PROVIDERS } from "./provider-catalog"
+import { getServerProviderCatalog, normalizeServerModel, SERVER_PROVIDERS } from "./provider-catalog"
 import {
   computeFirstRun,
   MIN_SCHEDULE_INTERVAL_MS,
@@ -45,7 +47,24 @@ import {
  * on and hear back. Its agent is asked to keep every chat it uses under it,
  * and that is not left to the asking: whatever it passes, a chat it creates
  * or forks is its sub-chat, and a chat it messages is adopted.
+ *
+ * Whether the sidebar lists a chat is its own field (`ChatRecord.hidden`),
+ * not the parent link. A chat started under another is hidden and an adopted
+ * one is listed, unless the agent passes `showInSidebar`. A delegator's
+ * listed chat is still its sub-chat: the user asked to see the work, not to
+ * take it from the chat that runs it.
  */
+
+/**
+ * What a chat an agent makes is: the agent has to say, as nothing in a
+ * chat's message tells Kanna whether it was meant to coordinate or to work.
+ * Here for `setSchedule`, which asks the same, and for the tools' schemas.
+ */
+export const DELEGATOR_DESCRIPTION = "Required. false for a chat that does the work itself, almost always the right choice. true for a chat that coordinates sub-chats of its own and does none of the work."
+export const DELEGATOR_REQUIRED = (tool: string) => `${tool} needs delegator: false for a chat that does the work itself, true for one that coordinates sub-chats of its own and does none of the work.`
+
+/** A chat with no parent is in no task log, so a list is the only place it is shown. */
+const UNLISTED_ORPHAN_ERROR = "A chat that is not a sub-chat of this one has to be in the sidebar: nothing else would show it. Leave showInSidebar unset, or keep the chat a sub-chat."
 
 /** Agent-created chats nest at most this deep below a chat the user started. */
 export const MAX_CHAT_DEPTH = 3
@@ -158,13 +177,22 @@ export interface AgentChatSummary {
   parentChatId?: string
   /** The parent adopted it and did not start it. See `ChatRecord.adopted`. */
   adopted?: true
+  /** Not in the user's sidebar: shown with its parent. See `ChatRecord.hidden`. */
+  hidden?: true
   /** It hands work to the chats under it instead of doing it. See `ChatRecord.delegator`. */
   delegator?: true
+  /** Settings staged for its next turn (`update_chat`). See `ChatNextRun`. */
+  nextRun?: { provider: AgentProvider; model?: string; effort?: string; planMode: boolean }
   forkedFromChatId?: string
   createdByChatId?: string
   lastMessageAt?: string
   turnCount: number
   queuedMessages: number
+  /**
+   * Its last turn was stopped and the queue is held: nothing in it starts on
+   * its own. `update_queued_message` with `send_now` resumes it.
+   */
+  queuePaused?: true
   archived?: true
   pinned?: true
   done?: true
@@ -241,6 +269,52 @@ interface RunOptions {
   model?: string
   effort?: string
   planMode?: boolean
+}
+
+/** What a run falls back to for each setting a message leaves out. */
+interface RunDefaults {
+  provider: AgentProvider | null
+  model?: string
+  effort?: string
+  planMode: boolean
+  autoPlan: boolean
+}
+
+/**
+ * A model the provider lists. Pi's are open-ended (any OpenRouter id), so any
+ * id goes there. The others' lists are the live ones their harness reported.
+ */
+function checkModel(provider: AgentProvider, model: string) {
+  if (provider === "pi") return
+  const catalog = getServerProviderCatalog(provider)
+  const id = normalizeServerModel(provider, model)
+  if (!catalog.models.some((option) => option.id === id || option.aliases?.includes(model))) {
+    throw new Error(`${catalog.label} has no model "${model}". get_context lists each provider's models.`)
+  }
+}
+
+/** An effort the provider offers, and the model takes. With no model, the provider's default model. */
+function checkEffort(provider: AgentProvider, model: string | undefined, effort: string) {
+  const catalog = getServerProviderCatalog(provider)
+  if (catalog.efforts.length === 0) throw new Error(`${catalog.label} has no reasoning effort to set.`)
+  const modelId = normalizeServerModel(provider, model)
+  const option = catalog.models.find((candidate) => candidate.id === modelId)
+  if (option && !option.supportsEffort) throw new Error(`${option.label} takes no reasoning effort.`)
+  const offered = provider === "codex"
+    ? getCodexReasoningOptions(modelId, catalog.models).map((entry) => entry.id)
+    : catalog.efforts.map((entry) => entry.id).filter((id) => provider !== "claude" || id !== "max" || option?.supportsMaxReasoningEffort)
+  if (!offered.includes(effort)) {
+    throw new Error(`${option?.label ?? modelId} has no "${effort}" effort. It takes: ${offered.join(", ")}.`)
+  }
+}
+
+function summarizeNextRun(run: ChatNextRun): NonNullable<AgentChatSummary["nextRun"]> {
+  return {
+    provider: run.provider,
+    ...(run.model ? { model: run.model } : {}),
+    ...(run.effort ? { effort: run.effort } : {}),
+    planMode: run.planMode,
+  }
 }
 
 function chatLink(chatId: string) {
@@ -413,9 +487,21 @@ export class ChatOrchestrator {
     if (this.agent.isBusy(chat.id) || this.agent.isDraining(chat.id)) return true
     // A queue normally drains as soon as the turn ends, so messages in it mean
     // a turn is about to start. The exception is a stopped chat, whose queue
-    // is parked until someone sends again.
+    // is parked until someone sends again (`isQueuePaused`).
     const queued = this.store.getQueuedMessages(chat.id).length
     return queued > 0 && chat.lastTurnOutcome !== "cancelled"
+  }
+
+  /**
+   * A stop holds the queue: the next message does not start when the turn
+   * ends, so a person who stopped a chat can change what was lined up before
+   * it runs. That holds for a sub-chat stopped with its parent too. Nothing
+   * releases it but a send, so it is shown as paused, to the user and to
+   * agents, with sending one now as the way on.
+   */
+  isQueuePaused(chat: ChatRecord) {
+    if (chat.lastTurnOutcome !== "cancelled" || this.agent.isBusy(chat.id)) return false
+    return this.store.getQueuedMessages(chat.id).length > 0
   }
 
   /**
@@ -528,12 +614,15 @@ export class ChatOrchestrator {
       planMode: chat.planMode,
       ...(chat.parentChatId ? { parentChatId: chat.parentChatId } : {}),
       ...(chat.adopted ? { adopted: true as const } : {}),
+      ...(chat.hidden ? { hidden: true as const } : {}),
       ...(chat.delegator ? { delegator: true as const } : {}),
+      ...(chat.nextRun ? { nextRun: summarizeNextRun(chat.nextRun) } : {}),
       ...(chat.forkedFromChatId ? { forkedFromChatId: chat.forkedFromChatId } : {}),
       ...(chat.createdByChatId ? { createdByChatId: chat.createdByChatId } : {}),
       ...(chat.lastMessageAt ? { lastMessageAt: iso(chat.lastMessageAt) } : {}),
       turnCount: chat.turnCount ?? 0,
       queuedMessages: this.store.getQueuedMessages(chat.id).length,
+      ...(this.isQueuePaused(chat) ? { queuePaused: true as const } : {}),
       ...(chat.archivedAt ? { archived: true as const } : {}),
       ...(chat.pinnedAt ? { pinned: true as const } : {}),
       ...(chat.doneAt ? { done: true as const } : {}),
@@ -659,7 +748,7 @@ export class ChatOrchestrator {
   private resolveRun(
     actorChatId: string,
     requested: RunOptions,
-    defaults: { provider: AgentProvider | null; model?: string; planMode: boolean; autoPlan: boolean },
+    defaults: RunDefaults,
   ) {
     const provider = requested.provider ?? defaults.provider ?? "claude"
     if (!SERVER_PROVIDERS.some((entry) => entry.id === provider)) {
@@ -674,13 +763,31 @@ export class ChatOrchestrator {
     if (planning && requested.planMode === false) {
       throw new Error("This chat is in plan mode, so a chat it starts or messages must be in plan mode too.")
     }
+    // A model belongs to its provider, so a default is not carried across a
+    // switch. Nor is an effort across a change of model: it was for that one.
+    const model = requested.model ?? (sameProvider ? defaults.model : undefined)
+    const effort = requested.effort ?? (sameProvider && requested.model === undefined ? defaults.effort : undefined)
+    if (requested.model !== undefined) checkModel(provider, requested.model)
+    if (requested.effort !== undefined) checkEffort(provider, model, requested.effort)
     return {
       provider,
-      // A model belongs to its provider, so a default is not carried across a switch.
-      model: requested.model ?? (sameProvider ? defaults.model : undefined),
-      effort: requested.effort,
+      model,
+      effort,
       planMode: catalog.supportsPlanMode && (planning || (requested.planMode ?? defaults.planMode)),
       autoPlan: sameProvider && catalog.supportsAutoPlanMode ? defaults.autoPlan : false,
+    }
+  }
+
+  /**
+   * What a chat runs with when a message to it names nothing: what an agent
+   * staged for it with `update_chat`, or else what its last turn ran with.
+   */
+  private ownRun(chat: ChatRecord): RunDefaults {
+    return chat.nextRun ?? {
+      provider: chat.provider,
+      model: chat.lastModel,
+      planMode: chat.planMode,
+      autoPlan: chat.autoPlan,
     }
   }
 
@@ -913,10 +1020,19 @@ export class ChatOrchestrator {
     title?: string
     projectId?: string
     subchat?: boolean
+    /** Overrides where it is shown. By default a sub-chat is hidden and any other chat listed. */
+    showInSidebar?: boolean
+    /**
+     * Makes it a delegator, or not. By default a sub-chat is a worker and any
+     * other chat follows Delegator mode, as the user's own do (`ChatCommands.create`).
+     */
+    delegator?: boolean
   }) {
     const caller = this.requireChat(actorChatId)
     // A delegator's chats are always under it. See the note at the top.
     const subchat = this.isDelegating(caller) ? true : input.subchat ?? true
+    const hidden = input.showInSidebar === undefined ? subchat : !input.showInSidebar
+    if (hidden && !subchat) throw new Error(UNLISTED_ORPHAN_ERROR)
     const projectId = input.projectId ?? caller.projectId
     if (!this.store.getProject(projectId)) {
       throw new Error(`Project ${projectId} not found. get_context lists the projects.`)
@@ -928,11 +1044,12 @@ export class ChatOrchestrator {
       planMode: false,
       autoPlan: false,
     })
+    if (input.delegator) this.checkCanDelegate(run.provider)
 
     const created = await this.commands.create(projectId, {
       createdByChatId: actorChatId,
       ...(subchat ? { parentChatId: actorChatId } : {}),
-    })
+    }, { hidden, ...(input.delegator !== undefined ? { delegator: input.delegator } : {}) })
     const chat = this.requireChat(created.result.chatId)
     if (input.title?.trim()) await this.commands.rename(chat.id, input.title)
     await this.send(actorChatId, chat, input.message, run, { report: subchat })
@@ -946,18 +1063,28 @@ export class ChatOrchestrator {
     /** The new work's. A fork is how a chat's context is reused for new work, so the tool requires one. */
     title?: string
     subchat?: boolean
+    /** As for `createChat`. */
+    showInSidebar?: boolean
+    /** Makes the fork a delegator, or not. By default it keeps the source's role. */
+    delegator?: boolean
   }) {
     const source = this.requireChat(input.chatId ?? actorChatId)
     const caller = this.requireChat(actorChatId)
     // A fork handed work is delegation, so it reports back unless told not to.
     // A delegator's fork is under it either way.
     const subchat = this.isDelegating(caller) ? true : input.subchat ?? Boolean(input.message)
+    const hidden = input.showInSidebar === undefined ? subchat : !input.showInSidebar
+    if (hidden && !subchat) throw new Error(UNLISTED_ORPHAN_ERROR)
+    if (input.delegator) this.checkCanDelegate(input.provider ?? source.provider)
     this.checkBudget(actorChatId)
     const forked = await this.commands.fork(source.id, {
       createdByChatId: actorChatId,
       ...(subchat ? { parentChatId: actorChatId } : {}),
-    })
+    }, { hidden })
     const chat = this.requireChat(forked.result.chatId)
+    if (input.delegator !== undefined && Boolean(chat.delegator) !== input.delegator) {
+      await this.commands.setDelegator(chat.id, input.delegator)
+    }
     if (input.title?.trim()) await this.commands.rename(chat.id, input.title.trim())
     if (input.message) {
       const run = this.resolveRun(actorChatId, input, {
@@ -984,20 +1111,25 @@ export class ChatOrchestrator {
     title?: string
     delivery?: "queue" | "steer"
     adopt?: boolean
+    /**
+     * Lists the chat in the sidebar, or takes it out. Only for a sub-chat of
+     * this one: one it started, or adopts with this message. Applied once the
+     * message is sent.
+     */
+    showInSidebar?: boolean
   }) {
     if (input.chatId === actorChatId) {
       throw new Error("A chat cannot message itself. Use set_schedule to send this chat a message later.")
     }
     const target = this.requireChat(input.chatId)
-    const run = this.resolveRun(actorChatId, input, {
-      provider: target.provider,
-      model: target.lastModel,
-      planMode: target.planMode,
-      autoPlan: target.autoPlan,
-    })
+    const run = this.resolveRun(actorChatId, input, this.ownRun(target))
     // Before the send: the turn it starts is told who its parent is, and the
     // report it earns is addressed by the link.
     const delegating = this.isDelegating(this.requireChat(actorChatId))
+    // Checked before anything is done, so a refusal leaves nothing behind.
+    if (input.showInSidebar !== undefined && target.parentChatId !== actorChatId && !input.adopt && !delegating) {
+      throw new Error("showInSidebar is only for a sub-chat of this chat. Pass adopt: true to make it one with this message.")
+    }
     const adoption = input.adopt || delegating ? await this.adopt(actorChatId, target, { forced: delegating && !input.adopt }) : null
     // Named for the work it is given, before the message lands, so the
     // sidebar says what it is doing from the start. Only a chat of this
@@ -1024,6 +1156,7 @@ export class ChatOrchestrator {
       await adoption?.undo().catch(() => {})
       throw error
     }
+    if (input.showInSidebar !== undefined) await this.store.setChatHidden(target.id, !input.showInSidebar)
     if (!adoption) {
       this.push({ sidebar: true, chatIds: [target.id] })
     } else {
@@ -1081,8 +1214,13 @@ export class ChatOrchestrator {
       parent: target.parentChatId ? { parentChatId: target.parentChatId, adopted: Boolean(target.adopted) } : null,
       reportOwed: Boolean(target.reportOwed),
       reportedThrough: target.reportedThrough,
+      hidden: Boolean(target.hidden),
     }
     await this.store.setChatParent(target.id, { parentChatId: actorChatId, adopted: true })
+    // An adopted chat is listed, as it was when visibility followed the parent
+    // link: one hidden under the parent that started it comes out from there.
+    // `showInSidebar` on the same message can still hide it.
+    await this.store.setChatHidden(target.id, false)
     // What it owed, and what it had already told, were the former parent's.
     // The new one starts with nothing heard, and a turn in flight was not its.
     await this.store.setReportOwed(target.id, false)
@@ -1093,6 +1231,7 @@ export class ChatOrchestrator {
       owedFormerParent: former.parent !== null && former.reportOwed,
       undo: async () => {
         await this.store.setChatParent(target.id, former.parent)
+        await this.store.setChatHidden(target.id, former.hidden)
         if (!former.reportOwed) await this.store.setReportOwed(target.id, false)
         else if (former.reportedThrough === undefined) await this.store.setReportOwed(target.id, true)
         else await this.store.setReportedThrough(target.id, former.reportedThrough)
@@ -1150,7 +1289,8 @@ export class ChatOrchestrator {
     }
   }
 
-  async cancelChat(actorChatId: string, chatId: string) {
+  /** `cascade: false` stops the chat's turn and leaves the sub-chats it started running. */
+  async cancelChat(actorChatId: string, chatId: string, options?: { cascade?: boolean }) {
     if (chatId === actorChatId) throw new Error("This would stop your own turn. Finish your reply instead.")
     const target = this.requireChat(chatId)
     // Whoever stops a sub-chat of its own already knows it ended, so no report.
@@ -1158,25 +1298,49 @@ export class ChatOrchestrator {
       this.forgetLaterTurn(target.id)
       await this.store.setReportOwed(target.id, false)
     }
-    await this.commands.cancel(target.id)
+    await this.commands.cancel(target.id, { cascade: options?.cascade })
     this.push({ sidebar: true, chatIds: [target.id] })
     return this.summarize(this.requireChat(target.id))
   }
 
-  async updateChat(actorChatId: string, input: {
+  /**
+   * A chat's settings, changed without a message. Run settings are staged for
+   * its next turn (`ChatNextRun`) rather than written to the chat: the turn
+   * that runs them is what switches a provider, with its handoff, and what
+   * records the model it ran with.
+   */
+  async updateChat(actorChatId: string, input: RunOptions & {
     chatId?: string
     title?: string
     pinned?: boolean
     done?: boolean
     archived?: boolean
+    /** As on `sendMessage`, for a sub-chat of this one, without the message. */
+    showInSidebar?: boolean
+    /** Makes the chat a delegator, or an ordinary chat again. See `ChatCommands.setDelegator`. */
+    delegator?: boolean
   }) {
     const chat = this.requireChat(input.chatId ?? actorChatId)
     if (input.title !== undefined && !input.title.trim()) throw new Error("The title cannot be empty.")
+    // Checked before anything is done, so a refusal leaves nothing behind.
+    if (input.showInSidebar !== undefined && chat.parentChatId !== actorChatId) {
+      throw new Error("showInSidebar is only for a sub-chat of this chat: one it started or adopted. Adopt it with send_message (adopt: true) first.")
+    }
+    const staging = input.provider !== undefined || input.model !== undefined || input.effort !== undefined || input.planMode !== undefined
+    // The rules a message's settings follow, the plan-mode ceiling among them:
+    // a chat in plan mode cannot stage its way out of it, its own next turn included.
+    const run = staging ? this.resolveRun(actorChatId, input, this.ownRun(chat)) : null
+    const flipsRole = input.delegator !== undefined && input.delegator !== Boolean(chat.delegator)
+    if (flipsRole && input.delegator) this.checkCanDelegate(run?.provider ?? chat.provider)
     const changes: Array<ChatChange | null> = []
+    // Compared with queued messages' `createdAt`, so on the store's clock.
+    if (run) await this.store.setChatNextRun(chat.id, { ...run, setAt: Date.now() })
+    if (input.showInSidebar !== undefined) await this.store.setChatHidden(chat.id, !input.showInSidebar)
     if (input.title !== undefined) changes.push((await this.commands.rename(chat.id, input.title)).changed)
     if (input.archived === false && chat.archivedAt) changes.push((await this.commands.unarchive(chat.id)).changed)
     if (input.pinned !== undefined) changes.push((await this.commands.setPinned(chat.id, input.pinned)).changed)
     if (input.done !== undefined) changes.push((await this.commands.setDone(chat.id, input.done)).changed)
+    if (flipsRole) changes.push((await this.commands.setDelegator(chat.id, input.delegator!)).changed)
     if (input.archived && !chat.archivedAt) changes.push((await this.commands.archive(chat.id)).changed)
     this.push({
       sidebar: true,
@@ -1185,7 +1349,19 @@ export class ChatOrchestrator {
     })
     // An empty chat is deleted by archiving, so there may be nothing left to describe.
     const updated = this.store.getChat(chat.id)
-    return updated ? this.summarize(updated) : { chatId: chat.id, deleted: true as const }
+    if (!updated) return { chatId: chat.id, deleted: true as const }
+    return {
+      ...this.summarize(updated),
+      // The role is in the system prompt, which a running turn cannot change.
+      ...(flipsRole ? { roleNote: `${input.delegator ? "It delegates" : "It works directly"} from its next turn, which restarts its provider session with the conversation carried over.` } : {}),
+    }
+  }
+
+  /** A delegator hands work off with the Kanna tools, which some providers are not given. */
+  private checkCanDelegate(provider: AgentProvider | null | undefined) {
+    if (!providerHasKannaTools(provider)) {
+      throw new Error(`A ${provider} chat cannot be a delegator: it has no Kanna tools to hand work to other chats with.`)
+    }
   }
 
   async updateQueuedMessage(input: { chatId: string; queuedMessageId: string; action: "remove" | "send_now" }) {
@@ -1208,6 +1384,8 @@ export class ChatOrchestrator {
     message?: string
     chatId?: string
     newChat?: boolean
+    /** With `newChat`: what each chat it makes is. Required when the target becomes a new chat. */
+    delegator?: boolean
     projectId?: string
     inMinutes?: number
     runAt?: string
@@ -1233,9 +1411,17 @@ export class ChatOrchestrator {
     if (input.newChat) {
       const projectId = input.projectId ?? caller.projectId
       if (!this.store.getProject(projectId)) throw new Error(`Project ${projectId} not found. get_context lists the projects.`)
-      target = { kind: "new_chat", projectId }
+      // Asked once, when the schedule starts making chats; a change to it
+      // keeps the answer unless it gives a new one.
+      const delegator = input.delegator ?? (target?.kind === "new_chat" ? target.delegator : undefined)
+      if (delegator === undefined) throw new Error(DELEGATOR_REQUIRED("set_schedule with newChat"))
+      if (delegator) this.checkCanDelegate(input.provider ?? existing?.provider ?? caller.provider)
+      target = { kind: "new_chat", projectId, delegator }
     } else if (input.chatId || !target) {
       target = { kind: "chat", chatId: this.requireChat(input.chatId ?? actorChatId).id }
+    } else if (input.delegator !== undefined && target.kind === "new_chat") {
+      if (input.delegator) this.checkCanDelegate(input.provider ?? existing?.provider ?? caller.provider)
+      target = { ...target, delegator: input.delegator }
     }
 
     // The message runs later with nobody to hold it to this chat's mode, so
@@ -1391,7 +1577,9 @@ export class ChatOrchestrator {
       const pending = this.store.getQueuedMessages(chat.id)
         .some((message) => message.source?.kind === "schedule" && message.source.scheduleId === schedule.id)
       if (pending) return { outcome: "skipped" }
-      const provider = schedule.provider ?? chat.provider ?? undefined
+      const own = this.ownRun(chat)
+      const provider = schedule.provider ?? own.provider ?? undefined
+      const sameProvider = provider === own.provider
       // Before the turn starts, like a parent's own message (`send`).
       const arms = Boolean(schedule.reportsToParent && chat.parentChatId && !chat.reportOwed)
       if (arms) await this.store.setReportOwed(chat.id, true)
@@ -1401,10 +1589,10 @@ export class ChatOrchestrator {
           chatId: chat.id,
           content: schedule.content,
           provider,
-          model: schedule.model ?? (provider === chat.provider ? chat.lastModel : undefined),
-          effort: schedule.effort,
-          planMode: schedule.planMode ?? chat.planMode,
-          autoPlan: chat.autoPlan,
+          model: schedule.model ?? (sameProvider ? own.model : undefined),
+          effort: schedule.effort ?? (sameProvider && !schedule.model ? own.effort : undefined),
+          planMode: schedule.planMode ?? own.planMode,
+          autoPlan: own.autoPlan,
         }, { source })
       } catch (error) {
         if (arms) await this.store.setReportOwed(chat.id, false).catch(() => {})
@@ -1415,7 +1603,8 @@ export class ChatOrchestrator {
 
     if (!this.store.getProject(schedule.target.projectId)) return { outcome: "gone" }
     if (schedule.lastRunChatId && this.isLive(schedule.lastRunChatId)) return { outcome: "skipped" }
-    const chatId = (await this.commands.create(schedule.target.projectId)).result.chatId
+    // A schedule from before the choice was asked follows Delegator mode, as the user's own chats do.
+    const chatId = (await this.commands.create(schedule.target.projectId, undefined, schedule.target.delegator === undefined ? undefined : { delegator: schedule.target.delegator })).result.chatId
     await this.commands.rename(chatId, schedule.name)
     await this.commands.send({
       type: "chat.send",
@@ -1482,6 +1671,26 @@ export class ChatOrchestrator {
     // The turn that ended is the one before this one.
     if (endedTurnOwed) void this.reportEndedTurn(chatId)
     this.pushChatsAbove(chatId)
+  }
+
+  /**
+   * A queued message is about to start a turn. One its parent sent owes the
+   * parent the result, as the send that queued it said (`send` arms the
+   * report then), but a stop releases that report while the message waits:
+   * stopping the parent, or the parent stopping this chat. The stop also
+   * holds the queue (`isQueuePaused`), so the message starts only when
+   * someone sends it on, and then the parent's work goes on and the parent
+   * hears how it ends.
+   *
+   * Only out of a held queue. One that drains on its own after a turn that
+   * was not stopped (an adopted chat's, under a parent that was) keeps the
+   * stop's word: the parent asked to hear nothing.
+   */
+  async armReportForQueuedMessage(chatId: string, source: MessageSource | undefined) {
+    const chat = this.store.getChat(chatId)
+    if (!chat?.parentChatId || chat.reportOwed || chat.lastTurnOutcome !== "cancelled") return
+    if (source?.kind !== "agent" || source.chatId !== chat.parentChatId) return
+    await this.store.setReportOwed(chatId, true)
   }
 
   /**
@@ -1553,6 +1762,8 @@ export class ChatOrchestrator {
         ...(status === "needs_input" ? { summary: "Waiting for your answer" } : {}),
         ...(running ? { stoppable: true } : {}),
         chatId: child.id,
+        // A stop of this chat leaves it running, so the stop button's count leaves it out.
+        ...(child.adopted ? { adopted: true as const } : {}),
       }
     })
     const running = activities.filter((activity) => activity.status === "running")
@@ -1618,6 +1829,16 @@ export class ChatOrchestrator {
         "<system-message>Chats you started that are still running:",
         ...running.map((child) => `${child.title} (chat id ${child.id})`),
         "Each one's result arrives here as a message when it finishes. Stop any you no longer need with cancel_chat.</system-message>",
+      ].join("\n"))
+    }
+    // Stopped, most often with this chat, with its messages from here still
+    // waiting. Nothing will come of them unless someone sends one on.
+    const paused = this.childrenOf(chatId).filter((child) => !child.adopted && this.isQueuePaused(child))
+    if (paused.length > 0) {
+      notices.push([
+        "<system-message>Chats you started that were stopped with messages still queued. Their queues are paused: nothing in them runs, and no result comes here, until one is sent with update_queued_message (send_now):",
+        ...paused.map((child) => `${child.title} (chat id ${child.id})`),
+        "</system-message>",
       ].join("\n"))
     }
     return notices
@@ -1890,15 +2111,18 @@ export class ChatOrchestrator {
         before = waiting.content
       }, () => {})
     }
+    // The parent carries on as it was running, same model and mode, unless
+    // settings were staged for its next turn.
+    const own = this.ownRun(parent)
     await this.commands.send({
       type: "chat.send",
       chatId: parent.id,
       content: appendReportSection(before, section),
-      // The parent carries on as it was running: same model and mode.
-      provider: parent.provider ?? undefined,
-      model: parent.lastModel,
-      planMode: parent.planMode,
-      autoPlan: parent.autoPlan,
+      provider: own.provider ?? undefined,
+      model: own.model,
+      effort: own.effort,
+      planMode: own.planMode,
+      autoPlan: own.autoPlan,
     }, { source: { kind: "report", chatIds } })
     this.push({ sidebar: true, chatIds: [parent.id] })
   }

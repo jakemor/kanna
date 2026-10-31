@@ -20,6 +20,12 @@ interface SegmentedControlProps<T extends string> {
   size?: SegmentedSize
   className?: string
   optionClassName?: string
+  /**
+   * `plain` drops the track and every outline, leaving only the selected
+   * segment's fill: for a control that is itself a row of a surface (the
+   * composer's harness menu) rather than a control sitting on one.
+   */
+  variant?: "default" | "plain"
 }
 
 const sizeClasses: Record<SegmentedSize, string> = {
@@ -34,7 +40,9 @@ export function SegmentedControl<T extends string>({
   size = "md",
   className,
   optionClassName,
+  variant = "default",
 }: SegmentedControlProps<T>) {
+  const plain = variant === "plain"
   const containerRef = useRef<HTMLDivElement>(null)
   const buttonRefs = useRef(new Map<T, HTMLButtonElement>())
   const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null)
@@ -63,7 +71,8 @@ export function SegmentedControl<T extends string>({
     <div
       ref={containerRef}
       className={cn(
-        "relative inline-flex items-center rounded-lg border border-border p-[3px] bg-slate-200 dark:bg-transparent",
+        "relative inline-flex items-center",
+        plain ? "py-[3px]" : "rounded-lg border border-border p-[3px] bg-slate-200 dark:bg-transparent",
         className,
       )}
     >
@@ -71,8 +80,8 @@ export function SegmentedControl<T extends string>({
         <span
           aria-hidden
           className={cn(
-            "pointer-events-none absolute top-[3px] bottom-[3px] rounded-[4px] border",
-            "bg-white dark:bg-muted border-slate-300 dark:border-white/10",
+            "pointer-events-none absolute top-[3px] bottom-[3px]",
+            plain ? "rounded-md bg-muted" : "rounded-[4px] border bg-white dark:bg-muted border-slate-300 dark:border-white/10",
             hasIndicator.current && "transition-[left,width] duration-200 ease-in-out",
           )}
           style={{ left: indicator.left, width: indicator.width }}

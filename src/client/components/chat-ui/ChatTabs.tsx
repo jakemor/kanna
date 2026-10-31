@@ -3,7 +3,6 @@ import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type D
 import { SortableContext, arrayMove, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable"
 import { CSS as DndCSS } from "@dnd-kit/utilities"
 import { PencilLine, X } from "lucide-react"
-import { DelegatorIcon } from "./delegator-icon"
 import { getAdjacentChatTab, getChatTabAfterClose, type ChatTab } from "../../lib/chat-tabs"
 import { isMacApp } from "../../lib/macApp"
 import { flattenSidebarThreads, type SidebarThread } from "../../lib/thread-sections"
@@ -73,9 +72,6 @@ const Tab = memo(function Tab({ tab, thread, active, isNew, editorLabel, actions
     <span className="relative flex size-4 shrink-0 items-center justify-center">
       {statusMark ?? (hasDraft
         ? <PencilLine className="h-4 w-4 shrink-0 text-logo" />
-        // A delegator's own mark, as on its sidebar row, where the navbar's
-        // "Delegator" tag is when tabs are off.
-        : thread?.row.delegator ? <DelegatorIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
         : thread ? <ProjectIcon name={thread.projectTitle} iconUrl={thread.projectIconUrl} /> : null)}
     </span>
   )
@@ -432,12 +428,9 @@ export const ChatTabs = memo(function ChatTabs({
   // Rendered with no tabs too: it is the navbar's flexible middle, and the
   // buttons on the right are held there by it.
   return (
-    // 9px down on the web, where the bar to line up with is the sidebar's,
-    // whose search icon sits lower than this row's center (set by eye
-    // against it). In the Mac app both bars center on the traffic lights.
-    // With the sidebar collapsed there is no bar to line up with, so the row
-    // goes back to its own center, on the clock and curve the sidebar leaves by.
-    <div className="pointer-events-none hidden min-w-0 flex-1 translate-y-[9px] md:flex mac-app:md:translate-y-0 transition-[translate] duration-300 ease-glide motion-reduce:transition-none group-data-[sidebar-collapsed]/navbar:translate-y-0">
+    // On the row's own center, which the sidebar's bar shares: 27px down on
+    // the web (KannaSidebar), the traffic lights' center in the Mac app.
+    <div className="pointer-events-none hidden min-w-0 flex-1 md:flex">
       <DndContext sensors={sensors} collisionDetection={closestCenter} modifiers={[alongTheBar]} onDragEnd={handleDragEnd}>
         <SortableContext items={tabIds} strategy={horizontalListSortingStrategy}>
           <div

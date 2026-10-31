@@ -341,6 +341,7 @@ function KannaLayout() {
     <KannaSidebar
       activeChatId={state.activeChatId}
       connectionStatus={state.connectionStatus}
+      connectionHealth={state.connectionHealth}
       ready={state.sidebarReady}
       collapsed={state.sidebarCollapsed}
       showMobileBackButton={showMobileBackButton}

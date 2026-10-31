@@ -8,7 +8,7 @@ import { REPLY_QUOTE_WIDTH_CLASS } from "./SourcedMessage"
  * The way back from a sub-chat to the chat it reports to, for when no message
  * on screen provides one.
  *
- * A sub-chat is in no list of chats (`isSubChat`), so the way back to its
+ * A sub-chat is usually in no list of chats (`SidebarChatRow.hidden`), so the way back to its
  * parent has to be in its own transcript. It is: the message that started the
  * sub-chat came from the parent's agent, and over its bubble is the parent's
  * row (`ChatReplyQuote`).

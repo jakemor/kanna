@@ -237,15 +237,14 @@ export function ChatNavbarWash({ stopAtTranscriptScrollbar = true, resetKey, opa
     >
       {opaqueBar ? (
         // Solid down to the tabs' bottom edge and no further, then a short
-        // fade. The tabs are 30px tall, centered on a line that differs by
-        // app: on the web 36px down (the row's 27px center, plus the 9px the
-        // tabs drop to meet the sidebar's bar), in the Mac app the traffic
-        // lights' center.
+        // fade. The tabs are 30px tall, centered on the row's line: on the
+        // web 27px down (9px padding, half the 36px row), in the Mac app the
+        // traffic lights' center.
         <>
-          <div className="absolute inset-x-0 top-0 h-[51px] bg-background mac-app:md:h-[calc(var(--mac-traffic-lights-center)+15px)]"></div>
+          <div className="absolute inset-x-0 top-0 h-[42px] bg-background mac-app:md:h-[calc(var(--mac-traffic-lights-center)+15px)]"></div>
           <div
             className={cn(
-              "absolute inset-x-0 top-[51px] h-4 bg-gradient-to-b from-background to-background/0 mac-app:md:top-[calc(var(--mac-traffic-lights-center)+15px)]",
+              "absolute inset-x-0 top-[42px] h-4 bg-gradient-to-b from-background to-background/0 mac-app:md:top-[calc(var(--mac-traffic-lights-center)+15px)]",
               settling ? "transition-none" : "transition-opacity duration-200 ease-out",
               scrolled ? "opacity-100" : "opacity-0"
             )}
@@ -321,9 +320,6 @@ function ChatNavbarImpl({
       data-window-drag
       ref={headerRef}
       inert={inert || undefined}
-      // Read by the title slot, which sits lower while there is a sidebar bar
-      // to line up with (ChatTabs, ChatNavbarTitle).
-      data-sidebar-collapsed={sidebarCollapsed || undefined}
       className={cn(
         "group/navbar absolute top-0 left-0 right-0 z-10 md:pt-[9px] max-md:px-2 md:pl-1 md:pr-2 border-border/0 flex items-center justify-center mac-app:md:pt-0 mac-app:md:pb-0",
         className

@@ -2,7 +2,7 @@
   "name": "kanna-mac",
   "productName": "Kanna",
   "private": true,
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Kanna for Mac: a window around the kanna command",
   "author": "Jake Mor",
   "license": "MIT",

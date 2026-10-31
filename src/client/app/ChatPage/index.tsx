@@ -29,6 +29,7 @@ import { buildChatJumpLocationState } from "../../lib/chat-navigation"
 import { snapshotDroppedFiles } from "../../lib/snapshotDroppedFiles"
 import { useRightSidebarStore, useWidgetsOpen } from "../../stores/rightSidebarStore"
 import { ViewerLayer, usePresentedViewer, useViewerShown } from "../../components/viewer/ViewerLayer"
+import { chatAttachmentSequence } from "../../components/viewer/attachmentSequence"
 import { dockedViewerPaneWidthPx, resolveViewerSplitMove, viewerPaneState, type ViewerPaneState } from "../../lib/viewer-split"
 import { opensInViewer, projectRelativePath } from "../../components/viewer/localLinks"
 import type { OpenLocalLinkTarget } from "../../components/messages/shared"
@@ -36,8 +37,8 @@ import { shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
 import { openViewer, useChatViewer, useViewerStore, viewerWidthClass } from "../../stores/viewerStore"
 import type { ChatPreviewContext } from "./ChatPreview"
 import { useOpenChat } from "../useOpenChat"
-import { useDelegateStore } from "../../stores/delegateStore"
 import type { DiffViewerContext } from "../../components/chat-ui/git/DiffViewer"
+import { recordChatViewed } from "../../lib/lastViewedChats"
 import { useChatExists, useChatIsDelegator, useProjectRepoUrl, useSidebarChatIsNew } from "../../stores/sidebarStore"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, isTerminalVisible, useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
@@ -53,7 +54,9 @@ import type { KannaState } from "../useKannaState"
 import { ChatInputDock } from "./ChatInputDock"
 import { DefaultModelsDialog } from "../../components/DefaultModelsDialog"
 import { ChatTranscriptViewport, type TranscriptScrollHandle } from "./ChatTranscriptViewport"
-import { TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
+import { TranscriptRenderOptionsProvider, type SubmitSecrets } from "../../components/messages/render-context"
+import type { RequestSecretsToolResult, SecretsListResult } from "../../../shared/secrets"
+import { loadSecretBackend } from "../../lib/secret-storage"
 import { ToolPayloadProvider } from "../../components/messages/tool-payload-context"
 import { createToolPayloadStore } from "./toolPayloadStore"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -61,6 +64,7 @@ import { CHAT_MIN_WORKSPACE_SIZE_PERCENT, WidgetsColumn } from "./WidgetsColumn"
 import { useChatPageSidebarActions, EMPTY_DIFF_SNAPSHOT } from "./useChatPageSidebarActions"
 import { useTranscriptJumpRequest } from "./useTranscriptJumpRequest"
 import { useTranscriptPaddingBottom } from "./useTranscriptPaddingBottom"
+import { countCascadingSubchats } from "../../../shared/stop-turn"
 import {
   EMPTY_STATE_TEXT,
   EMPTY_STATE_TYPING_INTERVAL_MS,
@@ -508,6 +512,10 @@ export function ChatPage() {
     : state.messages.length === 0 && state.runtime?.title === "New Chat"
   settledShowEmptyStateRef.current = showEmptyState
   const projectId = state.activeProjectId
+  // Where a click on the project comes back to (`lastViewedChats`).
+  useEffect(() => {
+    if (state.activeChatId && projectId) recordChatViewed(projectId, state.activeChatId)
+  }, [projectId, state.activeChatId])
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const storedTerminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
   // Set to the active chat when that pane opens and closes per chat, null when
@@ -569,6 +577,7 @@ export function ChatPage() {
   const editorCommandTemplate = useTerminalPreferencesStore((store) => store.editorCommandTemplate)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
   const baseContextWindowSnapshotRef = useRef<ReturnType<typeof deriveLatestContextWindowSnapshot>>(null)
+  const cascadingSubchats = countCascadingSubchats(state.runtime?.subagents)
   const contextWindowSnapshot = useMemo(() => {
     const derivedSnapshot = deriveLatestContextWindowSnapshot(state.chatSnapshot?.messages ?? EMPTY_TRANSCRIPT_ENTRIES)
     const previousSnapshot = baseContextWindowSnapshotRef.current
@@ -585,18 +594,11 @@ export function ChatPage() {
   // (`lib/viewer-levels`). Where there is a pane: on a phone the transcript
   // is the page and the list is the navbar button's overlay.
   //
-  // The list is in the pane the first time a delegator's page is opened in
-  // this browser. After that the pane is as it was left, open or shut, like
-  // any chat's viewer, and the navbar's button brings it back.
-  //
-  // After `setViewerChat` above, in the same commit, so a delegator opened
-  // for the first time is never painted with its pane shut.
+  // The pane is as it was left, open or shut, like any chat's viewer, and
+  // the navbar's button opens the list. It is not opened unasked: with
+  // Delegator mode nearly every chat is a delegator, most with nothing
+  // under them yet.
   const isDelegator = useChatIsDelegator(state.activeChatId)
-  // Which of a project's delegators a click on the project opens, when it has
-  // several (`resolveProjectNewChat`).
-  useEffect(() => {
-    if (isDelegator && state.activeChatId) useDelegateStore.getState().markViewed(state.activeChatId)
-  }, [isDelegator, state.activeChatId])
   const viewerFloorChatId = isDelegator && !isMobileViewport ? state.activeChatId : null
   const setViewerFloor = useViewerStore((store) => store.setFloor)
   useLayoutEffect(() => {
@@ -608,10 +610,7 @@ export function ChatPage() {
       setViewerFloor(null)
       return
     }
-    const delegateStore = useDelegateStore.getState()
-    const firstTime = !delegateStore.paneShown[viewerFloorChatId]
-    setViewerFloor({ kind: "delegated", chatId: viewerFloorChatId }, { openByDefault: firstTime })
-    if (firstTime) delegateStore.markPaneShown(viewerFloorChatId)
+    setViewerFloor({ kind: "delegated", chatId: viewerFloorChatId })
   }, [setViewerFloor, state.sidebarReady, viewerFloorChatId])
   const navigate = useNavigate()
   const location = useLocation()
@@ -940,8 +939,8 @@ export function ChatPage() {
     })
   }, [])
 
-  const handleCancel = useCallback(() => {
-    void state.handleCancel()
+  const handleCancel = useCallback((options?: { cascade?: boolean }) => {
+    void state.handleCancel(options)
   }, [state.handleCancel])
 
   const handleOpenExternal = useCallback<NonNullable<ComponentProps<typeof ChatNavbar>["onOpenExternal"]>>((action, editor) => {
@@ -1042,7 +1041,16 @@ export function ChatPage() {
     [state.socket, state.activeChatId]
   )
 
-  const transcriptRenderOptions = useMemo(() => ({ loadEntryDebugRaw }), [loadEntryDebugRaw])
+  const secretsSocket = state.socket
+  const submitSecrets = useCallback<SubmitSecrets>(async (toolUseId, answer) => {
+    if (!activeChatId) throw new Error("No chat is open")
+    return await secretsSocket.command<RequestSecretsToolResult>({ type: "secrets.submit", chatId: activeChatId, toolUseId, ...answer })
+  }, [activeChatId, secretsSocket])
+  const loadBackend = useCallback(() => loadSecretBackend(secretsSocket, (command) => secretsSocket.command<SecretsListResult>(command)), [secretsSocket])
+  const transcriptRenderOptions = useMemo(
+    () => ({ loadEntryDebugRaw, submitSecrets, loadSecretBackend: loadBackend }),
+    [loadEntryDebugRaw, submitSecrets, loadBackend],
+  )
 
   // One cache per chat: entry ids are chat-scoped, and leaving a chat should
   // not keep its payloads resident.
@@ -1330,6 +1338,7 @@ export function ChatPage() {
           isProcessing={state.isProcessing}
           runtimeStatus={state.runtimeStatus}
           waitingOn={state.runtime?.waitingOn}
+          queuePaused={Boolean(state.runtime?.queuePaused)}
           isDraining={state.isDraining}
           commandError={state.commandError}
           onStopDraining={state.handleStopDraining}
@@ -1378,6 +1387,7 @@ export function ChatPage() {
         hasSelectedProject={state.hasSelectedProject}
         runtimeStatus={state.runtimeStatus}
         canCancel={state.canCancel}
+        cascadingSubchats={cascadingSubchats}
         projectId={projectId}
         projectPath={state.navbarLocalPath ?? null}
         projectRepoLabel={state.navbarRepoLabel}
@@ -1388,6 +1398,8 @@ export function ChatPage() {
         onCancel={handleCancel}
         onEditModels={handleEditModels}
         onListSkills={handleListSkills}
+        oldestQueuedMessageId={state.queuedMessages[0]?.id ?? null}
+        onSendQueuedNow={state.handleSteerQueuedMessage}
       />
       <DefaultModelsDialog
         open={defaultModelsDialogOpen}
@@ -1416,6 +1428,11 @@ export function ChatPage() {
     isMac: state.localProjects?.machine.platform === "darwin",
   } : undefined), [diffRenderMode, handleLoadDiffPatch, handleOpenDiffFile, projectId, setDiffRenderMode, setWrapDiffLines, state.chatDiffSnapshot?.files, state.chatDiffSnapshot?.status, state.editorLabel, state.localProjects?.machine.platform, wrapDiffLines])
 
+  // What an open attachment steps through: the chat's, in transcript order.
+  const viewerAttachments = useMemo(
+    () => chatAttachmentSequence(state.chatSnapshot?.messages ?? EMPTY_TRANSCRIPT_ENTRIES),
+    [state.chatSnapshot?.messages],
+  )
   // What the viewer needs to show a sub-chat, live and with a composer.
   const chatPreviewContext = useMemo<ChatPreviewContext>(() => ({
     socket: state.socket,
@@ -1444,6 +1461,7 @@ export function ChatPage() {
     <ViewerLayer
       diff={diffViewerContext}
       chat={chatPreviewContext}
+      attachments={viewerAttachments}
       onOpenLocalLink={handleViewerLocalLink}
       placement={viewerPaneAvailable ? viewerPlacement : undefined}
       presented={presentedViewer}

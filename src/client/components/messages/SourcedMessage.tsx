@@ -1,5 +1,5 @@
 import { useMemo, useRef, type ReactNode } from "react"
-import { CalendarClock, CornerUpRight, MessageCircle, Split, X } from "lucide-react"
+import { CalendarClock, MessageCircle, Split, X } from "lucide-react"
 import type { ChatAttachment, MessageSource } from "../../../shared/types"
 import { stripSystemMessages } from "../../../shared/message-preview"
 import { ADOPTED_REPORT_STATUS, reportOutcome, splitReportSections, type ReportSection } from "../../../shared/report-sections"
@@ -236,10 +236,9 @@ export function ReportMarker({ section, outcome, flash = false }: {
 }
 
 /** One part of a delivered message: its quote, the line, and its bubble. */
-function SourcedPart({ section, source, steered, flash }: {
+function SourcedPart({ section, source, flash }: {
   section: ReportSection
   source: MessageSource
-  steered: boolean
   flash: boolean
 }) {
   const partRef = useRef<HTMLDivElement | null>(null)
@@ -250,22 +249,8 @@ function SourcedPart({ section, source, steered, flash }: {
       <ReplyQuoteRow>
         <SourceQuote source={source} chatId={section.chatId} />
       </ReplyQuoteRow>
-      <div className="flex min-w-0 max-w-full items-center gap-2">
-        <div {...{ [FOLD_SURFACE_ATTRIBUTE]: "" }} className={cn(USER_BUBBLE_CLASS, "px-3.5 py-1.5", flash && "kanna-jump-flash")}>
-          <ClampedMessageText text={section.body} lines={CLAMP_LINES.sent} scopeRef={partRef} />
-        </div>
-        {/* After the bubble and turned around, where a typed prompt has it
-            before: on the side that faces the middle of the column. */}
-        {steered ? (
-          <span
-            aria-label="Sent mid-turn"
-            role="img"
-            title="Sent mid-turn"
-            className="shrink-0 text-muted-foreground"
-          >
-            <CornerUpRight className="h-4 w-4" />
-          </span>
-        ) : null}
+      <div {...{ [FOLD_SURFACE_ATTRIBUTE]: "" }} className={cn(USER_BUBBLE_CLASS, "px-3.5 py-1.5 max-w-full", flash && "kanna-jump-flash")}>
+        <ClampedMessageText text={section.body} lines={CLAMP_LINES.sent} scopeRef={partRef} />
       </div>
     </div>
   )
@@ -275,12 +260,11 @@ interface Props {
   content: string
   source: MessageSource
   attachments?: ChatAttachment[]
-  steered?: boolean
   /** Light the bubbles: a jump just landed on this message. See UserMessage. */
   flash?: boolean
 }
 
-export function SourcedMessage({ content, source, attachments = [], steered = false, flash = false }: Props) {
+export function SourcedMessage({ content, source, attachments = [], flash = false }: Props) {
   const sections = useMemo(() => sourcedSections(content, source), [content, source])
 
   if (source.kind === "report") {
@@ -308,7 +292,6 @@ export function SourcedMessage({ content, source, attachments = [], steered = fa
           key={index}
           section={section}
           source={source}
-          steered={steered && index === 0}
           flash={flash}
         />
       ))}

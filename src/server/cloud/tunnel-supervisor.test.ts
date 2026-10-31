@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { DEFAULT_CLOUD_CONTROL_URL, type CloudHeartbeatRequest } from "../../shared/cloud-api"
+import type { CloudflaredInstalledEvent } from "../cloudflared-updater"
 import type { StartedShareTunnel } from "../share"
 import { CloudApiError, type CloudApiClient } from "./api-client"
 import type { CloudIdentity } from "./identity"
@@ -170,7 +171,7 @@ describe("tunnel supervisor (named tunnel)", () => {
     expect(connectors.stopped).toEqual([0])
   })
 
-  test("heartbeats every Nth successful ping", async () => {
+  test("heartbeats every Nth ping round", async () => {
     const sleep = createManualSleep()
     const connectors = createFakeConnectors()
     const api = createFakeApi()
@@ -413,5 +414,96 @@ describe("tunnel supervisor (named tunnel)", () => {
     expect(connectors.startedCount()).toBe(1) // no restart for a CP blip
 
     supervisor.stop()
+  })
+})
+
+describe("tunnel supervisor and cloudflared updates", () => {
+  function setup(connectorVersion: string | null) {
+    const sleep = createManualSleep()
+    const api = createFakeApi()
+    const warnings: string[] = []
+    const stopped: number[] = []
+    let started = 0
+    let announce: ((event: CloudflaredInstalledEvent) => void) | null = null
+    const supervisor = startCloudTunnelSupervisor({
+      localUrl: "http://localhost:3210",
+      identity: IDENTITY,
+      apiClient: api.client,
+      warn: (message) => warnings.push(message),
+      deps: {
+        startTunnelImpl: async () => {
+          const index = started
+          started += 1
+          return { publicUrl: null, binaryVersion: connectorVersion, stop: () => stopped.push(index) }
+        },
+        fetchImpl: okPing(),
+        sleepImpl: sleep.sleepImpl,
+        platform: "darwin",
+        subscribeCloudflaredInstalls: (listener) => {
+          announce = listener
+          return () => {
+            announce = null
+          }
+        },
+      },
+    })
+    return {
+      supervisor,
+      api,
+      sleep,
+      warnings,
+      stopped,
+      startedCount: () => started,
+      announce: (version: string) => announce?.({ bin: "/bin/cloudflared", version, previousVersion: connectorVersion }),
+      subscribed: () => announce !== null,
+    }
+  }
+
+  test("a newer binary on disk does not restart a connector at or above the minimum", async () => {
+    const harness = setup("2026.10.3")
+    await waitFor(() => harness.api.heartbeats.length === 1)
+
+    harness.announce("2026.10.4")
+    await Bun.sleep(10)
+
+    expect(harness.startedCount()).toBe(1)
+    expect(harness.stopped).toEqual([])
+    harness.supervisor.stop()
+    expect(harness.subscribed()).toBe(false)
+  })
+
+  test("a connector below the minimum is restarted once a verified patched binary is in place", async () => {
+    const harness = setup("2026.10.2")
+    await waitFor(() => harness.api.heartbeats.length === 1)
+
+    harness.announce("2026.10.4")
+    await waitFor(() => harness.stopped.length === 1)
+    expect(harness.warnings.some((line) => line.includes("below the security minimum 2026.10.3") && line.includes("2026.10.4"))).toBe(true)
+    await harness.sleep.releaseNext() // the 1s fast-retry delay
+    await waitFor(() => harness.startedCount() === 2)
+
+    harness.supervisor.stop()
+  })
+
+  test("an install that is itself below the minimum restarts nothing", async () => {
+    const harness = setup("2026.3.0")
+    await waitFor(() => harness.api.heartbeats.length === 1)
+
+    harness.announce("2026.10.2") // below the macOS minimum
+    await Bun.sleep(10)
+
+    expect(harness.stopped).toEqual([])
+    harness.supervisor.stop()
+  })
+
+  test("a connector of unknown version is not restarted", async () => {
+    const harness = setup(null)
+    await waitFor(() => harness.api.heartbeats.length === 1)
+
+    harness.announce("2026.10.4")
+    await Bun.sleep(10)
+
+    expect(harness.stopped).toEqual([])
+    harness.supervisor.stop()
   })
 })

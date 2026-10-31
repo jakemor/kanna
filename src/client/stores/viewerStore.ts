@@ -123,14 +123,18 @@ interface ViewerState {
   floor: ViewerFloor | null
   setChat: (chatId: string | null) => void
   /**
-   * Called by the page, after `setChat`. `openByDefault` puts the floor in
-   * an empty pane: a delegator's list is there the first time its page is
-   * opened. After that the pane is as it was left, open or shut, like any
-   * chat's (the page remembers which, and passes false).
+   * Called by the page, after `setChat`. It leaves the pane as it was, open
+   * or shut, like any chat's: the navbar's button puts the floor in it.
    */
-  setFloor: (floor: ViewerFloor | null, options?: { openByDefault?: boolean }) => void
+  setFloor: (floor: ViewerFloor | null) => void
   /** `expanded` opens it over the chat whatever the pane was, and only for as long as it is open. */
   open: (item: ViewerItem, options?: { expanded?: boolean }) => void
+  /**
+   * Shows `item` in place of what is open, the pane exactly as it is
+   * (expanded, its way back): a step through the chat's attachments. It
+   * lands at once, like a key's change, since a step is made again and again.
+   */
+  replace: (item: ViewerItem) => void
   /**
    * The Close button and Escape. Shuts the pane, or goes back to the chat
    * that what is open was opened over. On a page with a floor it is Escape
@@ -191,14 +195,11 @@ export const useViewerStore = create<ViewerState>()((set, get) => ({
   liveChatId: null,
   changedByKey: false,
   floor: null,
-  setFloor: (floor, options) => {
+  setFloor: (floor) => {
     const { chatKey } = get()
     if (get().floor?.chatId !== floor?.chatId) set({ floor })
     const current = currentViewer(chatKey)
-    if (floor) {
-      if (!current && options?.openByDefault) useRightSidebarStore.getState().setChatViewer(chatKey, { item: floor, expanded: false })
-      return
-    }
+    if (floor) return
     // A list left in the pane with no floor under it: the window went to a
     // phone's width, where the list is opened on request, or the page loaded
     // there. It was only ever there as the floor.
@@ -232,6 +233,10 @@ export const useViewerStore = create<ViewerState>()((set, get) => ({
       ...(returnTo ? { returnTo } : {}),
     })
     set((state) => ({ openCount: state.openCount + 1, changedByKey: isKeyboardInitiated() }))
+  },
+  replace: (item) => {
+    updateViewer(get().chatKey, (viewer) => ({ ...viewer, item }))
+    set({ changedByKey: true })
   },
   close: () => {
     const { chatKey, floor } = get()

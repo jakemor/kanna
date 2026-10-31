@@ -36,6 +36,33 @@ export interface ThreadStartParams {
   persistExtendedHistory: boolean
 }
 
+export interface ConfigReadParams {
+  includeLayers?: boolean
+  cwd?: string | null
+}
+
+export interface ConfigReadResponse {
+  config: {
+    mcp_servers?: Record<string, unknown> | null
+  } & Record<string, unknown>
+}
+
+export interface ListMcpServerStatusParams {
+  cursor?: string | null
+  limit?: number | null
+  detail?: "full" | "toolsAndAuthOnly" | null
+  threadId?: string | null
+}
+
+export interface ListMcpServerStatusResponse {
+  data: Array<{
+    name: string
+    /** The plugin that brings the server; null for config.toml servers and built-ins. */
+    pluginId: string | null
+  }>
+  nextCursor: string | null
+}
+
 export interface ThreadResumeParams {
   config?: Record<string, unknown>
   threadId: string

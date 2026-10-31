@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { KANNA_CHAT_LINK_INSTRUCTIONS } from "../shared/chat-links"
 import { buildKannaAgentTrailer } from "./attribution"
-import { buildKannaSystemInstructions, buildKannaSystemMessage, KANNA_DELEGATOR_INSTRUCTIONS, KANNA_ORCHESTRATION_INSTRUCTIONS, KANNA_VISUALIZATION_INSTRUCTIONS } from "./harness-instructions"
+import { buildKannaSystemInstructions, buildKannaSystemMessage, buildKannaToolCliInstructions, KANNA_DELEGATOR_INSTRUCTIONS, KANNA_ORCHESTRATION_INSTRUCTIONS, KANNA_VISUALIZATION_INSTRUCTIONS } from "./harness-instructions"
+import { kannaCliCommand } from "./secrets"
 import { KANNA_TOOL_DESCRIPTION_LIMIT, KANNA_TOOL_NAMES, kannaToolSpecs } from "./kanna-tools"
 import { SHOW_VISUALIZATION_TOOL } from "./kanna-visualization-tool"
 import { KANNA_VISUALIZATION_CONTRACT, KANNA_VISUALIZATION_SKILL_INSTRUCTIONS } from "./visualization-instructions"
@@ -25,8 +26,10 @@ describe("buildKannaSystemInstructions", () => {
   test("tells a delegator to hand work on, and no other chat", () => {
     for (const build of [buildKannaSystemInstructions, buildKannaSystemMessage]) {
       expect(build(AGENT_ID, { delegator: true })).toContain(KANNA_DELEGATOR_INSTRUCTIONS)
-      expect(build(AGENT_ID)).not.toContain("delegator")
-      expect(build(AGENT_ID, { delegator: false })).not.toContain("delegator")
+      // Every chat with the tools is told of the `delegator` choice on
+      // create_chat, but only a delegator is told it is one.
+      expect(build(AGENT_ID)).not.toContain("# This chat is a delegator")
+      expect(build(AGENT_ID, { delegator: false })).not.toContain("# This chat is a delegator")
       // It hands work on with the chat tools, so a harness without them is not told to.
       expect(build(AGENT_ID, { delegator: true, tools: false })).not.toContain("delegator")
     }
@@ -41,6 +44,10 @@ describe("buildKannaSystemInstructions", () => {
   test("every chat with the tools is told one chat is one piece of work, and to fork for new work", () => {
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("Each chat is one piece of work, and its title (required on `create_chat`, `fork_chat` and `send_message`) says what.")
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("prefer a fork to retitling a chat")
+    // The tool requires the choice, so the instructions say what each side means.
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`create_chat` needs a choice of `delegator: false` for a chat that does the work itself")
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`delegator: true` for one that coordinates sub-chats of its own")
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("So does `set_schedule` with `newChat`.")
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).not.toMatch(/ticket|checkpoint/i)
   })
 
@@ -48,7 +55,7 @@ describe("buildKannaSystemInstructions", () => {
     const told = KANNA_DELEGATOR_INSTRUCTIONS
     expect(told).toContain("Each chat under this one is a self-contained timeline of one piece of work, and its title says what that work is.")
     expect(told).toContain("The chat list is the user's record of what was worked on")
-    expect(told).toContain("New work goes to a new chat: `create_chat`, titled for that work.")
+    expect(told).toContain("New work goes to a new chat: `create_chat`, titled for that work, with `delegator: false` unless it should run chats of its own.")
     expect(told).toContain("To reuse a chat's context for new work, fork it: `fork_chat`, titled for the new work.")
     expect(told).toContain("Never point an existing chat at different work.")
     expect(told).toContain("Follow-ups on a chat's own work go to it with `send_message`, passing its current title")
@@ -66,6 +73,9 @@ describe("buildKannaSystemInstructions", () => {
     expect(told).toContain("Several unrelated tasks in one message go to several chats.")
     expect(told).toContain("Tell the user which chat each task went to, and link it.")
     expect(told).toContain("Do not redo")
+    expect(told).toContain("Almost always give each automation its own chat: a sub-chat from `create_chat`")
+    expect(told).toContain("with `set_schedule`'s `chatId` pointed at it")
+    expect(told).toContain("Schedule into this chat only if the user asks")
     const named = [...told.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!)
     expect(named).toEqual(expect.arrayContaining(["create_chat", "fork_chat", "send_message", "list_chats", "get_context"]))
     for (const name of named) expect(KANNA_TOOL_NAMES as readonly string[]).toContain(name)
@@ -78,6 +88,37 @@ describe("buildKannaSystemInstructions", () => {
       if (name === "kanna" || name.startsWith("mcp__")) continue
       expect(KANNA_TOOL_NAMES).toContain(name)
     }
+  })
+})
+
+describe("Kanna tools as commands", () => {
+  const CLI = "/opt/bun /opt/kanna/bin/kanna"
+
+  test("every harness with the tools is told each one is a command too, briefly, with an example", () => {
+    const hint = buildKannaToolCliInstructions(CLI)
+    expect(hint).toContain(`Every Kanna tool is also a shell command, for scripts and loops: \`${CLI} <tool>\``)
+    expect(hint).toContain("the result as JSON on stdout")
+    expect(hint).toContain(`\`${CLI} tools list\``)
+    expect(hint).toContain(`for id in $(${CLI} list_chats --status running | jq -r '.chats[].chatId'); do ${CLI} read_chat --chatId "$id"`)
+    expect(hint.split("\n")).toHaveLength(4)
+    expect(hint.length).toBeLessThan(800)
+    for (const build of [buildKannaSystemInstructions, buildKannaSystemMessage]) {
+      expect(build(AGENT_ID, { cliCommand: CLI })).toContain(hint)
+      expect(build(AGENT_ID, { tools: false, cliCommand: CLI })).not.toContain("tools list")
+    }
+    // The command an agent is told to run is this install's.
+    expect(buildKannaSystemInstructions(AGENT_ID)).toContain(buildKannaToolCliInstructions(kannaCliCommand()))
+  })
+
+  test("a harness that reaches the tools only by shell (grok) is told so before anything names one", () => {
+    const told = buildKannaSystemInstructions(AGENT_ID, { tools: "cli", delegator: true, cliCommand: CLI })
+    const hint = told.indexOf(buildKannaToolCliInstructions(CLI))
+    expect(hint).toBeGreaterThan(0)
+    expect(told).toContain("You have no Kanna tools to call directly.")
+    expect(hint).toBeLessThan(told.indexOf(KANNA_ORCHESTRATION_INSTRUCTIONS))
+    expect(told).toContain(KANNA_DELEGATOR_INSTRUCTIONS)
+    expect(told).toContain(KANNA_VISUALIZATION_INSTRUCTIONS)
+    expect(told.split("# Kanna tools as commands")).toHaveLength(2)
   })
 })
 

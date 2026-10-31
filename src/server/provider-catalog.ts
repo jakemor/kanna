@@ -3,7 +3,6 @@ import type {
   ClaudeModelOptions,
   CodexModelOptions,
   CursorModelOptions,
-  ClaudeContextWindow,
   FaveModel,
   GrokModelOptions,
   ModelOptions,
@@ -13,14 +12,13 @@ import type {
   ServiceTier,
 } from "../shared/types"
 import {
-  CLAUDE_CONTEXT_WINDOW_OPTIONS,
+  CLAUDE_1M_CONTEXT,
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
   PROVIDERS,
   codexReasoningEffortLabel,
   deriveModelLabel,
   withPiFaveModels,
-  normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeCodexReasoningEffort,
   normalizeGrokReasoningEffort,
@@ -65,7 +63,7 @@ export function resetServerProvidersForTests() {
  * spawns with) and labeled from the resolved wire id ("Sonnet 5") — the SDK's
  * display names ("Default (recommended)", versionless "Opus") are ignored.
  * Static catalog entries seed per-family metadata the SDK doesn't report
- * (context window options, max-effort support, fable's fixed 1M window).
+ * (the 1M window and its "[1m]" id, max-effort support, fable's 1M window).
  * Returns true when the catalog changed (callers should broadcast).
  */
 export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
@@ -97,15 +95,16 @@ export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
     // Prefer the row named after the family over role rows ("default").
     const row = group.rows.find((candidate) => modelIdFamily(candidate.value) === family) ?? group.rows[0]!
     const staticOption = staticModels.find((option) => option.id === family)
-    const contextWindowOptions = group.has1m
-      ? [...CLAUDE_CONTEXT_WINDOW_OPTIONS]
-      : staticOption?.contextWindowOptions
     return {
       id: family,
       label: deriveModelLabel(row.resolvedModel ?? row.value),
       supportsEffort: row.supportsEffort ?? staticOption?.supportsEffort ?? true,
-      ...(contextWindowOptions ? { contextWindowOptions: [...contextWindowOptions] } : {}),
-      ...(staticOption?.contextWindowTokens ? { contextWindowTokens: staticOption.contextWindowTokens } : {}),
+      ...(group.has1m
+        ? CLAUDE_1M_CONTEXT
+        : {
+            ...(staticOption?.contextWindowTokens ? { contextWindowTokens: staticOption.contextWindowTokens } : {}),
+            ...(staticOption?.apiModelSuffix ? { apiModelSuffix: staticOption.apiModelSuffix } : {}),
+          }),
       ...(staticOption?.supportsMaxReasoningEffort ? { supportsMaxReasoningEffort: true } : {}),
       ...((row.supportsFastMode ?? staticOption?.supportsFastMode) !== undefined
         ? { supportsFastMode: row.supportsFastMode ?? staticOption?.supportsFastMode }
@@ -362,7 +361,6 @@ export function normalizeClaudeModelOptions(
       : isClaudeReasoningEffort(legacyEffort)
         ? legacyEffort
         : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort,
-    contextWindow: normalizeClaudeContextWindow(model, modelOptions?.claude?.contextWindow as ClaudeContextWindow | undefined),
     fastMode: normalizeClaudeFastMode(model, modelOptions?.claude?.fastMode),
   }
 }

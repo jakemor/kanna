@@ -9,15 +9,24 @@ import type {
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
 import { generateUUID } from "../lib/utils"
+import {
+  getConnectionHealth,
+  msUntilConnectionHealthCheck,
+  SOCKET_DISCONNECTED_MESSAGE,
+  type ConnectionHealth,
+} from "./connectionHealth"
 
 type SnapshotListener<T> = (value: T) => void
 type EventListener<T> = (value: T) => void
 export type SocketStatus = "connecting" | "connected" | "disconnected"
 type StatusListener = (status: SocketStatus) => void
+type HealthListener = (health: ConnectionHealth) => void
 
 const STALE_CONNECTION_MS = 25_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 const PING_TIMEOUT_MS = 4_000
+const INITIAL_RECONNECT_DELAY_MS = 750
+const MAX_RECONNECT_DELAY_MS = 5_000
 
 interface SubscriptionEntry<TSnapshot, TEvent = never> {
   topic: SubscriptionTopic
@@ -46,31 +55,39 @@ export class KannaSocket {
   private ws: WebSocket | null = null
   private started = false
   private reconnectTimer: number | null = null
-  private reconnectDelayMs = 750
+  private reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
   private readonly subscriptions = new Map<string, SubscriptionEntry<unknown, unknown>>()
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly outboundQueue: ClientEnvelope[] = []
   private readonly statusListeners = new Set<StatusListener>()
+  private readonly healthListeners = new Set<HealthListener>()
   private heartbeatTimer: number | null = null
   private pingTimeoutTimer: number | null = null
   private pingPromise: Promise<void> | null = null
   private lastOpenAt = 0
   private lastMessageAt = 0
   private reconnectImmediatelyOnClose = false
+  // Inputs to `getConnectionHealth`: when the socket went down (or the grace
+  // window last restarted) and how many attempts failed since.
+  private hasConnected = false
+  private downSince = 0
+  private failedAttempts = 0
+  private health: ConnectionHealth = "connecting"
+  private healthTimer: number | null = null
   private readonly handleWindowFocus = () => {
-    void this.ensureHealthyConnection()
+    void this.ensureHealthyConnection({ returning: true })
   }
   private readonly handleVisibilityChange = () => {
     this.syncVisibility()
     if (document.visibilityState === "visible") {
       this.startHeartbeat()
-      void this.ensureHealthyConnection()
+      void this.ensureHealthyConnection({ returning: true })
       return
     }
     this.stopHeartbeat()
   }
   private readonly handleOnline = () => {
-    void this.ensureHealthyConnection()
+    void this.ensureHealthyConnection({ returning: true })
   }
 
   constructor(url: WsUrlSource) {
@@ -82,6 +99,9 @@ export class KannaSocket {
       return
     }
     this.started = true
+    this.downSince = Date.now()
+    this.failedAttempts = 0
+    this.updateHealth()
     window.addEventListener("focus", this.handleWindowFocus)
     window.addEventListener("online", this.handleOnline)
     document.addEventListener("visibilitychange", this.handleVisibilityChange)
@@ -94,6 +114,7 @@ export class KannaSocket {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.clearHealthTimer()
     this.stopHeartbeat()
     this.clearPingState()
     window.removeEventListener("focus", this.handleWindowFocus)
@@ -113,6 +134,15 @@ export class KannaSocket {
     listener(this.getStatus())
     return () => {
       this.statusListeners.delete(listener)
+    }
+  }
+
+  /** What a person should be told about the connection; see `connectionHealth.ts`. */
+  onHealth(listener: HealthListener) {
+    this.healthListeners.add(listener)
+    listener(this.health)
+    return () => {
+      this.healthListeners.delete(listener)
     }
   }
 
@@ -166,7 +196,17 @@ export class KannaSocket {
     })
   }
 
-  ensureHealthyConnection() {
+  /**
+   * `returning` is a person coming back to the page (focus, the tab shown
+   * again, the network back). A socket that is down then gets a fresh grace
+   * window: the retries that failed while the tab was hidden or the machine
+   * slept say nothing about whether the network is back now.
+   */
+  ensureHealthyConnection(options?: { returning?: boolean }) {
+    if (options?.returning && this.ws?.readyState !== WebSocket.OPEN) {
+      this.restartGraceWindow()
+    }
+
     if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
       this.reconnectNow()
       return Promise.resolve()
@@ -211,20 +251,29 @@ export class KannaSocket {
         if (!this.started || seq !== this.connectSeq) {
           return
         }
+        this.failedAttempts += 1
         this.emitStatus("disconnected")
+        this.updateHealth()
         this.scheduleReconnect()
       })
   }
 
   private openSocket(url: string) {
     this.ws = new WebSocket(url)
+    // A close after an open is a drop and starts the grace window; a close
+    // before one is an attempt that failed.
+    let opened = false
 
     this.ws.addEventListener("open", () => {
-      this.reconnectDelayMs = 750
+      opened = true
+      this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
       this.reconnectImmediatelyOnClose = false
       this.lastOpenAt = Date.now()
       this.lastMessageAt = this.lastOpenAt
+      this.hasConnected = true
+      this.failedAttempts = 0
       this.emitStatus("connected")
+      this.updateHealth()
       this.startHeartbeat()
       for (const [id, subscription] of this.subscriptions.entries()) {
         subscription.paused = this.shouldPause(subscription.topic)
@@ -294,9 +343,16 @@ export class KannaSocket {
       this.reconnectImmediatelyOnClose = false
       this.stopHeartbeat()
       this.clearPingState()
+      if (opened) {
+        this.downSince = Date.now()
+        this.failedAttempts = 0
+      } else {
+        this.failedAttempts += 1
+      }
       this.emitStatus("disconnected")
+      this.updateHealth()
       for (const pending of this.pending.values()) {
-        pending.reject(new Error("Disconnected"))
+        pending.reject(new Error(SOCKET_DISCONNECTED_MESSAGE))
       }
       this.pending.clear()
       if (reconnectImmediately) {
@@ -312,8 +368,46 @@ export class KannaSocket {
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null
       this.connect()
-      this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 5_000)
+      this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS)
     }, this.reconnectDelayMs)
+  }
+
+  private restartGraceWindow() {
+    this.downSince = Date.now()
+    this.failedAttempts = 0
+    this.updateHealth()
+  }
+
+  private updateHealth() {
+    this.clearHealthTimer()
+    const open = this.ws?.readyState === WebSocket.OPEN
+    const downForMs = open ? 0 : Date.now() - this.downSince
+    const health = getConnectionHealth({
+      open,
+      hasConnected: this.hasConnected,
+      failedAttempts: this.failedAttempts,
+      downForMs,
+    })
+    // Time alone can turn a drop into lost, with no socket event to say so.
+    const recheckInMs = open || !this.started ? null : msUntilConnectionHealthCheck(downForMs)
+    if (recheckInMs !== null) {
+      this.healthTimer = window.setTimeout(() => {
+        this.healthTimer = null
+        this.updateHealth()
+      }, recheckInMs)
+    }
+    if (health === this.health) return
+    this.health = health
+    for (const listener of this.healthListeners) {
+      listener(health)
+    }
+  }
+
+  private clearHealthTimer() {
+    if (this.healthTimer !== null) {
+      window.clearTimeout(this.healthTimer)
+      this.healthTimer = null
+    }
   }
 
   private getStatus(): SocketStatus {
@@ -366,6 +460,7 @@ export class KannaSocket {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
 
     if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
       this.connect()

@@ -11,3 +11,19 @@ import type { SubmitWhileRunning } from "./types"
 export function shouldSteerSubmit(mode: SubmitWhileRunning, withModifier: boolean) {
   return (mode === "steer") !== withModifier
 }
+
+/**
+ * What ⌘/Ctrl+Enter does. With anything in the composer, text or an
+ * attachment (even one still uploading), it sends that as it always has.
+ * With nothing there it has nothing of its own to send, so it sends the
+ * oldest queued message now: what that message's Send now does, which also
+ * resumes a queue a stop left paused. Whitespace is nothing, as it is to
+ * Send.
+ */
+export function resolveModifiedEnter(
+  composer: { text: string; attachmentCount: number },
+  hasQueuedMessage: boolean
+): "composer" | "send-oldest-queued" | "none" {
+  if (composer.text.trim().length > 0 || composer.attachmentCount > 0) return "composer"
+  return hasQueuedMessage ? "send-oldest-queued" : "none"
+}

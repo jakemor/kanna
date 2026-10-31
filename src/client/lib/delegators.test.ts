@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { SidebarChatRow } from "../../shared/types"
-import { delegatedAttentionCount, delegatedListTitle, delegatedThreads, projectDelegators } from "./delegators"
+import { delegatedAttentionCount, delegatedListTitle, delegatedThreads, delegatorToggleTitle } from "./delegators"
 import type { SidebarThread } from "./thread-sections"
 
 function thread(chatId: string, row: Partial<SidebarChatRow> = {}, extra: Partial<SidebarThread> = {}): SidebarThread {
@@ -16,22 +16,6 @@ function thread(chatId: string, row: Partial<SidebarChatRow> = {}, extra: Partia
     ...extra,
   }
 }
-
-const delegator = (chatId: string, lastActivityAt: number, extra: Partial<SidebarThread> = {}) => (
-  thread(chatId, { delegator: true }, { lastActivityAt, ...extra })
-)
-
-describe("projectDelegators", () => {
-  test("the project's delegators, most recently active first", () => {
-    const threads = [delegator("old", 1), thread("plain"), delegator("new", 5), delegator("elsewhere", 9, { projectId: "p2" })]
-    expect(projectDelegators(threads, "p1").map((item) => item.chatId)).toEqual(["new", "old"])
-  })
-
-  test("archived delegators are not offered, and no project has none", () => {
-    expect(projectDelegators([delegator("put-away", 3, { archived: true })], "p1")).toEqual([])
-    expect(projectDelegators([delegator("a", 1)], null)).toEqual([])
-  })
-})
 
 describe("delegatedThreads", () => {
   test("the chats directly under the delegator, archived ones included, and nothing deeper", () => {
@@ -53,13 +37,14 @@ describe("delegatedAttentionCount", () => {
     expect(delegatedAttentionCount([row({ status: "waiting_for_user" }), row({ status: "running" }), row({})], "deleg")).toBe(1)
   })
 
-  test("a chat that finished and has not been opened is counted until it is", () => {
-    expect(delegatedAttentionCount([row({ unread: true })], "deleg")).toBe(1)
-    expect(delegatedAttentionCount([row({ unread: false })], "deleg")).toBe(0)
+  // The server marks no other sub-chat unread: the delegator reports for it.
+  test("an adopted chat that finished and has not been opened is counted until it is", () => {
+    expect(delegatedAttentionCount([row({ adopted: true, unread: true })], "deleg")).toBe(1)
+    expect(delegatedAttentionCount([row({ adopted: true, unread: false })], "deleg")).toBe(0)
   })
 
   test("an unread mark on a chat still working is not its last word, and not counted", () => {
-    expect(delegatedAttentionCount([row({ unread: true, status: "running" }), row({ unread: true, status: "waiting_on_subagent" })], "deleg")).toBe(0)
+    expect(delegatedAttentionCount([row({ adopted: true, unread: true, status: "running" }), row({ adopted: true, unread: true, status: "waiting_on_subagent" })], "deleg")).toBe(0)
   })
 
   test("only this delegator's chats", () => {
@@ -76,5 +61,19 @@ describe("delegatedListTitle", () => {
     expect(delegatedListTitle("New Chat")).toBe("Delegator")
     expect(delegatedListTitle("  ")).toBe("Delegator")
     expect(delegatedListTitle(undefined)).toBe("Delegator")
+  })
+})
+
+describe("delegatorToggleTitle", () => {
+  test("a delegator can be made to work directly, and any other chat a delegator", () => {
+    expect(delegatorToggleTitle({ delegator: true, provider: "claude" })).toBe("Work Here Directly")
+    expect(delegatorToggleTitle({ provider: "codex" })).toBe("Make Delegator")
+    // An empty chat has no provider yet.
+    expect(delegatorToggleTitle({ provider: null })).toBe("Make Delegator")
+  })
+
+  test("a chat on a provider without the Kanna tools is not offered it, unless it already delegates", () => {
+    expect(delegatorToggleTitle({ provider: "grok" })).toBeNull()
+    expect(delegatorToggleTitle({ delegator: true, provider: "grok" })).toBe("Work Here Directly")
   })
 })

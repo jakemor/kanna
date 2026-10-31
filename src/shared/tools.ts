@@ -1,5 +1,6 @@
 import { VISUALIZATION_TOOL_NAME } from "./visualization"
 import { ATTACHMENT_TOOL_NAMES, resolveChartKeys, type ChartToolPayload } from "./display-tools"
+import type { RequestSecretsToolResult, SecretFieldRequest } from "./secrets"
 import type {
   AskUserQuestionItem,
   AskUserQuestionAnswerMap,
@@ -71,6 +72,18 @@ export function normalizeToolCall(args: {
         input: {
           plan: typeof input.plan === "string" ? input.plan : undefined,
           summary: typeof input.summary === "string" ? input.summary : undefined,
+        },
+        rawInput: input,
+      }
+    case "request_secrets":
+      return {
+        kind: "tool",
+        toolKind: "request_secrets",
+        toolName,
+        toolId,
+        input: {
+          reason: typeof input.reason === "string" ? input.reason : "",
+          fields: Array.isArray(input.fields) ? (input.fields as SecretFieldRequest[]) : [],
         },
         rawInput: input,
       }
@@ -347,6 +360,16 @@ export function hydrateToolResult(tool: NormalizedToolCall, raw: unknown): Hydra
         message: typeof record?.message === "string" ? record.message : undefined,
         ...(record?.discarded === true ? { discarded: true } : {}),
       } satisfies ExitPlanModeToolResult
+    }
+    case "request_secrets": {
+      const record = asRecord(parsed)
+      const names = (value: unknown) => Array.isArray(value) ? value.filter((name): name is string => typeof name === "string") : []
+      return {
+        saved: names(record?.saved),
+        skipped: names(record?.skipped),
+        ...(record?.cancelled === true ? { cancelled: true } : {}),
+        ...(record?.discarded === true ? { discarded: true } : {}),
+      } satisfies RequestSecretsToolResult
     }
     case "read_file":
       if (typeof parsed === "string") {

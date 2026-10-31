@@ -3,7 +3,7 @@ import { ChevronDown, SquarePen } from "lucide-react"
 import type { SidebarProjectGroup } from "../../../shared/types"
 import { computeChannelSections, getChannelPeekGroups, type ChannelPeekGroup } from "../../lib/channel-sections"
 import { getThreadDetailLabel } from "../../lib/thread-detail-label"
-import { isSubChat, isUnreadForUser, type SidebarThread } from "../../lib/thread-sections"
+import { isUnreadForUser, type SidebarThread } from "../../lib/thread-sections"
 import { isBackgroundOpenClick } from "../../lib/background-open"
 import { getPathBasename } from "../../lib/formatters"
 import { cn, normalizeChatId } from "../../lib/utils"
@@ -11,6 +11,7 @@ import { useChatHasDraft, useDraftStartTimes } from "../../stores/chatInputStore
 import { usePendingSendTimes } from "../../stores/pendingSendStore"
 import { useSectionOverrides } from "../../stores/sidebarSectionStore"
 import { renderChatStatusDot, ThreadRowContent } from "../chat-ui/ThreadRowContent"
+import { DiffFileStat } from "../chat-ui/git/shared"
 import { ProjectSectionMenu } from "../chat-ui/sidebar/Menus"
 import { SectionHeader } from "../chat-ui/sidebar/ThreadSections"
 import { LIST_HOVER_CARD_ROOM_BELOW, ListHoverCard } from "../ui/list-hover-card"
@@ -43,11 +44,9 @@ export type RenderChatHoverCard = (
  * the pencil for an unsent draft included. Its own component for that: the
  * draft is this browser's, read through a hook, one chat at a time.
  */
-function PeekChatContent({ thread, nowMs, delegatorMark }: {
+function PeekChatContent({ thread, nowMs }: {
   thread: SidebarThread
   nowMs: number
-  /** See `ThreadRowContent`. */
-  delegatorMark: boolean
 }) {
   const hasDraft = useChatHasDraft(thread.chatId)
   return (
@@ -56,7 +55,6 @@ function PeekChatContent({ thread, nowMs, delegatorMark }: {
       showStatus
       dimIdleTitles={false}
       hasDraft={hasDraft}
-      delegatorMark={delegatorMark}
       detailLabel={getThreadDetailLabel(thread, "project-scoped", nowMs)}
     />
   )
@@ -167,14 +165,7 @@ function ChannelPeek({
                       : "border-border/0 group-hover/peek:border-border group-hover/peek:bg-muted group-data-[hover-card-open]/peek:border-border group-data-[hover-card-open]/peek:bg-muted"
                   )}
                 >
-                  {/* No mark under a "Delegators" label. A card whose only
-                      group is its delegators draws no label, and there the
-                      mark is all that says it. */}
-                  <PeekChatContent
-                    thread={thread}
-                    nowMs={nowMs}
-                    delegatorMark={!(peekGroup.key === "delegators" && peekGroups.length > 1)}
-                  />
+                  <PeekChatContent thread={thread} nowMs={nowMs} />
                 </span>
               </button>
               ), onClose)}</Fragment>
@@ -205,9 +196,9 @@ export interface ChannelActions {
   editorLabel: string
   onCreateChat: (projectId: string) => void
   /**
-   * What a click on the channel itself does: its delegator if it has one,
-   * and otherwise its new chat page, which is the one already being written
-   * if it has one (`resolveProjectNewChat`). `onCreateChat` is for what says
+   * What a click on the channel itself does: the chat in it last viewed
+   * here, and failing that its new chat page, which is the one already
+   * being written if it has one (`resolveProjectNewChat`). `onCreateChat` is for what says
    * New Chat, and makes one every time.
    */
   onOpenNewChat: (projectId: string) => void
@@ -231,8 +222,65 @@ interface ChannelRowProps {
 }
 
 /**
- * A project as a channel: its mark, its name, and a count of the chats that
- * want you (unread, or waiting on an answer). The mark is the project's icon
+ * The right end of a channel row: its uncommitted changes, then its count of
+ * chats that want you.
+ *
+ * The changes show only while the row is hovered, focused from the keyboard,
+ * has its menu up, or is the open channel: on every row at once they were too
+ * much. Laid over the end of the name rather than beside it, so appearing
+ * moves nothing and a hidden stat takes no room from the name. They sit just
+ * left of the badge, or at the right edge without one, on a fade into the
+ * row's own hover background so the name runs out under them. Hover is gated
+ * to pointers that hover, so a tap on a touch screen doesn't flash it.
+ */
+export function ChannelRowTrailing({ gitState, attentionCount, active = false }: {
+  gitState: SidebarProjectGroup["gitState"]
+  attentionCount: number
+  /** The open channel: its changes stay shown. */
+  active?: boolean
+}) {
+  // Tracked changes only, so a tree with nothing but untracked files shows
+  // nothing, nor one whose counts are zero or unknown.
+  const showChanges = Boolean(gitState?.dirty && ((gitState.additions ?? 0) > 0 || (gitState.deletions ?? 0) > 0))
+  if (!showChanges && attentionCount === 0) return null
+  return (
+    // Zero wide without a badge, so the changes' right edge is the row's.
+    <span className="relative flex shrink-0 items-center">
+      {showChanges ? (
+        <span
+          data-channel-changes
+          className={cn(
+            "pointer-events-none absolute right-full top-1/2 flex -translate-y-1/2 items-center pl-4",
+            "bg-[linear-gradient(to_right,transparent,var(--color-muted)_12px)]",
+            attentionCount > 0 && "pr-2",
+            active
+              ? "opacity-100"
+              : "opacity-0 transition-opacity duration-150 ease-out motion-reduce:transition-none [@media(hover:hover)]:group-hover/channel:opacity-100 group-focus-visible/channel:opacity-100 group-data-[hover-card-open]/channel:opacity-100",
+          )}
+        >
+          {/* Normal weight even on an unread row: it is a count, not the name. */}
+          <DiffFileStat additions={gitState?.additions} deletions={gitState?.deletions} className="font-normal tabular-nums" />
+        </span>
+      ) : null}
+      {/* Neutral: the mark on the left carries the colour. A tint of the
+          text colour rather than `bg-muted`, which is the selected row's
+          own background and would hide the badge there. */}
+      {attentionCount > 0 ? (
+        <span
+          data-channel-badge
+          className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-foreground/10 px-1 text-[11px] font-bold leading-none text-foreground"
+        >
+          {attentionCount}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+/**
+ * A project as a channel: its mark, its name, its uncommitted changes as
+ * `+added −deleted` on hover (`ChannelRowTrailing`), and a count of the chats
+ * that want you (unread, or waiting on an answer). The mark is the project's icon
  * while every chat in it is idle and read, and otherwise the status glyph of
  * its most pressing chat, in the icon's slot so the name never shifts. Bold
  * means something in it is unread, as a Slack channel's is.
@@ -241,10 +289,9 @@ interface ChannelRowProps {
  * and finds the row under the pointer by `CHANNEL_ROW_ATTRIBUTE`.
  */
 const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned, actions, onSelect }: ChannelRowProps) {
-  // A sub-chat finishing is its parent's news, not the channel's, so its
-  // unread mark is not counted. One that stops to ask you something still is.
-  // Nor is the mark of a chat still working, which the window's title and
-  // the notifications leave out for the same reason (`isUnreadForUser`).
+  // The mark of a chat still working is not counted, which the window's
+  // title and the notifications leave out for the same reason
+  // (`isUnreadForUser`). A hidden sub-chat that stops to ask you something is.
   const unread = group.chats.some(isUnreadForUser)
   // Chats that want you: unread, or waiting on an answer. One chat counts
   // once even when it is both.
@@ -254,7 +301,7 @@ const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned,
   // subagent, then unread.
   const leadChat = group.chats.find((chat) => chat.status === "running" || chat.status === "starting")
     ?? group.chats.find((chat) => chat.status === "waiting_for_user")
-    ?? group.chats.find((chat) => chat.status === "waiting_on_subagent" && !isSubChat(chat))
+    ?? group.chats.find((chat) => chat.status === "waiting_on_subagent" && !chat.hidden)
     ?? group.chats.find(isUnreadForUser)
   const statusMark = leadChat ? renderChatStatusDot(leadChat) : null
 
@@ -302,14 +349,7 @@ const ChannelRow = memo(function ChannelRow({ group, active, menuPinned, pinned,
               {statusMark ?? <ProjectIcon name={group.title} iconUrl={group.iconUrl} />}
             </span>
             <span className="min-w-0 flex-1 truncate">{group.title}</span>
-            {/* Neutral: the mark on the left carries the colour. A tint of the
-                text colour rather than `bg-muted`, which is the selected row's
-                own background and would hide the badge there. */}
-            {attentionCount > 0 ? (
-              <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-foreground/10 px-1 text-[11px] font-bold leading-none text-foreground">
-                {attentionCount}
-              </span>
-            ) : null}
+            <ChannelRowTrailing gitState={group.gitState} attentionCount={attentionCount} active={active} />
           </span>
         </button>
     </ProjectSectionMenu>
@@ -361,9 +401,9 @@ export function ChannelList({
   // clicking a channel lets it go. See `ListHoverCard` on pinning.
   const [pinnedChannelId, setPinnedChannelId] = useState<string | null>(null)
   const unpinChannel = useCallback(() => setPinnedChannelId(null), [])
-  // A click on a channel goes to its delegator, which is the project's way
-  // in, or to its new chat page when it has none. The menu is for reaching a
-  // chat that is already there, and hovering is enough to get it.
+  // A click on a channel goes back to its chat last viewed here, or to its
+  // new chat page. The menu is for reaching any other chat already there,
+  // and hovering is enough to get it.
   //
   // Not by New Chat's route, which makes a chat every time: clicking away
   // from a new chat and clicking the channel again comes back to what was

@@ -1,14 +1,15 @@
-import { ArrowUpRight, FileText, Film, Paperclip } from "lucide-react"
+import { ArrowUpRight, Download, FileText, Film, Paperclip } from "lucide-react"
 import { useState } from "react"
 import { cn } from "../../../lib/utils"
 import { WidgetList, WidgetRow, WidgetTile, WidgetTileGrid } from "./parts"
 import { WidgetCard } from "./WidgetCard"
-import { openViewer, viewerAttachmentFromDisplay } from "../../../stores/viewerStore"
+import { viewerAttachmentFromDisplay } from "../../../stores/viewerStore"
+import { activateAttachment, attachmentOpenAction } from "../../viewer/attachmentActions"
 import type { WidgetAttachment } from "./derive"
 
-// Opens in the viewer, the same full-size surface as a diff or a chart.
-function openInViewer(attachment: WidgetAttachment) {
-  openViewer({ kind: "attachment", attachment: viewerAttachmentFromDisplay(attachment) })
+// The viewer when it can show the file, else a new tab, else a download.
+function openAttachment(attachment: WidgetAttachment) {
+  activateAttachment(viewerAttachmentFromDisplay(attachment))
 }
 
 /** Fades in once decoded, over the tile's muted placeholder, instead of popping. */
@@ -32,7 +33,6 @@ function AttachmentThumbnail({ url, name }: { url: string; name: string }) {
 /**
  * Files the agent sent this chat (send_attachments, generate_images), newest
  * first. Images show as a thumbnail grid; everything else as rows below them.
- * Either opens in a new tab.
  */
 export function AttachmentsWidget({ attachments }: { attachments: WidgetAttachment[] }) {
   const images = attachments.filter((attachment) => attachment.kind === "image")
@@ -50,7 +50,7 @@ export function AttachmentsWidget({ attachments }: { attachments: WidgetAttachme
           // about 96–128px however wide the sidebar is.
           <WidgetTileGrid>
             {images.map((image) => (
-              <WidgetTile key={image.key} tooltip={image.name} onActivate={() => openInViewer(image)}>
+              <WidgetTile key={image.key} tooltip={image.name} onActivate={() => openAttachment(image)}>
                 <AttachmentThumbnail url={image.url} name={image.name} />
               </WidgetTile>
             ))}
@@ -62,8 +62,8 @@ export function AttachmentsWidget({ attachments }: { attachments: WidgetAttachme
             icon={attachment.kind === "video" ? <Film /> : <FileText />}
             title={attachment.name}
             tooltip={attachment.name}
-            meta={<ArrowUpRight className="size-3.5" />}
-            onActivate={() => openInViewer(attachment)}
+            meta={attachmentOpenAction(viewerAttachmentFromDisplay(attachment)) === "download" ? <Download className="size-3.5" /> : <ArrowUpRight className="size-3.5" />}
+            onActivate={() => openAttachment(attachment)}
           />
         ))}
       </WidgetList>

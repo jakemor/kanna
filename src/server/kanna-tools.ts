@@ -1,12 +1,15 @@
 import { z } from "zod"
 import type { NormalizedToolCall, TranscriptEntry } from "../shared/types"
+import type { RequestSecretsInput, RequestSecretsToolResult } from "../shared/secrets"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessToolRequest } from "./harness-types"
 import { timestamped } from "./transcript"
 import { DISPLAY_TOOLS } from "./kanna-display-tools"
 import { GENERATE_IMAGES_TOOL } from "./kanna-image-tools"
 import { ORCHESTRATION_TOOLS } from "./kanna-orchestration-tools"
+import { SECRET_TOOLS } from "./kanna-secret-tools"
 import type { ChatOrchestrator } from "./orchestrator"
+import type { SecretsService } from "./secrets"
 
 export interface KannaToolResult {
   [key: string]: unknown
@@ -21,8 +24,15 @@ interface KannaToolContext {
   dataDir?: string
   signal: AbortSignal
   requestInput: (prompt: string) => Promise<string>
+  /**
+   * Shows the user a `request_secrets` form and waits. The values go from the
+   * form to the keychain without passing through here; this gets names.
+   */
+  requestSecrets?: (request: RequestSecretsInput) => Promise<RequestSecretsToolResult>
   /** Absent only where a runtime is built without a server behind it, as in tests. */
   orchestration?: ChatOrchestrator
+  projectId?: string
+  secrets?: SecretsService
 }
 
 export interface KannaToolDefinition {
@@ -42,7 +52,7 @@ export interface KannaToolDefinition {
 export const KANNA_TOOL_DESCRIPTION_LIMIT = 2048
 
 // Add tools here. Every provider registers the same definitions and calls the same handlers.
-export const KANNA_TOOLS: readonly KannaToolDefinition[] = [...DISPLAY_TOOLS, GENERATE_IMAGES_TOOL, ...ORCHESTRATION_TOOLS]
+export const KANNA_TOOLS: readonly KannaToolDefinition[] = [...DISPLAY_TOOLS, GENERATE_IMAGES_TOOL, ...ORCHESTRATION_TOOLS, ...SECRET_TOOLS]
 
 export const KANNA_TOOL_NAMES = KANNA_TOOLS.map((tool) => tool.name)
 
@@ -62,6 +72,13 @@ export interface KannaToolHost {
   execute: (name: string, input: unknown, signal?: AbortSignal) => Promise<KannaToolResult>
 }
 
+/** Names only: anything else in a `secrets.submit` answer is refused before the tool sees it. */
+const REQUEST_SECRETS_RESULT = z.strictObject({
+  saved: z.array(z.string()),
+  skipped: z.array(z.string()),
+  cancelled: z.literal(true).optional(),
+})
+
 export class KannaToolRuntime implements KannaToolHost {
   private readonly abortController = new AbortController()
   private inputTail: Promise<unknown> = Promise.resolve()
@@ -73,6 +90,8 @@ export class KannaToolRuntime implements KannaToolHost {
     emit: (entry: TranscriptEntry) => Promise<void>
     requestInput: (request: HarnessToolRequest, signal: AbortSignal) => Promise<unknown>
     orchestration?: ChatOrchestrator
+    projectId?: string
+    secrets?: SecretsService
   }, private readonly definitions: readonly KannaToolDefinition[] = KANNA_TOOLS) {}
 
   abort() {
@@ -112,6 +131,21 @@ export class KannaToolRuntime implements KannaToolHost {
         dataDir: this.context.dataDir,
         signal,
         orchestration: this.context.orchestration,
+        projectId: this.context.projectId,
+        secrets: this.context.secrets,
+        requestSecrets: async (request) => {
+          tool = normalizeToolCall({ toolName: definition.name, toolId, input: request as unknown as Record<string, unknown> })
+          if (tool.toolKind !== "request_secrets") throw new Error("Tool does not request secrets")
+          await this.context.emit(timestamped({ kind: "tool_call", tool }))
+          started = true
+          const response = await this.context.requestInput({
+            tool,
+            resultOwner: "tool",
+            validateResult: (value) => { REQUEST_SECRETS_RESULT.parse(value) },
+          }, signal)
+          signal.throwIfAborted()
+          return REQUEST_SECRETS_RESULT.parse(response)
+        },
         requestInput: async (prompt) => {
           tool = normalizeToolCall({ toolName: "AskUserQuestion", toolId, input: { questions: [{ id: "value", question: prompt, options: [] }] } })
           await this.context.emit(timestamped({ kind: "tool_call", tool }))

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo } from "react"
-import type { AgentProvider, ChatMode, ClaudeContextWindow, ProviderCatalogEntry } from "../../shared/types"
+import type { AgentProvider, ChatMode, ChatRuntime, ProviderCatalogEntry } from "../../shared/types"
 import {
   applyModelToComposerState,
   deriveComposerOptionControls,
@@ -39,6 +39,21 @@ function useChatComposerSeed(chatId: string | null): ComposerSeed | null {
   )
 }
 
+/**
+ * Puts settings an agent staged for the chat's next turn (`update_chat`) in
+ * its composer, so the user's next send carries them, as an agent's message
+ * to the chat would. Called where a chat's snapshot is read, so it happens
+ * whether or not the composer is on screen.
+ */
+export function useTakeUpNextRun(runtime: ChatRuntime | null) {
+  const chatId = runtime?.chatId
+  const nextRun = runtime?.nextRun
+  const activeProvider = runtime?.provider ?? null
+  useEffect(() => {
+    if (chatId && nextRun) useChatPreferencesStore.getState().applyNextRun(chatId, nextRun, activeProvider)
+  }, [activeProvider, chatId, nextRun])
+}
+
 export interface ComposerController extends ComposerView {
   /** Availability + current values of the per-model option controls. */
   optionControls: ComposerOptionControls
@@ -56,8 +71,6 @@ export interface ComposerController extends ComposerView {
   cycleMode: () => boolean
   /** Sets reasoning effort. Returns false when the option isn't offered for this provider/model. */
   setReasoningEffort: (effortId: string) => boolean
-  /** Sets the Claude context window. Returns false when the model has no selector. */
-  setContextWindow: (contextWindow: ClaudeContextWindow) => boolean
   /** Toggles fast mode. Returns false when the selected model doesn't support it. */
   setFastMode: (fastMode: boolean) => boolean
   /** Applies an arbitrary transform to the effective composer state (model options etc.). */
@@ -172,20 +185,6 @@ export function useComposer(args: {
     return true
   }, [optionControls.reasoning, updateEffectiveState])
 
-  const setContextWindow = useCallback((contextWindow: ClaudeContextWindow) => {
-    if (!optionControls.contextWindow?.options.some((candidate) => candidate.id === contextWindow)) return false
-    updateEffectiveState(
-      (state) => state.provider !== "claude"
-        ? state
-        // Re-run model normalization so an invalid window for the model snaps back.
-        : applyModelToComposerState(
-          { ...state, modelOptions: { ...state.modelOptions, contextWindow } },
-          state.model
-        )
-    )
-    return true
-  }, [optionControls.contextWindow, updateEffectiveState])
-
   const setFastMode = useCallback((fastMode: boolean) => {
     if (!optionControls.fastMode) return false
     updateEffectiveState((state) => ({
@@ -203,7 +202,6 @@ export function useComposer(args: {
     setMode,
     cycleMode,
     setReasoningEffort,
-    setContextWindow,
     setFastMode,
     updateEffectiveState,
   }), [
@@ -211,7 +209,6 @@ export function useComposer(args: {
     optionControls,
     selectModel,
     selectProvider,
-    setContextWindow,
     setFastMode,
     setMode,
     setReasoningEffort,

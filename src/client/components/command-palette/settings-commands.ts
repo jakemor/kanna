@@ -4,6 +4,7 @@ import {
   BellRing,
   ChartNoAxesColumn,
   Coffee,
+  Compass,
   Cpu,
   CornerDownLeft,
   FlaskConical,
@@ -12,6 +13,7 @@ import {
   Moon,
   PanelRight,
   PanelTop,
+  Plug,
   Sun,
   Volume2,
   type LucideIcon,
@@ -65,8 +67,10 @@ export interface SettingsCommandInput {
     | "submitWhileRunning"
     | "newSidebarEnabled"
     | "projectIconsInChats"
+    | "delegatorMode"
     | "chatTabsEnabled"
     | "widgetsPeekEnabled"
+    | "disablePreconfiguredMcp"
   > & { terminal: Pick<AppSettingsSnapshot["terminal"], "webglRenderer"> } | null
   /** The saved preference, not the resolved one: "system" is a choice of its own. */
   theme: AppThemePreference
@@ -156,6 +160,26 @@ export function buildSettingsCommands({ appSettings, theme, mac }: SettingsComma
       row: SETTINGS_ROWS.projectIconsInChats,
       icon: AppWindow,
       patch: (next) => ({ projectIconsInChats: next }),
+    }))
+    list.push(toggle({
+      id: "toggle-delegator-mode",
+      on: appSettings.delegatorMode !== false,
+      onTitle: "Enable Delegator Mode",
+      offTitle: "Disable Delegator Mode",
+      row: SETTINGS_ROWS.delegatorMode,
+      // The delegator's mark (`DelegatorIcon`), which is Lucide's compass.
+      icon: Compass,
+      patch: (next) => ({ delegatorMode: next }),
+    }))
+    // The setting is a "disable", so turning it on is what the first title says.
+    list.push(toggle({
+      id: "toggle-disable-preconfigured-mcp",
+      on: appSettings.disablePreconfiguredMcp === true,
+      onTitle: "Disable Pre-configured MCP Servers",
+      offTitle: "Enable Pre-configured MCP Servers",
+      row: SETTINGS_ROWS.disablePreconfiguredMcp,
+      icon: Plug,
+      patch: (next) => ({ disablePreconfiguredMcp: next }),
     }))
     list.push(toggle({
       id: "toggle-chat-tabs",

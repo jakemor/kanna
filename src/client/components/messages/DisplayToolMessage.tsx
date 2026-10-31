@@ -1,9 +1,10 @@
 import { readVisualizationArtifact, VISUALIZATION_TOOL_NAME } from "../../../shared/visualization"
 import { Visualization } from "./Visualization"
 import { useEffect, useRef, useState } from "react"
-import { FileText, ArrowUpRight } from "lucide-react"
+import { FileText, ArrowUpRight, Download } from "lucide-react"
 import { ChartTool } from "./ChartTool"
-import { openViewer, viewerAttachmentFromDisplay } from "../../stores/viewerStore"
+import { viewerAttachmentFromDisplay } from "../../stores/viewerStore"
+import { activateAttachment, attachmentOpenAction } from "../viewer/attachmentActions"
 import { displayAttachments, type ChartToolPayload, type DisplayAttachment } from "../../../shared/display-tools"
 import type { ProcessedToolCall } from "./types"
 import { useToolPayload } from "./tool-payload-context"
@@ -29,14 +30,14 @@ function errorText(result: unknown): string {
 }
 
 /**
- * A plain click opens the attachment in the viewer; a modified or middle
- * click keeps the link's own behavior (a new tab), which is why these stay
- * links rather than buttons.
+ * A plain click does what the file allows (`activateAttachment`): the viewer,
+ * a new tab, or a download. A modified or middle click keeps the link's own
+ * behavior, which is why these stay links rather than buttons.
  */
-function openInViewer(event: React.MouseEvent<HTMLAnchorElement>, attachment: DisplayAttachment) {
+function openAttachment(event: React.MouseEvent<HTMLAnchorElement>, attachment: DisplayAttachment) {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
   event.preventDefault()
-  openViewer({ kind: "attachment", attachment: viewerAttachmentFromDisplay(attachment) })
+  activateAttachment(viewerAttachmentFromDisplay(attachment))
 }
 
 export function AttachmentsCard({ attachments }: { attachments: DisplayAttachment[] }) {
@@ -76,8 +77,9 @@ export function AttachmentsCard({ attachments }: { attachments: DisplayAttachmen
               const mediaClass = "block h-56 w-full rounded-[10px] border border-border bg-muted dark:bg-card object-contain"
               const imagePreview = attachment.kind === "image" && !failed
               const onError = () => setBroken(current => new Set(current).add(attachment.url))
+              const downloads = attachmentOpenAction(viewerAttachmentFromDisplay(attachment)) === "download"
               const imageLink = (
-                <a href={attachment.url} target="_blank" rel="noreferrer noopener" className="block" aria-label={`Open ${attachment.name}`} onClick={(event) => openInViewer(event, attachment)}>
+                <a href={attachment.url} target="_blank" rel="noreferrer noopener" className="block" aria-label={`Open ${attachment.name}`} onClick={(event) => openAttachment(event, attachment)}>
                   {/* Load on mount because the image's dimensions determine the preview width. Every image has the same height. Only a panorama wider than the cap is cropped. */}
                   <img src={attachment.url} alt={attachment.name} referrerPolicy="no-referrer" className="block h-56 w-auto max-w-[32rem] rounded-[10px] object-cover shadow-md" onError={onError} />
                 </a>
@@ -89,10 +91,17 @@ export function AttachmentsCard({ attachments }: { attachments: DisplayAttachmen
                   ) : attachment.kind === "video" && !failed ? (
                     <video src={attachment.url} controls preload="metadata" className={mediaClass} onError={onError} aria-label={attachment.name} />
                   ) : (
-                    <a href={attachment.url} target="_blank" rel="noreferrer noopener" onClick={(event) => openInViewer(event, attachment)} className="flex max-w-80 items-center gap-3 rounded-[10px] border border-border bg-muted dark:bg-card p-3 text-sm hover:border-muted-foreground/50">
+                    <a
+                      href={attachment.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      download={downloads ? attachment.name : undefined}
+                      onClick={(event) => openAttachment(event, attachment)}
+                      className="flex max-w-80 items-center gap-3 rounded-[10px] border border-border bg-muted dark:bg-card p-3 text-sm hover:border-muted-foreground/50"
+                    >
                       <FileText className="size-5 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 truncate">{attachment.name}</span>
-                      <ArrowUpRight className="size-4 shrink-0" />
+                      {downloads ? <Download aria-label="Download" className="size-4 shrink-0" /> : <ArrowUpRight className="size-4 shrink-0" />}
                     </a>
                   )}
                   {failed && <span className="text-xs text-muted-foreground">Preview unavailable. Open the file to view it.</span>}

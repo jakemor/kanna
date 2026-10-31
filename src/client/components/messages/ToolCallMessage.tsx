@@ -11,6 +11,8 @@ import { ChatToolMessage, isChatToolCall } from "./ChatToolMessage"
 import { isScheduleToolCall, ScheduleToolMessage } from "./ScheduleToolMessage"
 import { DisplayToolMessage } from "./DisplayToolMessage"
 import { useToolPayloadPrefetch } from "./tool-payload-context"
+import { formatToolDuration, toolCallDurationMs } from "./tool-duration"
+import { useNow } from "../chat-ui/widgets/TasksWidget"
 
 interface Props {
   message: ProcessedToolCall
@@ -74,6 +76,21 @@ export function formatToolCallTitle(message: ToolTitleSource, localPath?: string
   return message.toolName
 }
 
+/**
+ * How long the call took, or has run so far, beside an open row's chevron.
+ * Mounted only while the row is open, so a collapsed row runs no clock.
+ */
+function ToolCallElapsed({ message, running }: { message: ProcessedToolCall; running: boolean }) {
+  const now = useNow(running)
+  const ms = toolCallDurationMs(message, { running, now })
+  if (ms === null) return null
+  return (
+    <span className="text-xs text-muted-foreground tabular-nums">
+      {formatToolDuration(ms, { finished: message.resultEntryId !== undefined })}
+    </span>
+  )
+}
+
 export function ToolCallMessage({ message, isLoading = false, localPath }: Props) {
   // Presence is the *existence* of a result entry, not its payload: a result
   // may arrive with its body left on the server, to be fetched only if the row
@@ -105,7 +122,10 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
     <MetaRow className="w-full" onPointerEnter={prefetchOwnPayloads}>
       {/* Creating the element is free; `ExpandableRow` only mounts it — and so
           only runs the work inside it — once the row is opened. */}
-      <ExpandableRow expandedContent={<ToolCallExpandedContent message={message} isLoading={isLoading} localPath={localPath} />}>
+      <ExpandableRow
+        expandedContent={<ToolCallExpandedContent message={message} isLoading={isLoading} localPath={localPath} />}
+        expandedMeta={<ToolCallElapsed message={message} running={showLoadingState} />}
+      >
         <div className="w-5 h-5 relative flex items-center justify-center">
           {(() => {
             if (message.isError) {

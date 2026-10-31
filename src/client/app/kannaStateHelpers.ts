@@ -1,5 +1,4 @@
 import type { AgentProvider, ChatAttachment, ChatSnapshot, ModelOptions, SidebarData, TranscriptEntry, UserPromptEntry } from "../../shared/types"
-import { isSubChat } from "../../shared/sub-chat"
 import { stripSystemMessages } from "../../shared/message-preview"
 import type { ComposerState } from "../stores/chatPreferencesStore"
 import { processTranscriptMessages } from "../lib/parseTranscript"
@@ -90,8 +89,8 @@ export function getNewestRemainingChatId(projectGroups: SidebarData["projectGrou
   const projectGroup = projectGroups.find((group) => group.chats.some((chat) => chat.chatId === activeChatId))
   if (!projectGroup) return null
 
-  // A chat the project's list shows, not a sub-chat the user never opened.
-  return projectGroup.chats.find((chat) => chat.chatId !== activeChatId && !isSubChat(chat))?.chatId ?? null
+  // A chat the project's list shows, not a hidden sub-chat the user never opened.
+  return projectGroup.chats.find((chat) => chat.chatId !== activeChatId && !chat.hidden)?.chatId ?? null
 }
 
 export function applySidebarProjectOrder(
@@ -146,7 +145,6 @@ export function composerStateFromSendOptions(options?: {
       model: options.model,
       modelOptions: {
         reasoningEffort: options.modelOptions.claude.reasoningEffort ?? "high",
-        contextWindow: options.modelOptions.claude.contextWindow ?? "1m",
         fastMode: options.modelOptions.claude.fastMode ?? false,
       },
       planMode: Boolean(options.planMode),

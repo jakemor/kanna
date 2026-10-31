@@ -49,9 +49,14 @@ export function useChatCommands(params: {
     await wrapCommand({ type: "message.dequeue", chatId: activeChatId, queuedMessageId })
   }, [activeChatId, wrapCommand])
 
-  const handleCancel = useCallback(async () => {
+  /** `cascade` as on `chat.cancel`: left out, the server stops the sub-chats too. */
+  const handleCancel = useCallback(async (options?: { cascade?: boolean }) => {
     if (!activeChatId) return
-    await wrapCommand({ type: "chat.cancel", chatId: activeChatId }, { keepCommandError: true })
+    await wrapCommand({
+      type: "chat.cancel",
+      chatId: activeChatId,
+      ...(options?.cascade === undefined ? {} : { cascade: options.cascade }),
+    }, { keepCommandError: true })
   }, [activeChatId, wrapCommand])
 
   const handleStopDraining = useCallback(async () => {

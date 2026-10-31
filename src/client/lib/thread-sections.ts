@@ -1,4 +1,3 @@
-import { isSubChat } from "../../shared/sub-chat"
 import { isWorkingStatus, type SidebarChatRow, type SidebarData } from "../../shared/types"
 import { getProjectSidebarLabel, type ProjectSidebarLabel } from "./project-label"
 
@@ -89,15 +88,10 @@ export function carryProjectSidebarLabel(
   if (cached) projectLabelCache.set(to, cached)
 }
 
-// The rule for which chats the lists leave out. It lives in `shared` because
-// the server's sidebar lists apply it too.
-export { isSubChat }
-
 /**
  * Whether a chat's unread mark is the user's to hear about, as a sound, a
- * notification or a count. A sub-chat's is not: it finished for its parent,
- * which reports the result in its own turn. An adopted chat is in the lists,
- * so its mark is the user's like any other chat's.
+ * notification or a count. A sub-chat has no mark to hear about: the server
+ * never sets one (`tracksUnread`), since its parent reports the result.
  *
  * Nor is the mark of a chat that is still working. Its turn ended, which is
  * what set the mark, but a chat waiting on a subagent has more to say, and the
@@ -105,14 +99,14 @@ export { isSubChat }
  * hearing about would be the one that made no sound. Held back until the chat
  * comes to rest, the mark is announced once, when everything is in.
  */
-export function isUnreadForUser(row: Pick<SidebarChatRow, "unread" | "parentChatId" | "adopted" | "status">): boolean {
-  return row.unread && !isSubChat(row) && !isWorkingStatus(row.status)
+export function isUnreadForUser(row: Pick<SidebarChatRow, "unread" | "status">): boolean {
+  return row.unread && !isWorkingStatus(row.status)
 }
 
-/** The threads a list of chats shows: everything but sub-chats. */
+/** The threads a list of chats shows: everything but hidden chats (`SidebarChatRow.hidden`). */
 export function listedThreads(threads: SidebarThread[]): SidebarThread[] {
-  return threads.some((thread) => isSubChat(thread.row))
-    ? threads.filter((thread) => !isSubChat(thread.row))
+  return threads.some((thread) => thread.row.hidden)
+    ? threads.filter((thread) => !thread.row.hidden)
     : threads
 }
 
@@ -398,11 +392,6 @@ export interface ThreadDateBucket {
 
 export interface SidebarThreadSections {
   pinned: SidebarThread[]
-  /**
-   * The delegators that are not pinned, most recently active first. Under
-   * Pinned, and held there whatever their status, as Pinned holds its own.
-   */
-  delegators: SidebarThread[]
   inProgress: SidebarThread[]
   review: SidebarThread[]
   /** Chats bearing on the project's uncommitted work — sits above the buckets. */
@@ -535,9 +524,8 @@ export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number
 }
 
 /**
- * Pinned chats keep their section across status changes, and so do
- * delegators, under them. Other chats appear in In Progress, Relevant, or
- * date buckets. Archived chats stay separate.
+ * Pinned chats keep their section across status changes. Other chats appear
+ * in In Progress, Relevant, or date buckets. Archived chats stay separate.
  */
 export function computeSidebarThreadSections(
   threads: SidebarThread[],
@@ -559,26 +547,14 @@ export function computeSidebarThreadSections(
   const pinned = threads
     .filter((thread) => !thread.archived && thread.row.pinnedAt != null)
     .sort((left, right) => left.row.pinnedAt! - right.row.pinnedAt! || left.chatId.localeCompare(right.chatId))
-  // So do delegators, in a section of their own under it. A delegator is a
-  // standing thing, like a pin: the place work is handed out from, to be
-  // found where it was whether it is running, wants you, or has not been
-  // used since last month. A pinned one is Pinned's. One with no message yet
-  // is listed too, unlike an empty chat anywhere below: a new delegator is
-  // empty until it is first sent to, and this is the only place it can be.
-  const isHeldDelegator = (thread: SidebarThread) => (
-    Boolean(thread.row.delegator) && !thread.archived && thread.row.pinnedAt == null
-  )
-  const delegators = threads
-    .filter(isHeldDelegator)
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt || left.chatId.localeCompare(right.chatId))
-  const unpinned = threads.filter((thread) => thread.row.pinnedAt == null && !isHeldDelegator(thread))
+  const unpinned = threads.filter((thread) => thread.row.pinnedAt == null)
   const review = getReviewThreads(unpinned, pendingSends)
   const inProgress = getInProgressThreads(
     unpinned,
     new Set(review.map((thread) => thread.chatId)),
     pendingSends,
   )
-  const pinnedIds = new Set([...pinned, ...delegators, ...review, ...inProgress].map((thread) => thread.chatId))
+  const pinnedIds = new Set([...pinned, ...review, ...inProgress].map((thread) => thread.chatId))
   const relevant = getRelevantThreads(threads, pinnedIds, draftStartTimes)
   const excludeIds = new Set([...pinnedIds, ...relevant.map((thread) => thread.chatId)])
   const rest = threads.filter((thread) =>
@@ -587,7 +563,6 @@ export function computeSidebarThreadSections(
     && !excludeIds.has(thread.chatId))
   return {
     pinned,
-    delegators,
     inProgress,
     review,
     relevant,

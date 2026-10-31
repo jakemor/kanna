@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { KannaSocket } from "./socket"
+import { RECONNECT_FAILURES_BEFORE_LOST, RECONNECT_GRACE_MS, SOCKET_DISCONNECTED_MESSAGE } from "./connectionHealth"
 
 type EventHandler = (event?: unknown) => void
 
@@ -313,6 +314,95 @@ describe("KannaSocket", () => {
     await Promise.resolve()
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(FakeWebSocket.instances[0]!.url).toBe("ws://tunnel/ws?token=x")
+    socket.dispose()
+  })
+
+  test("a drop reads as reconnecting through quick failures, lost past the threshold, connected once back", () => {
+    const healths: string[] = []
+    const socket = new KannaSocket("ws://localhost/ws")
+    socket.onHealth((health) => healths.push(health))
+    socket.start()
+    FakeWebSocket.instances[0]!.open()
+    expect(healths.at(-1)).toBe("connected")
+
+    FakeWebSocket.instances[0]!.close()
+    for (let attempt = 0; attempt < RECONNECT_FAILURES_BEFORE_LOST; attempt++) {
+      timers.runTimeout((socket as any).reconnectTimer)
+      FakeWebSocket.instances.at(-1)!.close()
+    }
+    expect(healths.at(-1)).toBe("reconnecting")
+    expect(healths).not.toContain("lost")
+
+    // The grace window runs out with no socket event; the health timer notices.
+    ;(socket as any).downSince = Date.now() - RECONNECT_GRACE_MS
+    timers.runTimeout((socket as any).healthTimer)
+    expect(healths.at(-1)).toBe("lost")
+
+    timers.runTimeout((socket as any).reconnectTimer)
+    FakeWebSocket.instances.at(-1)!.open()
+    expect(healths.at(-1)).toBe("connected")
+    expect((socket as any).healthTimer).toBeNull()
+    socket.dispose()
+  })
+
+  test("an unreachable server on first load reads as lost after the same threshold", () => {
+    const healths: string[] = []
+    const socket = new KannaSocket("ws://localhost/ws")
+    socket.onHealth((health) => healths.push(health))
+    socket.start()
+    FakeWebSocket.instances[0]!.close()
+    for (let attempt = 1; attempt < RECONNECT_FAILURES_BEFORE_LOST; attempt++) {
+      timers.runTimeout((socket as any).reconnectTimer)
+      FakeWebSocket.instances.at(-1)!.close()
+    }
+    expect(healths.at(-1)).toBe("connecting")
+
+    ;(socket as any).downSince = Date.now() - RECONNECT_GRACE_MS
+    timers.runTimeout((socket as any).healthTimer)
+    expect(healths.at(-1)).toBe("lost")
+    socket.dispose()
+  })
+
+  for (const returning of ["visibilitychange", "online", "focus"] as const) {
+    test(`${returning} reconnects a dead socket at once, resets the backoff and restarts the grace window`, () => {
+      const healths: string[] = []
+      const socket = new KannaSocket("ws://localhost/ws")
+      socket.onHealth((health) => healths.push(health))
+      socket.start()
+      FakeWebSocket.instances[0]!.open()
+      FakeWebSocket.instances[0]!.close()
+      for (let attempt = 0; attempt < RECONNECT_FAILURES_BEFORE_LOST; attempt++) {
+        timers.runTimeout((socket as any).reconnectTimer)
+        FakeWebSocket.instances.at(-1)!.close()
+      }
+      ;(socket as any).downSince = Date.now() - RECONNECT_GRACE_MS
+      timers.runTimeout((socket as any).healthTimer)
+      expect(healths.at(-1)).toBe("lost")
+      expect((socket as any).reconnectDelayMs).toBeGreaterThan(750)
+      const socketsBefore = FakeWebSocket.instances.length
+
+      if (returning === "visibilitychange") documentTarget.dispatchEvent("visibilitychange")
+      else windowTarget.dispatchEvent(returning)
+
+      expect(FakeWebSocket.instances).toHaveLength(socketsBefore + 1)
+      expect(FakeWebSocket.instances.at(-1)!.readyState).toBe(FakeWebSocket.CONNECTING)
+      expect((socket as any).reconnectTimer).toBeNull()
+      expect((socket as any).reconnectDelayMs).toBe(750)
+      expect(healths.at(-1)).toBe("reconnecting")
+
+      FakeWebSocket.instances.at(-1)!.open()
+      expect(healths.at(-1)).toBe("connected")
+      socket.dispose()
+    })
+  }
+
+  test("commands in flight when the socket drops reject with the disconnect message", async () => {
+    const socket = new KannaSocket("ws://localhost/ws")
+    socket.start()
+    FakeWebSocket.instances[0]!.open()
+    const command = socket.command({ type: "system.ping" })
+    FakeWebSocket.instances[0]!.close()
+    await expect(command).rejects.toThrow(SOCKET_DISCONNECTED_MESSAGE)
     socket.dispose()
   })
 

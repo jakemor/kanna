@@ -12,7 +12,9 @@ import {
 } from "../../components/chat-ui/chat-reference"
 import { renderChatStatusDot } from "../../components/chat-ui/ThreadRowContent"
 import { scheduleEditPrompt } from "../../components/chat-ui/widgets/SchedulesWidget"
-import { TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
+import { TranscriptRenderOptionsProvider, type SubmitSecrets } from "../../components/messages/render-context"
+import type { RequestSecretsToolResult, SecretsListResult } from "../../../shared/secrets"
+import { loadSecretBackend } from "../../lib/secret-storage"
 import { ToolPayloadProvider } from "../../components/messages/tool-payload-context"
 import { useViewerMotion, ViewerIconButton, ViewerSurface } from "../../components/viewer/ViewerSurface"
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow"
@@ -33,6 +35,7 @@ import { createToolPayloadStore } from "./toolPayloadStore"
 import type { TranscriptJumpRequest } from "./transcriptScrollAnchors"
 import { useTranscriptPaddingBottom } from "./useTranscriptPaddingBottom"
 import { hasFileDragTypes, sameContextWindowSnapshot } from "./utils"
+import { countCascadingSubchats } from "../../../shared/stop-turn"
 
 type ChatViewerItem = Extract<ViewerItem, { kind: "chat" }>
 
@@ -248,7 +251,15 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
     async (entryId: string) => await socket.command<string | null>({ type: "chat.getEntryDebugRaw", chatId, entryId }),
     [chatId, socket],
   )
-  const transcriptRenderOptions = useMemo(() => ({ loadEntryDebugRaw }), [loadEntryDebugRaw])
+  const submitSecrets = useCallback<SubmitSecrets>(
+    async (toolUseId, answer) => await socket.command<RequestSecretsToolResult>({ type: "secrets.submit", chatId, toolUseId, ...answer }),
+    [chatId, socket],
+  )
+  const loadBackend = useCallback(() => loadSecretBackend(socket, (command) => socket.command<SecretsListResult>(command)), [socket])
+  const transcriptRenderOptions = useMemo(
+    () => ({ loadEntryDebugRaw, submitSecrets, loadSecretBackend: loadBackend }),
+    [loadEntryDebugRaw, submitSecrets, loadBackend],
+  )
   const toolPayloadStore = useMemo(
     () => createToolPayloadStore(async (entryIds) => (
       await socket.command<TranscriptEntry[]>({ type: "chat.getToolEntries", chatId, entryIds }) ?? []
@@ -283,7 +294,8 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
     onEdit: handleEditSchedule,
   }), [chatId, handleEditSchedule, session.runtime?.schedules])
 
-  const handleCancel = useCallback(() => { void session.handleCancel() }, [session.handleCancel])
+  const handleCancel = useCallback((options?: { cascade?: boolean }) => { void session.handleCancel(options) }, [session.handleCancel])
+  const cascadingSubchats = countCascadingSubchats(session.runtime?.subagents)
   const handleListSkills = useCallback(
     (skillProvider: AgentProvider) => socket.command<ChatSkillsSnapshot>({
       type: "chat.listSkills",
@@ -335,6 +347,7 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
             latestToolIds={session.latestToolIds}
             isProcessing={session.isProcessing}
             runtimeStatus={session.runtimeStatus}
+            queuePaused={Boolean(session.runtime?.queuePaused)}
             isDraining={session.isDraining}
             commandError={session.commandError}
             onStopDraining={session.handleStopDraining}
@@ -378,6 +391,7 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
           hasSelectedProject
           runtimeStatus={session.runtimeStatus}
           canCancel={session.canCancel}
+          cascadingSubchats={cascadingSubchats}
           projectId={projectId}
           projectPath={projectPath}
           projectRepoLabel={projectRepoLabel}
@@ -390,6 +404,8 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
           onListSkills={handleListSkills}
           placeholder={`Message ${title}`}
           secondary
+          oldestQueuedMessageId={session.queuedMessages[0]?.id ?? null}
+          onSendQueuedNow={session.handleSteerQueuedMessage}
         />
       </div>
     </ChatSchedulesProvider>

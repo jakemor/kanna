@@ -48,6 +48,8 @@ describe("turn folds (shared fixtures, also run by the iOS app)", () => {
       const entries = foldEntriesFromTranscript(fixture.entries as unknown as TranscriptEntry[])
       const folds = computeTurnFolds(entries, { atRest: fixture.atRest })
       expect(describeFolds(entries, folds)).toEqual(fixture.folds as ExpectedFold[])
+      // The live clock, where a case says where it should start (the web's alone).
+      if ("workingSince" in fixture) expect(runningTurnStartedAt(entries)).toBe(fixture.workingSince ?? null)
     })
   }
 })
@@ -64,6 +66,8 @@ describe("turn fold words", () => {
     expect(turnFoldLabel({ outcome: "completed", workedMs: undefined }, true)).toBe("Hide work")
     expect(turnFoldLabel({ outcome: "completed", workedMs: undefined }, false)).toBe("Show work")
     expect(turnFoldLabel({ outcome: "completed", workedMs: 5000 }, true)).toBe("Worked for 5s")
+    expect(turnFoldLabel({ outcome: "stopped", workedMs: undefined }, false)).toBe("Stopped · Show work")
+    expect(turnFoldLabel({ outcome: "failed", workedMs: undefined }, true)).toBe("Failed · Hide work")
   })
 })
 
@@ -74,8 +78,8 @@ describe("runningTurnStartedAt", () => {
     expect(runningTurnStartedAt([entry("p0", "prompt", 0), entry("r0", "result", 5), entry("p1", "prompt", 10), entry("a1", "text", 20)])).toBe(10)
   })
 
-  test("a prompt sent while the run started joins it", () => {
-    expect(runningTurnStartedAt([entry("p1", "prompt", 10), entry("p2", "prompt", 12), entry("a1", "text", 20)])).toBe(10)
+  test("never from a prompt before the latest, even one whose turn wrote no end", () => {
+    expect(runningTurnStartedAt([entry("p1", "prompt", 10), entry("c1", "tool", 11), entry("p2", "prompt", 5_000), entry("a1", "text", 5_020)])).toBe(5_000)
   })
 
   test("nothing is running once the last turn ended", () => {

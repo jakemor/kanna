@@ -101,6 +101,18 @@ describe("the transcript's rows around a fold", () => {
     expect(rowNames(folded)).toEqual(["p0", "[closed p0]", "a00", "res0(ends)", "p1", "a1", "c1"])
   })
 
+  test("supervibes: the turn left on an unanswered form shows whole, with no empty header", () => {
+    const testCase = fixture("Supervibes: the chart turn once it ends")
+    const { folded } = foldedRows(testCase, () => false)
+    const names = rowNames(folded)
+    const oauth = names.findIndex((name) => name.startsWith("902f6b2d"))
+    const chart = names.findIndex((name) => name.startsWith("b576b9a0"))
+    expect(names.slice(oauth + 1, chart).some((name) => name.startsWith("["))).toBe(false)
+    expect(names.slice(oauth + 1, chart).some((name) => name.startsWith("6e961f70"))).toBe(true)
+    // The form turns before it fold, timed without the wait on the form.
+    expect(folded.filter((row) => row.kind === "fold-header").map((row) => row.kind === "fold-header" && row.workedMs)).toEqual([8923, 8225])
+  })
+
   test("a turn the window cut folds under a header at the top", () => {
     const { folded } = foldedRows(fixture("A window that cuts a turn folds what it holds, timed by the provider"), () => false)
     expect(rowNames(folded)).toEqual(["[closed partial:a0]", "a1", "res0(ends)", "p1", "a2", "res1"])

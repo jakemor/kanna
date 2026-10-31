@@ -39,6 +39,8 @@ export interface FoldEntry {
   toolName?: string
   /** On a tool call: its result has arrived. */
   answered?: boolean
+  /** On a tool call that has its result: when it came, epoch milliseconds. */
+  answeredAt?: number
   /** On a result. */
   subtype?: "success" | "error" | "cancelled"
   durationMs?: number
@@ -75,7 +77,12 @@ export interface TurnFold {
   end: number
   /** The exchange is over: nothing more will be added to it. */
   settled: boolean
-  /** Settled, with something to hide: the header is drawn and the fold can close. */
+  /**
+   * Settled, with something to hide and something left when it is hidden:
+   * the header is drawn and the fold can close. A turn whose every row would
+   * fold away (stopped before it said anything, or left on a card when the
+   * next prompt came) stays drawn whole, so the reader sees what happened.
+   */
   folds: boolean
   outcome: FoldOutcome
   /** Time spent working, the turns' own durations summed. Undefined when any of them is unknown. */
@@ -158,11 +165,15 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
 
     const roles: FoldRole[] = []
     let hasWork = false
+    let hasSurvivor = false
     for (let index = start; index <= end; index += 1) {
       const entry = entries[index]!
       const role = roleOf(entry, index, { replyIndex, lastTerminalIndex })
       roles.push(role)
       if (role === "folded" && isWork(entry)) hasWork = true
+      // The rule that ends the turn and the model rows are not what it came
+      // back with: a fold that leaves only those shows nothing of the turn.
+      if ((role === "reply" || role === "kept") && entry.kind !== "meta") hasSurvivor = true
     }
 
     const settled = !isLast || (context.atRest && !holdsLiveCard)
@@ -173,7 +184,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
       start,
       end,
       settled,
-      folds: settled && hasWork,
+      folds: settled && hasWork && hasSurvivor,
       outcome: outcomeOf(lastTerminalIndex >= 0 ? entries[lastTerminalIndex]! : undefined),
       workedMs: workedMsOf(entries, first, end),
       roles,
@@ -220,6 +231,10 @@ function outcomeOf(terminal: FoldEntry | undefined): FoldOutcome {
  * The turns' durations, summed. A turn's own when the provider reported one,
  * otherwise from the prompt that started it to the row that ended it. Undefined
  * when a turn has neither, such as one whose prompt is before the window.
+ *
+ * Less the time a card (a question, a plan, a secrets form) sat waiting for
+ * the user: that time is theirs, not the agent's, and Claude counts it in its
+ * own duration. A form left open for nine minutes read "Worked for 9m 13s".
  */
 function workedMsOf(entries: readonly FoldEntry[], first: number, end: number): number | undefined {
   let total = 0
@@ -227,6 +242,10 @@ function workedMsOf(entries: readonly FoldEntry[], first: number, end: number): 
   let turnStartedAt: number | null = null
   for (let index = first; index <= end; index += 1) {
     const entry = entries[index]!
+    if (entry.kind === "tool" && CARD_TOOL_KINDS.has(entry.toolKind ?? "") && entry.answeredAt !== undefined) {
+      total -= Math.max(0, entry.answeredAt - entry.createdAt)
+      continue
+    }
     if (entry.kind === "prompt") {
       turnStartedAt ??= entry.createdAt
       continue
@@ -240,7 +259,7 @@ function workedMsOf(entries: readonly FoldEntry[], first: number, end: number): 
     turns += 1
     turnStartedAt = null
   }
-  return turns > 0 ? total : undefined
+  return turns > 0 ? Math.max(0, total) : undefined
 }
 
 /** "32s", "23m 0s", "6h 23m 32s". Minutes always carry their seconds, so the width barely moves. */
@@ -258,9 +277,10 @@ export function formatWorkedDuration(ms: number): string {
 /** The header's words. Nothing about what is inside: opening it says that. */
 export function turnFoldLabel(fold: Pick<TurnFold, "outcome" | "workedMs">, open: boolean): string {
   if (fold.workedMs === undefined) {
-    if (fold.outcome === "failed") return "Failed"
-    if (fold.outcome === "stopped") return "Stopped"
-    return open ? "Hide work" : "Show work"
+    const action = open ? "Hide work" : "Show work"
+    if (fold.outcome === "failed") return `Failed · ${action}`
+    if (fold.outcome === "stopped") return `Stopped · ${action}`
+    return action
   }
   const worked = formatWorkedDuration(fold.workedMs)
   if (fold.outcome === "failed") return `Failed after ${worked}`
@@ -268,30 +288,27 @@ export function turnFoldLabel(fold: Pick<TurnFold, "outcome" | "workedMs">, open
   return `Worked for ${worked}`
 }
 
-/** When the turn now running started, for the live "Working for 12s" line; null when none is. */
+/**
+ * When the turn now running started, for the live "Working for 12s" line:
+ * the latest prompt, which is what started it. Null when a turn ended after
+ * it. Never an earlier prompt: a turn that ended with no result written (left
+ * on a card, cut by a restart) has no terminal row, and walking back past it
+ * counted the new turn from days ago.
+ */
 export function runningTurnStartedAt(entries: readonly FoldEntry[]): number | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!
     if (isTerminal(entry)) return null
-    if (entry.kind === "prompt") {
-      // The first prompt of the run: one sent while it was starting joins it.
-      let startedAt = entry.createdAt
-      for (let earlier = index - 1; earlier >= 0; earlier -= 1) {
-        const previous = entries[earlier]!
-        if (isTerminal(previous)) break
-        if (previous.kind === "prompt") startedAt = previous.createdAt
-      }
-      return startedAt
-    }
+    if (entry.kind === "prompt") return entry.createdAt
   }
   return null
 }
 
 /** The rows of a raw transcript, as folding sees them. A subagent's own rows fold under its call, so they are left out. */
 export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): FoldEntry[] {
-  const answered = new Set<string>()
+  const answered = new Map<string, number>()
   for (const entry of entries) {
-    if (entry.kind === "tool_result") answered.add(entry.toolId)
+    if (entry.kind === "tool_result" && !answered.has(entry.toolId)) answered.set(entry.toolId, entry.createdAt)
   }
   const result: FoldEntry[] = []
   for (const entry of entries) {
@@ -311,6 +328,7 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
           toolKind: entry.tool.toolKind,
           toolName: entry.tool.toolName,
           answered: answered.has(entry.tool.toolId),
+          answeredAt: answered.get(entry.tool.toolId),
         })
         break
       case "tool_result":
@@ -344,6 +362,7 @@ export function foldEntriesFromMessages(messages: readonly HydratedTranscriptMes
           toolKind: message.toolKind,
           toolName: message.toolName,
           answered: message.resultEntryId !== undefined,
+          answeredAt: message.resultTimestamp ? Date.parse(message.resultTimestamp) : undefined,
         }
       case "result":
         return {

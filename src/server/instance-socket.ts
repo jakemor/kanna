@@ -114,8 +114,9 @@ function send(socket: net.Socket, message: unknown) {
 type Answer = { kind: "none" } | { kind: "noAnswer" } | { kind: "answer"; message: Record<string, unknown> }
 
 /**
- * "none" when nothing listens: the file is missing, or left behind by a
- * process that died (connecting is refused). "noAnswer" when something
+ * "none" when nothing listens: the file is missing, left behind by a process
+ * that died (connecting is refused), or not a socket at all (Bun 1.4 says
+ * ENOTSOCK there, where 1.3 said ENOENT). "noAnswer" when something
  * listens but doesn't reply in time, which is a live process, not a stale
  * socket.
  */
@@ -136,7 +137,8 @@ function ask(socketPath: string, request: InstanceRequest, timeoutMs: number): P
     socket.once("connect", () => send(socket, request))
     // `on`, not `once`: Bun can emit a failed connect's error twice.
     socket.on("error", (error: NodeJS.ErrnoException) => {
-      finish(error.code === "ENOENT" || error.code === "ECONNREFUSED" ? { kind: "none" } : { kind: "noAnswer" })
+      const nobody = error.code === "ENOENT" || error.code === "ECONNREFUSED" || error.code === "ENOTSOCK"
+      finish(nobody ? { kind: "none" } : { kind: "noAnswer" })
     })
     readLines(socket, (message) => finish({ kind: "answer", message }))
   })
@@ -295,8 +297,8 @@ export async function acquireInstanceLock(options: {
 
   for (let attempt = 0; attempt < 50; attempt++) {
     // Checking and listening happen under a short claim, for two reasons.
-    // Bun's listen replaces a socket file that's already there instead of
-    // failing, so listening alone isn't exclusive. And two starters that
+    // Listening alone isn't exclusive: Bun 1.3's listen replaces a socket
+    // file that's already there instead of failing. And two starters that
     // both find a stale file mustn't both remove it, one of them deleting
     // the socket the other just opened.
     const claim = claimSocket(socketPath)

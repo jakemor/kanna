@@ -319,6 +319,7 @@ export function useChatSession({ socket, chatId, fallbackProviders }: {
     reportReadAnchor,
     hasOlderMessages: (snapshot?.startIndex ?? (cachedTranscript?.chatId === chatId ? cachedTranscript.startIndex : 0)) > 0,
     transcriptOutline: snapshot?.outline ?? EMPTY_OUTLINE,
+    turnFolds: snapshot?.turnFolds,
     forkBoundary,
     loadOlderMessages,
     isLoadingOlderMessages,

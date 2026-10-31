@@ -367,6 +367,7 @@ function ChatPreviewSession({ chatId, title, projectId: sidebarProjectId, projec
             onJumpRequestHandled={onJumpRequestHandled}
             hasOlderMessages={session.hasOlderMessages}
             transcriptOutline={session.transcriptOutline}
+            turnFolds={session.turnFolds}
             forkBoundary={session.forkBoundary}
             onLoadOlderMessages={session.loadOlderMessages}
             isLoadingOlderMessages={session.isLoadingOlderMessages}

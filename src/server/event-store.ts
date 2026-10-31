@@ -1,3 +1,4 @@
+import { TurnFoldCache } from "./turn-folds"
 import type { PerformanceLog } from "./performance-log"
 import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
@@ -6,7 +7,7 @@ import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
 import { toMessagePreview } from "../shared/message-preview"
 import { buildTranscriptOutline, findTranscriptWindowStart } from "../shared/transcript-window"
-import type { TranscriptOutlineEntry } from "../shared/types"
+import type { KannaStatus, TranscriptOutlineEntry } from "../shared/types"
 import type { AgentProvider, ChatNextRun, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
@@ -2551,7 +2552,7 @@ export class EventStore {
    * any subscriber holds. `startIndex` records where the clone begins so the
    * router can still slice per socket.
    */
-  getClientTranscript(chatId: string, fromIndex = 0) {
+  getClientTranscript(chatId: string, fromIndex = 0, options?: { status?: KannaStatus }) {
     const entries = this.getTranscriptEntries(chatId)
     const start = Math.max(0, Math.min(fromIndex, entries.length))
     return {
@@ -2563,8 +2564,13 @@ export class EventStore {
       readAnchor: this.getChatReadAnchor(chatId),
       outline: this.getTranscriptOutline(chatId, entries),
       ...this.forkEntryCountField(chatId, entries),
+      // Only when asked with the chat's status, which says whether its
+      // newest turn is over (server/turn-folds.ts).
+      ...(options?.status ? { turnFolds: this.turnFolds.get(entries, options.status, start) } : {}),
     }
   }
+
+  private readonly turnFolds = new TurnFoldCache()
 
   /**
    * On a fork, the index its own history starts at: the copied entries come

@@ -26,7 +26,7 @@ import {
   useSidebarReady,
   useSidebarStore,
 } from "../stores/sidebarStore"
-import type { BranchActionFailure, BranchActionSuccess, ChatSnapshot, HydratedTranscriptMessage, LocalProjectsSnapshot, SidebarChatRow, SidebarData, TranscriptOutlineEntry } from "../../shared/types"
+import type { BranchActionFailure, BranchActionSuccess, ChatSnapshot, ChatTurnFolds, HydratedTranscriptMessage, LocalProjectsSnapshot, SidebarChatRow, SidebarData, TranscriptOutlineEntry } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -188,6 +188,8 @@ export interface KannaState {
   hasOlderMessages: boolean
   /** Every user prompt in the chat, loaded or not (see shared/transcript-window.ts). */
   transcriptOutline: TranscriptOutlineEntry[]
+  /** The server's turn folds; absent from a server that does not fold. */
+  turnFolds: ChatTurnFolds | undefined
   /** On a fork whose copied history is loaded: where it ends. */
   forkBoundary: ForkBoundary | null
   /** Widen the window toward the start; the rows arrive on the subscription. */
@@ -1344,6 +1346,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       ?? (cachedTranscript?.chatId === activeChatId ? cachedTranscript.startIndex : 0)
     ) > 0,
     transcriptOutline: activeChatSnapshot?.outline ?? EMPTY_OUTLINE,
+    turnFolds: activeChatSnapshot?.turnFolds,
     forkBoundary,
     loadOlderMessages,
     isLoadingOlderMessages,

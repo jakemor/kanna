@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { Loader2, X } from "lucide-react"
-import { formatWorkedDuration } from "../../../shared/turn-fold"
+import { formatWorkedDuration } from "../../../shared/turn-fold-label"
 import type { WaitingOn } from "../../../shared/types"
 import { waitingOnLabel } from "../../lib/waiting-on"
 import { MetaRow, MetaContent } from "./shared"

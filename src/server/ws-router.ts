@@ -31,6 +31,7 @@ import type { ProviderAuthManager } from "./provider-auth"
 import type { UpdateManager } from "./update-manager"
 import type { UsageLimitsManager } from "./usage-limits"
 import { deriveChatSnapshot, deriveChatTouchedFiles, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import { sliceTurnFolds } from "./turn-folds"
 import type {
   AppSettingsSnapshot,
   ChatSnapshot,
@@ -87,6 +88,12 @@ export interface ClientState {
    * incremental push carries it whenever this differs from what is current.
    */
   chatProvidersSent?: Map<string, string>
+  /**
+   * Serialized turn folds last sent per chat subscription. They change only
+   * when a turn settles or the window grows, so an incremental push carries
+   * them only when they differ from this.
+   */
+  chatTurnFoldsSent?: Map<string, string>
   chatFollowing?: Map<string, boolean>
   chatWindowChecks?: Map<string, number>
   protectedDraftChatIds?: Set<string>
@@ -667,7 +674,7 @@ export function createWsRouter({
           getChatStatuses(),
           agent.getDrainingChatIds(),
           topic.chatId,
-          (chatId) => store.getClientTranscript(chatId),
+          (chatId, options) => store.getClientTranscript(chatId, 0, options),
           agent.getSubagents?.(topic.chatId),
           agent.getWaitingOn?.(topic.chatId)
         ),
@@ -703,7 +710,7 @@ export function createWsRouter({
       getChatStatuses(),
       agent.getDrainingChatIds(),
       chatId,
-      (id) => store.getClientTranscript(id, fromIndex ?? getEarliestChatWindowStart(id)),
+      (id, options) => store.getClientTranscript(id, fromIndex ?? getEarliestChatWindowStart(id), options),
       agent.getSubagents?.(chatId),
       agent.getWaitingOn?.(chatId)
     )
@@ -747,7 +754,12 @@ export function createWsRouter({
   function sliceChatWindow(data: ChatSnapshot, windowStart: number): ChatSnapshot {
     const offset = Math.max(0, Math.min(windowStart - data.startIndex, data.messages.length))
     if (offset === 0) return data
-    return { ...data, messages: data.messages.slice(offset), startIndex: data.startIndex + offset }
+    return {
+      ...data,
+      messages: data.messages.slice(offset),
+      startIndex: data.startIndex + offset,
+      ...(data.turnFolds ? { turnFolds: sliceTurnFolds(data.turnFolds, data.messages.slice(0, offset)) } : {}),
+    }
   }
 
   /**
@@ -910,11 +922,13 @@ export function createWsRouter({
         const data = full ? sliceChatWindow(full, windowStart) : full
         const outlineCounts = ensureChatOutlineCounts(ws)
         const providersSent = ensureChatProvidersSent(ws)
+        const foldsSent = (ws.data.chatTurnFoldsSent ??= new Map())
         let body = toSocketChatSnapshot(data, advanced ? undefined : previous)
         // The outline is a few KB and would otherwise ride every streamed
         // push; an incremental body carries it only when a prompt was added.
         const outlineCount = data?.outline?.length ?? 0
         const providersJson = JSON.stringify(data?.availableProviders ?? null)
+        const foldsJson = JSON.stringify(data?.turnFolds ?? null)
         if (body?.incremental) {
           // The read anchor never changes mid-chat, and the client latches it
           // from the first full snapshot (`foldChatSnapshot` carries it forward).
@@ -936,6 +950,12 @@ export function createWsRouter({
             const { outline, ...withoutOutline } = body
             body = withoutOutline as typeof body
           }
+          // The folds change when a turn settles or the window grows, not
+          // with each streamed entry.
+          if (foldsSent.get(id) === foldsJson) {
+            const { turnFolds, ...withoutFolds } = body
+            body = withoutFolds as typeof body
+          }
         }
         const snapshotJson = JSON.stringify({ type: "chat", data: body })
         if (snapshotSignatures.get(id) === snapshotJson) {
@@ -948,10 +968,12 @@ export function createWsRouter({
           spans.set(id, { start: windowStart, end: data.startIndex + data.messages.length })
           outlineCounts.set(id, outlineCount)
           providersSent.set(id, providersJson)
+          foldsSent.set(id, foldsJson)
         } else {
           spans.delete(id)
           outlineCounts.delete(id)
           providersSent.delete(id)
+          foldsSent.delete(id)
         }
         sendSerializedSnapshot(ws, id, snapshotJson)
         diagnostics?.record("chat_snapshot_ms", performance.now() - started)
@@ -2109,6 +2131,7 @@ export function createWsRouter({
       ws.data.chatEntrySpans?.clear()
       ws.data.chatProvidersSent?.clear()
       ws.data.chatOutlineCounts?.clear()
+      ws.data.chatTurnFoldsSent?.clear()
       ws.data.chatWindowStarts?.clear()
       ws.data.chatFollowing?.clear()
       ws.data.chatWindowChecks?.clear()
@@ -2151,6 +2174,7 @@ export function createWsRouter({
         ws.data.chatEntrySpans?.delete(parsed.id)
         ws.data.chatWindowStarts?.delete(parsed.id)
         ws.data.chatOutlineCounts?.delete(parsed.id)
+        ws.data.chatTurnFoldsSent?.delete(parsed.id)
         ws.data.chatProvidersSent?.delete(parsed.id)
         ws.data.chatFollowing?.delete(parsed.id)
         ws.data.chatWindowChecks?.delete(parsed.id)
@@ -2212,6 +2236,7 @@ export function createWsRouter({
         ws.data.chatEntrySpans?.delete(parsed.id)
         ws.data.chatWindowStarts?.delete(parsed.id)
         ws.data.chatOutlineCounts?.delete(parsed.id)
+        ws.data.chatTurnFoldsSent?.delete(parsed.id)
         ws.data.chatProvidersSent?.delete(parsed.id)
         ws.data.chatFollowing?.delete(parsed.id)
         ws.data.chatWindowChecks?.delete(parsed.id)

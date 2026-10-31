@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import fixtures from "../../shared/turn-fold.fixtures.json"
-import { computeTurnFolds, foldEntriesFromMessages, turnFoldLabel, type FoldEntry, type TurnFold } from "../../shared/turn-fold"
-import type { HydratedTranscriptMessage, TranscriptEntry } from "../../shared/types"
+import fixtures from "../../server/turn-folds.fixtures.json"
+// The server decides the folds; these tests build them as it would, then
+// check what the client draws from them.
+import { buildChatTurnFolds } from "../../server/turn-folds"
+import type { ChatTurnFolds, HydratedTranscriptMessage, TranscriptEntry } from "../../shared/types"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { buildTranscriptTurns } from "./ChatPage/transcriptTurns"
 import { buildRowIndexByMessageId, getRowAnchorMessageId } from "./ChatPage/transcriptScrollAnchors"
@@ -21,41 +23,18 @@ function hydrate(entries: unknown[]): HydratedTranscriptMessage[] {
   return processTranscriptMessages(entries as TranscriptEntry[])
 }
 
-function describeFolds(entries: readonly FoldEntry[], folds: readonly TurnFold[]) {
-  return folds.map((fold) => {
-    const roles: Record<string, string> = {}
-    fold.roles.forEach((role, offset) => { roles[entries[fold.start + offset]!.id] = role })
-    return {
-      id: fold.id,
-      header: fold.start <= fold.end ? entries[fold.start]!.id : null,
-      settled: fold.settled,
-      folds: fold.folds,
-      outcome: fold.outcome,
-      workedMs: fold.workedMs ?? null,
-      label: turnFoldLabel(fold, false),
-      roles,
-    }
-  })
+function serverFolds(testCase: Fixture): ChatTurnFolds {
+  return buildChatTurnFolds(testCase.entries as unknown as TranscriptEntry[], { status: testCase.atRest ? "idle" : "running" })
 }
 
-// The shared fixtures again, through the rows the web client actually holds:
-// hydrated messages, with tool results folded into their calls.
-describe("turn folds from hydrated messages", () => {
-  for (const testCase of fixtures.cases) {
-    test(testCase.name, () => {
-      const entries = foldEntriesFromMessages(hydrate(testCase.entries))
-      expect(describeFolds(entries, computeTurnFolds(entries, { atRest: testCase.atRest }))).toEqual(testCase.folds as ReturnType<typeof describeFolds>)
-    })
-  }
-})
-
-function foldedRows(testCase: Fixture, open: (foldId: string) => boolean) {
-  const messages = hydrate(testCase.entries)
+/** The rows drawn from `entries` (a window of the case's), folded as the server says. */
+function foldedRows(testCase: Fixture, open: (foldId: string) => boolean, options: { folds?: ChatTurnFolds | null; from?: number } = {}) {
+  const messages = hydrate(testCase.entries.slice(options.from ?? 0))
   const rows = buildResolvedTranscriptRows(messages, {
     isLoading: !testCase.atRest,
     latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
   })
-  const folds = computeTurnFolds(foldEntriesFromMessages(messages), { atRest: testCase.atRest })
+  const folds = options.folds === null ? undefined : (options.folds ?? serverFolds(testCase)).folds
   return { rows, folded: applyTurnFolds(rows, indexTurnFolds(messages, folds), open) }
 }
 
@@ -81,9 +60,15 @@ describe("the transcript's rows around a fold", () => {
     expect(names.filter((name) => !name.startsWith("["))).toEqual(rowNames(rows).map((name) => name === "res1" ? "res1(ends)" : name))
   })
 
-  test("a delegator's chat cards and reports stay in place inside its closed fold", () => {
-    const { folded } = foldedRows(fixture("A delegator's exchange folds around its chat cards and reports"), () => false)
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "cc1", "cc2", "rp1", "cc3", "rp2", "a4", "res3(ends)"])
+  test("a delegator's chat cards stay in place inside its closed fold, and the reports fold", () => {
+    const { folded } = foldedRows(fixture("A delegator's exchange keeps its chat cards and folds the reports"), () => false)
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "cc1", "cc2", "cc3", "a4", "res3(ends)"])
+  })
+
+  test("from a server that sends no folds, everything is drawn as it was", () => {
+    const testCase = fixture("What survives the fold")
+    const { rows, folded } = foldedRows(testCase, () => false, { folds: null })
+    expect(rowNames(folded)).toEqual(rowNames(rows))
   })
 
   test("a delegator waiting on its sub-chats draws no header", () => {
@@ -114,8 +99,11 @@ describe("the transcript's rows around a fold", () => {
   })
 
   test("a turn the window cut folds under a header at the top", () => {
-    const { folded } = foldedRows(fixture("A window that cuts a turn folds what it holds, timed by the provider"), () => false)
-    expect(rowNames(folded)).toEqual(["[closed partial:a0]", "a1", "res0(ends)", "p1", "a2", "res1"])
+    // The server folds over the whole chat; the client holds from the middle of turn 1.
+    const testCase = fixture("A delegator's exchange keeps its chat cards and folds the reports")
+    const from = testCase.entries.findIndex((entry) => entry._id === "rp1")
+    const { folded } = foldedRows(testCase, () => false, { from })
+    expect(rowNames(folded)).toEqual(["[closed p1]", "cc3", "a4", "res3(ends)"])
   })
 
   test("the minimap still counts what a closed fold hides, and a header is no read position", () => {

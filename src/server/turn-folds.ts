@@ -1,5 +1,5 @@
-import { CHAT_TOOL_NAMES, SCHEDULE_TOOL_NAMES } from "./tools"
-import type { HydratedTranscriptMessage, TranscriptEntry } from "./types"
+import { CHAT_TOOL_NAMES, SCHEDULE_TOOL_NAMES } from "../shared/tools"
+import type { ChatTurnFolds, KannaStatus, TranscriptEntry, TranscriptTurnFold, TurnFoldOutcome } from "../shared/types"
 
 /**
  * Folding a finished turn behind one header ("Worked for 2m 14s"), so a chat
@@ -13,21 +13,25 @@ import type { HydratedTranscriptMessage, TranscriptEntry } from "./types"
  *
  * Closed, a fold still shows what the turn made or decided, and what it
  * handed to other chats: the reply (its last text), pictures, files and
- * visualizations, chat and schedule cards with the reports that came back, a
- * plan with nothing said after it, and errors. Edits, commands, reads and the
- * text between them fold away.
+ * visualizations, chat and schedule cards, a plan with nothing said after it,
+ * and errors. Edits, commands, reads, the text between them, and the reports
+ * sub-chats sent back fold away: a report is that chat's reply, and its card
+ * stays to open it.
  *
- * Decided on the client, from the entries alone, so web and iOS agree without
- * the server stamping anything. The Swift port is `TurnFolds` in
- * ios/App/Chat/TurnFold.swift; both run `turn-fold.fixtures.json`, and a
- * change here changes both and the fixtures with them.
+ * Decided here, on the server, and sent with the chat snapshot
+ * (`ChatSnapshot.turnFolds`), so web and iOS draw the same folds and neither
+ * works them out. Cases in `turn-folds.fixtures.json`.
  */
 
 export type FoldEntryKind = "prompt" | "text" | "tool" | "result" | "interrupted" | "meta" | "other"
 
-/** What folding needs to know of one transcript row, from either shape the clients hold. */
+/** What folding needs to know of one transcript entry. */
 export interface FoldEntry {
   id: string
+  /** Its index in the transcript. */
+  index: number
+  /** Its own kind, for the meta rows that need telling apart. */
+  entryKind?: TranscriptEntry["kind"]
   kind: FoldEntryKind
   hidden: boolean
   /** Epoch milliseconds. */
@@ -56,7 +60,7 @@ export interface FoldEntry {
  */
 export type FoldRole = "folded" | "kept" | "reply" | "end"
 
-export type FoldOutcome = "completed" | "failed" | "stopped"
+export type FoldOutcome = TurnFoldOutcome
 
 export interface TurnFold {
   /**
@@ -198,8 +202,9 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
       case "meta":
         return "kept"
       case "prompt":
-        // A sub-chat's report is the sub-chat's, not this turn's work.
-        return entry.source === "report" && !entry.hidden ? "kept" : "folded"
+        // A sub-chat's report is its reply, which its card opens: it folds
+        // with the rest. The turn's own reply is what stays.
+        return "folded"
       case "text":
         return index === marks.replyIndex ? "reply" : "folded"
       case "tool":
@@ -262,32 +267,6 @@ function workedMsOf(entries: readonly FoldEntry[], first: number, end: number): 
   return turns > 0 ? Math.max(0, total) : undefined
 }
 
-/** "32s", "23m 0s", "6h 23m 32s". Minutes always carry their seconds, so the width barely moves. */
-export function formatWorkedDuration(ms: number): string {
-  if (ms < 1000) return "<1s"
-  const totalSeconds = Math.floor(ms / 1000)
-  const hours = Math.floor(totalSeconds / 3600)
-  const minutes = Math.floor((totalSeconds % 3600) / 60)
-  const seconds = totalSeconds % 60
-  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`
-  if (minutes > 0) return `${minutes}m ${seconds}s`
-  return `${seconds}s`
-}
-
-/** The header's words. Nothing about what is inside: opening it says that. */
-export function turnFoldLabel(fold: Pick<TurnFold, "outcome" | "workedMs">, open: boolean): string {
-  if (fold.workedMs === undefined) {
-    const action = open ? "Hide work" : "Show work"
-    if (fold.outcome === "failed") return `Failed · ${action}`
-    if (fold.outcome === "stopped") return `Stopped · ${action}`
-    return action
-  }
-  const worked = formatWorkedDuration(fold.workedMs)
-  if (fold.outcome === "failed") return `Failed after ${worked}`
-  if (fold.outcome === "stopped") return `Stopped after ${worked}`
-  return `Worked for ${worked}`
-}
-
 /**
  * When the turn now running started, for the live "Working for 12s" line:
  * the latest prompt, which is what started it. Null when a turn ended after
@@ -311,9 +290,9 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
     if (entry.kind === "tool_result" && !answered.has(entry.toolId)) answered.set(entry.toolId, entry.createdAt)
   }
   const result: FoldEntry[] = []
-  for (const entry of entries) {
-    if (entry.parentToolUseId) continue
-    const base = { id: entry._id, hidden: entry.hidden === true, createdAt: entry.createdAt }
+  entries.forEach((entry, index) => {
+    if (entry.parentToolUseId) return
+    const base = { id: entry._id, index, entryKind: entry.kind, hidden: entry.hidden === true, createdAt: entry.createdAt }
     switch (entry.kind) {
       case "user_prompt":
         result.push({ ...base, kind: "prompt", source: entry.source?.kind })
@@ -342,41 +321,121 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
       default:
         result.push({ ...base, kind: META_KINDS.has(entry.kind) ? "meta" : "other" })
     }
-  }
+  })
   return result
 }
 
-/** The web client's hydrated rows, as folding sees them. One per message, so indices line up. */
-export function foldEntriesFromMessages(messages: readonly HydratedTranscriptMessage[]): FoldEntry[] {
-  return messages.map((message) => {
-    const base = { id: message.id, hidden: message.hidden === true, createdAt: Date.parse(message.timestamp) || 0 }
-    switch (message.kind) {
-      case "user_prompt":
-        return { ...base, kind: "prompt", source: message.source?.kind }
-      case "assistant_text":
-        return { ...base, kind: "text" }
-      case "tool":
-        return {
-          ...base,
-          kind: "tool",
-          toolKind: message.toolKind,
-          toolName: message.toolName,
-          answered: message.resultEntryId !== undefined,
-          answeredAt: message.resultTimestamp ? Date.parse(message.resultTimestamp) : undefined,
-        }
-      case "result":
-        return {
-          ...base,
-          kind: "result",
-          subtype: message.cancelled ? "cancelled" : message.success ? "success" : "error",
-          durationMs: message.durationMs,
-        }
-      case "interrupted":
-        return { ...base, kind: "interrupted" }
-      case "unknown":
-        return { ...base, kind: "other" }
-      default:
-        return { ...base, kind: "meta" }
-    }
+/** Statuses in which the newest turn is still going: it does not fold yet. */
+const GOING: ReadonlySet<KannaStatus> = new Set<KannaStatus>(["starting", "running", "waiting_for_user", "waiting_on_subagent"])
+
+/**
+ * Every fold of a transcript in wire form, each with the index of its last
+ * entry so a window can be cut from it, and what the newest turn is doing.
+ */
+interface AllTurnFolds {
+  folds: Array<{ fold: TranscriptTurnFold; endIndex: number }>
+  latestId?: string
+  latestSettled: boolean
+  workingSince?: number
+}
+
+function buildAllTurnFolds(entries: readonly TranscriptEntry[], status: KannaStatus): AllTurnFolds {
+  const foldEntries = foldEntriesFromTranscript(entries)
+  const folds = computeTurnFolds(foldEntries, { atRest: !GOING.has(status) })
+  const latest = folds[folds.length - 1]
+  const workingSince = status === "running" || status === "starting" ? runningTurnStartedAt(foldEntries) : null
+  return {
+    folds: folds.filter((fold) => fold.folds).map((fold) => ({ fold: toWireFold(foldEntries, fold), endIndex: foldEntries[fold.end]!.index })),
+    ...(latest && latest.openerIndex !== null ? { latestId: latest.id } : {}),
+    latestSettled: latest?.settled ?? true,
+    ...(workingSince !== null ? { workingSince } : {}),
+  }
+}
+
+function windowOf(all: AllTurnFolds, fromIndex: number): ChatTurnFolds {
+  const { folds, ...rest } = all
+  return { folds: folds.filter((entry) => entry.endIndex >= fromIndex).map((entry) => entry.fold), ...rest }
+}
+
+/**
+ * The wire form of the folds (`ChatSnapshot.turnFolds`): those that fold and
+ * end at or after `fromIndex`, named by entry id, with what the newest turn
+ * is doing.
+ */
+export function buildChatTurnFolds(
+  entries: readonly TranscriptEntry[],
+  { status, fromIndex = 0 }: { status: KannaStatus; fromIndex?: number },
+): ChatTurnFolds {
+  return windowOf(buildAllTurnFolds(entries, status), fromIndex)
+}
+
+function toWireFold(entries: readonly FoldEntry[], fold: TurnFold): TranscriptTurnFold {
+  let replyEntryId: string | undefined
+  let endEntryId: string | undefined
+  const keptEntryIds: string[] = []
+  fold.roles.forEach((role, offset) => {
+    const entry = entries[fold.start + offset]!
+    if (role === "reply") replyEntryId = entry.id
+    else if (role === "end") endEntryId = entry.id
+    // Usage updates are never drawn, and there is one per step: listing them
+    // would only make the list long.
+    else if (role === "kept" && entry.entryKind !== "context_window_updated") keptEntryIds.push(entry.id)
   })
+  return {
+    id: fold.id,
+    firstEntryId: entries[fold.start]!.id,
+    lastEntryId: entries[fold.end]!.id,
+    outcome: fold.outcome,
+    ...(fold.workedMs !== undefined ? { workedMs: fold.workedMs } : {}),
+    ...(replyEntryId ? { replyEntryId } : {}),
+    ...(endEntryId ? { endEntryId } : {}),
+    keptEntryIds,
+  }
+}
+
+/**
+ * Cut the folds down to a narrower window, by the entries a client will not
+ * hold: a fold whose last entry is among them is gone with them.
+ */
+export function sliceTurnFolds(turnFolds: ChatTurnFolds, dropped: readonly TranscriptEntry[]): ChatTurnFolds {
+  if (dropped.length === 0 || turnFolds.folds.length === 0) return turnFolds
+  const droppedIds = new Set(dropped.map((entry) => entry._id))
+  const folds = turnFolds.folds.filter((fold) => !droppedIds.has(fold.lastEntryId))
+  return folds.length === turnFolds.folds.length ? turnFolds : { ...turnFolds, folds }
+}
+
+/**
+ * The folds of one chat, recomputed only when they can have changed.
+ *
+ * A snapshot goes out on every streamed entry, and working the folds out walks
+ * the whole transcript. While the newest turn is going, an append can only
+ * change that turn, which is not folded and not on the wire, until a prompt
+ * opens the next one. So between those the last answer stands.
+ */
+export class TurnFoldCache {
+  private readonly cache = new WeakMap<readonly TranscriptEntry[], { length: number; status: KannaStatus; value: AllTurnFolds }>()
+
+  get(entries: readonly TranscriptEntry[], status: KannaStatus, fromIndex: number): ChatTurnFolds {
+    const cached = this.cache.get(entries)
+    if (cached && cached.status === status && cached.length <= entries.length) {
+      let reusable = cached.length === entries.length
+      if (!reusable && GOING.has(status)) {
+        reusable = true
+        for (let index = cached.length; index < entries.length; index += 1) {
+          const entry = entries[index]!
+          if (entry.kind === "user_prompt" && !entry.hidden && entry.source?.kind !== "report" && !entry.parentToolUseId) {
+            reusable = false
+            break
+          }
+        }
+      }
+      if (reusable) {
+        cached.length = entries.length
+        return windowOf(cached.value, fromIndex)
+      }
+    }
+    const value = buildAllTurnFolds(entries, status)
+    this.cache.set(entries, { length: entries.length, status, value })
+    return windowOf(value, fromIndex)
+  }
 }

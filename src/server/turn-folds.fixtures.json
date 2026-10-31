@@ -921,7 +921,7 @@
    ]
   },
   {
-   "name": "A delegator's exchange folds around its chat cards and reports",
+   "name": "A delegator's exchange keeps its chat cards and folds the reports",
    "atRest": true,
    "entries": [
     {
@@ -1097,12 +1097,12 @@
       "cc2": "kept",
       "a2": "folded",
       "res1": "folded",
-      "rp1": "kept",
+      "rp1": "folded",
       "a3": "folded",
       "c1": "folded",
       "cc3": "kept",
       "res2": "folded",
-      "rp2": "kept",
+      "rp2": "folded",
       "a4": "reply",
       "res3": "end"
      }

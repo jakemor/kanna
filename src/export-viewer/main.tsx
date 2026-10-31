@@ -183,7 +183,6 @@ function StandaloneTranscriptApp() {
             isPageFileDragActive={false}
             showEmptyState={false}
             headerOffsetPx={20}
-            foldTurns={false}
           />
 
             <div className="absolute bottom-4 left-1/2 z-20 w-full -translate-x-1/2 md:w-auto">

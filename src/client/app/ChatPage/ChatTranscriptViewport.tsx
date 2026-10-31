@@ -57,8 +57,7 @@ import {
   EMPTY_STATE_TEXT,
 } from "./utils"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction, TerminalPreset } from "../../../shared/protocol"
-import type { TranscriptOutlineEntry, WaitingOn } from "../../../shared/types"
-import { computeTurnFolds, foldEntriesFromMessages, runningTurnStartedAt } from "../../../shared/turn-fold"
+import type { ChatTurnFolds, TranscriptOutlineEntry, WaitingOn } from "../../../shared/types"
 import { setTurnFoldPreference, turnFoldPreferenceKey, useTurnFoldPreferences } from "../../lib/turn-fold-state"
 import { applyTurnFolds, indexTurnFolds, isTurnFoldOpen } from "../turnFolds"
 /**
@@ -320,10 +319,11 @@ interface ChatTranscriptViewportProps {
   /** On a fork whose copied history is loaded: where the "Forked from" line goes. */
   forkBoundary?: ForkBoundary | null
   /**
-   * Fold each finished turn behind a "Worked for" header (shared/turn-fold.ts).
-   * Off in the export viewer, which shows a transcript whole.
+   * The finished turns that fold behind a "Worked for" header, as the server
+   * decided them (`ChatSnapshot.turnFolds`). Absent, from a server that does
+   * not fold or in the export viewer, the transcript is drawn whole.
    */
-  foldTurns?: boolean
+  turnFolds?: ChatTurnFolds
   onLoadOlderMessages?: (options?: { untilMessageId?: string; all?: boolean }) => Promise<void>
   isLoadingOlderMessages?: boolean
   /**
@@ -519,7 +519,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   hasOlderMessages = false,
   transcriptOutline,
   forkBoundary = null,
-  foldTurns = true,
+  turnFolds,
   onLoadOlderMessages,
   isLoadingOlderMessages = false,
   scrollbarGutterHostRef,
@@ -551,28 +551,18 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     forkBoundary,
   }), [forkBoundary, isProcessing, latestToolIds, localPath, messages])
 
-  // A chat waiting on its sub-chats is not processing, but its turn is not
-  // over either: the report that comes back carries it on.
-  const atRest = !isProcessing && runtimeStatus !== "waiting_on_subagent"
-  const foldEntries = useMemo(() => foldEntriesFromMessages(messages), [messages])
-  const turnFolds = useMemo(
-    () => (foldTurns ? computeTurnFolds(foldEntries, { atRest }) : []),
-    [atRest, foldEntries, foldTurns],
-  )
-  const foldIndex = useMemo(() => indexTurnFolds(messages, turnFolds), [messages, turnFolds])
-  // The turns this viewport saw running. One of them that settles stays open
+  const foldIndex = useMemo(() => indexTurnFolds(messages, turnFolds?.folds), [messages, turnFolds])
+  // The turns this viewport saw going. One of them that settles stays open
   // while it is the latest (see `isTurnFoldOpen`). Written during render, but
   // only ever added to, so a render that is thrown away does no harm.
   const watchedFoldsRef = useRef<{ chatId: string | null; ids: Set<string> }>({ chatId: activeChatId, ids: new Set() })
   if (watchedFoldsRef.current.chatId !== activeChatId) watchedFoldsRef.current = { chatId: activeChatId, ids: new Set() }
-  for (const fold of turnFolds) {
-    if (!fold.settled) watchedFoldsRef.current.ids.add(fold.id)
-  }
+  if (turnFolds?.latestId && !turnFolds.latestSettled) watchedFoldsRef.current.ids.add(turnFolds.latestId)
   const foldPreferences = useTurnFoldPreferences()
   // Folds opened to land a jump or a restored read position on a row inside them.
   const [landingFolds, setLandingFolds] = useState<{ chatId: string | null; ids: ReadonlySet<string> }>({ chatId: activeChatId, ids: new Set() })
   const landingFoldIds = landingFolds.chatId === activeChatId ? landingFolds.ids : null
-  const latestFoldId = turnFolds[turnFolds.length - 1]?.id
+  const latestFoldId = turnFolds?.latestId
   const isFoldOpen = useCallback((foldId: string) => {
     const stored = activeChatId ? foldPreferences[turnFoldPreferenceKey(activeChatId, foldId)] : undefined
     return isTurnFoldOpen({
@@ -1319,10 +1309,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     [hasOlderMessages, messages, parentChatId],
   )
 
-  const workingSince = useMemo(
-    () => (runtimeStatus === "running" ? runningTurnStartedAt(foldEntries) : null),
-    [foldEntries, runtimeStatus],
-  )
+  const workingSince = runtimeStatus === "running" ? turnFolds?.workingSince ?? null : null
 
   const listHeader = (
     <div style={{ paddingTop: `${headerOffsetPx}px` }}>

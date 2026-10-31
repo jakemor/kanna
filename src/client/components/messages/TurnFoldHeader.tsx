@@ -1,10 +1,11 @@
 import { ChevronRight } from "lucide-react"
-import { turnFoldLabel, type FoldOutcome } from "../../../shared/turn-fold"
+import { turnFoldLabel } from "../../../shared/turn-fold-label"
+import type { TurnFoldOutcome } from "../../../shared/types"
 import { cn } from "../../lib/utils"
 
 interface Props {
   open: boolean
-  outcome: FoldOutcome
+  outcome: TurnFoldOutcome
   workedMs?: number
   onToggle: () => void
 }

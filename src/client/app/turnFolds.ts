@@ -1,11 +1,11 @@
-import type { HydratedTranscriptMessage } from "../../shared/types"
-import type { FoldOutcome, FoldRole, TurnFold } from "../../shared/turn-fold"
+import type { HydratedTranscriptMessage, TranscriptTurnFold, TurnFoldOutcome } from "../../shared/types"
 import type { ResolvedTranscriptRow } from "./KannaTranscript"
 
 /**
- * Where the transcript's rows meet the shared fold decision
- * (shared/turn-fold.ts): the header row each fold gets, which rows a closed
- * fold leaves out, and whether a fold is open.
+ * Where the transcript's rows meet the folds the server sends
+ * (`ChatSnapshot.turnFolds`, decided in server/turn-folds.ts): the header row
+ * each fold gets, which rows a closed fold leaves out, and whether a fold is
+ * open. Nothing here decides what folds.
  */
 
 export interface ResolvedFoldHeaderTranscriptRow {
@@ -13,7 +13,7 @@ export interface ResolvedFoldHeaderTranscriptRow {
   id: string
   foldId: string
   open: boolean
-  outcome: FoldOutcome
+  outcome: TurnFoldOutcome
   workedMs?: number
   /** What the closed fold leaves out that the minimap counts as the agent's. */
   hiddenAgentCount: number
@@ -23,27 +23,44 @@ export function foldHeaderRowId(foldId: string) {
   return `fold:${foldId}`
 }
 
-/** Where each message stands: the fold it is in, and its role there. Only folds that fold. */
+/** What a message is to its fold: drawn only while open, or drawn either way. */
+export type FoldRole = "folded" | "kept" | "reply" | "end"
+
+/** Where each message stands: the fold it is in, and its role there. */
 export interface FoldIndex {
-  foldAt: Array<TurnFold | undefined>
+  foldAt: Array<TranscriptTurnFold | undefined>
   roleAt: Array<FoldRole | undefined>
   /** Message id to the fold that hides it while closed. */
   foldIdByHiddenMessageId: Map<string, string>
 }
 
-export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], folds: readonly TurnFold[]): FoldIndex {
-  const foldAt = new Array<TurnFold | undefined>(messages.length)
+/**
+ * Place the server's folds on the messages held. A fold spans its first entry
+ * to its last; where the window starts inside one, it spans from the first
+ * message held. One with neither end held is not in this window.
+ */
+export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], folds: readonly TranscriptTurnFold[] | undefined): FoldIndex {
+  const foldAt = new Array<TranscriptTurnFold | undefined>(messages.length)
   const roleAt = new Array<FoldRole | undefined>(messages.length)
   const foldIdByHiddenMessageId = new Map<string, string>()
+  if (!folds || folds.length === 0) return { foldAt, roleAt, foldIdByHiddenMessageId }
+  const indexById = new Map<string, number>()
+  messages.forEach((message, index) => indexById.set(message.id, index))
   for (const fold of folds) {
-    if (!fold.folds) continue
-    fold.roles.forEach((role, offset) => {
-      const index = fold.start + offset
+    const end = indexById.get(fold.lastEntryId)
+    if (end === undefined) continue
+    const start = indexById.get(fold.firstEntryId) ?? 0
+    const kept = new Set(fold.keptEntryIds)
+    for (let index = start; index <= end; index += 1) {
+      const message = messages[index]!
+      const role: FoldRole = message.id === fold.replyEntryId ? "reply"
+        : message.id === fold.endEntryId ? "end"
+        : kept.has(message.id) ? "kept"
+        : "folded"
       foldAt[index] = fold
       roleAt[index] = role
-      const message = messages[index]
-      if (role === "folded" && message) foldIdByHiddenMessageId.set(message.id, fold.id)
-    })
+      if (role === "folded") foldIdByHiddenMessageId.set(message.id, fold.id)
+    }
   }
   return { foldAt, roleAt, foldIdByHiddenMessageId }
 }
@@ -92,7 +109,7 @@ export function applyTurnFolds(
   isOpen: (foldId: string) => boolean,
 ): ResolvedTranscriptRow[] {
   const result: ResolvedTranscriptRow[] = []
-  let currentFold: TurnFold | undefined
+  let currentFold: TranscriptTurnFold | undefined
   let currentHeader: ResolvedFoldHeaderTranscriptRow | undefined
 
   for (const row of rows) {

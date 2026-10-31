@@ -174,6 +174,11 @@ export function shouldPreserveExistingProjectDiffs(
   )
 }
 
+/** The folds are a few ids per turn, and change only when a turn settles. */
+function sameTurnFolds(left: ChatSnapshot["turnFolds"], right: ChatSnapshot["turnFolds"]) {
+  return left === right || JSON.stringify(left) === JSON.stringify(right)
+}
+
 export function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | null) {
   if (left === right) return true
   if (!left || !right) return false
@@ -181,6 +186,7 @@ export function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnaps
     && sameQueuedMessages(left.queuedMessages, right.queuedMessages)
     && sameTranscriptEntries(left.messages, right.messages)
     && sameProviders(left.availableProviders, right.availableProviders)
+    && sameTurnFolds(left.turnFolds, right.turnFolds)
 }
 
 /**
@@ -225,13 +231,13 @@ export function applyIncrementalChatSnapshot(
  * router's staleness tests compare and what the local cache is keyed on.
  */
 function assembleFolded(
-  current: Pick<ChatSnapshot, "messages" | "startIndex"> & Partial<Pick<ChatSnapshot, "availableProviders" | "readAnchor" | "outline">>,
+  current: Pick<ChatSnapshot, "messages" | "startIndex"> & Partial<Pick<ChatSnapshot, "availableProviders" | "readAnchor" | "outline" | "turnFolds">>,
   incoming: ChatSnapshot,
   messages: TranscriptEntry[],
   startIndex: number,
 ): ChatSnapshot {
   const carried = carriedFields(current, incoming)
-  const { runtime, queuedMessages, availableProviders, readAnchor, outline, incremental, messages: _m, startIndex: _s, ...rest } = incoming
+  const { runtime, queuedMessages, availableProviders, readAnchor, outline, turnFolds, incremental, messages: _m, startIndex: _s, ...rest } = incoming
   return {
     ...rest,
     runtime,
@@ -241,6 +247,7 @@ function assembleFolded(
     availableProviders: carried.availableProviders ?? availableProviders,
     readAnchor: carried.readAnchor ?? null,
     ...("outline" in carried ? { outline: carried.outline } : outline !== undefined ? { outline } : {}),
+    ...("turnFolds" in carried ? { turnFolds: carried.turnFolds } : turnFolds !== undefined ? { turnFolds } : {}),
     incremental: false,
   }
 }
@@ -251,15 +258,17 @@ function assembleFolded(
  * held snapshot still has them, so they carry forward.
  */
 function carriedFields(
-  current: Pick<ChatSnapshot, "messages" | "startIndex"> & Partial<Pick<ChatSnapshot, "availableProviders" | "readAnchor" | "outline">>,
+  current: Pick<ChatSnapshot, "messages" | "startIndex"> & Partial<Pick<ChatSnapshot, "availableProviders" | "readAnchor" | "outline" | "turnFolds">>,
   incoming: ChatSnapshot,
-): Partial<Pick<ChatSnapshot, "availableProviders" | "readAnchor" | "outline">> {
+): Partial<Pick<ChatSnapshot, "availableProviders" | "readAnchor" | "outline" | "turnFolds">> {
   return {
     availableProviders: incoming.availableProviders ?? current.availableProviders,
     readAnchor: incoming.readAnchor === undefined ? current.readAnchor ?? null : incoming.readAnchor,
     // Omitted means "same as before"; the server sends it only when a
     // prompt was added.
     ...(incoming.outline === undefined && current.outline !== undefined ? { outline: current.outline } : {}),
+    // The same for the folds: sent when a turn settled or the window grew.
+    ...(incoming.turnFolds === undefined && current.turnFolds !== undefined ? { turnFolds: current.turnFolds } : {}),
   }
 }
 
@@ -295,6 +304,10 @@ export function foldChatSnapshot(
   if (next && next.outline === undefined && current?.outline) {
     next = { ...next, outline: current.outline }
   }
+  // And the folds, which travel when a turn settles or the window grows.
+  if (next && next.turnFolds === undefined && current?.turnFolds && incoming?.incremental) {
+    next = { ...next, turnFolds: current.turnFolds }
+  }
   if (sameChatSnapshotCore(current, next)) return current
   if (!current || !next) return next
   // The push changed something, usually the transcript. The parts it did not
@@ -310,6 +323,9 @@ export function foldChatSnapshot(
     availableProviders: sameProviders(current.availableProviders, next.availableProviders)
       ? current.availableProviders
       : next.availableProviders,
+    ...(next.turnFolds !== undefined
+      ? { turnFolds: sameTurnFolds(current.turnFolds, next.turnFolds) ? current.turnFolds : next.turnFolds }
+      : {}),
   }
 }
 

@@ -19,7 +19,7 @@ import type { ChatRecord, StoreState, TouchedFile } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 import { buildTranscriptOutline } from "../shared/transcript-window"
-import type { TranscriptOutlineEntry } from "../shared/types"
+import type { ChatTurnFolds, TranscriptOutlineEntry } from "../shared/types"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
@@ -462,7 +462,7 @@ export function deriveChatSnapshot(
   activeStatuses: Map<string, KannaStatus>,
   drainingChatIds: Set<string>,
   chatId: string,
-  getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "startIndex" | "readAnchor"> & { outline?: TranscriptOutlineEntry[]; forkEntryCount?: number },
+  getMessages: (chatId: string, options: { status: KannaStatus }) => Pick<ChatSnapshot, "messages" | "startIndex" | "readAnchor"> & { outline?: TranscriptOutlineEntry[]; forkEntryCount?: number; turnFolds?: ChatTurnFolds },
   subagents?: readonly SubagentActivity[],
   /** What the chat is waiting on, when it is. See `WaitingOn`. */
   waitingOn?: WaitingOn
@@ -509,7 +509,7 @@ export function deriveChatSnapshot(
     ...(schedules.length ? { schedules } : {}),
   }
 
-  const transcript = getMessages(chat.id)
+  const transcript = getMessages(chat.id, { status })
   // Recorded on the fork, or derived from its transcript for an older one
   // (`EventStore.forkEntryCountField`).
   const forkEntryCount = transcript.forkEntryCount ?? chat.forkedEntryCount
@@ -531,5 +531,6 @@ export function deriveChatSnapshot(
     // window; the store caches it per transcript and only rebuilds when a
     // prompt is appended.
     outline: transcript.outline ?? buildTranscriptOutline(transcript.messages),
+    ...(transcript.turnFolds ? { turnFolds: transcript.turnFolds } : {}),
   }
 }

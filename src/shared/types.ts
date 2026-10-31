@@ -2784,6 +2784,57 @@ export interface ChatSnapshot {
    * any push where it changed; absent means "same as last time".
    */
   outline?: TranscriptOutlineEntry[]
+  /**
+   * Which finished turns fold behind a "Worked for" header, decided by the
+   * server (server/turn-folds.ts) so every client folds the same way. Present
+   * on a full snapshot; on an incremental push only when it changed, absent
+   * meaning "same as last time". A server that predates folding never sends
+   * it, and a client then draws the transcript whole.
+   */
+  turnFolds?: ChatTurnFolds
+}
+
+/** How a folded turn ended, as its header says it. */
+export type TurnFoldOutcome = "completed" | "failed" | "stopped"
+
+/**
+ * One finished turn that folds: everything from a prompt someone sent to the
+ * next one, less the prompt and the model rows right after it. Named by entry
+ * ids, so a client places it in whatever window it holds.
+ */
+export interface TranscriptTurnFold {
+  /** The id of the prompt that opened the turn. Also what an open fold is remembered by. */
+  id: string
+  /** The first entry inside the fold: its header goes before it. */
+  firstEntryId: string
+  /** The last entry of the turn. */
+  lastEntryId: string
+  outcome: TurnFoldOutcome
+  /** Time the agent spent working; absent when not known. */
+  workedMs?: number
+  /** The turn's last text, drawn whether the fold is open or not. */
+  replyEntryId?: string
+  /** The result that ends the turn: its rule, drawn either way, without the time the header says. */
+  endEntryId?: string
+  /**
+   * Other entries drawn either way: pictures, files, visualizations, chat
+   * and schedule cards, a plan nothing came after, errors, compaction and
+   * model rows. Everything else between the first and last entry is drawn
+   * only while the fold is open.
+   */
+  keptEntryIds: string[]
+}
+
+/** The turn folds of the transcript a snapshot holds. */
+export interface ChatTurnFolds {
+  /** Every finished turn that folds and ends inside the window, oldest first. */
+  folds: TranscriptTurnFold[]
+  /** The id of the newest turn, folded or not. */
+  latestId?: string
+  /** False while the newest turn is still going (running, or waiting on the user or on sub-chats). */
+  latestSettled: boolean
+  /** While a turn runs: when it started, for the "Working for 1m 3s" line. */
+  workingSince?: number
 }
 
 /** One turn of a chat, as the outline names it. */

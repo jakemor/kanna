@@ -112,7 +112,7 @@ interface KannaSidebarProps {
   onLoadPreview?: (chatId: string) => Promise<ChatPreview>
   /** Prompts to `git init` a chat's project — the hover card's "Setup Git". */
   onSetupGit: (chatId: string) => void
-  /** Hides the "Setup Kanna Cloud" prompt; Settings brings it back. */
+  /** Hides the "Setup Kanna Cloud" prompt for good; Settings › Kanna Cloud still pairs. */
   onDismissCloudSetup: () => void
   onRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
   onHideProject: (projectId: string) => void

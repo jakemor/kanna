@@ -108,6 +108,7 @@ export function buildTranscriptTurns(rows: ResolvedTranscriptRow[]): TranscriptT
       if (current) current.agentMessageCount += row.hiddenAgentCount
       continue
     }
+    if (row.kind === "fold-chat-card") continue
 
     if (row.message.kind === "user_prompt") {
       const previous = turns[turns.length - 1]

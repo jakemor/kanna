@@ -856,7 +856,12 @@
       "toolKind": "chat",
       "toolName": "create_chat",
       "toolId": "tool-cc1",
-      "input": {}
+      "input": {
+       "payload": {
+        "title": "Docs audit",
+        "message": "Audit the docs."
+       }
+      }
      }
     },
     {
@@ -864,7 +869,7 @@
      "kind": "tool_result",
      "createdAt": 2100,
      "toolId": "tool-cc1",
-     "content": "ok"
+     "content": "{\"chatId\":\"chatA\",\"title\":\"Docs audit\"}"
     },
     {
      "_id": "cc2",
@@ -875,7 +880,11 @@
       "toolKind": "chat",
       "toolName": "create_chat",
       "toolId": "tool-cc2",
-      "input": {}
+      "input": {
+       "payload": {
+        "message": "Build the funnel report."
+       }
+      }
      }
     },
     {
@@ -883,7 +892,7 @@
      "kind": "tool_result",
      "createdAt": 2300,
      "toolId": "tool-cc2",
-     "content": "ok"
+     "content": "{\"chatId\":\"chatB\"}"
     },
     {
      "_id": "a2",
@@ -912,16 +921,33 @@
      "label": "Worked for 2s",
      "roles": {
       "a1": "folded",
-      "cc1": "kept",
-      "cc2": "kept",
+      "cc1": "folded",
+      "cc2": "folded",
       "a2": "reply",
       "res1": "end"
-     }
+     },
+     "chatCards": [
+      {
+       "chatId": "chatA",
+       "anchorEntryId": "cc1",
+       "last": "started",
+       "lastEntryId": "cc1",
+       "preview": "Audit the docs.",
+       "title": "Docs audit"
+      },
+      {
+       "chatId": "chatB",
+       "anchorEntryId": "cc2",
+       "last": "started",
+       "lastEntryId": "cc2",
+       "preview": "Build the funnel report."
+      }
+     ]
     }
    ]
   },
   {
-   "name": "A delegator's exchange keeps its chat cards and folds the reports",
+   "name": "A delegator's exchange closes to one card per sub-chat, in the order they came up",
    "atRest": true,
    "entries": [
     {
@@ -945,7 +971,12 @@
       "toolKind": "chat",
       "toolName": "create_chat",
       "toolId": "tool-cc1",
-      "input": {}
+      "input": {
+       "payload": {
+        "title": "Docs audit",
+        "message": "Audit the docs."
+       }
+      }
      }
     },
     {
@@ -953,7 +984,7 @@
      "kind": "tool_result",
      "createdAt": 2100,
      "toolId": "tool-cc1",
-     "content": "ok"
+     "content": "{\"chatId\":\"chatA\",\"title\":\"Docs audit\"}"
     },
     {
      "_id": "cc2",
@@ -964,7 +995,11 @@
       "toolKind": "chat",
       "toolName": "create_chat",
       "toolId": "tool-cc2",
-      "input": {}
+      "input": {
+       "payload": {
+        "message": "Build the funnel report."
+       }
+      }
      }
     },
     {
@@ -972,7 +1007,7 @@
      "kind": "tool_result",
      "createdAt": 2300,
      "toolId": "tool-cc2",
-     "content": "ok"
+     "content": "{\"chatId\":\"chatB\"}"
     },
     {
      "_id": "a2",
@@ -993,11 +1028,11 @@
      "_id": "rp1",
      "kind": "user_prompt",
      "createdAt": 60000,
-     "content": "report",
+     "content": "<system-message>Sub-chat completed: chatA (chat id chatA)</system-message>\n\nThe docs audit is done.",
      "source": {
       "kind": "report",
       "chatIds": [
-       "x"
+       "chatA"
       ]
      }
     },
@@ -1035,7 +1070,12 @@
       "toolKind": "chat",
       "toolName": "send_message",
       "toolId": "tool-cc3",
-      "input": {}
+      "input": {
+       "payload": {
+        "chatId": "chatA",
+        "message": "One more page, please."
+       }
+      }
      }
     },
     {
@@ -1043,7 +1083,7 @@
      "kind": "tool_result",
      "createdAt": 63100,
      "toolId": "tool-cc3",
-     "content": "ok"
+     "content": "{\"started\":true}"
     },
     {
      "_id": "res2",
@@ -1058,11 +1098,12 @@
      "_id": "rp2",
      "kind": "user_prompt",
      "createdAt": 120000,
-     "content": "report",
+     "content": "<system-message>Sub-chat completed: chatC (chat id chatC)</system-message>\n\nSignups are down 15%.\n\n---\n\n<system-message>Sub-chat completed: chatA (chat id chatA)</system-message>\n\nDone with the extra page.",
      "source": {
       "kind": "report",
       "chatIds": [
-       "y"
+       "chatC",
+       "chatA"
       ]
      }
     },
@@ -1093,19 +1134,150 @@
      "label": "Worked for 7s",
      "roles": {
       "a1": "folded",
-      "cc1": "kept",
-      "cc2": "kept",
+      "cc1": "folded",
+      "cc2": "folded",
       "a2": "folded",
       "res1": "folded",
       "rp1": "folded",
       "a3": "folded",
       "c1": "folded",
-      "cc3": "kept",
+      "cc3": "folded",
       "res2": "folded",
       "rp2": "folded",
       "a4": "reply",
       "res3": "end"
+     },
+     "chatCards": [
+      {
+       "chatId": "chatA",
+       "anchorEntryId": "cc1",
+       "last": "replied",
+       "lastEntryId": "rp2",
+       "preview": "Done with the extra page.",
+       "title": "Docs audit"
+      },
+      {
+       "chatId": "chatB",
+       "anchorEntryId": "cc2",
+       "last": "started",
+       "lastEntryId": "cc2",
+       "preview": "Build the funnel report."
+      },
+      {
+       "chatId": "chatC",
+       "anchorEntryId": "rp2",
+       "last": "replied",
+       "lastEntryId": "rp2",
+       "preview": "Signups are down 15%."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "A send and its reply from one chat are one card, saying the reply",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "cc1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "send_message",
+      "toolId": "tool-cc1",
+      "input": {
+       "payload": {
+        "chatId": "chatA",
+        "message": "Correction on MMP."
+       }
+      }
      }
+    },
+    {
+     "_id": "rc1",
+     "kind": "tool_result",
+     "createdAt": 1100,
+     "toolId": "tool-cc1",
+     "content": "{\"started\":true}"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 2000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    },
+    {
+     "_id": "rp1",
+     "kind": "user_prompt",
+     "createdAt": 30000,
+     "content": "<system-message>Sub-chat completed: chatA (chat id chatA)</system-message>\n\nFixed the MMP page.\n\n---\n\n<system-message>Sub-chat completed: chatB (chat id chatB)</system-message>\n\nToday's funnel report.",
+     "source": {
+      "kind": "report",
+      "chatIds": [
+       "chatA",
+       "chatB"
+      ]
+     }
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 31000,
+     "text": "Here's the funnel."
+    },
+    {
+     "_id": "res2",
+     "kind": "result",
+     "createdAt": 32000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 1000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "cc1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 3000,
+     "label": "Worked for 3s",
+     "roles": {
+      "cc1": "folded",
+      "res1": "folded",
+      "rp1": "folded",
+      "a1": "reply",
+      "res2": "end"
+     },
+     "chatCards": [
+      {
+       "chatId": "chatA",
+       "anchorEntryId": "cc1",
+       "last": "replied",
+       "lastEntryId": "rp1",
+       "preview": "Fixed the MMP page."
+      },
+      {
+       "chatId": "chatB",
+       "anchorEntryId": "rp1",
+       "last": "replied",
+       "lastEntryId": "rp1",
+       "preview": "Today's funnel report."
+      }
+     ]
     }
    ]
   },

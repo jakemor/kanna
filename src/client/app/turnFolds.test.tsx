@@ -43,7 +43,8 @@ function rowNames(rows: readonly ResolvedTranscriptRow[]) {
   return rows.map((row) => {
     if (row.kind === "fold-header") return `[${row.open ? "open" : "closed"} ${row.foldId}]`
     if (row.kind === "tool-group") return row.messages.map((message) => message.id).join("+")
-    return row.endsFold ? `${row.message.id}(ends)` : row.message.id
+    if (row.kind === "fold-chat-card") return `<${row.card.chatId} ${row.card.last}>`
+    return row.kind === "single" && row.endsFold ? `${row.message.id}(ends)` : (row as { message: { id: string } }).message.id
   })
 }
 
@@ -60,9 +61,33 @@ describe("the transcript's rows around a fold", () => {
     expect(names.filter((name) => !name.startsWith("["))).toEqual(rowNames(rows).map((name) => name === "res1" ? "res1(ends)" : name))
   })
 
-  test("a delegator's chat cards stay in place inside its closed fold, and the reports fold", () => {
-    const { folded } = foldedRows(fixture("A delegator's exchange keeps its chat cards and folds the reports"), () => false)
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "cc1", "cc2", "cc3", "a4", "res3(ends)"])
+  test("closed, a delegator's turn draws one card per sub-chat, where each first came up, and no report lines", () => {
+    const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
+    const { folded } = foldedRows(testCase, () => false)
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB started>", "<chatC replied>", "a4", "res3(ends)"])
+  })
+
+  test("open, the same turn is the raw log: every send card and report line, and no deduped cards", () => {
+    const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
+    const { rows, folded } = foldedRows(testCase, () => true)
+    const names = rowNames(folded)
+    expect(names.some((name) => name.startsWith("<"))).toBe(false)
+    expect(names.filter((name) => !name.startsWith("["))).toEqual(rowNames(rows).map((name) => name === "res3" ? "res3(ends)" : name))
+    for (const id of ["cc1", "cc2", "cc3", "rp1", "rp2"]) expect(names).toContain(id)
+  })
+
+  test("a send and a reply from one chat are one card; a chat that only replied gets one too", () => {
+    const { folded } = foldedRows(fixture("A send and its reply from one chat are one card, saying the reply"), () => false)
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB replied>", "a1", "res2(ends)"])
+  })
+
+  test("a card reads the last thing that passed, and opens its chat", () => {
+    const { folded } = foldedRows(fixture("A send and its reply from one chat are one card, saying the reply"), () => false)
+    const card = folded.find((row) => row.kind === "fold-chat-card")!
+    const html = renderToStaticMarkup(
+      <KannaTranscriptRow row={card} onToolGroupExpandedChange={() => undefined} onAskUserQuestionSubmit={() => undefined} onExitPlanModeConfirm={() => undefined} />,
+    )
+    expect(html).toContain("Replied · Fixed the MMP page.")
   })
 
   test("from a server that sends no folds, everything is drawn as it was", () => {
@@ -100,10 +125,11 @@ describe("the transcript's rows around a fold", () => {
 
   test("a turn the window cut folds under a header at the top", () => {
     // The server folds over the whole chat; the client holds from the middle of turn 1.
-    const testCase = fixture("A delegator's exchange keeps its chat cards and folds the reports")
+    const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
     const from = testCase.entries.findIndex((entry) => entry._id === "rp1")
     const { folded } = foldedRows(testCase, () => false, { from })
-    expect(rowNames(folded)).toEqual(["[closed p1]", "cc3", "a4", "res3(ends)"])
+    // The cards whose chat first came up before the window come first.
+    expect(rowNames(folded)).toEqual(["[closed p1]", "<chatA replied>", "<chatB started>", "<chatC replied>", "a4", "res3(ends)"])
   })
 
   test("the minimap still counts what a closed fold hides, and a header is no read position", () => {

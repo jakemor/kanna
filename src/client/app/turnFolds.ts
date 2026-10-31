@@ -1,4 +1,4 @@
-import type { HydratedTranscriptMessage, TranscriptTurnFold, TurnFoldOutcome } from "../../shared/types"
+import type { HydratedTranscriptMessage, TranscriptTurnFold, TurnFoldChatCard, TurnFoldOutcome } from "../../shared/types"
 import type { ResolvedTranscriptRow } from "./KannaTranscript"
 
 /**
@@ -23,6 +23,13 @@ export function foldHeaderRowId(foldId: string) {
   return `fold:${foldId}`
 }
 
+/** A sub-chat a closed fold dealt with, as one card (`TranscriptTurnFold.chatCards`). */
+export interface ResolvedFoldChatCardTranscriptRow {
+  kind: "fold-chat-card"
+  id: string
+  card: TurnFoldChatCard
+}
+
 /** What a message is to its fold: drawn only while open, or drawn either way. */
 export type FoldRole = "folded" | "kept" | "reply" | "end"
 
@@ -32,6 +39,8 @@ export interface FoldIndex {
   roleAt: Array<FoldRole | undefined>
   /** Message id to the fold that hides it while closed. */
   foldIdByHiddenMessageId: Map<string, string>
+  /** Each fold's chat cards, with the message index each stands at (-1 before the window). */
+  cardsByFoldId: Map<string, Array<{ card: TurnFoldChatCard; at: number }>>
 }
 
 /**
@@ -43,7 +52,8 @@ export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], f
   const foldAt = new Array<TranscriptTurnFold | undefined>(messages.length)
   const roleAt = new Array<FoldRole | undefined>(messages.length)
   const foldIdByHiddenMessageId = new Map<string, string>()
-  if (!folds || folds.length === 0) return { foldAt, roleAt, foldIdByHiddenMessageId }
+  const cardsByFoldId = new Map<string, Array<{ card: TurnFoldChatCard; at: number }>>()
+  if (!folds || folds.length === 0) return { foldAt, roleAt, foldIdByHiddenMessageId, cardsByFoldId }
   const indexById = new Map<string, number>()
   messages.forEach((message, index) => indexById.set(message.id, index))
   for (const fold of folds) {
@@ -61,8 +71,11 @@ export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], f
       roleAt[index] = role
       if (role === "folded") foldIdByHiddenMessageId.set(message.id, fold.id)
     }
+    if (fold.chatCards?.length) {
+      cardsByFoldId.set(fold.id, fold.chatCards.map((card) => ({ card, at: indexById.get(card.anchorEntryId) ?? -1 })))
+    }
   }
-  return { foldAt, roleAt, foldIdByHiddenMessageId }
+  return { foldAt, roleAt, foldIdByHiddenMessageId, cardsByFoldId }
 }
 
 /**
@@ -102,6 +115,10 @@ function agentCountOf(row: ResolvedTranscriptRow): number {
  * fold stops a run). The header goes before the first row at or after the
  * fold's start. A row that ends its fold loses the "Worked for" on its rule,
  * which the header now says.
+ *
+ * A closed fold also draws one card per sub-chat it dealt with, each where
+ * that chat first came up, in place of the chat calls and report lines it
+ * stands for. Open, those are back as they happened and the cards are not.
  */
 export function applyTurnFolds(
   rows: readonly ResolvedTranscriptRow[],
@@ -111,12 +128,22 @@ export function applyTurnFolds(
   const result: ResolvedTranscriptRow[] = []
   let currentFold: TranscriptTurnFold | undefined
   let currentHeader: ResolvedFoldHeaderTranscriptRow | undefined
+  // The closed fold's cards still to draw, first first.
+  let cards: Array<{ card: TurnFoldChatCard; at: number }> = []
+  const drawCards = (upTo: number) => {
+    while (cards.length > 0 && cards[0]!.at <= upTo) {
+      const { card } = cards.shift()!
+      result.push({ kind: "fold-chat-card", id: `fold-chat:${currentFold!.id}:${card.chatId}`, card })
+    }
+  }
 
   for (const row of rows) {
-    if (row.kind === "fold-header") continue
+    if (row.kind === "fold-header" || row.kind === "fold-chat-card") continue
     const messageIndex = row.kind === "single" ? row.index : row.startIndex
     const fold = index.foldAt[messageIndex]
+    if (fold !== currentFold) drawCards(Number.POSITIVE_INFINITY)
     if (!fold) {
+      currentFold = undefined
       result.push(row)
       continue
     }
@@ -132,7 +159,9 @@ export function applyTurnFolds(
         hiddenAgentCount: 0,
       }
       result.push(currentHeader)
+      cards = currentHeader.open ? [] : [...(index.cardsByFoldId.get(fold.id) ?? [])]
     }
+    drawCards(messageIndex)
     const role = index.roleAt[messageIndex]
     if (role === "folded" && !currentHeader!.open) {
       currentHeader!.hiddenAgentCount += agentCountOf(row)
@@ -140,6 +169,7 @@ export function applyTurnFolds(
     }
     result.push(role === "end" && row.kind === "single" ? { ...row, endsFold: true } : row)
   }
+  drawCards(Number.POSITIVE_INFINITY)
 
   return result
 }

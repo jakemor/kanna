@@ -22,7 +22,7 @@ export function isOptimisticMessageId(messageId: string) {
  */
 export function getRowAnchorMessageId(row: ResolvedTranscriptRow): string | null {
   if (row.kind === "single") return row.message.id
-  if (row.kind === "fold-header") return null
+  if (row.kind === "fold-header" || row.kind === "fold-chat-card") return null
   return row.messages[0]?.id ?? null
 }
 
@@ -40,7 +40,7 @@ export function buildRowIndexByMessageId(rows: ResolvedTranscriptRow[]): Map<str
       map.set(row.message.id, index)
       return
     }
-    if (row.kind === "fold-header") return
+    if (row.kind === "fold-header" || row.kind === "fold-chat-card") return
     for (const message of row.messages) {
       map.set(message.id, index)
     }

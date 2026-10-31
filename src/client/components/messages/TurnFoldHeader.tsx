@@ -1,6 +1,7 @@
 import { ChevronRight } from "lucide-react"
 import { turnFoldLabel } from "../../../shared/turn-fold-label"
-import type { TurnFoldOutcome } from "../../../shared/types"
+import type { TurnFoldChatCard as TurnFoldChatCardData, TurnFoldOutcome } from "../../../shared/types"
+import { ChatCard } from "./ChatToolMessage"
 import { cn } from "../../lib/utils"
 
 interface Props {
@@ -43,5 +44,29 @@ export function TurnFoldHeader({ open, outcome, workedMs, onToggle }: Props) {
         )}
       />
     </button>
+  )
+}
+
+/** What the last thing between the turn and a sub-chat was, as a card's caption starts. */
+const LAST_WORDS: Record<TurnFoldChatCardData["last"], string> = {
+  started: "Started",
+  forked: "Forked",
+  sent: "Sent",
+  replied: "Replied",
+}
+
+/**
+ * A sub-chat a closed fold dealt with: the chat's own card, as a chat call
+ * draws it, captioned with the last thing that passed between them
+ * ("Replied · Fixed the MMP page."). One per chat, however many messages
+ * went each way; the server works them out (`TranscriptTurnFold.chatCards`).
+ */
+export function TurnFoldChatCard({ card }: { card: TurnFoldChatCardData }) {
+  return (
+    <ChatCard
+      chatId={card.chatId}
+      title={card.title ?? "Chat"}
+      caption={[LAST_WORDS[card.last], card.preview].filter(Boolean).join(" · ")}
+    />
   )
 }

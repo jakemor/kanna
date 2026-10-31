@@ -22,6 +22,7 @@ interface ExpectedFold {
   workedMs: number | null
   label: string
   roles: Record<string, string>
+  chatCards?: unknown[]
 }
 
 /** A fold as the fixtures write it: by entry id, so the web's hydrated rows and the raw entries both check against it. */
@@ -38,6 +39,7 @@ function describeFolds(entries: readonly FoldEntry[], folds: readonly TurnFold[]
       workedMs: fold.workedMs ?? null,
       label: turnFoldLabel(fold, false),
       roles,
+      ...(fold.chatCards.length > 0 ? { chatCards: fold.chatCards } : {}),
     }
   })
 }
@@ -107,10 +109,29 @@ describe("the folds a snapshot carries", () => {
     expect(wire.workingSince).toBeUndefined()
   })
 
-  test("a delegator's chat cards stay and its reports fold", () => {
-    const [fold] = buildChatTurnFolds(entries("A delegator's exchange keeps its chat cards and folds the reports"), { status: "idle" }).folds
-    expect(fold!.keptEntryIds).toEqual(["cc1", "cc2", "cc3"])
+  test("a delegator's sub-chats ride as one card each; its calls and reports are not kept", () => {
+    const [fold] = buildChatTurnFolds(entries("A delegator's exchange closes to one card per sub-chat, in the order they came up"), { status: "idle" }).folds
+    expect(fold!.keptEntryIds).toEqual([])
     expect(fold!.replyEntryId).toBe("a4")
+    expect(fold!.chatCards?.map((card) => [card.chatId, card.last, card.anchorEntryId])).toEqual([
+      ["chatA", "replied", "cc1"],
+      ["chatB", "started", "cc2"],
+      ["chatC", "replied", "rp2"],
+    ])
+  })
+
+  test("a chat call that failed keeps its own row and makes no card", () => {
+    const failed = [
+      { _id: "p1", kind: "user_prompt", content: "go", createdAt: 0 },
+      { _id: "a1", kind: "assistant_text", text: "Asking.", createdAt: 1 },
+      { _id: "cc1", kind: "tool_call", createdAt: 2, tool: { kind: "tool", toolKind: "chat", toolName: "send_message", toolId: "t1", input: { payload: { chatId: "gone", message: "hi" } } } },
+      { _id: "rc1", kind: "tool_result", toolId: "t1", content: "No such chat", isError: true, createdAt: 3 },
+      { _id: "a2", kind: "assistant_text", text: "It is gone.", createdAt: 4 },
+      { _id: "res1", kind: "result", subtype: "success", isError: false, durationMs: 4, result: "", createdAt: 5 },
+    ] as unknown as TranscriptEntry[]
+    const [fold] = buildChatTurnFolds(failed, { status: "idle" }).folds
+    expect(fold!.keptEntryIds).toEqual(["cc1"])
+    expect(fold!.chatCards).toBeUndefined()
   })
 
   test("while a turn runs: only the settled ones, and when it started", () => {

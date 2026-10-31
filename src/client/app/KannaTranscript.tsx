@@ -24,10 +24,10 @@ import type { ForkBoundary as ForkBoundaryPosition } from "../lib/fork-boundary"
 import { StatusMessage } from "../components/messages/StatusMessage"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { foldRuns } from "../lib/fold-runs"
-import { TurnFoldHeader } from "../components/messages/TurnFoldHeader"
+import { TurnFoldChatCard, TurnFoldHeader } from "../components/messages/TurnFoldHeader"
 import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
 import { SPECIAL_TOOL_NAMES } from "./derived"
-import type { ResolvedFoldHeaderTranscriptRow } from "./turnFolds"
+import type { ResolvedFoldChatCardTranscriptRow, ResolvedFoldHeaderTranscriptRow } from "./turnFolds"
 
 const SPECIAL_TOOL_NAME_SET = new Set<string>(SPECIAL_TOOL_NAMES)
 
@@ -86,7 +86,11 @@ function sameForkBoundary(left: ForkBoundaryMark | undefined, right: ForkBoundar
   return left?.sourceChatId === right?.sourceChatId && left?.at === right?.at
 }
 
-export type ResolvedTranscriptRow = ResolvedSingleTranscriptRow | ResolvedToolGroupTranscriptRow | ResolvedFoldHeaderTranscriptRow
+export type ResolvedTranscriptRow =
+  | ResolvedSingleTranscriptRow
+  | ResolvedToolGroupTranscriptRow
+  | ResolvedFoldHeaderTranscriptRow
+  | ResolvedFoldChatCardTranscriptRow
 
 export interface StableResolvedTranscriptRowsState {
   byId: Map<string, ResolvedTranscriptRow>
@@ -504,6 +508,10 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
     )
   }
 
+  if (left.kind === "fold-chat-card" && right.kind === "fold-chat-card") {
+    return JSON.stringify(left.card) === JSON.stringify(right.card)
+  }
+
   if (left.kind === "fold-header" && right.kind === "fold-header") {
     return left.open === right.open
       && left.outcome === right.outcome
@@ -919,6 +927,10 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: KannaTranscriptRowProps) {
+  if (row.kind === "fold-chat-card") {
+    return <TurnFoldChatCard card={row.card} />
+  }
+
   if (row.kind === "fold-header") {
     return (
       <TurnFoldHeader
@@ -988,7 +1000,11 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       && prev.row.outcome === next.row.outcome
       && prev.row.workedMs === next.row.workedMs
   }
+  if (prev.row.kind === "fold-chat-card" && next.row.kind === "fold-chat-card") {
+    return JSON.stringify(prev.row.card) === JSON.stringify(next.row.card)
+  }
   if (prev.row.kind === "fold-header" || next.row.kind === "fold-header") return false
+  if (prev.row.kind === "fold-chat-card" || next.row.kind === "fold-chat-card") return false
   if (!sameForkBoundary(prev.row.forkBoundary, next.row.forkBoundary)) return false
 
   if (prev.row.kind === "tool-group" && next.row.kind === "tool-group") {

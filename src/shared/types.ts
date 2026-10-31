@@ -2823,6 +2823,27 @@ export interface TranscriptTurnFold {
    * only while the fold is open.
    */
   keptEntryIds: string[]
+  /**
+   * One card per sub-chat the turn dealt with, in the order they first came
+   * up: drawn while the fold is closed, in place of the chat calls and report
+   * lines it stands for (which are left out of `keptEntryIds`). Open, the
+   * fold shows those as they happened instead.
+   */
+  chatCards?: TurnFoldChatCard[]
+}
+
+/** A sub-chat a folded turn started, messaged or heard from, as one card. */
+export interface TurnFoldChatCard {
+  chatId: string
+  /** The first entry that dealt with it: the card stands where that entry was. */
+  anchorEntryId: string
+  /** The last thing that passed between them in the turn. */
+  last: "started" | "forked" | "sent" | "replied"
+  lastEntryId: string
+  /** One line of it: what was sent, or what the chat replied. */
+  preview?: string
+  /** What the call that started it named it, for until the sidebar can. */
+  title?: string
 }
 
 /** The turn folds of the transcript a snapshot holds. */

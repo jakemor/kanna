@@ -1,5 +1,7 @@
 import { CHAT_TOOL_NAMES, SCHEDULE_TOOL_NAMES } from "../shared/tools"
-import type { ChatTurnFolds, KannaStatus, TranscriptEntry, TranscriptTurnFold, TurnFoldOutcome } from "../shared/types"
+import { toMessagePreview } from "../shared/message-preview"
+import { splitReportSections } from "../shared/report-sections"
+import type { ChatTurnFolds, KannaStatus, TranscriptEntry, TranscriptTurnFold, TurnFoldChatCard, TurnFoldOutcome } from "../shared/types"
 
 /**
  * Folding a finished turn behind one header ("Worked for 2m 14s"), so a chat
@@ -14,9 +16,13 @@ import type { ChatTurnFolds, KannaStatus, TranscriptEntry, TranscriptTurnFold, T
  * Closed, a fold still shows what the turn made or decided, and what it
  * handed to other chats: the reply (its last text), pictures, files and
  * visualizations, chat and schedule cards, a plan with nothing said after it,
- * and errors. Edits, commands, reads, the text between them, and the reports
- * sub-chats sent back fold away: a report is that chat's reply, and its card
- * stays to open it.
+ * and errors. Edits, commands, reads and the text between them fold away.
+ *
+ * What passed between the turn and its sub-chats closes to one card per chat:
+ * every chat the turn started, forked or messaged, and every chat that
+ * reported back, once each, in the order they first came up, saying the last
+ * thing that passed. The send cards and report lines it stands for fold away;
+ * opened, the fold shows them as they happened.
  *
  * Decided here, on the server, and sent with the chat snapshot
  * (`ChatSnapshot.turnFolds`), so web and iOS draw the same folds and neither
@@ -48,6 +54,11 @@ export interface FoldEntry {
   /** On a result. */
   subtype?: "success" | "error" | "cancelled"
   durationMs?: number
+  /**
+   * The sub-chats this entry passed something to or from: the chat a
+   * successful chat call reached, or each chat a report is from.
+   */
+  chats?: Array<{ chatId: string; kind: TurnFoldChatCard["last"]; preview?: string; title?: string }>
 }
 
 /**
@@ -93,6 +104,8 @@ export interface TurnFold {
   workedMs?: number
   /** `roles[i - start]` is the role of row `i`. */
   roles: FoldRole[]
+  /** One card per sub-chat the turn dealt with, in the order they first came up. */
+  chatCards: TurnFoldChatCard[]
 }
 
 export interface TurnFoldContext {
@@ -168,6 +181,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
     }
 
     const roles: FoldRole[] = []
+    const chatCards = new Map<string, TurnFoldChatCard>()
     let hasWork = false
     let hasSurvivor = false
     for (let index = start; index <= end; index += 1) {
@@ -175,6 +189,20 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
       const role = roleOf(entry, index, { replyIndex, lastTerminalIndex })
       roles.push(role)
       if (role === "folded" && isWork(entry)) hasWork = true
+      if (!entry.hidden) {
+        for (const chat of entry.chats ?? []) {
+          const card = chatCards.get(chat.chatId)
+          chatCards.set(chat.chatId, {
+            chatId: chat.chatId,
+            anchorEntryId: card?.anchorEntryId ?? entry.id,
+            last: chat.kind,
+            lastEntryId: entry.id,
+            ...(chat.preview ? { preview: chat.preview } : {}),
+            ...((chat.title ?? card?.title) ? { title: chat.title ?? card?.title } : {}),
+          })
+          hasSurvivor = true
+        }
+      }
       // The rule that ends the turn and the model rows are not what it came
       // back with: a fold that leaves only those shows nothing of the turn.
       if ((role === "reply" || role === "kept") && entry.kind !== "meta") hasSurvivor = true
@@ -192,6 +220,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
       outcome: outcomeOf(lastTerminalIndex >= 0 ? entries[lastTerminalIndex]! : undefined),
       workedMs: workedMsOf(entries, first, end),
       roles,
+      chatCards: [...chatCards.values()],
     })
   }
 
@@ -208,6 +237,9 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
       case "text":
         return index === marks.replyIndex ? "reply" : "folded"
       case "tool":
+        // A chat call that reached its chat is that chat's card now. One that
+        // failed keeps its own row, which says what went wrong.
+        if (entry.chats?.length) return "folded"
         if (entry.toolKind === "display" || isChatOrScheduleTool(entry.toolKind, entry.toolName)) return "kept"
         // A plan nothing was said after is what the turn came back with.
         if (entry.toolKind === "exit_plan_mode" && marks.replyIndex < index) return "kept"
@@ -286,8 +318,12 @@ export function runningTurnStartedAt(entries: readonly FoldEntry[]): number | nu
 /** The rows of a raw transcript, as folding sees them. A subagent's own rows fold under its call, so they are left out. */
 export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): FoldEntry[] {
   const answered = new Map<string, number>()
+  const results = new Map<string, { content: unknown; isError: boolean }>()
   for (const entry of entries) {
-    if (entry.kind === "tool_result" && !answered.has(entry.toolId)) answered.set(entry.toolId, entry.createdAt)
+    if (entry.kind === "tool_result" && !answered.has(entry.toolId)) {
+      answered.set(entry.toolId, entry.createdAt)
+      results.set(entry.toolId, { content: entry.content, isError: entry.isError === true })
+    }
   }
   const result: FoldEntry[] = []
   entries.forEach((entry, index) => {
@@ -295,7 +331,12 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
     const base = { id: entry._id, index, entryKind: entry.kind, hidden: entry.hidden === true, createdAt: entry.createdAt }
     switch (entry.kind) {
       case "user_prompt":
-        result.push({ ...base, kind: "prompt", source: entry.source?.kind })
+        result.push({
+          ...base,
+          kind: "prompt",
+          source: entry.source?.kind,
+          ...(entry.source?.kind === "report" ? { chats: reportChats(entry.content, entry.source.chatIds) } : {}),
+        })
         break
       case "assistant_text":
         result.push({ ...base, kind: "text" })
@@ -308,6 +349,7 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
           toolName: entry.tool.toolName,
           answered: answered.has(entry.tool.toolId),
           answeredAt: answered.get(entry.tool.toolId),
+          ...chatCallField(entry, results.get(entry.tool.toolId)),
         })
         break
       case "tool_result":
@@ -390,6 +432,7 @@ function toWireFold(entries: readonly FoldEntry[], fold: TurnFold): TranscriptTu
     ...(replyEntryId ? { replyEntryId } : {}),
     ...(endEntryId ? { endEntryId } : {}),
     keptEntryIds,
+    ...(fold.chatCards.length > 0 ? { chatCards: fold.chatCards } : {}),
   }
 }
 
@@ -438,4 +481,63 @@ export class TurnFoldCache {
     this.cache.set(entries, { length: entries.length, status, value })
     return windowOf(value, fromIndex)
   }
+}
+
+/** At most this much of a message or reply rides a card: one line of it. */
+const CARD_PREVIEW_CHARS = 160
+
+function preview(text: unknown): string | undefined {
+  if (typeof text !== "string") return undefined
+  const line = toMessagePreview(text).replace(/\s+/g, " ").trim()
+  if (!line) return undefined
+  return line.length > CARD_PREVIEW_CHARS ? `${line.slice(0, CARD_PREVIEW_CHARS - 1).trimEnd()}…` : line
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+/** A Kanna tool's result: an object, or JSON as text, bare or in a text block. */
+function resultRecord(content: unknown): Record<string, unknown> | null {
+  const direct = record(content)
+  if (direct) return direct
+  const first = Array.isArray(content) ? record(content[0])?.text : content
+  if (typeof first !== "string") return null
+  try {
+    return record(JSON.parse(first))
+  } catch {
+    return null
+  }
+}
+
+/** The chat a successful chat call reached, and what it did there. */
+function chatCallField(entry: Extract<TranscriptEntry, { kind: "tool_call" }>, answer: { content: unknown; isError: boolean } | undefined): Pick<FoldEntry, "chats"> {
+  const { toolKind, toolName } = entry.tool
+  const isChat = toolKind === "chat" || (toolKind === "unknown_tool" && CHAT_TOOL_NAMES.includes(toolName))
+  if (!isChat || !answer || answer.isError) return {}
+  const input = record(record(entry.tool.input)?.payload) ?? record(entry.tool.rawInput) ?? {}
+  const result = resultRecord(answer.content)
+  const chatId = (typeof result?.chatId === "string" && result.chatId)
+    || (toolName === "send_message" && typeof input.chatId === "string" && input.chatId)
+    || null
+  if (!chatId) return {}
+  const kind: TurnFoldChatCard["last"] = toolName === "fork_chat" ? "forked" : toolName === "send_message" ? "sent" : "started"
+  const title = typeof result?.title === "string" ? result.title : typeof input.title === "string" ? input.title : undefined
+  return { chats: [{ chatId, kind, preview: preview(input.message), ...(title ? { title } : {}) }] }
+}
+
+/** Each chat a report is from, with the first line of what it said. */
+function reportChats(content: string, chatIds: readonly string[]): NonNullable<FoldEntry["chats"]> {
+  const chats: NonNullable<FoldEntry["chats"]> = []
+  const seen = new Set<string>()
+  for (const section of splitReportSections(content, chatIds)) {
+    if (!section.chatId || seen.has(section.chatId)) continue
+    seen.add(section.chatId)
+    chats.push({ chatId: section.chatId, kind: "replied", preview: preview(section.body) })
+  }
+  // A chat the report names but says nothing for still reported.
+  for (const chatId of chatIds) {
+    if (!seen.has(chatId)) chats.push({ chatId, kind: "replied" })
+  }
+  return chats
 }

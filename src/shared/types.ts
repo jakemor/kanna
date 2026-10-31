@@ -2786,10 +2786,11 @@ export interface ChatSnapshot {
   outline?: TranscriptOutlineEntry[]
   /**
    * Which finished turns fold behind a "Worked for" header, decided by the
-   * server (server/turn-folds.ts) so every client folds the same way. Present
-   * on a full snapshot; on an incremental push only when it changed, absent
-   * meaning "same as last time". A server that predates folding never sends
-   * it, and a client then draws the transcript whole.
+   * server (server/turn-folds.ts) so every client folds the same way. Whole
+   * on a full snapshot. On an incremental push, only the folds that are new to
+   * the client, and only when something is new; absent means nothing changed.
+   * A server that predates folding never sends it, and a client then draws
+   * the transcript whole.
    */
   turnFolds?: ChatTurnFolds
 }
@@ -2846,14 +2847,20 @@ export interface TurnFoldChatCard {
   title?: string
 }
 
-/** The turn folds of the transcript a snapshot holds. */
+/**
+ * The turn folds of the transcript a snapshot holds. The turn in progress is
+ * not folded; every other turn is, from the moment it ends, and its fold
+ * never changes after that.
+ */
 export interface ChatTurnFolds {
-  /** Every finished turn that folds and ends inside the window, oldest first. */
-  folds: TranscriptTurnFold[]
-  /** The id of the newest turn, folded or not. */
-  latestId?: string
-  /** False while the newest turn is still going (running, or waiting on the user or on sub-chats). */
-  latestSettled: boolean
+  /**
+   * The folds, by turn (the id of the prompt that opened it). On a full
+   * snapshot, every fold of the window. On an incremental push, only folds
+   * the client has not had: a client adds them to what it holds.
+   */
+  folds: Record<string, TranscriptTurnFold>
+  /** The turn in progress, when one is: drawn whole, whatever fold a client still holds for it. */
+  runningTurnId?: string
   /** While a turn runs: when it started, for the "Working for 1m 3s" line. */
   workingSince?: number
 }

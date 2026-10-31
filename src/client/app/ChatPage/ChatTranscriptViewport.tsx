@@ -59,7 +59,7 @@ import {
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction, TerminalPreset } from "../../../shared/protocol"
 import type { ChatTurnFolds, TranscriptOutlineEntry, WaitingOn } from "../../../shared/types"
 import { setTurnFoldPreference, turnFoldPreferenceKey, useTurnFoldPreferences } from "../../lib/turn-fold-state"
-import { applyTurnFolds, indexTurnFolds, isTurnFoldOpen, settleScrollTarget, type LatestTurnState } from "../turnFolds"
+import { applyTurnFolds, foldHeaderRowId, indexTurnFolds, settleScrollTarget, turnJustFolded } from "../turnFolds"
 /**
  * How close to the bottom counts as "at the end", as a fraction of viewport
  * height.
@@ -551,44 +551,16 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     forkBoundary,
   }), [forkBoundary, isProcessing, latestToolIds, localPath, messages])
 
-  const foldIndex = useMemo(() => indexTurnFolds(messages, turnFolds?.folds), [messages, turnFolds])
+  const foldIndex = useMemo(() => indexTurnFolds(messages, turnFolds), [messages, turnFolds])
   const foldPreferences = useTurnFoldPreferences()
-  // Folds opened to land a jump or a restored read position on a row inside them.
-  const [landingFolds, setLandingFolds] = useState<{ chatId: string | null; ids: ReadonlySet<string> }>({ chatId: activeChatId, ids: new Set() })
-  const landingFoldIds = landingFolds.chatId === activeChatId ? landingFolds.ids : null
-  const isFoldOpen = useCallback((foldId: string) => {
-    const stored = activeChatId ? foldPreferences[turnFoldPreferenceKey(activeChatId, foldId)] : undefined
-    return isTurnFoldOpen({
-      preference: stored === undefined ? undefined : stored[0] === 1,
-      landing: landingFoldIds?.has(foldId) ?? false,
-    })
-  }, [activeChatId, foldPreferences, landingFoldIds])
+  // Closed unless the reader opened it. Nothing else opens a fold.
+  const isFoldOpen = useCallback((foldId: string) => (
+    activeChatId ? foldPreferences[turnFoldPreferenceKey(activeChatId, foldId)]?.[0] === 1 : false
+  ), [activeChatId, foldPreferences])
   const isFoldOpenRef = useRef(isFoldOpen)
   isFoldOpenRef.current = isFoldOpen
   const foldedRows = useMemo(() => applyTurnFolds(rawRows, foldIndex, isFoldOpen), [foldIndex, isFoldOpen, rawRows])
   const resolvedRows = useStableResolvedRows(foldedRows)
-
-  /**
-   * Open the closed fold a landing is headed into, so the row is there to
-   * land on. True when one was opened: the caller waits for the render that
-   * draws it.
-   */
-  const openFoldToLand = useCallback((messageId: string | undefined) => {
-    const foldId = messageId ? foldIndex.foldIdByHiddenMessageId.get(messageId) : undefined
-    if (!foldId || isFoldOpen(foldId)) return false
-    setLandingFolds((current) => ({
-      chatId: activeChatId,
-      ids: new Set([...(current.chatId === activeChatId ? current.ids : []), foldId]),
-    }))
-    return true
-  }, [activeChatId, foldIndex, isFoldOpen])
-
-  /** The message a jump request names, when it names one a fold could hide. */
-  const jumpRequestMessageId = useMemo(() => {
-    const target = jumpRequest?.target
-    if (!target || typeof target === "string") return undefined
-    return messages.find((message) => message.kind === "tool" && message.toolId === target.toolId)?.id
-  }, [jumpRequest, messages])
 
   useEffect(() => {
     setToolGroupExpanded({})
@@ -599,7 +571,20 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     return () => { listRef.current = null }
   }, [listRef, scrollToEnd])
 
-  const rowIndexByMessageId = useMemo(() => buildRowIndexByMessageId(resolvedRows), [resolvedRows])
+  // A message a closed fold hides is found at its fold's header: a stored
+  // read position or a jump inside a closed fold lands there, and the fold
+  // stays closed.
+  const rowIndexByMessageId = useMemo(() => {
+    const map = buildRowIndexByMessageId(resolvedRows)
+    if (foldIndex.foldIdByHiddenMessageId.size === 0) return map
+    const headerIndex = new Map<string, number>()
+    resolvedRows.forEach((row, index) => { if (row.kind === "fold-header") headerIndex.set(row.foldId, index) })
+    for (const [messageId, foldId] of foldIndex.foldIdByHiddenMessageId) {
+      const index = headerIndex.get(foldId)
+      if (!map.has(messageId) && index !== undefined) map.set(messageId, index)
+    }
+    return map
+  }, [foldIndex, resolvedRows])
   const loadedTurns = useMemo(() => buildTranscriptTurns(resolvedRows), [resolvedRows])
   // Turns before the window come from the outline. They have no rows, so
   // they carry no reply or count; they exist so the map reaches the start
@@ -829,9 +814,16 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     if (!jumpRequest || handledJumpRequestIdRef.current === jumpRequest.requestId) return null
     handledJumpRequestIdRef.current = jumpRequest.requestId
     onJumpRequestHandled?.(jumpRequest.requestId)
-    const target = resolveJumpTarget(resolvedRows, jumpRequest.target)
+    let target = resolveJumpTarget(resolvedRows, jumpRequest.target)
+    const toolTarget = jumpRequest.target
+    if (!target && typeof toolTarget !== "string") {
+      // A call a closed fold hides: land on the fold's header.
+      const message = messages.find((candidate) => candidate.kind === "tool" && candidate.toolId === toolTarget.toolId)
+      const foldId = message ? foldIndex.foldIdByHiddenMessageId.get(message.id) : undefined
+      if (foldId) target = { kind: "pin", rowId: foldHeaderRowId(foldId) }
+    }
     return target?.kind === "pin" ? prepareJumpToRow(target.rowId) : target
-  }, [jumpRequest, onJumpRequestHandled, prepareJumpToRow, resolvedRows])
+  }, [foldIndex, jumpRequest, messages, onJumpRequestHandled, prepareJumpToRow, resolvedRows])
 
   /**
    * Where the open landed, the jump that sent it there if one did, and
@@ -888,8 +880,6 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
       // then, unless the reader has scrolled since.
       const restoredFrom = restoredFromRef.current
       if (!restoredFrom || restoredFrom.confirmed || !readAnchorState.confirmed) return
-      if (!hasUserScrolledRef.current && !restoredFrom.jump && !readAnchorState.anchor?.atEnd
-        && openFoldToLand(readAnchorState.anchor?.messageId)) return
       restoredFrom.confirmed = true
       // Prompts the server's answer brought were sent before this open. The
       // effect that follows a new prompt to the end must not take them for
@@ -909,9 +899,6 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
       return
     }
 
-    if (jumpRequest && handledJumpRequestIdRef.current !== jumpRequest.requestId
-      ? openFoldToLand(jumpRequestMessageId)
-      : !readAnchorState.anchor?.atEnd && openFoldToLand(readAnchorState.anchor?.messageId)) return
     restoredChatIdRef.current = activeChatId
     hasUserScrolledRef.current = false
     pendingPinRef.current = null
@@ -928,7 +915,7 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     const target = jumpTarget ?? restoreTarget()
     restoredFromRef.current = { target, jump: jumpTarget ? jump : null, confirmed: readAnchorState.confirmed }
     applyScrollTarget(target)
-  }, [activeChatId, applyScrollTarget, consumeJumpTarget, jumpRequest, jumpRequestMessageId, onIsAtEndChange, openFoldToLand, prepareJumpToRow, readAnchorState, resolvedRows, rowIndexByMessageId])
+  }, [activeChatId, applyScrollTarget, consumeJumpTarget, jumpRequest, onIsAtEndChange, prepareJumpToRow, readAnchorState, resolvedRows, rowIndexByMessageId])
 
   // A jump into the chat that is *already* open — the restore effect above has
   // already run for it, so nothing else would move the viewport. Deliberate in
@@ -937,12 +924,11 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   useEffect(() => {
     if (!activeChatId || restoredChatIdRef.current !== activeChatId) return
     if (resolvedRows.length === 0) return
-    if (jumpRequest && handledJumpRequestIdRef.current !== jumpRequest.requestId && openFoldToLand(jumpRequestMessageId)) return
     const target = consumeJumpTarget()
     if (!target) return
     hasUserScrolledRef.current = true
     applyScrollTarget(target)
-  }, [activeChatId, applyScrollTarget, consumeJumpTarget, jumpRequest, jumpRequestMessageId, openFoldToLand, resolvedRows])
+  }, [activeChatId, applyScrollTarget, consumeJumpTarget, resolvedRows])
 
   // Sending jumps to the bottom, where the new prompt and the reply that
   // follows it are. Streaming output never trips this because it leaves the
@@ -997,20 +983,18 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   const latestTextRef = useRef<{ rowId: string; contentTop: number } | null>(null)
   const lastScrollTopRef = useRef(0)
   const isAtEndRef = useRef(true)
-  const latestTurnRef = useRef<LatestTurnState | null>(null)
+  /** The turn in progress as the last commit had it, by chat. */
+  const runningTurnRef = useRef<{ chatId: string | null; id?: string }>({ chatId: activeChatId })
 
-  // A turn that just ended closes at once (see `isTurnFoldOpen`). A reader at
-  // the end stays at the end; anyone else keeps the reply where it was on
-  // screen while the rows above it go. Safari has no scroll anchoring to do
-  // that for us, and Chromium's could pick a row that is about to vanish.
+  // A turn that just ended folds closed at once. A reader at the end stays
+  // at the end; anyone else keeps the reply where it was on screen while the
+  // rows above it go. Safari has no scroll anchoring to do that for us, and
+  // Chromium's could pick a row that is about to vanish.
   useLayoutEffect(() => {
-    const previous = latestTurnRef.current
-    const current: LatestTurnState = { chatId: activeChatId, id: turnFolds?.latestId, settled: turnFolds?.latestSettled ?? true }
-    latestTurnRef.current = current
+    const previous = runningTurnRef.current
+    runningTurnRef.current = { chatId: activeChatId, id: turnFolds?.runningTurnId }
+    if (previous.chatId !== activeChatId || !turnJustFolded(previous.id, turnFolds)) return
     const target = settleScrollTarget({
-      previous,
-      current,
-      folded: Boolean(current.id && turnFolds?.folds.some((fold) => fold.id === current.id)),
       atEnd: isAtEndRef.current,
       text: latestTextRef.current,
       scrollTop: lastScrollTopRef.current,

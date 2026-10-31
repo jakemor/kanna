@@ -9,7 +9,7 @@ import { processTranscriptMessages } from "../lib/parseTranscript"
 import { buildTranscriptTurns } from "./ChatPage/transcriptTurns"
 import { buildRowIndexByMessageId, getRowAnchorMessageId } from "./ChatPage/transcriptScrollAnchors"
 import { buildResolvedTranscriptRows, KannaTranscriptRow, type ResolvedTranscriptRow } from "./KannaTranscript"
-import { applyTurnFolds, foldHeaderRowId, indexTurnFolds, isTurnFoldOpen, settleScrollTarget, type LatestTurnState } from "./turnFolds"
+import { applyTurnFolds, foldHeaderRowId, indexTurnFolds, settleScrollTarget, turnJustFolded } from "./turnFolds"
 
 type Fixture = (typeof fixtures.cases)[number]
 
@@ -34,7 +34,7 @@ function foldedRows(testCase: Fixture, open: (foldId: string) => boolean, option
     isLoading: !testCase.atRest,
     latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
   })
-  const folds = options.folds === null ? undefined : (options.folds ?? serverFolds(testCase)).folds
+  const folds = options.folds === null ? undefined : (options.folds ?? serverFolds(testCase))
   return { rows, folded: applyTurnFolds(rows, indexTurnFolds(messages, folds), open) }
 }
 
@@ -159,35 +159,39 @@ describe("the transcript's rows around a fold", () => {
   })
 })
 
-describe("whether a fold is open", () => {
-  test("a settled fold starts closed, the one that just settled under the reader too", () => {
-    expect(isTurnFoldOpen({ preference: undefined, landing: false })).toBe(false)
-  })
+describe("the rule: the turn in progress is drawn whole, every other turn is folded", () => {
+  const closed = () => false
 
-  test("a fold the reader opened stays open, and one they closed stays closed", () => {
-    expect(isTurnFoldOpen({ preference: true, landing: false })).toBe(true)
-    expect(isTurnFoldOpen({ preference: false, landing: true })).toBe(false)
-  })
-
-  test("a fold a jump or restored position lands in is open", () => {
-    expect(isTurnFoldOpen({ preference: undefined, landing: true })).toBe(true)
-  })
-
-  test("live: the turn that just settled draws closed, with its card and reply", () => {
-    // What the server sends once the delegator's turn ends: the fold, settled.
-    const testCase = fixture("A send and its reply from one chat are one card, saying the reply")
-    const { folded } = foldedRows(testCase, () => isTurnFoldOpen({ preference: undefined, landing: false }))
+  test("a turn that just ended draws closed, with its card and reply", () => {
+    const { folded } = foldedRows(fixture("A send and its reply from one chat are one card, saying the reply"), closed)
     expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB replied>", "a1", "res2(ends)"])
+  })
+
+  test("the turn in progress draws whole even when a fold for it is still held", () => {
+    // A report resumed the turn: the client still holds the fold it had.
+    const testCase = fixture("What survives the fold")
+    const folds = serverFolds(testCase)
+    const { rows, folded } = foldedRows(testCase, closed, { folds: { ...folds, runningTurnId: "p1" } })
+    expect(rowNames(folded)).toEqual(rowNames(rows))
+  })
+
+  test("a fold the reader opened stays open; nothing else opens one", () => {
+    const testCase = fixture("What survives the fold")
+    expect(rowNames(foldedRows(testCase, (id) => id === "p1").folded)[1]).toBe("[open p1]")
+    expect(rowNames(foldedRows(testCase, closed).folded)[1]).toBe("[closed p1]")
+  })
+
+  test("a turn that ended between two snapshots is the one that was running", () => {
+    const folds = serverFolds(fixture("What survives the fold"))
+    expect(turnJustFolded("p1", folds)).toBe("p1")
+    expect(turnJustFolded(undefined, folds)).toBeUndefined()
+    expect(turnJustFolded("p1", { ...folds, runningTurnId: "p1" })).toBeUndefined()
+    expect(turnJustFolded("p9", folds)).toBeUndefined()
   })
 })
 
-describe("the scroll as a turn settles", () => {
-  const running: LatestTurnState = { chatId: "c", id: "p1", settled: false }
-  const settled: LatestTurnState = { chatId: "c", id: "p1", settled: true }
+describe("the scroll as a turn folds", () => {
   const base = {
-    previous: running,
-    current: settled,
-    folded: true,
     atEnd: false,
     text: { rowId: "a1", contentTop: 1_500 },
     scrollTop: 1_200,
@@ -204,12 +208,8 @@ describe("the scroll as a turn settles", () => {
     expect(settleScrollTarget({ ...base, atEnd: true })).toEqual({ kind: "end" })
   })
 
-  test("nothing moves unless that turn just settled into a fold", () => {
-    expect(settleScrollTarget({ ...base, previous: settled })).toBeNull()
-    expect(settleScrollTarget({ ...base, previous: null })).toBeNull()
-    expect(settleScrollTarget({ ...base, previous: { ...running, id: "p0" } })).toBeNull()
-    expect(settleScrollTarget({ ...base, previous: { ...running, chatId: "other" } })).toBeNull()
-    expect(settleScrollTarget({ ...base, folded: false })).toBeNull()
+  test("nothing to hold when the reply is not drawn", () => {
     expect(settleScrollTarget({ ...base, rowIds: new Set(["p1"]) })).toBeNull()
+    expect(settleScrollTarget({ ...base, text: null })).toBeNull()
   })
 })

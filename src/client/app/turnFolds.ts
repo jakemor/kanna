@@ -1,4 +1,4 @@
-import type { HydratedTranscriptMessage, TranscriptTurnFold, TurnFoldChatCard, TurnFoldOutcome } from "../../shared/types"
+import type { ChatTurnFolds, HydratedTranscriptMessage, TranscriptTurnFold, TurnFoldChatCard, TurnFoldOutcome } from "../../shared/types"
 import type { ResolvedTranscriptRow } from "./KannaTranscript"
 
 /**
@@ -6,6 +6,10 @@ import type { ResolvedTranscriptRow } from "./KannaTranscript"
  * (`ChatSnapshot.turnFolds`, decided in server/turn-folds.ts): the header row
  * each fold gets, which rows a closed fold leaves out, and whether a fold is
  * open. Nothing here decides what folds.
+ *
+ * The rule is the server's and has no exceptions: the turn in progress is
+ * drawn whole, every other turn is folded, and a fold is closed unless the
+ * reader opened it themselves (lib/turn-fold-state.ts).
  */
 
 export interface ResolvedFoldHeaderTranscriptRow {
@@ -46,14 +50,17 @@ export interface FoldIndex {
 /**
  * Place the server's folds on the messages held. A fold spans its first entry
  * to its last; where the window starts inside one, it spans from the first
- * message held. One with neither end held is not in this window.
+ * message held. One with neither end held is not in this window. A fold the
+ * client still holds for the turn now in progress (a turn a report resumed)
+ * is not drawn: that turn is drawn whole until it ends again.
  */
-export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], folds: readonly TranscriptTurnFold[] | undefined): FoldIndex {
+export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], turnFolds: ChatTurnFolds | undefined): FoldIndex {
   const foldAt = new Array<TranscriptTurnFold | undefined>(messages.length)
   const roleAt = new Array<FoldRole | undefined>(messages.length)
   const foldIdByHiddenMessageId = new Map<string, string>()
   const cardsByFoldId = new Map<string, Array<{ card: TurnFoldChatCard; at: number }>>()
-  if (!folds || folds.length === 0) return { foldAt, roleAt, foldIdByHiddenMessageId, cardsByFoldId }
+  const folds = Object.values(turnFolds?.folds ?? {}).filter((fold) => fold.id !== turnFolds?.runningTurnId)
+  if (folds.length === 0) return { foldAt, roleAt, foldIdByHiddenMessageId, cardsByFoldId }
   const indexById = new Map<string, number>()
   messages.forEach((message, index) => indexById.set(message.id, index))
   for (const fold of folds) {
@@ -76,24 +83,6 @@ export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], f
     }
   }
   return { foldAt, roleAt, foldIdByHiddenMessageId, cardsByFoldId }
-}
-
-/**
- * Whether a fold is open.
- *
- * The reader's own choice wins, wherever and whenever it was made. Without
- * one, a fold someone is being taken to (a stored read position, a jump) is
- * open, so the row they land on is there. Every other fold is closed, the
- * one that has just settled under the reader too: a turn collapses to what
- * it came back with the moment it ends, as it reads after a reload. The
- * viewport keeps the reply where it was on screen as the work above it goes.
- */
-export function isTurnFoldOpen({ preference, landing }: {
-  preference: boolean | undefined
-  landing: boolean
-}): boolean {
-  if (preference !== undefined) return preference
-  return landing
 }
 
 function agentCountOf(row: ResolvedTranscriptRow): number {
@@ -171,25 +160,22 @@ export function applyTurnFolds(
   return result
 }
 
-/** The newest turn as one commit saw it. */
-export interface LatestTurnState {
-  chatId: string | null
-  id?: string
-  settled: boolean
+/**
+ * The turn that ended between two snapshots and now has a fold: the one that
+ * was running before and is not now. Undefined when none did.
+ */
+export function turnJustFolded(previousRunningTurnId: string | undefined, turnFolds: ChatTurnFolds | undefined): string | undefined {
+  if (!previousRunningTurnId || turnFolds?.runningTurnId === previousRunningTurnId) return undefined
+  return turnFolds?.folds[previousRunningTurnId] ? previousRunningTurnId : undefined
 }
 
 /**
- * Where to scroll on the commit a turn settles and folds closed, if anywhere.
- * A reader at the end stays at the end. Anyone else keeps the turn's reply
- * (the newest text, measured on the commit before) where it was on screen,
- * while the work above it folds away. Null when no turn just settled into a
- * fold, or the text is not drawn.
+ * Where to scroll on the commit a turn ends and folds closed. A reader at the
+ * end stays at the end. Anyone else keeps the turn's reply (the newest text,
+ * measured on the commit before) where it was on screen while the work above
+ * it folds away. Null when the text is not drawn.
  */
-export function settleScrollTarget({ previous, current, folded, atEnd, text, scrollTop, rowIds, headerOffsetPx }: {
-  previous: LatestTurnState | null
-  current: LatestTurnState
-  /** The newest turn has a fold now. */
-  folded: boolean
+export function settleScrollTarget({ atEnd, text, scrollTop, rowIds, headerOffsetPx }: {
   atEnd: boolean
   /** The newest text row and its top in the content, from the commit before. */
   text: { rowId: string; contentTop: number } | null
@@ -197,9 +183,6 @@ export function settleScrollTarget({ previous, current, folded, atEnd, text, scr
   rowIds: ReadonlySet<string>
   headerOffsetPx: number
 }): { kind: "end" } | { kind: "pin"; rowId: string; offsetFromMessage: number } | null {
-  const justSettled = previous !== null && previous.chatId === current.chatId && previous.id === current.id
-    && !previous.settled && current.settled
-  if (!justSettled || !current.id || !folded) return null
   if (atEnd) return { kind: "end" }
   if (!text || !rowIds.has(text.rowId)) return null
   return { kind: "pin", rowId: text.rowId, offsetFromMessage: headerOffsetPx - (text.contentTop - scrollTop) }

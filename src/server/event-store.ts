@@ -2552,7 +2552,7 @@ export class EventStore {
    * any subscriber holds. `startIndex` records where the clone begins so the
    * router can still slice per socket.
    */
-  getClientTranscript(chatId: string, fromIndex = 0, options?: { status?: KannaStatus }) {
+  getClientTranscript(chatId: string, fromIndex = 0, options?: { status?: KannaStatus; foldsFrom?: number }) {
     const entries = this.getTranscriptEntries(chatId)
     const start = Math.max(0, Math.min(fromIndex, entries.length))
     return {
@@ -2565,8 +2565,11 @@ export class EventStore {
       outline: this.getTranscriptOutline(chatId, entries),
       ...this.forkEntryCountField(chatId, entries),
       // Only when asked with the chat's status, which says whether its
-      // newest turn is over (server/turn-folds.ts).
-      ...(options?.status ? { turnFolds: this.turnFolds.get(entries, options.status, start) } : {}),
+      // newest turn is over (server/turn-folds.ts). For the window the
+      // client holds (`foldsFrom`), not for the slice cloned here: a streamed
+      // push clones only the tail, and folds cut to the tail left out every
+      // earlier turn's.
+      ...(options?.status ? { turnFolds: this.turnFolds.get(entries, options.status, options.foldsFrom ?? start) } : {}),
     }
   }
 

@@ -5,7 +5,6 @@ import {
   computeTurnFolds,
   foldEntriesFromTranscript,
   runningTurnStartedAt,
-  sliceTurnFolds,
   TurnFoldCache,
   type FoldEntry,
   type TurnFold,
@@ -92,28 +91,28 @@ describe("runningTurnStartedAt", () => {
 describe("the folds a snapshot carries", () => {
   const entries = (name: string) => fixtures.cases.find((c) => c.name === name)!.entries as unknown as TranscriptEntry[]
 
-  test("named by entry id: span, reply, the rule that ends it, and what else stays", () => {
+  test("by turn: span, reply, the rule that ends it, and what else stays", () => {
     const wire = buildChatTurnFolds(entries("What survives the fold"), { status: "idle" })
-    expect(wire.folds).toEqual([{
-      id: "p1",
-      firstEntryId: "c1",
-      lastEntryId: "res1",
-      outcome: "completed",
-      workedMs: 134_000,
-      replyEntryId: "a1",
-      endEntryId: "res1",
-      keptEntryIds: ["c2", "c7", "c8", "c9", "c11", "cb", "cs", "c14"],
-    }])
-    expect(wire.latestId).toBe("p1")
-    expect(wire.latestSettled).toBe(true)
-    expect(wire.workingSince).toBeUndefined()
+    expect(wire.folds).toEqual({
+      p1: {
+        id: "p1",
+        firstEntryId: "c1",
+        lastEntryId: "res1",
+        outcome: "completed",
+        workedMs: 134_000,
+        replyEntryId: "a1",
+        endEntryId: "res1",
+        keptEntryIds: ["c2", "c7", "c8", "c9", "c11", "cb", "cs", "c14"],
+      },
+    })
+    expect(wire.runningTurnId).toBeUndefined()
   })
 
   test("a delegator's sub-chats ride as one card each; its calls and reports are not kept", () => {
-    const [fold] = buildChatTurnFolds(entries("A delegator's exchange closes to one card per sub-chat, in the order they came up"), { status: "idle" }).folds
-    expect(fold!.keptEntryIds).toEqual([])
-    expect(fold!.replyEntryId).toBe("a4")
-    expect(fold!.chatCards?.map((card) => [card.chatId, card.last, card.anchorEntryId])).toEqual([
+    const fold = buildChatTurnFolds(entries("A delegator's exchange closes to one card per sub-chat, in the order they came up"), { status: "idle" }).folds.p1!
+    expect(fold.keptEntryIds).toEqual([])
+    expect(fold.replyEntryId).toBe("a4")
+    expect(fold.chatCards?.map((card) => [card.chatId, card.last, card.anchorEntryId])).toEqual([
       ["chatA", "replied", "cc1"],
       ["chatB", "started", "cc2"],
       ["chatC", "replied", "rp2"],
@@ -129,48 +128,78 @@ describe("the folds a snapshot carries", () => {
       { _id: "a2", kind: "assistant_text", text: "It is gone.", createdAt: 4 },
       { _id: "res1", kind: "result", subtype: "success", isError: false, durationMs: 4, result: "", createdAt: 5 },
     ] as unknown as TranscriptEntry[]
-    const [fold] = buildChatTurnFolds(failed, { status: "idle" }).folds
-    expect(fold!.keptEntryIds).toEqual(["cc1"])
-    expect(fold!.chatCards).toBeUndefined()
+    const fold = buildChatTurnFolds(failed, { status: "idle" }).folds.p1!
+    expect(fold.keptEntryIds).toEqual(["cc1"])
+    expect(fold.chatCards).toBeUndefined()
   })
 
-  test("while a turn runs: only the settled ones, and when it started", () => {
+  test("the turn in progress has no fold; every turn before it has one", () => {
     const wire = buildChatTurnFolds(entries("A running turn is not settled; the one before it is"), { status: "running" })
-    expect(wire.folds.map((fold) => fold.id)).toEqual(["p0"])
-    expect(wire.latestId).toBe("p1")
-    expect(wire.latestSettled).toBe(false)
+    expect(Object.keys(wire.folds)).toEqual(["p0"])
+    expect(wire.runningTurnId).toBe("p1")
     expect(wire.workingSince).toBe(5000)
   })
 
-  test("waiting on sub-chats is not settled, and is not working either", () => {
+  test("waiting on sub-chats is in progress, and is not working", () => {
     const wire = buildChatTurnFolds(entries("A delegator's turn waits unfolded on its sub-chats"), { status: "waiting_on_subagent" })
-    expect(wire.folds).toEqual([])
-    expect(wire.latestSettled).toBe(false)
+    expect(wire.folds).toEqual({})
+    expect(wire.runningTurnId).toBe("p1")
     expect(wire.workingSince).toBeUndefined()
   })
 
-  test("a window carries the folds that end inside it, whole even when it starts inside one", () => {
+  test("a window carries the folds of the turns that end inside it, whole even when it starts inside one", () => {
     const all = entries("A running turn is not settled; the one before it is")
-    const settledFirst = buildChatTurnFolds(all, { status: "running" })
-    expect(settledFirst.folds.map((fold) => fold.id)).toEqual(["p0"])
-    // From the second entry on: the first fold is cut, but still carried.
-    expect(buildChatTurnFolds(all, { status: "running", fromIndex: 1 }).folds.map((fold) => fold.id)).toEqual(["p0"])
-    // Past its end: not carried.
+    expect(Object.keys(buildChatTurnFolds(all, { status: "running", fromIndex: 1 }).folds)).toEqual(["p0"])
     const afterFirst = all.findIndex((entry) => entry._id === "p1")
-    expect(buildChatTurnFolds(all, { status: "running", fromIndex: afterFirst }).folds).toEqual([])
-    expect(sliceTurnFolds(settledFirst, all.slice(0, afterFirst)).folds).toEqual([])
-    expect(sliceTurnFolds(settledFirst, all.slice(0, 2))).toBe(settledFirst)
+    expect(buildChatTurnFolds(all, { status: "running", fromIndex: afterFirst }).folds).toEqual({})
   })
+})
 
-  test("the cache answers the same while a turn streams, and again once a prompt opens the next", () => {
+describe("a fold, once its turn has ended, never changes", () => {
+  const first: TranscriptEntry[] = [
+    { _id: "p1", kind: "user_prompt", content: "go", createdAt: 0 },
+    { _id: "a1", kind: "assistant_text", text: "Looking.", createdAt: 1_000 },
+    { _id: "c1", kind: "tool_call", createdAt: 2_000, tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t1", input: {} } },
+    { _id: "r1", kind: "tool_result", toolId: "t1", content: "ok", createdAt: 3_000 },
+    { _id: "a2", kind: "assistant_text", text: "Done.", createdAt: 4_000 },
+    { _id: "res1", kind: "result", subtype: "success", isError: false, durationMs: 4_000, result: "", createdAt: 5_000 },
+  ] as unknown as TranscriptEntry[]
+  const second = [
+    { _id: "p2", kind: "user_prompt", content: "again", createdAt: 9_000 },
+    { _id: "b1", kind: "assistant_text", text: "On it.", createdAt: 9_500 },
+    { _id: "d1", kind: "tool_call", createdAt: 9_600, tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t2", input: {} } },
+    { _id: "e1", kind: "tool_result", toolId: "t2", content: "ok", createdAt: 9_700 },
+  ] as unknown as TranscriptEntry[]
+  const secondEnd = [
+    { _id: "b2", kind: "assistant_text", text: "Done again.", createdAt: 9_800 },
+    { _id: "res2", kind: "result", subtype: "success", isError: false, durationMs: 800, result: "", createdAt: 9_900 },
+  ] as unknown as TranscriptEntry[]
+
+  test("through the next turn starting, streaming and ending, and through the cache", () => {
     const cache = new TurnFoldCache()
-    const live = [...entries("A running turn is not settled; the one before it is")]
-    const first = cache.get(live, "running", 0)
-    live.push({ _id: "a9", kind: "assistant_text", text: "more", createdAt: 9_000 } as TranscriptEntry)
-    expect(cache.get(live, "running", 0)).toEqual(first)
-    live.push({ _id: "res9", kind: "result", subtype: "success", isError: false, durationMs: 4000, result: "", createdAt: 9_500 } as TranscriptEntry)
-    const settled = cache.get(live, "idle", 0)
-    expect(settled.folds.map((fold) => fold.id)).toEqual(["p0", "p1"])
-    expect(settled.latestSettled).toBe(true)
+    const live = [...first]
+    const ended = cache.get(live, "idle", 0).folds.p1
+    expect(ended).toBeDefined()
+    // The next prompt arrives: the chat is running again.
+    live.push(second[0]!)
+    let wire = cache.get(live, "running", 0)
+    expect(wire.folds.p1).toEqual(ended!)
+    expect(wire.runningTurnId).toBe("p2")
+    expect(wire.folds.p2).toBeUndefined()
+    // It streams.
+    for (const entry of second.slice(1)) {
+      live.push(entry)
+      wire = cache.get(live, "running", 0)
+      expect(wire.folds.p1).toEqual(ended!)
+      expect(wire.folds.p2).toBeUndefined()
+    }
+    // It ends: it folds too, and the first does not move.
+    live.push(...secondEnd)
+    wire = cache.get(live, "idle", 0)
+    expect(wire.folds.p1).toEqual(ended!)
+    expect(wire.folds.p2?.replyEntryId).toBe("b2")
+    expect(wire.runningTurnId).toBeUndefined()
+    // A fresh read, as after a restart, says the same.
+    expect(buildChatTurnFolds(live, { status: "idle" }).folds).toEqual(wire.folds)
   })
 })

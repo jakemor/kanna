@@ -2,7 +2,6 @@ import type { ChatSnapshot, KannaStatus, SubagentActivity, WaitingOn } from "../
 import type { AppSettingsManager } from "./app-settings"
 import type { EventStore } from "./event-store"
 import { deriveChatSnapshot } from "./read-models"
-import { sliceTurnFolds } from "./turn-folds"
 
 /**
  * `GET /api/chats/:chatId/window`: the first chat snapshot a cold
@@ -54,12 +53,7 @@ export function readChatWindow(chatId: string, deps: ChatWindowRouteDeps): ChatS
   if (!full) return null
   const offset = Math.max(0, Math.min(windowStart - full.startIndex, full.messages.length))
   if (offset === 0) return full
-  return {
-    ...full,
-    messages: full.messages.slice(offset),
-    startIndex: full.startIndex + offset,
-    ...(full.turnFolds ? { turnFolds: sliceTurnFolds(full.turnFolds, full.messages.slice(0, offset)) } : {}),
-  }
+  return { ...full, messages: full.messages.slice(offset), startIndex: full.startIndex + offset }
 }
 
 function acceptsGzip(req: Request) {

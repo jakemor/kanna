@@ -240,29 +240,27 @@ describe("applyIncrementalChatSnapshot carried fields", () => {
 })
 
 describe("the turn folds a push carries", () => {
-  const folds = (id: string): ChatSnapshot["turnFolds"] => ({
-    folds: [{ id, firstEntryId: "a", lastEntryId: "b", outcome: "completed", keptEntryIds: [] }],
-    latestId: id,
-    latestSettled: true,
+  const fold = (id: string) => ({ id, firstEntryId: `${id}-a`, lastEntryId: `${id}-b`, outcome: "completed" as const, keptEntryIds: [] })
+
+  test("an incremental push adds its folds to those held, which do not change", () => {
+    const current = { ...snapshot(0, ["a", "b"]), turnFolds: { folds: { p1: fold("p1") } } }
+    const started = foldChatSnapshot(current, null, { ...snapshot(2, ["c"], true), turnFolds: { folds: {}, runningTurnId: "p2" } })
+    expect(started?.turnFolds).toEqual({ folds: { p1: fold("p1") }, runningTurnId: "p2" })
+    const ended = foldChatSnapshot(started, null, { ...snapshot(3, ["d"], true), turnFolds: { folds: { p2: fold("p2") } } })
+    expect(ended?.turnFolds).toEqual({ folds: { p1: fold("p1"), p2: fold("p2") } })
   })
 
   test("an incremental push without them keeps the ones held", () => {
-    const current = { ...snapshot(0, ["a", "b"]), turnFolds: folds("p1") }
+    const current = { ...snapshot(0, ["a", "b"]), turnFolds: { folds: { p1: fold("p1") }, runningTurnId: "p2" } }
     const next = foldChatSnapshot(current, null, snapshot(2, ["c"], true))
     expect(ids(next)).toEqual(["a", "b", "c"])
     expect(next?.turnFolds).toBe(current.turnFolds)
   })
 
-  test("a push with new ones replaces them, and the same ones keep their identity", () => {
-    const current = { ...snapshot(0, ["a", "b"]), turnFolds: folds("p1") }
-    const changed = foldChatSnapshot(current, null, { ...snapshot(2, [], true), turnFolds: folds("p2") })
-    expect(changed?.turnFolds?.latestId).toBe("p2")
-    const same = foldChatSnapshot(current, null, { ...snapshot(2, ["c"], true), turnFolds: folds("p1") })
-    expect(same?.turnFolds).toBe(current.turnFolds)
-  })
-
-  test("a full snapshot from a server that does not fold has none", () => {
-    const current = { ...snapshot(0, ["a", "b"]), turnFolds: folds("p1") }
+  test("a full snapshot replaces them, and from a server that does not fold leaves none", () => {
+    const current = { ...snapshot(0, ["a", "b"]), turnFolds: { folds: { p1: fold("p1") } } }
+    expect(foldChatSnapshot(current, null, { ...snapshot(0, ["a", "b", "c"]), turnFolds: { folds: { p9: fold("p9") } } })?.turnFolds)
+      .toEqual({ folds: { p9: fold("p9") } })
     expect(foldChatSnapshot(current, null, snapshot(0, ["a", "b", "c"]))?.turnFolds).toBeUndefined()
   })
 })

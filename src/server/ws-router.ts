@@ -31,7 +31,6 @@ import type { ProviderAuthManager } from "./provider-auth"
 import type { UpdateManager } from "./update-manager"
 import type { UsageLimitsManager } from "./usage-limits"
 import { deriveChatSnapshot, deriveChatTouchedFiles, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
-import { sliceTurnFolds } from "./turn-folds"
 import type {
   AppSettingsSnapshot,
   ChatSnapshot,
@@ -89,11 +88,12 @@ export interface ClientState {
    */
   chatProvidersSent?: Map<string, string>
   /**
-   * Serialized turn folds last sent per chat subscription. They change only
-   * when a turn settles or the window grows, so an incremental push carries
-   * them only when they differ from this.
+   * The turn folds a chat subscription has been sent, by fold, serialized,
+   * and the running turn it was last told of. A fold never changes once its
+   * turn has ended, so an incremental push carries only the folds not yet
+   * sent; the client adds them to what it holds.
    */
-  chatTurnFoldsSent?: Map<string, string>
+  chatTurnFoldsSent?: Map<string, { folds: Map<string, string>; running: string }>
   chatFollowing?: Map<string, boolean>
   chatWindowChecks?: Map<string, number>
   protectedDraftChatIds?: Set<string>
@@ -710,7 +710,9 @@ export function createWsRouter({
       getChatStatuses(),
       agent.getDrainingChatIds(),
       chatId,
-      (id, options) => store.getClientTranscript(id, fromIndex ?? getEarliestChatWindowStart(id), options),
+      // The folds cover the widest window any socket holds; one a socket's
+      // window does not reach is ignored by its client.
+      (id, options) => store.getClientTranscript(id, fromIndex ?? getEarliestChatWindowStart(id), { ...options, foldsFrom: getEarliestChatWindowStart(id) }),
       agent.getSubagents?.(chatId),
       agent.getWaitingOn?.(chatId)
     )
@@ -754,12 +756,7 @@ export function createWsRouter({
   function sliceChatWindow(data: ChatSnapshot, windowStart: number): ChatSnapshot {
     const offset = Math.max(0, Math.min(windowStart - data.startIndex, data.messages.length))
     if (offset === 0) return data
-    return {
-      ...data,
-      messages: data.messages.slice(offset),
-      startIndex: data.startIndex + offset,
-      ...(data.turnFolds ? { turnFolds: sliceTurnFolds(data.turnFolds, data.messages.slice(0, offset)) } : {}),
-    }
+    return { ...data, messages: data.messages.slice(offset), startIndex: data.startIndex + offset }
   }
 
   /**
@@ -928,7 +925,25 @@ export function createWsRouter({
         // push; an incremental body carries it only when a prompt was added.
         const outlineCount = data?.outline?.length ?? 0
         const providersJson = JSON.stringify(data?.availableProviders ?? null)
-        const foldsJson = JSON.stringify(data?.turnFolds ?? null)
+        // A full body sends every fold; an incremental one, the new ones.
+        const foldsHeld = body?.incremental ? foldsSent.get(id) : undefined
+        const foldsNow = { folds: new Map(foldsHeld?.folds), running: "" }
+        if (body && data?.turnFolds) {
+          const { folds, ...running } = data.turnFolds
+          foldsNow.running = JSON.stringify(running)
+          const fresh: Record<string, (typeof folds)[string]> = {}
+          for (const [foldId, fold] of Object.entries(folds)) {
+            const json = JSON.stringify(fold)
+            if (foldsNow.folds.get(foldId) === json) continue
+            foldsNow.folds.set(foldId, json)
+            fresh[foldId] = fold
+          }
+          if (body.incremental) {
+            const changed = Object.keys(fresh).length > 0 || foldsNow.running !== foldsHeld?.running
+            const { turnFolds, ...withoutFolds } = body
+            body = (changed ? { ...withoutFolds, turnFolds: { ...running, folds: fresh } } : withoutFolds) as typeof body
+          }
+        }
         if (body?.incremental) {
           // The read anchor never changes mid-chat, and the client latches it
           // from the first full snapshot (`foldChatSnapshot` carries it forward).
@@ -950,12 +965,6 @@ export function createWsRouter({
             const { outline, ...withoutOutline } = body
             body = withoutOutline as typeof body
           }
-          // The folds change when a turn settles or the window grows, not
-          // with each streamed entry.
-          if (foldsSent.get(id) === foldsJson) {
-            const { turnFolds, ...withoutFolds } = body
-            body = withoutFolds as typeof body
-          }
         }
         const snapshotJson = JSON.stringify({ type: "chat", data: body })
         if (snapshotSignatures.get(id) === snapshotJson) {
@@ -968,7 +977,7 @@ export function createWsRouter({
           spans.set(id, { start: windowStart, end: data.startIndex + data.messages.length })
           outlineCounts.set(id, outlineCount)
           providersSent.set(id, providersJson)
-          foldsSent.set(id, foldsJson)
+          foldsSent.set(id, foldsNow)
         } else {
           spans.delete(id)
           outlineCounts.delete(id)

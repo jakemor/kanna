@@ -174,6 +174,14 @@ export function shouldPreserveExistingProjectDiffs(
   )
 }
 
+/** What an incremental push leaves the client holding: the held folds plus the new ones. */
+function mergeTurnFolds(held: ChatSnapshot["turnFolds"], incoming: ChatSnapshot["turnFolds"]): ChatSnapshot["turnFolds"] {
+  if (!incoming) return held
+  if (!held) return incoming
+  const { folds, ...running } = incoming
+  return { ...running, folds: { ...held.folds, ...folds } }
+}
+
 /** The folds are a few ids per turn, and change only when a turn settles. */
 function sameTurnFolds(left: ChatSnapshot["turnFolds"], right: ChatSnapshot["turnFolds"]) {
   return left === right || JSON.stringify(left) === JSON.stringify(right)
@@ -247,7 +255,7 @@ function assembleFolded(
     availableProviders: carried.availableProviders ?? availableProviders,
     readAnchor: carried.readAnchor ?? null,
     ...("outline" in carried ? { outline: carried.outline } : outline !== undefined ? { outline } : {}),
-    ...("turnFolds" in carried ? { turnFolds: carried.turnFolds } : turnFolds !== undefined ? { turnFolds } : {}),
+    ...(carried.turnFolds !== undefined ? { turnFolds: carried.turnFolds } : {}),
     incremental: false,
   }
 }
@@ -267,8 +275,9 @@ function carriedFields(
     // Omitted means "same as before"; the server sends it only when a
     // prompt was added.
     ...(incoming.outline === undefined && current.outline !== undefined ? { outline: current.outline } : {}),
-    // The same for the folds: sent when a turn settled or the window grew.
-    ...(incoming.turnFolds === undefined && current.turnFolds !== undefined ? { turnFolds: current.turnFolds } : {}),
+    // The folds an incremental push carries are the new ones: they are added
+    // to those held, which never change. Absent, nothing changed.
+    ...(mergeTurnFolds(current.turnFolds, incoming.turnFolds) ? { turnFolds: mergeTurnFolds(current.turnFolds, incoming.turnFolds) } : {}),
   }
 }
 
@@ -303,10 +312,6 @@ export function foldChatSnapshot(
   // one means "same as before".
   if (next && next.outline === undefined && current?.outline) {
     next = { ...next, outline: current.outline }
-  }
-  // And the folds, which travel when a turn settles or the window grows.
-  if (next && next.turnFolds === undefined && current?.turnFolds && incoming?.incremental) {
-    next = { ...next, turnFolds: current.turnFolds }
   }
   if (sameChatSnapshotCore(current, next)) return current
   if (!current || !next) return next

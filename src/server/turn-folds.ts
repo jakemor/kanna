@@ -370,45 +370,78 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
 /** Statuses in which the newest turn is still going: it does not fold yet. */
 const GOING: ReadonlySet<KannaStatus> = new Set<KannaStatus>(["starting", "running", "waiting_for_user", "waiting_on_subagent"])
 
-/**
- * Every fold of a transcript in wire form, each with the index of its last
- * entry so a window can be cut from it, and what the newest turn is doing.
- */
-interface AllTurnFolds {
-  folds: Array<{ fold: TranscriptTurnFold; endIndex: number }>
-  latestId?: string
-  latestSettled: boolean
-  workingSince?: number
+/** A prompt someone sent opens a turn. A report or a hidden prompt carries the one going on. */
+function opensTurn(entry: TranscriptEntry) {
+  return entry.kind === "user_prompt" && !entry.hidden && entry.source?.kind !== "report" && !entry.parentToolUseId
 }
 
-function buildAllTurnFolds(entries: readonly TranscriptEntry[], status: KannaStatus): AllTurnFolds {
-  const foldEntries = foldEntriesFromTranscript(entries)
-  const folds = computeTurnFolds(foldEntries, { atRest: !GOING.has(status) })
-  const latest = folds[folds.length - 1]
-  const workingSince = status === "running" || status === "starting" ? runningTurnStartedAt(foldEntries) : null
+/** One turn of a transcript: entries `[start, end)`, named by the prompt that opened it. */
+export interface TurnSpan {
+  id: string
+  start: number
+  end: number
+}
+
+/** The transcript's turns, oldest first. Entries before the first prompt are a turn of their own. */
+export function splitTurns(entries: readonly TranscriptEntry[]): TurnSpan[] {
+  const turns: TurnSpan[] = []
+  entries.forEach((entry, index) => {
+    if (!opensTurn(entry)) return
+    const last = turns[turns.length - 1]
+    if (last) last.end = index
+    else if (index > 0) turns.push({ id: `partial:${entries[0]!._id}`, start: 0, end: index })
+    turns.push({ id: entry._id, start: index, end: entries.length })
+  })
+  if (turns.length === 0 && entries.length > 0) turns.push({ id: `partial:${entries[0]!._id}`, start: 0, end: entries.length })
+  return turns
+}
+
+/**
+ * A turn's fold, from that turn's entries alone. `settled` is false while
+ * the turn is going: it has no fold then. A settled turn with nothing to
+ * hide, or nothing left once hidden, has none either.
+ */
+function foldOfTurn(entries: readonly TranscriptEntry[], turn: TurnSpan, atRest: boolean): { settled: boolean; fold: TranscriptTurnFold | null } {
+  const foldEntries = foldEntriesFromTranscript(entries.slice(turn.start, turn.end))
+  const [computed] = computeTurnFolds(foldEntries, { atRest })
+  if (!computed) return { settled: true, fold: null }
   return {
-    folds: folds.filter((fold) => fold.folds).map((fold) => ({ fold: toWireFold(foldEntries, fold), endIndex: foldEntries[fold.end]!.index })),
-    ...(latest && latest.openerIndex !== null ? { latestId: latest.id } : {}),
-    latestSettled: latest?.settled ?? true,
-    ...(workingSince !== null ? { workingSince } : {}),
+    settled: computed.settled,
+    fold: computed.folds ? { ...toWireFold(foldEntries, computed), id: turn.id } : null,
   }
 }
 
-function windowOf(all: AllTurnFolds, fromIndex: number): ChatTurnFolds {
-  const { folds, ...rest } = all
-  return { folds: folds.filter((entry) => entry.endIndex >= fromIndex).map((entry) => entry.fold), ...rest }
-}
-
 /**
- * The wire form of the folds (`ChatSnapshot.turnFolds`): those that fold and
- * end at or after `fromIndex`, named by entry id, with what the newest turn
- * is doing.
+ * The wire form of the folds (`ChatSnapshot.turnFolds`): every finished
+ * turn's fold that ends at or after `fromIndex`, by turn, and which turn is
+ * going. The newest turn is going when the chat's status says so, or it
+ * waits on a card; every other turn is over, since a prompt came after it.
  */
 export function buildChatTurnFolds(
   entries: readonly TranscriptEntry[],
   { status, fromIndex = 0 }: { status: KannaStatus; fromIndex?: number },
+  cached: (turn: TurnSpan, atRest: boolean) => { settled: boolean; fold: TranscriptTurnFold | null } = (turn, atRest) => foldOfTurn(entries, turn, atRest),
 ): ChatTurnFolds {
-  return windowOf(buildAllTurnFolds(entries, status), fromIndex)
+  const folds: Record<string, TranscriptTurnFold> = {}
+  let runningTurnId: string | undefined
+  let workingSince: number | undefined
+  const turns = splitTurns(entries)
+  turns.forEach((turn, index) => {
+    if (turn.end <= fromIndex) return
+    const isLast = index === turns.length - 1
+    const result = cached(turn, isLast ? !GOING.has(status) : true)
+    if (result.fold) folds[turn.id] = result.fold
+    if (result.settled) return
+    runningTurnId = turn.id
+    if (status === "running" || status === "starting") {
+      workingSince = runningTurnStartedAt(foldEntriesFromTranscript(entries.slice(turn.start, turn.end))) ?? undefined
+    }
+  })
+  return {
+    folds,
+    ...(runningTurnId ? { runningTurnId } : {}),
+    ...(workingSince !== undefined ? { workingSince } : {}),
+  }
 }
 
 function toWireFold(entries: readonly FoldEntry[], fold: TurnFold): TranscriptTurnFold {
@@ -437,49 +470,28 @@ function toWireFold(entries: readonly FoldEntry[], fold: TurnFold): TranscriptTu
 }
 
 /**
- * Cut the folds down to a narrower window, by the entries a client will not
- * hold: a fold whose last entry is among them is gone with them.
- */
-export function sliceTurnFolds(turnFolds: ChatTurnFolds, dropped: readonly TranscriptEntry[]): ChatTurnFolds {
-  if (dropped.length === 0 || turnFolds.folds.length === 0) return turnFolds
-  const droppedIds = new Set(dropped.map((entry) => entry._id))
-  const folds = turnFolds.folds.filter((fold) => !droppedIds.has(fold.lastEntryId))
-  return folds.length === turnFolds.folds.length ? turnFolds : { ...turnFolds, folds }
-}
-
-/**
- * The folds of one chat, recomputed only when they can have changed.
- *
- * A snapshot goes out on every streamed entry, and working the folds out walks
- * the whole transcript. While the newest turn is going, an append can only
- * change that turn, which is not folded and not on the wire, until a prompt
- * opens the next one. So between those the last answer stands.
+ * Each turn's fold, worked out once. A turn a later prompt closed never
+ * changes (the transcript only grows at its end), so its fold is computed
+ * the first time it is asked for and kept. Only the newest turn is looked
+ * at again, when it has grown or the chat's status moved.
  */
 export class TurnFoldCache {
-  private readonly cache = new WeakMap<readonly TranscriptEntry[], { length: number; status: KannaStatus; value: AllTurnFolds }>()
+  private readonly cache = new WeakMap<readonly TranscriptEntry[], Map<string, { end: number; atRest: boolean; result: { settled: boolean; fold: TranscriptTurnFold | null } }>>()
 
   get(entries: readonly TranscriptEntry[], status: KannaStatus, fromIndex: number): ChatTurnFolds {
-    const cached = this.cache.get(entries)
-    if (cached && cached.status === status && cached.length <= entries.length) {
-      let reusable = cached.length === entries.length
-      if (!reusable && GOING.has(status)) {
-        reusable = true
-        for (let index = cached.length; index < entries.length; index += 1) {
-          const entry = entries[index]!
-          if (entry.kind === "user_prompt" && !entry.hidden && entry.source?.kind !== "report" && !entry.parentToolUseId) {
-            reusable = false
-            break
-          }
-        }
-      }
-      if (reusable) {
-        cached.length = entries.length
-        return windowOf(cached.value, fromIndex)
-      }
+    let turns = this.cache.get(entries)
+    if (!turns) {
+      turns = new Map()
+      this.cache.set(entries, turns)
     }
-    const value = buildAllTurnFolds(entries, status)
-    this.cache.set(entries, { length: entries.length, status, value })
-    return windowOf(value, fromIndex)
+    const known = turns
+    return buildChatTurnFolds(entries, { status, fromIndex }, (turn, atRest) => {
+      const hit = known.get(turn.id)
+      if (hit && hit.end === turn.end && hit.atRest === atRest) return hit.result
+      const result = foldOfTurn(entries, turn, atRest)
+      known.set(turn.id, { end: turn.end, atRest, result })
+      return result
+    })
   }
 }
 

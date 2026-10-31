@@ -67,8 +67,12 @@ describe("CodexAppServerManager", () => {
       }
     })
 
+    let spawnedWith: Record<string, string> | undefined
     const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+      spawnProcess: (_cwd, env) => {
+        spawnedWith = env
+        return process as never
+      },
     })
 
     await manager.startSession({
@@ -76,8 +80,11 @@ describe("CodexAppServerManager", () => {
       cwd: "/tmp/project",
       model: "gpt-5.4",
       sessionToken: null,
+      env: { KANNA_TOOLS_AUTH: "abc" },
     })
 
+    // Its shell commands inherit the chat's `kanna <tool>` credential.
+    expect(spawnedWith).toEqual({ KANNA_TOOLS_AUTH: "abc" })
     expect(process.messages).toHaveLength(3)
     expect((process.messages[0] as any).method).toBe("initialize")
     expect((process.messages[1] as any).method).toBe("initialized")

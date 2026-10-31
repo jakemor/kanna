@@ -166,6 +166,9 @@ Usage:
   ${CLI_COMMAND} secret exec KEY [KEY...] -- <command>
                        Run <command> with this folder's project secrets as environment variables
   ${CLI_COMMAND} secret list   Name the secrets saved for this folder's project (never their values)
+  ${CLI_COMMAND} tools list    Name every Kanna tool an agent has
+  ${CLI_COMMAND} <tool> [--parameter value ...]
+                       Run a Kanna tool from an agent's shell, as its chat; JSON out (<tool> --help)
 
 Options:
   --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})

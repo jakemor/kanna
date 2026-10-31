@@ -50,10 +50,16 @@ export interface GrokChildProcess {
   once(event: "error", listener: (err: Error) => void): unknown
 }
 
-export type SpawnGrokAgent = (args: { cwd: string; argv: string[] }) => GrokChildProcess
+export type SpawnGrokAgent = (args: { cwd: string; argv: string[]; env?: Record<string, string> }) => GrokChildProcess
 
 export interface StartGrokTurnArgs {
   cwd: string
+  /**
+   * Added to the agent's environment: the chat's `kanna <tool>` credential
+   * (kanna-tool-gateway.ts). Grok takes no MCP tools from Kanna, so its shell
+   * is how it reaches them.
+   */
+  env?: Record<string, string>
   content: string
   model: string
   effort?: string
@@ -707,11 +713,11 @@ export class GrokCliManager {
   constructor(args: { spawnProcess?: SpawnGrokAgent } = {}) {
     this.spawnProcess =
       args.spawnProcess ??
-      (({ cwd, argv }) =>
+      (({ cwd, argv, env }) =>
         spawn("grok", argv, {
           cwd,
           stdio: ["pipe", "pipe", "pipe"],
-          env: process.env,
+          env: { ...process.env, ...env },
         }) as unknown as GrokChildProcess)
   }
 
@@ -794,7 +800,7 @@ export class GrokCliManager {
       if (args.forkSession) argv.push("--fork-session")
     }
 
-    const child = this.spawnProcess({ cwd: args.cwd, argv })
+    const child = this.spawnProcess({ cwd: args.cwd, argv, ...(args.env ? { env: args.env } : {}) })
     const queue = new AsyncQueue<HarnessEvent>()
     const coalescer = new GrokStreamCoalescer()
 

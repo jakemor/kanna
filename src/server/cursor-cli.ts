@@ -43,10 +43,12 @@ export interface CursorChildProcess {
   once(event: "error", listener: (err: Error) => void): unknown
 }
 
-export type SpawnCursorAgent = (args: { cwd: string; argv: string[] }) => CursorChildProcess
+export type SpawnCursorAgent = (args: { cwd: string; argv: string[]; env?: Record<string, string> }) => CursorChildProcess
 
 export interface StartCursorTurnArgs {
   customTools?: KannaToolHost
+  /** Added to the agent's environment: the chat's `kanna <tool>` credential (kanna-tool-gateway.ts). */
+  env?: Record<string, string>
   cwd: string
   content: string
   /** Concrete model id to spawn, e.g. "composer-2.5" or "composer-2.5-fast". */
@@ -317,11 +319,11 @@ export class CursorCliManager {
   constructor(args: { spawnProcess?: SpawnCursorAgent } = {}) {
     this.spawnProcess =
       args.spawnProcess ??
-      (({ cwd, argv }) =>
+      (({ cwd, argv, env }) =>
         spawn("cursor-agent", argv, {
           cwd,
           stdio: ["pipe", "pipe", "pipe"],
-          env: process.env,
+          env: { ...process.env, ...env },
         }) as unknown as CursorChildProcess)
   }
 
@@ -392,7 +394,7 @@ export class CursorCliManager {
     if (customTools) argv.push("--plugin-dir", customTools.directory, "--approve-mcps")
     let child: CursorChildProcess
     try {
-      child = this.spawnProcess({ cwd: args.cwd, argv })
+      child = this.spawnProcess({ cwd: args.cwd, argv, ...(args.env ? { env: args.env } : {}) })
     } catch (error) {
       customTools?.close()
       throw error

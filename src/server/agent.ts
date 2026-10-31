@@ -34,6 +34,7 @@ import type { RequestSecretsToolResult } from "../shared/secrets"
 import { AsyncQueue } from "./async-queue"
 import { resolveClaudeExecutable } from "./claude-executable"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
+import type { KannaToolGateway } from "./kanna-tool-gateway"
 import { SecretsService } from "./secrets"
 import type { ChatOrchestrator } from "./orchestrator"
 import { createClaudeKannaTools } from "./kanna-tool-adapters"
@@ -360,6 +361,7 @@ export interface AgentCoordinatorArgs {
     forkSession: boolean
     resumeSessionAt?: string
     customTools?: KannaToolHost
+    env?: Record<string, string>
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
     onSubagentActivity?: (update: SubagentActivityUpdate) => void
@@ -371,6 +373,11 @@ export interface AgentCoordinatorArgs {
    * so a running turn keeps the servers it started with. Off when absent.
    */
   disablePreconfiguredMcp?: () => boolean
+  /**
+   * Serves each chat's Kanna tools to `kanna <tool>` in its agent's shell.
+   * Without it (tests), harnesses get no tool credential in their environment.
+   */
+  toolGateway?: KannaToolGateway
   /**
    * Probe whether a provider's native session artifact still exists on disk.
    * Injectable so tests can force a "missing" session without touching the
@@ -1043,6 +1050,8 @@ async function startClaudeSession(args: {
    */
   resumeSessionAt?: string
   customTools?: KannaToolHost
+  /** Added to the CLI's environment, for its shell: the chat's `kanna <tool>` credential (kanna-tool-gateway.ts). */
+  env?: Record<string, string>
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
   /**
@@ -1141,7 +1150,7 @@ async function startClaudeSession(args: {
       ...claudeLaunchOptions({
         serviceTier: args.serviceTier,
         disablePreconfiguredMcp: args.disablePreconfiguredMcp,
-        env: process.env,
+        env: { ...process.env, ...args.env },
       }),
       pathToClaudeCodeExecutable: claudeExecutable.path,
     },
@@ -1239,6 +1248,7 @@ export class AgentCoordinator {
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly checkSessionArtifactFn: NonNullable<AgentCoordinatorArgs["checkSessionArtifact"]>
   private readonly disablePreconfiguredMcp: () => boolean
+  private readonly toolGateway: KannaToolGateway | null
   private secretsService: SecretsService | null
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
@@ -1318,6 +1328,7 @@ export class AgentCoordinator {
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
     this.disablePreconfiguredMcp = args.disablePreconfiguredMcp ?? (() => false)
+    this.toolGateway = args.toolGateway ?? null
     this.secretsService = args.secrets ?? null
   }
 
@@ -2445,6 +2456,8 @@ export class AgentCoordinator {
         return active.customTools.execute(name, input, signal)
       },
     }
+    // The same tools for `kanna <tool>` in the agent's shell, as this chat.
+    const toolEnv = this.toolGateway?.register(args.chatId, customTools)
 
     // Wire-only injections. The transcript above stores the user's typed text
     // verbatim; anything Kanna adds for the harness is applied here and never
@@ -2499,7 +2512,7 @@ export class AgentCoordinator {
     }
 
     // Read at each turn start, so a chat made a delegator mid-way is told on
-    // its next turn. Grok has no chat tools, so it is told nothing of it.
+    // its next turn.
     const delegator = Boolean(this.store.getChat(args.chatId)?.delegator)
     // Also read here, so the setting reaches the next turn and never a running
     // one. Only Claude and Codex can be started without the user's servers:
@@ -2522,6 +2535,7 @@ export class AgentCoordinator {
         ...(chat.pendingForkSessionToken && chat.pendingForkAt ? { resumeSessionAt: chat.pendingForkAt } : {}),
         onToolRequest,
         customTools,
+        env: toolEnv,
       })
     } else if (args.provider === "cursor") {
       // Refresh the model catalog off the turn's critical path if a previous
@@ -2538,6 +2552,7 @@ export class AgentCoordinator {
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
         customTools,
+        env: toolEnv,
         content: cursorContent,
         model: args.model,
         sessionToken: chat.sessionToken,
@@ -2547,11 +2562,12 @@ export class AgentCoordinator {
       let grokContent = buildPromptText(wireContent, args.attachments)
       grokContent = appendSystemMessageBlock(
         grokContent,
-        // Grok is not handed the Kanna tools, so it is not told about them.
-        buildKannaSystemMessage(buildKannaAgentId("grok", args.model), { tools: false }),
+        // Grok takes no MCP tools, so it reaches Kanna's through its shell.
+        buildKannaSystemMessage(buildKannaAgentId("grok", args.model), toolEnv ? { tools: "cli", delegator } : { tools: false }),
       )
       turn = await this.grokManager.startTurn({
         cwd: project.localPath,
+        env: toolEnv,
         content: grokContent,
         model: args.model,
         effort: args.effort,
@@ -2568,6 +2584,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         cwd: project.localPath,
         customTools,
+        env: toolEnv,
         content: buildPromptText(wireContent, args.attachments),
         model: args.model,
         effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
@@ -2581,6 +2598,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         cwd: project.localPath,
         customTools,
+        env: toolEnv,
         model: args.model,
         serviceTier: args.serviceTier,
         sessionToken: chat.sessionToken,
@@ -2701,6 +2719,7 @@ export class AgentCoordinator {
     forkSession: boolean
     resumeSessionAt?: string
     customTools?: KannaToolHost
+    env?: Record<string, string>
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }): Promise<HarnessTurn> {
     this.cancelIdleClose(args.chatId)
@@ -2745,6 +2764,7 @@ export class AgentCoordinator {
         ...(args.resumeSessionAt ? { resumeSessionAt: args.resumeSessionAt } : {}),
         onToolRequest: args.onToolRequest,
         customTools: args.customTools,
+        ...(args.env ? { env: args.env } : {}),
         onRateLimitEvent: (info) => this.onClaudeRateLimit?.(info),
         onSubagentActivity: (update) => {
           this.applySubagentActivity(args.chatId, update)

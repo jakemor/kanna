@@ -92,7 +92,7 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
+type SpawnCodexAppServer = (cwd: string, env?: Record<string, string>) => CodexAppServerProcess
 
 interface PendingRequest<TResult> {
   method: string
@@ -190,6 +190,12 @@ interface SessionContext {
 
 export interface StartCodexSessionArgs {
   customTools?: KannaToolHost
+  /**
+   * Added to the app server's environment, which its shell commands inherit:
+   * the chat's `kanna <tool>` credential (kanna-tool-gateway.ts). Stable for
+   * the chat, so a process kept across turns still holds a good one.
+   */
+  env?: Record<string, string>
   chatId: string
   cwd: string
   model: string
@@ -873,11 +879,11 @@ export class CodexAppServerManager {
   private onProviderActivity: ((chatId: string) => void) | null = null
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.spawnProcess = args.spawnProcess ?? ((cwd) =>
+    this.spawnProcess = args.spawnProcess ?? ((cwd, env) =>
       spawn("codex", ["app-server"], {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
+        env: { ...process.env, ...env },
       }) as unknown as CodexAppServerProcess)
   }
 
@@ -1037,7 +1043,7 @@ export class CodexAppServerManager {
       this.stopSession(args.chatId)
     }
 
-    const child = this.spawnProcess(args.cwd)
+    const child = this.spawnProcess(args.cwd, args.env)
     const customTools = args.customTools ? createKannaMcpServer(args.customTools) : undefined
     const context: SessionContext = {
       customTools,

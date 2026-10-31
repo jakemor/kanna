@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { KANNA_CHAT_LINK_INSTRUCTIONS } from "../shared/chat-links"
 import { buildKannaAgentTrailer } from "./attribution"
-import { buildKannaSystemInstructions, buildKannaSystemMessage, KANNA_DELEGATOR_INSTRUCTIONS, KANNA_ORCHESTRATION_INSTRUCTIONS, KANNA_VISUALIZATION_INSTRUCTIONS } from "./harness-instructions"
+import { buildKannaSystemInstructions, buildKannaSystemMessage, buildKannaToolCliInstructions, KANNA_DELEGATOR_INSTRUCTIONS, KANNA_ORCHESTRATION_INSTRUCTIONS, KANNA_VISUALIZATION_INSTRUCTIONS } from "./harness-instructions"
+import { kannaCliCommand } from "./secrets"
 import { KANNA_TOOL_DESCRIPTION_LIMIT, KANNA_TOOL_NAMES, kannaToolSpecs } from "./kanna-tools"
 import { SHOW_VISUALIZATION_TOOL } from "./kanna-visualization-tool"
 import { KANNA_VISUALIZATION_CONTRACT, KANNA_VISUALIZATION_SKILL_INSTRUCTIONS } from "./visualization-instructions"
@@ -87,6 +88,37 @@ describe("buildKannaSystemInstructions", () => {
       if (name === "kanna" || name.startsWith("mcp__")) continue
       expect(KANNA_TOOL_NAMES).toContain(name)
     }
+  })
+})
+
+describe("Kanna tools as commands", () => {
+  const CLI = "/opt/bun /opt/kanna/bin/kanna"
+
+  test("every harness with the tools is told each one is a command too, briefly, with an example", () => {
+    const hint = buildKannaToolCliInstructions(CLI)
+    expect(hint).toContain(`Every Kanna tool is also a shell command, for scripts and loops: \`${CLI} <tool>\``)
+    expect(hint).toContain("the result as JSON on stdout")
+    expect(hint).toContain(`\`${CLI} tools list\``)
+    expect(hint).toContain(`for id in $(${CLI} list_chats --status running | jq -r '.chats[].chatId'); do ${CLI} read_chat --chatId "$id"`)
+    expect(hint.split("\n")).toHaveLength(4)
+    expect(hint.length).toBeLessThan(800)
+    for (const build of [buildKannaSystemInstructions, buildKannaSystemMessage]) {
+      expect(build(AGENT_ID, { cliCommand: CLI })).toContain(hint)
+      expect(build(AGENT_ID, { tools: false, cliCommand: CLI })).not.toContain("tools list")
+    }
+    // The command an agent is told to run is this install's.
+    expect(buildKannaSystemInstructions(AGENT_ID)).toContain(buildKannaToolCliInstructions(kannaCliCommand()))
+  })
+
+  test("a harness that reaches the tools only by shell (grok) is told so before anything names one", () => {
+    const told = buildKannaSystemInstructions(AGENT_ID, { tools: "cli", delegator: true, cliCommand: CLI })
+    const hint = told.indexOf(buildKannaToolCliInstructions(CLI))
+    expect(hint).toBeGreaterThan(0)
+    expect(told).toContain("You have no Kanna tools to call directly.")
+    expect(hint).toBeLessThan(told.indexOf(KANNA_ORCHESTRATION_INSTRUCTIONS))
+    expect(told).toContain(KANNA_DELEGATOR_INSTRUCTIONS)
+    expect(told).toContain(KANNA_VISUALIZATION_INSTRUCTIONS)
+    expect(told.split("# Kanna tools as commands")).toHaveLength(2)
   })
 })
 

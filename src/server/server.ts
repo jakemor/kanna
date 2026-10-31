@@ -20,6 +20,7 @@ import { writeCloudIdentity } from "./cloud/identity"
 import { createPairSessionManager, type PairSessionSnapshot } from "./cloud/pair-session"
 import { EventStore } from "./event-store"
 import { AgentCoordinator, type AgentCoordinatorArgs } from "./agent"
+import { createKannaToolGateway } from "./kanna-tool-gateway"
 import { CodexAppServerManager } from "./codex-app-server"
 import { isAnalyticsDisabledByEnv, KannaAnalyticsReporter, NoopAnalyticsReporter } from "./analytics"
 import { AppSettingsManager } from "./app-settings"
@@ -289,8 +290,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     })
     : null
   const codexManager = machine.codexManager ?? new CodexAppServerManager()
+  // `kanna <tool>` in an agent's shell reaches its chat's tools here.
+  const toolGateway = createKannaToolGateway({ isLive: (chatId) => Boolean(store.getChat(chatId)) })
   const agent = new AgentCoordinator({
     store,
+    toolGateway,
     analytics,
     codexManager,
     cursorManager: machine.cursorManager,
@@ -858,6 +862,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     // restarts the work instead of leaving it interrupted (see resume-turns.ts).
     orchestrator.dispose()
     try { await agent.interruptForShutdown() } finally { agent.dispose() }
+    toolGateway.close()
     router.dispose()
     providerAuth.dispose()
     usageLimits.dispose()

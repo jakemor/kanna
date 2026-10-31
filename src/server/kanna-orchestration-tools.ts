@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { AgentProvider } from "../shared/types"
 import type { KannaToolDefinition, KannaToolResult } from "./kanna-tools"
 import { DELEGATOR_DESCRIPTION, DELEGATOR_REQUIRED, READ_CHAT_KINDS, type ChatOrchestrator } from "./orchestrator"
+import { kannaCliCommand } from "./secrets"
 
 /**
  * The chat tools: what a user can do to chats in Kanna, for an agent to do.
@@ -164,10 +165,11 @@ const deleteSchedule = z.strictObject({
 export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
   {
     name: "get_context",
-    description: "Where you are in Kanna: this chat's id, project, provider and model; the other projects; the providers and models a chat can run on; the current time.",
+    description: "Where you are in Kanna: this chat's id, project, provider and model; the other projects; the providers and models a chat can run on; the current time; and cli, the shell command that runs any Kanna tool (JSON out), for scripts.",
     schema: getContext,
     async execute(_input, context) {
-      return reply(orchestration(context).getContext(context.chatId))
+      // Every tool is a command too (kanna-tool-cli.ts); this install's path to it.
+      return reply({ ...orchestration(context).getContext(context.chatId), cli: `${kannaCliCommand()} <tool>` })
     },
   },
   {

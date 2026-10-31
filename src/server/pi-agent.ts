@@ -7,6 +7,7 @@ import type {
   ModelRegistry,
   AgentSession,
   AgentSessionEvent,
+  ToolDefinition,
 } from "@mariozechner/pi-coding-agent"
 
 /**
@@ -259,6 +260,8 @@ export const MISSING_PI_CONNECTION_MESSAGE =
 
 export interface StartPiTurnArgs {
   customTools?: KannaToolHost
+  /** Added to the environment of the shell commands Pi runs: the chat's `kanna <tool>` credential (kanna-tool-gateway.ts). */
+  env?: Record<string, string>
   chatId: string
   cwd: string
   content: string
@@ -433,7 +436,7 @@ export class PiAgentManager {
 
     // All state is Kanna-owned: in-memory credentials/settings, sessions under
     // Kanna's data root, and no discovery of the user's ~/.pi setup.
-    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession } = await loadPiSdk()
+    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await loadPiSdk()
     const authStorage = AuthStorage.inMemory()
     authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
     const modelRegistry = ModelRegistry.inMemory(authStorage)
@@ -472,7 +475,15 @@ export class PiAgentManager {
       model: this.resolveModel(modelRegistry, args.connection, args.model),
       thinkingLevel: args.effort,
       tools: [...PI_TOOL_NAMES, ...(args.customTools ? KANNA_TOOL_NAMES : [])],
-      customTools: args.customTools ? createPiKannaTools(args.customTools) : undefined,
+      customTools: args.customTools || args.env
+        ? [
+          ...(args.customTools ? createPiKannaTools(args.customTools) : []),
+          // Pi runs in this process, so its shell can't be handed an
+          // environment at spawn. A custom tool named bash takes the place of
+          // the built-in one, the same but for the variables it adds.
+          ...(args.env ? [createBashToolDefinition(args.cwd, { spawnHook: (spawn) => ({ ...spawn, env: { ...spawn.env, ...args.env } }) }) as unknown as ToolDefinition] : []),
+        ]
+        : undefined,
     })
 
     const chatSession: PiChatSession = {

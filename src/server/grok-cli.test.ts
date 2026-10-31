@@ -396,9 +396,11 @@ describe("inspect skills / auth token / billing windows", () => {
 describe("GrokCliManager.startTurn", () => {
   test("spawns grok with streaming-json, prompt-file, model, and always-approve", async () => {
     const argvCalls: string[][] = []
+    const envs: Array<Record<string, string> | undefined> = []
     const manager = new GrokCliManager({
-      spawnProcess: ({ argv }) => {
+      spawnProcess: ({ argv, env }) => {
         argvCalls.push(argv)
+        envs.push(env)
         const stdout = new PassThrough()
         const stderr = new PassThrough()
         const stdin = new PassThrough()
@@ -430,7 +432,10 @@ describe("GrokCliManager.startTurn", () => {
       planMode: false,
       sessionToken: "sess-old",
       forkSession: true,
+      env: { KANNA_TOOLS_AUTH: "abc" },
     })
+    // Grok takes no MCP tools: its shell reaches them with this (kanna-tool-gateway.ts).
+    expect(envs[0]).toEqual({ KANNA_TOOLS_AUTH: "abc" })
     const events: HarnessEvent[] = []
     for await (const event of turn.stream) events.push(event)
 

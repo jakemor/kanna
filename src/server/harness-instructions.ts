@@ -1,5 +1,6 @@
 import { KANNA_CHAT_LINK_INSTRUCTIONS } from "../shared/chat-links"
 import { buildKannaAttributionInstructions } from "./attribution"
+import { kannaCliCommand } from "./secrets"
 import { KANNA_VISUALIZATION_CONTRACT, KANNA_VISUALIZATION_ROUTING, KANNA_VISUALIZATION_SKILL_INSTRUCTIONS } from "./visualization-instructions"
 
 /**
@@ -65,6 +66,23 @@ export const KANNA_DELEGATOR_INSTRUCTIONS = [
   "Almost always give each automation its own chat: a sub-chat from `create_chat`, titled for it (\"Daily churn-risk sweep\"), with `set_schedule`'s `chatId` pointed at it. Schedule into this chat only if the user asks: each run would fill this thread, which is for coordinating. `newChat` (which also needs a `delegator:` choice) suits runs that are each independent and start fresh; those chats go in the user's sidebar.",
 ].join("\n")
 
+/**
+ * Every Kanna tool is a shell command too (kanna-tool-cli.ts), so an agent can
+ * loop over chats or chain tools in one script. `cli` is this install's
+ * `kanna`, as `kanna secret` is given: one on PATH may be another install.
+ */
+export function buildKannaToolCliInstructions(cli: string = kannaCliCommand()): string {
+  return [
+    "# Kanna tools as commands",
+    "",
+    `Every Kanna tool is also a shell command, for scripts and loops: \`${cli} <tool>\`, with its parameters as flags (arrays and objects as JSON) or \`--json '{...}'\`, and the result as JSON on stdout. \`${cli} tools list\` names them; \`--help\` after a tool gives its parameters. For example:`,
+    `\`for id in $(${cli} list_chats --status running | jq -r '.chats[].chatId'); do ${cli} read_chat --chatId "$id" --lastTurns 1 --kinds '["reply"]'; done\``,
+  ].join("\n")
+}
+
+/** For a harness that takes no MCP tools from Kanna (grok): the commands are how it reaches them. */
+const KANNA_CLI_ONLY_NOTE = "You have no Kanna tools to call directly. Where the sections below name one, run it as this command."
+
 export const KANNA_VISUALIZATION_INSTRUCTIONS = [
   "# Kanna visualizations",
   "",
@@ -80,26 +98,32 @@ export const KANNA_VISUALIZATION_INSTRUCTIONS = [
  * Only notices that change turn to turn (skills, concurrent agents, steer)
  * belong on the user-text path. See attribution.ts for the per-provider hooks.
  *
- * `tools: false` is for a harness that is not handed the Kanna tools, which
- * must not be told to call them.
+ * `tools: false` is for a harness that can reach no Kanna tools, which must
+ * not be told to call them. `tools: "cli"` is for one that reaches them only
+ * as commands from its shell: it is told so first, then everything else.
  *
  * `delegator` adds what a delegator chat is told. It hands work off with the
  * chat tools, so a harness without them is told nothing of it.
  */
 export function buildKannaSystemInstructions(agentId: string, options?: KannaInstructionOptions): string {
-  const tools = options?.tools !== false
+  const tools = options?.tools ?? true
+  const cli = buildKannaToolCliInstructions(options?.cliCommand)
   return [
     buildKannaAttributionInstructions(agentId),
     KANNA_CHAT_LINK_INSTRUCTIONS,
+    ...(tools === "cli" ? [`${cli}\n\n${KANNA_CLI_ONLY_NOTE}`] : []),
     ...(tools ? [KANNA_ORCHESTRATION_INSTRUCTIONS] : []),
     ...(tools && options?.delegator ? [KANNA_DELEGATOR_INSTRUCTIONS] : []),
     ...(tools ? [KANNA_VISUALIZATION_INSTRUCTIONS] : []),
+    ...(tools === true ? [cli] : []),
   ].join("\n\n")
 }
 
 export interface KannaInstructionOptions {
-  tools?: boolean
+  tools?: boolean | "cli"
   delegator?: boolean
+  /** How the agent runs `kanna`. Defaults to this install's (`kannaCliCommand`). */
+  cliCommand?: string
 }
 
 /** Wrapped for the providers that have no system-prompt append hook (cursor, grok). */

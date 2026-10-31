@@ -23,6 +23,8 @@ import type { SubagentActivityUpdate } from "./background-tasks"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
+import { createKannaToolGateway } from "./kanna-tool-gateway"
+import { runKannaToolCli } from "./kanna-tool-cli"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()
@@ -3470,6 +3472,58 @@ describe("subagent activity", () => {
     expect(byId.get("a1")?.endedAt).toBeDefined()
     // Work that already finished keeps its outcome.
     expect(byId.get("a2")).toMatchObject({ status: "completed", endedAt: 2000 })
+  })
+})
+
+describe("Kanna tools from the agent's shell", () => {
+  test("grok's shell gets its chat's credential, is told to use it, and calls run as that chat's turn", async () => {
+    let release!: () => void
+    let started: { env?: Record<string, string>; content: string } | undefined
+    const fakeGrokManager = {
+      async startTurn(args: { env?: Record<string, string>; content: string }): Promise<HarnessTurn> {
+        started = args
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({ kind: "system_init", provider: "grok", model: "grok-4", tools: [], agents: [], slashCommands: [], mcpServers: [] }),
+          }
+          await new Promise<void>((resolve) => { release = resolve })
+        }
+        return { provider: "grok", stream: stream(), interrupt: async () => release(), close: () => {} }
+      },
+    }
+    const toolGateway = createKannaToolGateway({ isLive: () => true })
+    const agent = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      grokManager: fakeGrokManager as never,
+      toolGateway,
+    })
+    const call = async (env: Record<string, string>) => {
+      let stdout = "", stderr = ""
+      const code = await runKannaToolCli(["get_context"], { env, stdout: (text) => { stdout += text }, stderr: (text) => { stderr += text }, readStdin: async () => "" })
+      return { code, stdout, stderr }
+    }
+    try {
+      await agent.send({ type: "chat.send", chatId: "chat-1", provider: "grok", content: "work" })
+      await waitFor(() => agent.getActiveStatuses().get("chat-1") === "running")
+      const env = started!.env!
+      expect(env.KANNA_CHAT_ID).toBe("chat-1")
+      expect(env.KANNA_TOOLS_URL).toStartWith("http://127.0.0.1:")
+      expect(env.KANNA_TOOLS_AUTH).toBeString()
+      // Grok takes no MCP tools, so it hears of them as commands.
+      expect(started!.content).toContain("# Kanna tools as commands")
+      expect(started!.content).toContain("You have no Kanna tools to call directly.")
+      expect(started!.content).toContain("`create_chat`")
+
+      // The call reached this chat's own tool runtime. The fake has no orchestrator behind it.
+      expect(await call(env)).toMatchObject({ code: 1, stderr: expect.stringContaining("The chat tools are not available in this session.") })
+
+      await agent.cancel("chat-1")
+      expect(await call(env)).toMatchObject({ code: 1, stderr: expect.stringContaining("Chat turn ended") })
+    } finally {
+      toolGateway.close()
+    }
   })
 })
 

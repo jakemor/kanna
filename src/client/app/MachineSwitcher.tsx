@@ -8,6 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog"
+import { Button } from "../components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip"
 import { CloudPairPanel } from "../components/cloud/CloudPairPanel"
 import { useCloudPairSession } from "../components/cloud/useCloudPairSession"
 import { InputPopover, PopoverMenuItem } from "../components/chat-ui/ChatPreferenceControls"
@@ -129,22 +131,39 @@ export function MachineSwitcher({ onDismissCloudSetup }: { onDismissCloudSetup: 
             <ExternalLink className="size-3.5 shrink-0 opacity-60" />
           </a>
         ) : (
-          <div className="relative">
+          // The dismiss X takes the link icon's place, drawn like the sidebar
+          // section headers' hover buttons. Where a pointer hovers it shows
+          // only while the row is hovered or has keyboard focus. A touch
+          // screen has no hover, so there it is always shown, and under a
+          // finger its target grows to 44px wide and the section's full height.
+          <div className="group/cloud-setup relative">
             <button type="button" onClick={() => setPairDialogOpen(true)} className={SIDEBAR_BUTTON_CLASS}>
               <span className="flex min-w-0 items-center gap-2">
                 <Cloud className="ml-[1px] size-4 shrink-0" />
                 <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
               </span>
+              <ExternalLink className="size-3.5 shrink-0 opacity-60 transition-opacity duration-150 [@media(hover:none)]:invisible [@media(hover:hover)]:group-hover/cloud-setup:opacity-0 group-has-[:focus-visible]/cloud-setup:opacity-0" />
             </button>
-            <button
-              type="button"
-              onClick={onDismissCloudSetup}
-              title="Dismiss"
-              aria-label="Dismiss Kanna Cloud setup"
-              className="absolute right-[7px] top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <X className="size-3.5" />
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onDismissCloudSetup}
+                  aria-label="Dismiss Kanna Cloud setup"
+                  className={cn(
+                    "absolute right-1.5 top-1/2 h-5.5 w-5.5 -translate-y-1/2 !rounded",
+                    "duration-150 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/cloud-setup:opacity-100 [@media(hover:hover)]:group-has-[:focus-visible]/cloud-setup:opacity-100",
+                    "pointer-coarse:before:absolute pointer-coarse:before:-inset-x-[11px] pointer-coarse:before:-inset-y-[7px] pointer-coarse:before:content-['']",
+                  )}
+                >
+                  <X className="size-3.5 text-slate-500 dark:text-slate-400" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right" sideOffset={4}>
+                Dismiss
+              </TooltipContent>
+            </Tooltip>
           </div>
         )}
         <Dialog open={pairDialogOpen} onOpenChange={setPairDialogOpen}>

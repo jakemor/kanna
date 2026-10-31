@@ -950,17 +950,20 @@ export class CodexAppServerManager {
   }
 
   /**
-   * The models the signed-in account can run, from `model/list`. Reuses a
-   * live session's app-server process when one exists; otherwise spawns a
+   * The models the signed-in account can run, from `model/list`. Reuses the
+   * newest live app-server process when one exists, since an older one may
+   * predate a Codex upgrade and list stale models (startSession re-adds a
+   * chat's entry, so map order is age order); otherwise spawns a
    * short-lived probe. Hidden rows (internal models the picker should not
    * show) are left out. Returns null only when Codex is unusable (binary
    * missing). Throws on protocol errors, including "method not found" from a
    * codex older than model/list — callers keep the static catalog then.
    */
   async listModels(probeCwd: string): Promise<CodexModelSummary[] | null> {
-    for (const context of this.sessions.values()) {
-      if (context.closed) continue
-      return await this.requestModelList(context)
+    const contexts = Array.from(this.sessions.values())
+    for (let index = contexts.length - 1; index >= 0; index -= 1) {
+      if (contexts[index].closed) continue
+      return await this.requestModelList(contexts[index])
     }
     return await this.withProbe(probeCwd, (context) => this.requestModelList(context))
   }

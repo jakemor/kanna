@@ -807,6 +807,8 @@ export class GrokCliManager {
     let sawResult = false
     let finished = false
     let stderr = ""
+    // The CLI's `end` carries no duration, so a result's is measured from the spawn.
+    const startedAt = Date.now()
 
     // Headless plan mode has no channel back to the CLI: stdin is closed, so
     // an ExitPlanMode or AskUserQuestion call can only be recorded, never
@@ -822,6 +824,9 @@ export class GrokCliManager {
     let heldResult: HarnessEvent | null = null
 
     const emit = (event: HarnessEvent) => {
+      if (event.type === "transcript" && event.entry.kind === "result" && !event.entry.durationMs) {
+        event = { ...event, entry: { ...event.entry, durationMs: Date.now() - startedAt } }
+      }
       const entry = event.type === "transcript" ? event.entry : undefined
       if (deferToUser && entry) {
         if (entry.kind === "tool_call" && isInteractiveTool(entry.tool)) {
@@ -869,7 +874,7 @@ export class GrokCliManager {
             kind: "result",
             subtype: "error",
             isError: true,
-            durationMs: 0,
+            durationMs: Date.now() - startedAt,
             result: detail,
           }),
         })

@@ -566,6 +566,34 @@ describe("GrokCliManager.startTurn", () => {
       expect(transcriptEntries(events).filter((entry) => entry.kind === "result")).toHaveLength(1)
     })
 
+    test("the end of the turn carries how long it ran, which the CLI does not report", async () => {
+      const turn = await new GrokCliManager({
+        spawnProcess: () => {
+          const stdout = new PassThrough()
+          const closeListeners: Array<(code: number | null) => void> = []
+          setTimeout(() => {
+            stdout.write(`{"type":"end","stopReason":"end_turn","sessionId":"sess-1"}\n`)
+            stdout.end()
+            setTimeout(() => { for (const listener of closeListeners) listener(0) }, 10)
+          }, 40)
+          return {
+            stdin: new PassThrough(),
+            stdout,
+            stderr: new PassThrough(),
+            kill: () => true,
+            once: (event: "close" | "error", listener: (code: number | null) => void) => {
+              if (event === "close") closeListeners.push(listener)
+              return undefined
+            },
+          } as unknown as GrokChildProcess
+        },
+      }).startTurn({ ...startArgs, planMode: false })
+      const events: HarnessEvent[] = []
+      for await (const event of turn.stream) events.push(event)
+      const result = transcriptEntries(events).find((entry) => entry.kind === "result")
+      expect(result?.kind === "result" ? result.durationMs : 0).toBeGreaterThanOrEqual(30)
+    })
+
     test("outside plan mode the stream passes through untouched", async () => {
       let asked = false
       const turn = await fakeGrok(PLAN_LINES).startTurn({

@@ -2649,6 +2649,37 @@ describe("CodexAppServerManager", () => {
     expect(resultEntry?.subtype).toBe("error")
     expect(resultEntry?.result).toBe("usage limit reached: resets at 5pm")
   })
+
+  test("the result carries how long the turn ran, since codex reports no duration", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { turn: { id: "turn-1", status: "inProgress", error: null } },
+        })
+        setTimeout(() => {
+          child.writeServerMessage({
+            method: "turn/completed",
+            params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } },
+          })
+        }, 40)
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    const turn = await manager.startTurn({ chatId: "chat-1", model: "gpt-5.4", content: "hi", planMode: false })
+    const entries = (await collectStream(turn.stream)).flatMap((event) => event.type === "transcript" ? [event.entry] : [])
+    const result = entries.find((entry) => entry.kind === "result")
+    expect(result?.kind === "result" ? result.durationMs : 0).toBeGreaterThanOrEqual(30)
+  })
 })
 
 describe("Codex shared tools", () => {

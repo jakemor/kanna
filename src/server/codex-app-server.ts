@@ -121,6 +121,8 @@ interface PendingTurn {
    * notification that follows can be empty.
    */
   retryCause: CodexError | null
+  /** When the turn was sent: codex reports no duration, so the result's is measured from here. */
+  startedAt: number
   resolved: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: (
@@ -1190,6 +1192,7 @@ export class CodexAppServerManager {
       todoSequence: 0,
       pendingWebSearchResultToolId: null,
       retryCause: null,
+      startedAt: Date.now(),
       resolved: false,
       onToolRequest: args.onToolRequest,
       onApprovalRequest: args.onApprovalRequest,
@@ -2000,7 +2003,7 @@ export class CodexAppServerManager {
         ...(notification.turn.id ? { messageId: notification.turn.id } : {}),
         subtype: isCancelled ? "cancelled" : isError ? "error" : "success",
         isError,
-        durationMs: 0,
+        durationMs: Date.now() - pendingTurn.startedAt,
         result: isError
           ? formatCodexError(notification.turn.error)
             || formatCodexError(pendingTurn.retryCause)
@@ -2049,7 +2052,7 @@ export class CodexAppServerManager {
           kind: "result",
           subtype: "error",
           isError: true,
-          durationMs: 0,
+          durationMs: Date.now() - pendingTurn.startedAt,
           result: message,
         }),
       })

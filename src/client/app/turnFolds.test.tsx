@@ -9,7 +9,7 @@ import { processTranscriptMessages } from "../lib/parseTranscript"
 import { buildTranscriptTurns } from "./ChatPage/transcriptTurns"
 import { buildRowIndexByMessageId, getRowAnchorMessageId } from "./ChatPage/transcriptScrollAnchors"
 import { buildResolvedTranscriptRows, KannaTranscriptRow, type ResolvedTranscriptRow } from "./KannaTranscript"
-import { applyTurnFolds, foldHeaderRowId, indexTurnFolds, isTurnFoldOpen } from "./turnFolds"
+import { applyTurnFolds, foldHeaderRowId, indexTurnFolds, isTurnFoldOpen, settleScrollTarget, type LatestTurnState } from "./turnFolds"
 
 type Fixture = (typeof fixtures.cases)[number]
 
@@ -160,24 +160,56 @@ describe("the transcript's rows around a fold", () => {
 })
 
 describe("whether a fold is open", () => {
-  const base = { preference: undefined, landing: false, watched: false, latest: false }
-
-  test("an older settled fold starts closed", () => {
-    expect(isTurnFoldOpen(base)).toBe(false)
-    expect(isTurnFoldOpen({ ...base, latest: true })).toBe(false)
+  test("a settled fold starts closed, the one that just settled under the reader too", () => {
+    expect(isTurnFoldOpen({ preference: undefined, landing: false })).toBe(false)
   })
 
-  test("a turn watched running stays open as it settles, until the next turn starts", () => {
-    expect(isTurnFoldOpen({ ...base, watched: true, latest: true })).toBe(true)
-    expect(isTurnFoldOpen({ ...base, watched: true, latest: false })).toBe(false)
-  })
-
-  test("the reader's own choice wins over everything", () => {
-    expect(isTurnFoldOpen({ ...base, preference: false, watched: true, latest: true, landing: true })).toBe(false)
-    expect(isTurnFoldOpen({ ...base, preference: true })).toBe(true)
+  test("a fold the reader opened stays open, and one they closed stays closed", () => {
+    expect(isTurnFoldOpen({ preference: true, landing: false })).toBe(true)
+    expect(isTurnFoldOpen({ preference: false, landing: true })).toBe(false)
   })
 
   test("a fold a jump or restored position lands in is open", () => {
-    expect(isTurnFoldOpen({ ...base, landing: true })).toBe(true)
+    expect(isTurnFoldOpen({ preference: undefined, landing: true })).toBe(true)
+  })
+
+  test("live: the turn that just settled draws closed, with its card and reply", () => {
+    // What the server sends once the delegator's turn ends: the fold, settled.
+    const testCase = fixture("A send and its reply from one chat are one card, saying the reply")
+    const { folded } = foldedRows(testCase, () => isTurnFoldOpen({ preference: undefined, landing: false }))
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB replied>", "a1", "res2(ends)"])
+  })
+})
+
+describe("the scroll as a turn settles", () => {
+  const running: LatestTurnState = { chatId: "c", id: "p1", settled: false }
+  const settled: LatestTurnState = { chatId: "c", id: "p1", settled: true }
+  const base = {
+    previous: running,
+    current: settled,
+    folded: true,
+    atEnd: false,
+    text: { rowId: "a1", contentTop: 1_500 },
+    scrollTop: 1_200,
+    rowIds: new Set(["p1", "a1"]),
+    headerOffsetPx: 60,
+  }
+
+  test("keeps the reply where it was on screen", () => {
+    // 300px below the viewport's top before; the header inset is 60.
+    expect(settleScrollTarget(base)).toEqual({ kind: "pin", rowId: "a1", offsetFromMessage: -240 })
+  })
+
+  test("a reader at the end stays at the end", () => {
+    expect(settleScrollTarget({ ...base, atEnd: true })).toEqual({ kind: "end" })
+  })
+
+  test("nothing moves unless that turn just settled into a fold", () => {
+    expect(settleScrollTarget({ ...base, previous: settled })).toBeNull()
+    expect(settleScrollTarget({ ...base, previous: null })).toBeNull()
+    expect(settleScrollTarget({ ...base, previous: { ...running, id: "p0" } })).toBeNull()
+    expect(settleScrollTarget({ ...base, previous: { ...running, chatId: "other" } })).toBeNull()
+    expect(settleScrollTarget({ ...base, folded: false })).toBeNull()
+    expect(settleScrollTarget({ ...base, rowIds: new Set(["p1"]) })).toBeNull()
   })
 })

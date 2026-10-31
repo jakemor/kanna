@@ -83,20 +83,17 @@ export function indexTurnFolds(messages: readonly HydratedTranscriptMessage[], f
  *
  * The reader's own choice wins, wherever and whenever it was made. Without
  * one, a fold someone is being taken to (a stored read position, a jump) is
- * open, so the row they land on is there. A turn the reader watched run
- * stays open as it settles, so nothing they were reading folds away under
- * them; it closes when the next turn starts, which is when the transcript
- * follows the new prompt to the bottom anyway. Every other fold is closed.
+ * open, so the row they land on is there. Every other fold is closed, the
+ * one that has just settled under the reader too: a turn collapses to what
+ * it came back with the moment it ends, as it reads after a reload. The
+ * viewport keeps the reply where it was on screen as the work above it goes.
  */
-export function isTurnFoldOpen({ preference, landing, watched, latest }: {
+export function isTurnFoldOpen({ preference, landing }: {
   preference: boolean | undefined
   landing: boolean
-  watched: boolean
-  latest: boolean
 }): boolean {
   if (preference !== undefined) return preference
-  if (landing) return true
-  return watched && latest
+  return landing
 }
 
 function agentCountOf(row: ResolvedTranscriptRow): number {
@@ -172,4 +169,38 @@ export function applyTurnFolds(
   drawCards(Number.POSITIVE_INFINITY)
 
   return result
+}
+
+/** The newest turn as one commit saw it. */
+export interface LatestTurnState {
+  chatId: string | null
+  id?: string
+  settled: boolean
+}
+
+/**
+ * Where to scroll on the commit a turn settles and folds closed, if anywhere.
+ * A reader at the end stays at the end. Anyone else keeps the turn's reply
+ * (the newest text, measured on the commit before) where it was on screen,
+ * while the work above it folds away. Null when no turn just settled into a
+ * fold, or the text is not drawn.
+ */
+export function settleScrollTarget({ previous, current, folded, atEnd, text, scrollTop, rowIds, headerOffsetPx }: {
+  previous: LatestTurnState | null
+  current: LatestTurnState
+  /** The newest turn has a fold now. */
+  folded: boolean
+  atEnd: boolean
+  /** The newest text row and its top in the content, from the commit before. */
+  text: { rowId: string; contentTop: number } | null
+  scrollTop: number
+  rowIds: ReadonlySet<string>
+  headerOffsetPx: number
+}): { kind: "end" } | { kind: "pin"; rowId: string; offsetFromMessage: number } | null {
+  const justSettled = previous !== null && previous.chatId === current.chatId && previous.id === current.id
+    && !previous.settled && current.settled
+  if (!justSettled || !current.id || !folded) return null
+  if (atEnd) return { kind: "end" }
+  if (!text || !rowIds.has(text.rowId)) return null
+  return { kind: "pin", rowId: text.rowId, offsetFromMessage: headerOffsetPx - (text.contentTop - scrollTop) }
 }

@@ -59,7 +59,7 @@ import {
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction, TerminalPreset } from "../../../shared/protocol"
 import type { ChatTurnFolds, TranscriptOutlineEntry, WaitingOn } from "../../../shared/types"
 import { setTurnFoldPreference, turnFoldPreferenceKey, useTurnFoldPreferences } from "../../lib/turn-fold-state"
-import { applyTurnFolds, indexTurnFolds, isTurnFoldOpen } from "../turnFolds"
+import { applyTurnFolds, indexTurnFolds, isTurnFoldOpen, settleScrollTarget, type LatestTurnState } from "../turnFolds"
 /**
  * How close to the bottom counts as "at the end", as a fraction of viewport
  * height.
@@ -552,26 +552,17 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
   }), [forkBoundary, isProcessing, latestToolIds, localPath, messages])
 
   const foldIndex = useMemo(() => indexTurnFolds(messages, turnFolds?.folds), [messages, turnFolds])
-  // The turns this viewport saw going. One of them that settles stays open
-  // while it is the latest (see `isTurnFoldOpen`). Written during render, but
-  // only ever added to, so a render that is thrown away does no harm.
-  const watchedFoldsRef = useRef<{ chatId: string | null; ids: Set<string> }>({ chatId: activeChatId, ids: new Set() })
-  if (watchedFoldsRef.current.chatId !== activeChatId) watchedFoldsRef.current = { chatId: activeChatId, ids: new Set() }
-  if (turnFolds?.latestId && !turnFolds.latestSettled) watchedFoldsRef.current.ids.add(turnFolds.latestId)
   const foldPreferences = useTurnFoldPreferences()
   // Folds opened to land a jump or a restored read position on a row inside them.
   const [landingFolds, setLandingFolds] = useState<{ chatId: string | null; ids: ReadonlySet<string> }>({ chatId: activeChatId, ids: new Set() })
   const landingFoldIds = landingFolds.chatId === activeChatId ? landingFolds.ids : null
-  const latestFoldId = turnFolds?.latestId
   const isFoldOpen = useCallback((foldId: string) => {
     const stored = activeChatId ? foldPreferences[turnFoldPreferenceKey(activeChatId, foldId)] : undefined
     return isTurnFoldOpen({
       preference: stored === undefined ? undefined : stored[0] === 1,
       landing: landingFoldIds?.has(foldId) ?? false,
-      watched: watchedFoldsRef.current.ids.has(foldId),
-      latest: foldId === latestFoldId,
     })
-  }, [activeChatId, foldPreferences, landingFoldIds, latestFoldId])
+  }, [activeChatId, foldPreferences, landingFoldIds])
   const isFoldOpenRef = useRef(isFoldOpen)
   isFoldOpenRef.current = isFoldOpen
   const foldedRows = useMemo(() => applyTurnFolds(rawRows, foldIndex, isFoldOpen), [foldIndex, isFoldOpen, rawRows])
@@ -997,6 +988,61 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     applyScrollTarget({ kind: "pin", rowId: hold.rowId, offsetFromMessage: headerOffsetPx - hold.top })
   }, [applyScrollTarget, headerOffsetPx, resolvedRows])
 
+  /**
+   * The newest text row as it stood after the last commit: where it sat in
+   * the content, and the scroll position then. When a turn settles, its
+   * work folds away above that text, its reply; this is how far down the
+   * reply was, so it can be put back where the reader saw it.
+   */
+  const latestTextRef = useRef<{ rowId: string; contentTop: number } | null>(null)
+  const lastScrollTopRef = useRef(0)
+  const isAtEndRef = useRef(true)
+  const latestTurnRef = useRef<LatestTurnState | null>(null)
+
+  // A turn that just ended closes at once (see `isTurnFoldOpen`). A reader at
+  // the end stays at the end; anyone else keeps the reply where it was on
+  // screen while the rows above it go. Safari has no scroll anchoring to do
+  // that for us, and Chromium's could pick a row that is about to vanish.
+  useLayoutEffect(() => {
+    const previous = latestTurnRef.current
+    const current: LatestTurnState = { chatId: activeChatId, id: turnFolds?.latestId, settled: turnFolds?.latestSettled ?? true }
+    latestTurnRef.current = current
+    const target = settleScrollTarget({
+      previous,
+      current,
+      folded: Boolean(current.id && turnFolds?.folds.some((fold) => fold.id === current.id)),
+      atEnd: isAtEndRef.current,
+      text: latestTextRef.current,
+      scrollTop: lastScrollTopRef.current,
+      rowIds: new Set(resolvedRows.map((row) => row.id)),
+      headerOffsetPx,
+    })
+    if (target) applyScrollTarget(target)
+  }, [activeChatId, applyScrollTarget, headerOffsetPx, resolvedRows, turnFolds])
+
+  // After the settle above has read it: where the newest text row is now.
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    let rowId: string | null = null
+    for (let index = resolvedRows.length - 1; index >= 0; index -= 1) {
+      const row = resolvedRows[index]!
+      if (row.kind === "single" && row.message.kind === "assistant_text") {
+        rowId = row.id
+        break
+      }
+    }
+    const element = rowId ? viewport?.querySelector(`[data-message-id="${CSS.escape(rowId)}"]`) : null
+    if (!viewport || !rowId || !element) {
+      latestTextRef.current = null
+      return
+    }
+    lastScrollTopRef.current = viewport.scrollTop
+    latestTextRef.current = {
+      rowId,
+      contentTop: element.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop,
+    }
+  }, [resolvedRows])
+
   const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
     setToolGroupExpanded((current) => (
       current[groupId] === next
@@ -1131,6 +1177,8 @@ const TranscriptScrollerBody = memo(function TranscriptScrollerBody({
     if (!scrollNode) return
     const distanceFromEnd = scrollNode.scrollHeight - scrollNode.clientHeight - scrollNode.scrollTop
     const isAtEnd = distanceFromEnd <= AT_END_THRESHOLD_PX
+    isAtEndRef.current = isAtEnd
+    lastScrollTopRef.current = scrollNode.scrollTop
     onIsAtEndChange(isAtEnd)
     reportTopVisibleMessage(isAtEnd)
     setTranscriptOverflows(scrollNode.scrollHeight - scrollNode.clientHeight > OVERFLOW_EPSILON_PX)

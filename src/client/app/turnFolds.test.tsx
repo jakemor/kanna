@@ -64,7 +64,13 @@ describe("the transcript's rows around a fold", () => {
   test("closed, a delegator's turn draws one card per sub-chat, where each first came up, and no report lines", () => {
     const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
     const { folded } = foldedRows(testCase, () => false)
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB started>", "<chatC replied>", "a4", "res3(ends)"])
+    // Its earlier replies too: a2 and a3 each ended a turn.
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB started>", "a2", "a3", "<chatC replied>", "a4", "res3(ends)"])
+  })
+
+  test("closed, every reply the delegator ended a turn with shows, with one card", () => {
+    const { folded } = foldedRows(fixture("Each reply a delegator ended a turn with stays, the answer among them"), () => false)
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatD replied>", "a1", "a2", "a3", "res3(ends)"])
   })
 
   test("open, the same turn is the raw log: every send card and report line, and no deduped cards", () => {
@@ -129,7 +135,7 @@ describe("the transcript's rows around a fold", () => {
     const from = testCase.entries.findIndex((entry) => entry._id === "rp1")
     const { folded } = foldedRows(testCase, () => false, { from })
     // The cards whose chat first came up before the window come first.
-    expect(rowNames(folded)).toEqual(["[closed p1]", "<chatA replied>", "<chatB started>", "<chatC replied>", "a4", "res3(ends)"])
+    expect(rowNames(folded)).toEqual(["[closed p1]", "<chatA replied>", "<chatB started>", "a3", "<chatC replied>", "a4", "res3(ends)"])
   })
 
   test("the minimap still counts what a closed fold hides, and a header is no read position", () => {

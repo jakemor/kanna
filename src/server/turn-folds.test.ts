@@ -108,15 +108,22 @@ describe("the folds a snapshot carries", () => {
     expect(wire.runningTurnId).toBeUndefined()
   })
 
-  test("a delegator's sub-chats ride as one card each; its calls and reports are not kept", () => {
+  test("a delegator's sub-chats ride as one card each; its calls and reports are not kept, its earlier replies are", () => {
     const fold = buildChatTurnFolds(entries("A delegator's exchange closes to one card per sub-chat, in the order they came up"), { status: "idle" }).folds.p1!
-    expect(fold.keptEntryIds).toEqual([])
+    expect(fold.keptEntryIds).toEqual(["a2", "a3"])
     expect(fold.replyEntryId).toBe("a4")
     expect(fold.chatCards?.map((card) => [card.chatId, card.last, card.anchorEntryId])).toEqual([
       ["chatA", "replied", "cc1"],
       ["chatB", "started", "cc2"],
       ["chatC", "replied", "rp2"],
     ])
+  })
+
+  test("each turn-ending reply goes out as a kept entry, in order; the last is the reply", () => {
+    const fold = buildChatTurnFolds(entries("Each reply a delegator ended a turn with stays, the answer among them"), { status: "idle" }).folds.p1!
+    expect(fold.keptEntryIds).toEqual(["a1", "a2"])
+    expect(fold.replyEntryId).toBe("a3")
+    expect(fold.chatCards?.map((card) => card.chatId)).toEqual(["chatD"])
   })
 
   test("a chat call that failed keeps its own row and makes no card", () => {

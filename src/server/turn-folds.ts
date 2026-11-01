@@ -14,7 +14,9 @@ import type { ChatTurnFolds, KannaStatus, TranscriptEntry, TranscriptTurnFold, T
  * own prompt, another agent's message and a schedule firing each open one.
  *
  * Closed, a fold still shows what the turn made or decided, and what it
- * handed to other chats: the reply (its last text), pictures, files and
+ * handed to other chats: every reply it ended a provider turn with (the last
+ * text before each result or stop; a delegator resumed by its sub-chats
+ * ends several, and the answer is often not the last), pictures, files and
  * visualizations, chat and schedule cards, a plan with nothing said after it,
  * and errors. Edits, commands, reads and the text between them fold away.
  *
@@ -173,10 +175,21 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
     let replyIndex = -1
     let lastTerminalIndex = -1
     let holdsLiveCard = false
+    // The last text before each result or stop: what that provider turn
+    // ended on. Reset at each one, so a turn that said nothing adds none.
+    const turnReplies = new Set<number>()
+    let textSinceTerminal = -1
     for (let index = first; index <= end; index += 1) {
       const entry = entries[index]!
-      if (entry.kind === "text" && !entry.hidden && index >= start) replyIndex = index
-      if (isTerminal(entry)) lastTerminalIndex = index
+      if (entry.kind === "text" && !entry.hidden && index >= start) {
+        replyIndex = index
+        textSinceTerminal = index
+      }
+      if (isTerminal(entry)) {
+        lastTerminalIndex = index
+        if (textSinceTerminal >= 0) turnReplies.add(textSinceTerminal)
+        textSinceTerminal = -1
+      }
       if (entry.kind === "tool" && !entry.answered && CARD_TOOL_KINDS.has(entry.toolKind ?? "")) holdsLiveCard = true
     }
 
@@ -186,7 +199,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
     let hasSurvivor = false
     for (let index = start; index <= end; index += 1) {
       const entry = entries[index]!
-      const role = roleOf(entry, index, { replyIndex, lastTerminalIndex })
+      const role = roleOf(entry, index, { replyIndex, lastTerminalIndex, turnReplies })
       roles.push(role)
       if (role === "folded" && isWork(entry)) hasWork = true
       if (!entry.hidden) {
@@ -226,7 +239,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
 
   return folds
 
-  function roleOf(entry: FoldEntry, index: number, marks: { replyIndex: number; lastTerminalIndex: number }): FoldRole {
+  function roleOf(entry: FoldEntry, index: number, marks: { replyIndex: number; lastTerminalIndex: number; turnReplies: ReadonlySet<number> }): FoldRole {
     switch (entry.kind) {
       case "meta":
         return "kept"
@@ -235,7 +248,8 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
         // with the rest. The turn's own reply is what stays.
         return "folded"
       case "text":
-        return index === marks.replyIndex ? "reply" : "folded"
+        if (index === marks.replyIndex) return "reply"
+        return marks.turnReplies.has(index) ? "kept" : "folded"
       case "tool":
         // A chat call that reached its chat is that chat's card now. One that
         // failed keeps its own row, which says what went wrong.

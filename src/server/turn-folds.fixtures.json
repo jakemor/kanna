@@ -1136,10 +1136,10 @@
       "a1": "folded",
       "cc1": "folded",
       "cc2": "folded",
-      "a2": "folded",
+      "a2": "kept",
       "res1": "folded",
       "rp1": "folded",
-      "a3": "folded",
+      "a3": "kept",
       "c1": "folded",
       "cc3": "folded",
       "res2": "folded",
@@ -1746,7 +1746,7 @@
      "roles": {
       "a1": "folded",
       "c1": "folded",
-      "a2": "folded",
+      "a2": "kept",
       "res1": "folded",
       "ph": "folded",
       "a3": "reply",
@@ -2742,6 +2742,287 @@
     }
    ],
    "workingSince": null
+  },
+  {
+   "name": "Each reply a delegator ended a turn with stays, the answer among them",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "a0",
+     "kind": "assistant_text",
+     "createdAt": 500,
+     "text": "Sending it over."
+    },
+    {
+     "_id": "cs1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "send_message",
+      "toolId": "tool-cs1",
+      "input": {
+       "payload": {
+        "chatId": "chatD",
+        "message": "Put it through the ringer."
+       }
+      }
+     }
+    },
+    {
+     "_id": "rs1",
+     "kind": "tool_result",
+     "createdAt": 1100,
+     "toolId": "tool-cs1",
+     "content": "{\"started\":true}"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 2000,
+     "text": "I've sent this to the demo chat."
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 3000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 3000,
+     "result": ""
+    },
+    {
+     "_id": "rp1",
+     "kind": "user_prompt",
+     "createdAt": 60000,
+     "content": "<system-message>Sub-chat completed: chatD (chat id chatD)</system-message>\n\nI'd ship hot reload first.",
+     "source": {
+      "kind": "report",
+      "chatIds": [
+       "chatD"
+      ]
+     }
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 61000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 61500,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a2",
+     "kind": "assistant_text",
+     "createdAt": 62000,
+     "text": "Do it: ship hot reload first."
+    },
+    {
+     "_id": "res2",
+     "kind": "result",
+     "createdAt": 63000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 3000,
+     "result": ""
+    },
+    {
+     "_id": "rp2",
+     "kind": "user_prompt",
+     "createdAt": 90000,
+     "content": "<system-message>Sub-chat completed: chatD (chat id chatD)</system-message>\n\nOne leftover background check stopped.",
+     "source": {
+      "kind": "report",
+      "chatIds": [
+       "chatD"
+      ]
+     }
+    },
+    {
+     "_id": "a3",
+     "kind": "assistant_text",
+     "createdAt": 91000,
+     "text": "Nothing changed."
+    },
+    {
+     "_id": "res3",
+     "kind": "result",
+     "createdAt": 92000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 1000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "a0",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 7000,
+     "label": "Worked for 7s",
+     "roles": {
+      "a0": "folded",
+      "cs1": "folded",
+      "a1": "kept",
+      "res1": "folded",
+      "rp1": "folded",
+      "c1": "folded",
+      "a2": "kept",
+      "res2": "folded",
+      "rp2": "folded",
+      "a3": "reply",
+      "res3": "end"
+     },
+     "chatCards": [
+      {
+       "chatId": "chatD",
+       "anchorEntryId": "cs1",
+       "last": "replied",
+       "lastEntryId": "rp2",
+       "preview": "One leftover background check stopped."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "A delegator turn that ended without text adds no reply",
+   "atRest": true,
+   "entries": [
+    {
+     "_id": "p1",
+     "kind": "user_prompt",
+     "createdAt": 0,
+     "content": "do it"
+    },
+    {
+     "_id": "cc1",
+     "kind": "tool_call",
+     "createdAt": 1000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "chat",
+      "toolName": "create_chat",
+      "toolId": "tool-cc1",
+      "input": {
+       "payload": {
+        "message": "Go."
+       }
+      }
+     }
+    },
+    {
+     "_id": "rc1",
+     "kind": "tool_result",
+     "createdAt": 1100,
+     "toolId": "tool-cc1",
+     "content": "{\"chatId\":\"chatE\"}"
+    },
+    {
+     "_id": "res1",
+     "kind": "result",
+     "createdAt": 2000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 2000,
+     "result": ""
+    },
+    {
+     "_id": "rp1",
+     "kind": "user_prompt",
+     "createdAt": 30000,
+     "content": "<system-message>Sub-chat completed: chatE (chat id chatE)</system-message>\n\nDone.",
+     "source": {
+      "kind": "report",
+      "chatIds": [
+       "chatE"
+      ]
+     }
+    },
+    {
+     "_id": "c1",
+     "kind": "tool_call",
+     "createdAt": 31000,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c1",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r1",
+     "kind": "tool_result",
+     "createdAt": 31500,
+     "toolId": "tool-c1",
+     "content": "ok"
+    },
+    {
+     "_id": "a1",
+     "kind": "assistant_text",
+     "createdAt": 32000,
+     "text": "It's done."
+    },
+    {
+     "_id": "res2",
+     "kind": "result",
+     "createdAt": 33000,
+     "subtype": "success",
+     "isError": false,
+     "durationMs": 3000,
+     "result": ""
+    }
+   ],
+   "folds": [
+    {
+     "id": "p1",
+     "header": "cc1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 5000,
+     "label": "Worked for 5s",
+     "roles": {
+      "cc1": "folded",
+      "res1": "folded",
+      "rp1": "folded",
+      "c1": "folded",
+      "a1": "reply",
+      "res2": "end"
+     },
+     "chatCards": [
+      {
+       "chatId": "chatE",
+       "anchorEntryId": "cc1",
+       "last": "replied",
+       "lastEntryId": "rp1",
+       "preview": "Done."
+      }
+     ]
+    }
+   ]
   }
  ]
 }

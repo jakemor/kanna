@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { Zap } from "lucide-react"
 import {
   resolveModelLabel,
   type AgentProvider,
@@ -373,6 +374,9 @@ export function ComposerHarnessMenu({
   const contextWarning = isContextNearlyFull(contextWindow)
   // The menu's Effort row's label, said faintly after the model in the card.
   const effortLabel = optionControls.reasoning?.options.find((option) => option.id === optionControls.reasoning?.selectedId)?.label
+  // Fast mode, as a bolt between the model and the effort: only with both
+  // shown, as iOS does, so a harness without efforts says nothing extra.
+  const showFast = showModel && Boolean(effortLabel) && Boolean(optionControls.fastMode?.enabled)
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -380,7 +384,7 @@ export function ComposerHarnessMenu({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`${providerLabel}, ${modelLabel}${showModel && effortLabel ? ` ${effortLabel}` : ""}${contextWarning ? ", context nearly full" : ""}${providerSwitchPending ? ", switches on your next message" : ""}. Harness and model`}
+          aria-label={`${providerLabel}, ${modelLabel}${showFast ? " Fast" : ""}${showModel && effortLabel ? ` ${effortLabel}` : ""}${contextWarning ? ", context nearly full" : ""}${providerSwitchPending ? ", switches on your next message" : ""}. Harness and model`}
           className={cn(
             // Named, it may shrink in a narrow card: the effort goes first, then the model.
             "flex", showModel ? "min-w-0" : "shrink-0",
@@ -396,8 +400,11 @@ export function ComposerHarnessMenu({
             staged={providerSwitchPending}
           />
           {showModel ? (
-            <span className="flex min-w-0 items-baseline gap-1 whitespace-nowrap">
+            <span className="flex min-w-0 items-center gap-1 whitespace-nowrap">
               <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
+              {showFast ? (
+                <Zap data-part="fast" aria-hidden className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+              ) : null}
               {effortLabel ? (
                 <span data-part="effort" className="min-w-0 shrink-[1000] truncate text-muted-foreground/70">{effortLabel}</span>
               ) : null}

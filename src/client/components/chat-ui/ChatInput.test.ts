@@ -337,3 +337,36 @@ describe("ChatInput effort after the model", () => {
     expect(render("effort-3", "claude", "desktop")).not.toContain('data-part="effort"')
   })
 })
+
+describe("ChatInput fast bolt", () => {
+  const render = (chatId: string, layout: "phone" | "desktop", options: Record<string, unknown>, model = "opus", provider: "claude" | "cursor" = "claude") => {
+    const store = useChatPreferencesStore.getState()
+    store.setComposerState(chatId, { ...store.getComposerState(chatId), provider, model, modelOptions: options } as never)
+    return renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      activeProvider: provider,
+      availableProviders: PROVIDERS,
+      chatId,
+      layout,
+    }))
+  }
+
+  test("on: a bolt between the model and the effort, named Fast for screen readers", () => {
+    const html = render("fast-on", "phone", { reasoningEffort: "high", fastMode: true })
+    expect(html.indexOf(">Opus</span>")).toBeLessThan(html.indexOf('data-part="fast"'))
+    expect(html.indexOf('data-part="fast"')).toBeLessThan(html.indexOf('data-part="effort"'))
+    // The effort's own muted colour.
+    expect(html).toMatch(/lucide-zap[^"]*text-muted-foreground\/70" data-part="fast"/)
+    expect(html).toContain("Opus Fast High")
+  })
+
+  test("off: no bolt", () => {
+    expect(render("fast-off", "phone", { reasoningEffort: "high", fastMode: false })).not.toContain('data-part="fast"')
+  })
+
+  test("no effort to sit beside, or desktop's one line: no bolt", () => {
+    expect(render("fast-cursor", "phone", { fastMode: true }, "composer-2.5", "cursor")).not.toContain('data-part="fast"')
+    expect(render("fast-desktop", "desktop", { reasoningEffort: "high", fastMode: true })).not.toContain('data-part="fast"')
+  })
+})

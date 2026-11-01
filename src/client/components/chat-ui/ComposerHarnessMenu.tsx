@@ -404,7 +404,10 @@ export function ComposerHarnessMenu({
               <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
               {showFast ? (
                 // Filled, as iOS's bolt.fill; a thin stroke keeps it no heavier.
-                <Zap data-part="fast" aria-hidden fill="currentColor" strokeWidth={1} className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                // Measured, its ink already sits evenly between the two words,
+                // but its left side is a hairline tip against the model's last
+                // glyph and reads tighter; a pixel more there evens it to the eye.
+                <Zap data-part="fast" aria-hidden fill="currentColor" strokeWidth={1} className="ml-px h-3 w-3 shrink-0 text-muted-foreground/70" />
               ) : null}
               {effortLabel ? (
                 <span data-part="effort" className="min-w-0 shrink-[1000] truncate text-muted-foreground/70">{effortLabel}</span>

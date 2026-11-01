@@ -357,10 +357,10 @@ describe("ChatInput fast bolt", () => {
     expect(html.indexOf(">Opus</span>")).toBeLessThan(html.indexOf('data-part="fast"'))
     expect(html.indexOf('data-part="fast"')).toBeLessThan(html.indexOf('data-part="effort"'))
     // The effort's own muted colour.
-    expect(html).toMatch(/lucide-zap ml-px [^"]*text-muted-foreground\/70" data-part="fast"/)
+    expect(html).toMatch(/data-part="fast" aria-hidden="true" viewBox="0 0 12 12" fill="currentColor" class="[^"]*text-muted-foreground\/70"/)
     expect(html).toContain("Opus Fast High")
-    // Filled, to match iOS's bolt.fill.
-    expect(html).toMatch(/<svg[^>]*fill="currentColor"[^>]*lucide-zap/)
+    // Solid, with no outline, to match iOS's bolt.fill.
+    expect(html).not.toMatch(/data-part="fast"[^>]*stroke/)
   })
 
   test("off: no bolt", () => {

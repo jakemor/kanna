@@ -832,7 +832,7 @@
    ]
   },
   {
-   "name": "A delegator's turn waits unfolded on its sub-chats",
+   "name": "A delegator turn still going is not folded",
    "atRest": false,
    "entries": [
     {
@@ -947,7 +947,7 @@
    ]
   },
   {
-   "name": "A delegator's exchange closes to one card per sub-chat, in the order they came up",
+   "name": "A delegator's turns fold one by one, each report above its own",
    "atRest": true,
    "entries": [
     {
@@ -1130,30 +1130,22 @@
      "settled": true,
      "folds": true,
      "outcome": "completed",
-     "workedMs": 7000,
-     "label": "Worked for 7s",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
      "roles": {
       "a1": "folded",
       "cc1": "folded",
       "cc2": "folded",
-      "a2": "kept",
-      "res1": "folded",
-      "rp1": "folded",
-      "a3": "kept",
-      "c1": "folded",
-      "cc3": "folded",
-      "res2": "folded",
-      "rp2": "folded",
-      "a4": "reply",
-      "res3": "end"
+      "a2": "reply",
+      "res1": "end"
      },
      "chatCards": [
       {
        "chatId": "chatA",
        "anchorEntryId": "cc1",
-       "last": "replied",
-       "lastEntryId": "rp2",
-       "preview": "Done with the extra page.",
+       "last": "started",
+       "lastEntryId": "cc1",
+       "preview": "Audit the docs.",
        "title": "Docs audit"
       },
       {
@@ -1162,20 +1154,50 @@
        "last": "started",
        "lastEntryId": "cc2",
        "preview": "Build the funnel report."
-      },
-      {
-       "chatId": "chatC",
-       "anchorEntryId": "rp2",
-       "last": "replied",
-       "lastEntryId": "rp2",
-       "preview": "Signups are down 15%."
       }
      ]
+    },
+    {
+     "id": "rp1",
+     "header": "a3",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 3000,
+     "label": "Worked for 3s",
+     "roles": {
+      "a3": "reply",
+      "c1": "folded",
+      "cc3": "folded",
+      "res2": "end"
+     },
+     "chatCards": [
+      {
+       "chatId": "chatA",
+       "anchorEntryId": "cc3",
+       "last": "sent",
+       "lastEntryId": "cc3",
+       "preview": "One more page, please."
+      }
+     ]
+    },
+    {
+     "id": "rp2",
+     "header": "a4",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
+     "roles": {
+      "a4": "reply",
+      "res3": "end"
+     }
     }
    ]
   },
   {
-   "name": "A send and its reply from one chat are one card, saying the reply",
+   "name": "A send, then the report it brings back, are two turns",
    "atRest": true,
    "entries": [
     {
@@ -1253,31 +1275,34 @@
      "settled": true,
      "folds": true,
      "outcome": "completed",
-     "workedMs": 3000,
-     "label": "Worked for 3s",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
      "roles": {
       "cc1": "folded",
-      "res1": "folded",
-      "rp1": "folded",
-      "a1": "reply",
-      "res2": "end"
+      "res1": "end"
      },
      "chatCards": [
       {
        "chatId": "chatA",
        "anchorEntryId": "cc1",
-       "last": "replied",
-       "lastEntryId": "rp1",
-       "preview": "Fixed the MMP page."
-      },
-      {
-       "chatId": "chatB",
-       "anchorEntryId": "rp1",
-       "last": "replied",
-       "lastEntryId": "rp1",
-       "preview": "Today's funnel report."
+       "last": "sent",
+       "lastEntryId": "cc1",
+       "preview": "Correction on MMP."
       }
      ]
+    },
+    {
+     "id": "rp1",
+     "header": "a1",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 1000,
+     "label": "Worked for 1s",
+     "roles": {
+      "a1": "reply",
+      "res2": "end"
+     }
     }
    ]
   },
@@ -1593,7 +1618,7 @@
    ]
   },
   {
-   "name": "Hidden prompts carry the exchange on; a schedule opens a new one",
+   "name": "A prompt nobody sees after a turn ended starts its own; a schedule opens one too",
    "atRest": true,
    "entries": [
     {
@@ -1741,14 +1766,24 @@
      "settled": true,
      "folds": true,
      "outcome": "completed",
-     "workedMs": 1500,
+     "workedMs": 1000,
      "label": "Worked for 1s",
      "roles": {
       "a1": "folded",
       "c1": "folded",
-      "a2": "kept",
-      "res1": "folded",
-      "ph": "folded",
+      "a2": "reply",
+      "res1": "end"
+     }
+    },
+    {
+     "id": "ph",
+     "header": "a3",
+     "settled": true,
+     "folds": false,
+     "outcome": "completed",
+     "workedMs": 500,
+     "label": "Worked for <1s",
+     "roles": {
       "a3": "reply",
       "res2": "end"
      }
@@ -2744,7 +2779,7 @@
    "workingSince": null
   },
   {
-   "name": "Each reply a delegator ended a turn with stays, the answer among them",
+   "name": "Product: each turn the delegator ends folds on its own",
    "atRest": true,
    "entries": [
     {
@@ -2857,6 +2892,25 @@
      }
     },
     {
+     "_id": "c3",
+     "kind": "tool_call",
+     "createdAt": 90500,
+     "tool": {
+      "kind": "tool",
+      "toolKind": "bash",
+      "toolName": "Bash",
+      "toolId": "tool-c3",
+      "input": {}
+     }
+    },
+    {
+     "_id": "r3",
+     "kind": "tool_result",
+     "createdAt": 90700,
+     "toolId": "tool-c3",
+     "content": "ok"
+    },
+    {
      "_id": "a3",
      "kind": "assistant_text",
      "createdAt": 91000,
@@ -2879,35 +2933,56 @@
      "settled": true,
      "folds": true,
      "outcome": "completed",
-     "workedMs": 7000,
-     "label": "Worked for 7s",
+     "workedMs": 3000,
+     "label": "Worked for 3s",
      "roles": {
       "a0": "folded",
       "cs1": "folded",
-      "a1": "kept",
-      "res1": "folded",
-      "rp1": "folded",
-      "c1": "folded",
-      "a2": "kept",
-      "res2": "folded",
-      "rp2": "folded",
-      "a3": "reply",
-      "res3": "end"
+      "a1": "reply",
+      "res1": "end"
      },
      "chatCards": [
       {
        "chatId": "chatD",
        "anchorEntryId": "cs1",
-       "last": "replied",
-       "lastEntryId": "rp2",
-       "preview": "One leftover background check stopped."
+       "last": "sent",
+       "lastEntryId": "cs1",
+       "preview": "Put it through the ringer."
       }
      ]
+    },
+    {
+     "id": "rp1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 3000,
+     "label": "Worked for 3s",
+     "roles": {
+      "c1": "folded",
+      "a2": "reply",
+      "res2": "end"
+     }
+    },
+    {
+     "id": "rp2",
+     "header": "c3",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 1000,
+     "label": "Worked for 1s",
+     "roles": {
+      "c3": "folded",
+      "a3": "reply",
+      "res3": "end"
+     }
     }
    ]
   },
   {
-   "name": "A delegator turn that ended without text adds no reply",
+   "name": "A turn that ended without text has no reply",
    "atRest": true,
    "entries": [
     {
@@ -3002,25 +3077,35 @@
      "settled": true,
      "folds": true,
      "outcome": "completed",
-     "workedMs": 5000,
-     "label": "Worked for 5s",
+     "workedMs": 2000,
+     "label": "Worked for 2s",
      "roles": {
       "cc1": "folded",
-      "res1": "folded",
-      "rp1": "folded",
-      "c1": "folded",
-      "a1": "reply",
-      "res2": "end"
+      "res1": "end"
      },
      "chatCards": [
       {
        "chatId": "chatE",
        "anchorEntryId": "cc1",
-       "last": "replied",
-       "lastEntryId": "rp1",
-       "preview": "Done."
+       "last": "started",
+       "lastEntryId": "cc1",
+       "preview": "Go."
       }
      ]
+    },
+    {
+     "id": "rp1",
+     "header": "c1",
+     "settled": true,
+     "folds": true,
+     "outcome": "completed",
+     "workedMs": 3000,
+     "label": "Worked for 3s",
+     "roles": {
+      "c1": "folded",
+      "a1": "reply",
+      "res2": "end"
+     }
     }
    ]
   }

@@ -7,23 +7,20 @@ import type { ChatTurnFolds, KannaStatus, TranscriptEntry, TranscriptTurnFold, T
  * Folding a finished turn behind one header ("Worked for 2m 14s"), so a chat
  * reads as what was asked and what came back.
  *
- * The unit is the exchange, not the provider's turn: everything from a prompt
- * someone sent to the next one. A delegator's turn ends while its sub-chats
- * work and resumes when each one reports, and the reader saw that as one turn.
- * So a report, or a prompt nobody sees, carries the exchange on; the user's
- * own prompt, another agent's message and a schedule firing each open one.
+ * The unit is the agent's turn: from the prompt that started it to the result
+ * or stop that ended it. A delegator ends a turn when it hands work to its
+ * sub-chats, and each report that comes back starts another; each is a fold
+ * of its own, with the report above it where a user's prompt would be.
+ * (`turnStarts` is the one place that says where a turn starts.)
  *
  * Closed, a fold still shows what the turn made or decided, and what it
- * handed to other chats: every reply it ended a provider turn with (the last
- * text before each result or stop; a delegator resumed by its sub-chats
- * ends several, and the answer is often not the last), pictures, files and
+ * handed to other chats: its reply (its last text), pictures, files and
  * visualizations, chat and schedule cards, a plan with nothing said after it,
  * and errors. Edits, commands, reads and the text between them fold away.
  *
- * What passed between the turn and its sub-chats closes to one card per chat:
- * every chat the turn started, forked or messaged, and every chat that
- * reported back, once each, in the order they first came up, saying the last
- * thing that passed. The send cards and report lines it stands for fold away;
+ * What the turn sent to other chats closes to one card per chat: every chat
+ * it started, forked or messaged, once each, in the order they first came up,
+ * saying the last thing that passed. The calls it stands for fold away;
  * opened, the fold shows them as they happened.
  *
  * Decided here, on the server, and sent with the chat snapshot
@@ -139,12 +136,30 @@ function isChatOrScheduleTool(toolKind: string | undefined, toolName: string | u
     && (CHAT_TOOL_NAMES.includes(toolName) || SCHEDULE_TOOL_NAMES.includes(toolName))
 }
 
-function opensExchange(entry: FoldEntry) {
-  return entry.kind === "prompt" && !entry.hidden && entry.source !== "report"
-}
-
 function isTerminal(entry: FoldEntry) {
   return entry.kind === "result" || entry.kind === "interrupted"
+}
+
+/**
+ * Where each turn starts, as indices into `entries`. A prompt the reader sees
+ * that someone sent (the user, another agent, a schedule) always starts one.
+ * Any other prompt (a sub-chat's report, one nobody sees) starts one when the
+ * turn before it has ended, so a fold ends at every result or stop. Nothing
+ * before the first entry is running: one turn's own entries, which start
+ * with its report, are read the same as the whole transcript.
+ */
+export function turnStarts(entries: readonly FoldEntry[]): number[] {
+  const starts: number[] = []
+  let ended = true
+  entries.forEach((entry, index) => {
+    if (entry.kind === "prompt" && ((!entry.hidden && entry.source !== "report") || ended)) {
+      starts.push(index)
+      ended = false
+    } else if (isTerminal(entry)) {
+      ended = true
+    }
+  })
+  return starts
 }
 
 /** Rows whose absence a reader would notice: there has to be one for a fold to be worth a header. */
@@ -155,12 +170,9 @@ function isWork(entry: FoldEntry) {
 
 export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFoldContext): TurnFold[] {
   const folds: TurnFold[] = []
-  // Exchange boundaries: the index each one opens at. A window cut mid-turn
-  // starts with an exchange that has no opener.
-  const starts: number[] = []
-  entries.forEach((entry, index) => {
-    if (opensExchange(entry)) starts.push(index)
-  })
+  // Turn boundaries: the index each one opens at. A window cut mid-turn
+  // starts with a turn that has no opener.
+  const starts = turnStarts(entries)
   if (entries.length > 0 && starts[0] !== 0) starts.unshift(-1)
 
   for (let n = 0; n < starts.length; n += 1) {
@@ -175,21 +187,10 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
     let replyIndex = -1
     let lastTerminalIndex = -1
     let holdsLiveCard = false
-    // The last text before each result or stop: what that provider turn
-    // ended on. Reset at each one, so a turn that said nothing adds none.
-    const turnReplies = new Set<number>()
-    let textSinceTerminal = -1
     for (let index = first; index <= end; index += 1) {
       const entry = entries[index]!
-      if (entry.kind === "text" && !entry.hidden && index >= start) {
-        replyIndex = index
-        textSinceTerminal = index
-      }
-      if (isTerminal(entry)) {
-        lastTerminalIndex = index
-        if (textSinceTerminal >= 0) turnReplies.add(textSinceTerminal)
-        textSinceTerminal = -1
-      }
+      if (entry.kind === "text" && !entry.hidden && index >= start) replyIndex = index
+      if (isTerminal(entry)) lastTerminalIndex = index
       if (entry.kind === "tool" && !entry.answered && CARD_TOOL_KINDS.has(entry.toolKind ?? "")) holdsLiveCard = true
     }
 
@@ -199,7 +200,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
     let hasSurvivor = false
     for (let index = start; index <= end; index += 1) {
       const entry = entries[index]!
-      const role = roleOf(entry, index, { replyIndex, lastTerminalIndex, turnReplies })
+      const role = roleOf(entry, index, { replyIndex, lastTerminalIndex })
       roles.push(role)
       if (role === "folded" && isWork(entry)) hasWork = true
       if (!entry.hidden) {
@@ -239,7 +240,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
 
   return folds
 
-  function roleOf(entry: FoldEntry, index: number, marks: { replyIndex: number; lastTerminalIndex: number; turnReplies: ReadonlySet<number> }): FoldRole {
+  function roleOf(entry: FoldEntry, index: number, marks: { replyIndex: number; lastTerminalIndex: number }): FoldRole {
     switch (entry.kind) {
       case "meta":
         return "kept"
@@ -248,8 +249,7 @@ export function computeTurnFolds(entries: readonly FoldEntry[], context: TurnFol
         // with the rest. The turn's own reply is what stays.
         return "folded"
       case "text":
-        if (index === marks.replyIndex) return "reply"
-        return marks.turnReplies.has(index) ? "kept" : "folded"
+        return index === marks.replyIndex ? "reply" : "folded"
       case "tool":
         // A chat call that reached its chat is that chat's card now. One that
         // failed keeps its own row, which says what went wrong.
@@ -381,13 +381,12 @@ export function foldEntriesFromTranscript(entries: readonly TranscriptEntry[]): 
   return result
 }
 
-/** Statuses in which the newest turn is still going: it does not fold yet. */
-const GOING: ReadonlySet<KannaStatus> = new Set<KannaStatus>(["starting", "running", "waiting_for_user", "waiting_on_subagent"])
-
-/** A prompt someone sent opens a turn. A report or a hidden prompt carries the one going on. */
-function opensTurn(entry: TranscriptEntry) {
-  return entry.kind === "user_prompt" && !entry.hidden && entry.source?.kind !== "report" && !entry.parentToolUseId
-}
+/**
+ * Statuses in which the newest turn is still going: it does not fold yet. Not
+ * waiting on sub-chats: the delegator's turn has ended, and the report that
+ * comes back starts a turn of its own.
+ */
+const GOING: ReadonlySet<KannaStatus> = new Set<KannaStatus>(["starting", "running", "waiting_for_user"])
 
 /** One turn of a transcript: entries `[start, end)`, named by the prompt that opened it. */
 export interface TurnSpan {
@@ -396,16 +395,19 @@ export interface TurnSpan {
   end: number
 }
 
-/** The transcript's turns, oldest first. Entries before the first prompt are a turn of their own. */
+/**
+ * The transcript's turns, oldest first, by `turnStarts`. Entries before the
+ * first turn's prompt are a turn of their own.
+ */
 export function splitTurns(entries: readonly TranscriptEntry[]): TurnSpan[] {
+  const foldEntries = foldEntriesFromTranscript(entries)
   const turns: TurnSpan[] = []
-  entries.forEach((entry, index) => {
-    if (!opensTurn(entry)) return
+  for (const start of turnStarts(foldEntries).map((index) => foldEntries[index]!.index)) {
     const last = turns[turns.length - 1]
-    if (last) last.end = index
-    else if (index > 0) turns.push({ id: `partial:${entries[0]!._id}`, start: 0, end: index })
-    turns.push({ id: entry._id, start: index, end: entries.length })
-  })
+    if (last) last.end = start
+    else if (start > 0) turns.push({ id: `partial:${entries[0]!._id}`, start: 0, end: start })
+    turns.push({ id: entries[start]!._id, start, end: entries.length })
+  }
   if (turns.length === 0 && entries.length > 0) turns.push({ id: `partial:${entries[0]!._id}`, start: 0, end: entries.length })
   return turns
 }

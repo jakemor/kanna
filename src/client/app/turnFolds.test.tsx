@@ -61,39 +61,45 @@ describe("the transcript's rows around a fold", () => {
     expect(names.filter((name) => !name.startsWith("["))).toEqual(rowNames(rows).map((name) => name === "res1" ? "res1(ends)" : name))
   })
 
-  test("closed, a delegator's turn draws one card per sub-chat, where each first came up, and no report lines", () => {
-    const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
-    const { folded } = foldedRows(testCase, () => false)
-    // Its earlier replies too: a2 and a3 each ended a turn.
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB started>", "a2", "a3", "<chatC replied>", "a4", "res3(ends)"])
+  test("closed, each turn a delegator ends is its own fold, the report that resumed it above it", () => {
+    const { folded } = foldedRows(fixture("A delegator's turns fold one by one, each report above its own"), () => false)
+    // The last turn had nothing to hide: drawn whole, with no header.
+    expect(rowNames(folded)).toEqual([
+      "p1", "[closed p1]", "<chatA started>", "<chatB started>", "a2", "res1(ends)",
+      "rp1", "[closed rp1]", "a3", "<chatA sent>", "res2(ends)",
+      "rp2", "a4", "res3",
+    ])
   })
 
-  test("closed, every reply the delegator ended a turn with shows, with one card", () => {
-    const { folded } = foldedRows(fixture("Each reply a delegator ended a turn with stays, the answer among them"), () => false)
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatD replied>", "a1", "a2", "a3", "res3(ends)"])
+  test("Product: three folds, each with its one reply", () => {
+    const { folded } = foldedRows(fixture("Product: each turn the delegator ends folds on its own"), () => false)
+    expect(rowNames(folded)).toEqual([
+      "p1", "[closed p1]", "<chatD sent>", "a1", "res1(ends)",
+      "rp1", "[closed rp1]", "a2", "res2(ends)",
+      "rp2", "[closed rp2]", "a3", "res3(ends)",
+    ])
   })
 
-  test("open, the same turn is the raw log: every send card and report line, and no deduped cards", () => {
-    const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
-    const { rows, folded } = foldedRows(testCase, () => true)
+  test("open, a report-opened fold is the raw log: its send card, and no deduped card", () => {
+    const { rows, folded } = foldedRows(fixture("A delegator's turns fold one by one, each report above its own"), () => true)
     const names = rowNames(folded)
     expect(names.some((name) => name.startsWith("<"))).toBe(false)
-    expect(names.filter((name) => !name.startsWith("["))).toEqual(rowNames(rows).map((name) => name === "res3" ? "res3(ends)" : name))
+    expect(names.filter((name) => !name.startsWith("["))).toEqual(rowNames(rows).map((name) => (name === "res1" || name === "res2") ? `${name}(ends)` : name))
     for (const id of ["cc1", "cc2", "cc3", "rp1", "rp2"]) expect(names).toContain(id)
   })
 
-  test("a send and a reply from one chat are one card; a chat that only replied gets one too", () => {
-    const { folded } = foldedRows(fixture("A send and its reply from one chat are one card, saying the reply"), () => false)
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB replied>", "a1", "res2(ends)"])
+  test("a send and the report it brings back are two turns: the send's card, then the report above the reply", () => {
+    const { folded } = foldedRows(fixture("A send, then the report it brings back, are two turns"), () => false)
+    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA sent>", "res1(ends)", "rp1", "a1", "res2"])
   })
 
   test("a card reads the last thing that passed, and opens its chat", () => {
-    const { folded } = foldedRows(fixture("A send and its reply from one chat are one card, saying the reply"), () => false)
+    const { folded } = foldedRows(fixture("A send, then the report it brings back, are two turns"), () => false)
     const card = folded.find((row) => row.kind === "fold-chat-card")!
     const html = renderToStaticMarkup(
       <KannaTranscriptRow row={card} onToolGroupExpandedChange={() => undefined} onAskUserQuestionSubmit={() => undefined} onExitPlanModeConfirm={() => undefined} />,
     )
-    expect(html).toContain("Replied · Fixed the MMP page.")
+    expect(html).toContain("Sent · Correction on MMP.")
   })
 
   test("from a server that sends no folds, everything is drawn as it was", () => {
@@ -102,8 +108,8 @@ describe("the transcript's rows around a fold", () => {
     expect(rowNames(folded)).toEqual(rowNames(rows))
   })
 
-  test("a delegator waiting on its sub-chats draws no header", () => {
-    const { rows, folded } = foldedRows(fixture("A delegator's turn waits unfolded on its sub-chats"), () => false)
+  test("a delegator turn still going draws no header", () => {
+    const { rows, folded } = foldedRows(fixture("A delegator turn still going is not folded"), () => false)
     expect(rowNames(folded)).toEqual(rowNames(rows))
   })
 
@@ -130,12 +136,11 @@ describe("the transcript's rows around a fold", () => {
   })
 
   test("a turn the window cut folds under a header at the top", () => {
-    // The server folds over the whole chat; the client holds from the middle of turn 1.
-    const testCase = fixture("A delegator's exchange closes to one card per sub-chat, in the order they came up")
-    const from = testCase.entries.findIndex((entry) => entry._id === "rp1")
+    // The server folds over the whole chat; the client holds from the middle of the report's turn.
+    const testCase = fixture("A delegator's turns fold one by one, each report above its own")
+    const from = testCase.entries.findIndex((entry) => entry._id === "c1")
     const { folded } = foldedRows(testCase, () => false, { from })
-    // The cards whose chat first came up before the window come first.
-    expect(rowNames(folded)).toEqual(["[closed p1]", "<chatA replied>", "<chatB started>", "a3", "<chatC replied>", "a4", "res3(ends)"])
+    expect(rowNames(folded)).toEqual(["[closed rp1]", "<chatA sent>", "res2(ends)", "rp2", "a4", "res3"])
   })
 
   test("the minimap still counts what a closed fold hides, and a header is no read position", () => {
@@ -169,8 +174,17 @@ describe("the rule: the turn in progress is drawn whole, every other turn is fol
   const closed = () => false
 
   test("a turn that just ended draws closed, with its card and reply", () => {
-    const { folded } = foldedRows(fixture("A send and its reply from one chat are one card, saying the reply"), closed)
-    expect(rowNames(folded)).toEqual(["p1", "[closed p1]", "<chatA replied>", "<chatB replied>", "a1", "res2(ends)"])
+    const { folded } = foldedRows(fixture("A finished turn folds its work and keeps its reply"), closed)
+    expect(rowNames(folded)).toEqual(["p1", "s1", "[closed p1]", "a2", "res1(ends)"])
+  })
+
+  test("a fold a report opened is keyed by the report, so its open state stays its own", () => {
+    const testCase = fixture("Product: each turn the delegator ends folds on its own")
+    const names = rowNames(foldedRows(testCase, (id) => id === "rp1").folded)
+    expect(names).toContain("[open rp1]")
+    expect(names).toContain("[closed p1]")
+    expect(names).toContain("[closed rp2]")
+    expect(foldHeaderRowId("rp1")).toBe("fold:rp1")
   })
 
   test("the turn in progress draws whole even when a fold for it is still held", () => {

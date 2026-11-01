@@ -55,6 +55,19 @@ describe("turn folds (the fixtures)", () => {
   }
 })
 
+// Snapshots fold one turn's entries at a time; the fixtures read a whole
+// transcript. The two have to agree on every fold.
+describe("one turn at a time, as snapshots fold, says what the fixtures say", () => {
+  for (const fixture of fixtures.cases) {
+    test(fixture.name, () => {
+      const wire = buildChatTurnFolds(fixture.entries as unknown as TranscriptEntry[], { status: fixture.atRest ? "idle" : "running" })
+      const expected = (fixture.folds as ExpectedFold[]).filter((fold) => fold.folds)
+      expect(Object.values(wire.folds).map((fold) => [fold.id, fold.firstEntryId, fold.replyEntryId ?? null]))
+        .toEqual(expected.map((fold) => [fold.id, fold.header, Object.entries(fold.roles).find(([, role]) => role === "reply")?.[0] ?? null]))
+    })
+  }
+})
+
 describe("turn fold words", () => {
   test("durations", () => {
     expect(formatWorkedDuration(400)).toBe("<1s")
@@ -108,22 +121,22 @@ describe("the folds a snapshot carries", () => {
     expect(wire.runningTurnId).toBeUndefined()
   })
 
-  test("a delegator's sub-chats ride as one card each; its calls and reports are not kept, its earlier replies are", () => {
-    const fold = buildChatTurnFolds(entries("A delegator's exchange closes to one card per sub-chat, in the order they came up"), { status: "idle" }).folds.p1!
-    expect(fold.keptEntryIds).toEqual(["a2", "a3"])
-    expect(fold.replyEntryId).toBe("a4")
-    expect(fold.chatCards?.map((card) => [card.chatId, card.last, card.anchorEntryId])).toEqual([
-      ["chatA", "replied", "cc1"],
-      ["chatB", "started", "cc2"],
-      ["chatC", "replied", "rp2"],
-    ])
+  test("a delegator's turns are folds of their own, named by what opened each", () => {
+    const wire = buildChatTurnFolds(entries("A delegator's turns fold one by one, each report above its own"), { status: "idle" })
+    // The last turn had nothing to hide.
+    expect(Object.keys(wire.folds)).toEqual(["p1", "rp1"])
+    expect(wire.folds.p1!.chatCards?.map((card) => [card.chatId, card.last])).toEqual([["chatA", "started"], ["chatB", "started"]])
+    expect(wire.folds.rp1!.firstEntryId).toBe("a3")
+    expect(wire.folds.rp1!.replyEntryId).toBe("a3")
+    // The report that opened it is above it, not a card in it.
+    expect(wire.folds.rp1!.chatCards?.map((card) => [card.chatId, card.last])).toEqual([["chatA", "sent"]])
+    expect(wire.folds.rp1!.keptEntryIds).toEqual([])
   })
 
-  test("each turn-ending reply goes out as a kept entry, in order; the last is the reply", () => {
-    const fold = buildChatTurnFolds(entries("Each reply a delegator ended a turn with stays, the answer among them"), { status: "idle" }).folds.p1!
-    expect(fold.keptEntryIds).toEqual(["a1", "a2"])
-    expect(fold.replyEntryId).toBe("a3")
-    expect(fold.chatCards?.map((card) => card.chatId)).toEqual(["chatD"])
+  test("Product: three folds, each with its one reply", () => {
+    const wire = buildChatTurnFolds(entries("Product: each turn the delegator ends folds on its own"), { status: "idle" })
+    expect(Object.values(wire.folds).map((fold) => [fold.id, fold.replyEntryId, fold.workedMs, fold.chatCards?.length ?? 0]))
+      .toEqual([["p1", "a1", 3000, 1], ["rp1", "a2", 3000, 0], ["rp2", "a3", 1000, 0]])
   })
 
   test("a chat call that failed keeps its own row and makes no card", () => {
@@ -147,11 +160,20 @@ describe("the folds a snapshot carries", () => {
     expect(wire.workingSince).toBe(5000)
   })
 
-  test("waiting on sub-chats is in progress, and is not working", () => {
-    const wire = buildChatTurnFolds(entries("A delegator's turn waits unfolded on its sub-chats"), { status: "waiting_on_subagent" })
-    expect(wire.folds).toEqual({})
-    expect(wire.runningTurnId).toBe("p1")
+  test("waiting on sub-chats, the delegator's turn has ended: it folds, and nothing is running", () => {
+    const wire = buildChatTurnFolds(entries("A delegator turn still going is not folded"), { status: "waiting_on_subagent" })
+    expect(Object.keys(wire.folds)).toEqual(["p1"])
+    expect(wire.runningTurnId).toBeUndefined()
     expect(wire.workingSince).toBeUndefined()
+  })
+
+  test("a turn a report resumed runs unfolded; the turn before it stays folded", () => {
+    const all = entries("A delegator's turns fold one by one, each report above its own")
+    const upToRunning = all.slice(0, all.findIndex((entry) => entry._id === "c1") + 1)
+    const wire = buildChatTurnFolds(upToRunning, { status: "running" })
+    expect(Object.keys(wire.folds)).toEqual(["p1"])
+    expect(wire.runningTurnId).toBe("rp1")
+    expect(wire.workingSince).toBe(60000)
   })
 
   test("a window carries the folds of the turns that end inside it, whole even when it starts inside one", () => {

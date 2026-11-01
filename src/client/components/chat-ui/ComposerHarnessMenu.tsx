@@ -411,7 +411,11 @@ export function ComposerHarnessMenu({
             <span className="flex min-w-0 items-center gap-1 whitespace-nowrap">
               <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
               {showFast ? (
-                <FastBoltIcon className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                // iOS's spacing as a share of the type (FastBoltLayout, tuned by
+                // Jake): on the ink, 0.58em after the name and 0.33em before the
+                // effort. At 14px that measures 8.25 and 5px on the ink, from the
+                // gap's 6 and 6.25.
+                <FastBoltIcon className="ml-[2px] -mr-[1.5px] h-3 w-3 shrink-0 text-muted-foreground/70" />
               ) : null}
               {effortLabel ? (
                 <span data-part="effort" className="min-w-0 shrink-[1000] truncate text-muted-foreground/70">{effortLabel}</span>

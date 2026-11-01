@@ -361,6 +361,9 @@ describe("ChatInput fast bolt", () => {
     expect(html).toContain("Opus Fast High")
     // Solid, with no outline, to match iOS's bolt.fill.
     expect(html).not.toMatch(/data-part="fast"[^>]*stroke/)
+    // iOS's spacing, as a share of the type: 2px more after the name, 1.5px
+    // less before the effort than the gap gives.
+    expect(html).toMatch(/data-part="fast"[^>]*class="ml-\[2px\] -mr-\[1\.5px\] /)
   })
 
   test("off: no bolt", () => {

@@ -359,6 +359,8 @@ describe("ChatInput fast bolt", () => {
     // The effort's own muted colour.
     expect(html).toMatch(/lucide-zap[^"]*text-muted-foreground\/70" data-part="fast"/)
     expect(html).toContain("Opus Fast High")
+    // Filled, to match iOS's bolt.fill.
+    expect(html).toMatch(/<svg[^>]*fill="currentColor"[^>]*lucide-zap/)
   })
 
   test("off: no bolt", () => {

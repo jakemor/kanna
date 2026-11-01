@@ -403,7 +403,8 @@ export function ComposerHarnessMenu({
             <span className="flex min-w-0 items-center gap-1 whitespace-nowrap">
               <span className="min-w-0 truncate text-foreground">{modelLabel}</span>
               {showFast ? (
-                <Zap data-part="fast" aria-hidden className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                // Filled, as iOS's bolt.fill; a thin stroke keeps it no heavier.
+                <Zap data-part="fast" aria-hidden fill="currentColor" strokeWidth={1} className="h-3 w-3 shrink-0 text-muted-foreground/70" />
               ) : null}
               {effortLabel ? (
                 <span data-part="effort" className="min-w-0 shrink-[1000] truncate text-muted-foreground/70">{effortLabel}</span>

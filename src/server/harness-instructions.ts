@@ -14,7 +14,7 @@ export const KANNA_ORCHESTRATION_INSTRUCTIONS = [
   "The `kanna` tools let you do what the user can do in Kanna: start chats, message them, read them, stop them, and schedule messages. Tool names may carry a prefix such as `mcp__kanna__`.",
   "",
   "- A sub-chat is a chat you start with `create_chat`. It runs on its own, on any provider and model, with only the message you give it: it does not see this conversation. Use one for work that is independent of yours or that should run in parallel. For small same-model help, your own subagent tool is cheaper.",
-  "- `create_chat` needs a choice of `delegator: false` for a chat that does the work itself, almost always the right one, or `delegator: true` for one that coordinates sub-chats of its own and does none of the work. So does `set_schedule` with `newChat`.",
+  "- `create_chat` needs a choice of `delegator: false` for a chat that does the work itself, almost always the right one, or `delegator: true` for one that coordinates sub-chats of its own and does none of the work. So does `set_schedule` with `newChat: true`.",
   "- Sub-chats are asynchronous. `create_chat` returns at once, and the result arrives later as a message in this chat, which wakes you if your turn has ended. So you can start several, finish your turn, and be called back.",
   "- A sub-chat reports when its turn ends, and the report carries its final reply whole, so there is no need to read the chat for it. If it handed work off in turn, the report says it is not its last word, and another follows when that work comes back. Read the first as progress, not as the result. `read_chat` reads anything else: earlier turns, its tool calls and their output.",
   "- To use another chat's result, have it report here (start it with `create_chat`, or pass `adopt: true` to `send_message`) and end your turn. Its reply arrives as a message and wakes this chat. Do not poll it with `read_chat` meanwhile.",
@@ -23,7 +23,7 @@ export const KANNA_ORCHESTRATION_INSTRUCTIONS = [
   "- A chat's settings (its title, where it is shown, and the provider, model, effort and plan mode of its next turn) can change with the message you send it, or on their own with `update_chat`, without sending one.",
   "- `fork_chat` copies a conversation, context included. `create_chat` starts empty.",
   "- Each chat is one piece of work, and its title (required on `create_chat`, `fork_chat` and `send_message`) says what. New work goes to a new chat, or to a fork of one whose context it needs, titled for the new work: prefer a fork to retitling a chat. `send_message` is for follow-ups, with the chat's current title or a sharper one.",
-  "- `set_schedule` sends a message later or on a repeat, into this chat by default. Use it to check on something in a while instead of sleeping.",
+  "- `set_schedule` sends a message later or on a repeat. Use it to check on something in a while instead of sleeping. A new schedule needs `newChat`: `newChat: false` sends every run to one existing chat (`chatId`, this chat by default), which suits almost every automation; `newChat: true` starts a new chat on each run, only for runs that are each independent.",
   "- `send_message` to a chat you did not start gets nothing back when that chat finishes. When you need its result, pass `adopt: true`: the chat becomes your sub-chat and its reply arrives here as a message. An adopted chat is still the user's, so it stays in their sidebar.",
   "- When the user stops this chat's turn while sub-chats it started are running, they choose whether those stop too. Adopted ones never do. Stop one yourself with `cancel_chat` when it is no longer needed.",
   "- A stopped chat holds its queue (`queuePaused`): nothing waiting in it starts until it is delivered with `update_queued_message` (action send_now), or another message is sent.",
@@ -63,7 +63,7 @@ export const KANNA_DELEGATOR_INSTRUCTIONS = [
   "",
   "## Automations",
   "",
-  "Almost always give each automation its own chat: a sub-chat from `create_chat`, titled for it (\"Daily churn-risk sweep\"), with `set_schedule`'s `chatId` pointed at it. Schedule into this chat only if the user asks: each run would fill this thread, which is for coordinating. `newChat` (which also needs a `delegator:` choice) suits runs that are each independent and start fresh; those chats go in the user's sidebar.",
+  "Almost always give each automation its own chat that every run reuses: a sub-chat from `create_chat`, titled for it (\"Daily churn-risk sweep\"), with `set_schedule`'s `newChat: false` and `chatId` pointed at it. Schedule into this chat only if the user asks: each run would fill this thread, which is for coordinating. `newChat: true` (also needs `delegator:`) is only for independent runs; those chats go in the user's sidebar.",
 ].join("\n")
 
 /**

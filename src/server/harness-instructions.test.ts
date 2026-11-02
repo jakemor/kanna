@@ -47,7 +47,10 @@ describe("buildKannaSystemInstructions", () => {
     // The tool requires the choice, so the instructions say what each side means.
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`create_chat` needs a choice of `delegator: false` for a chat that does the work itself")
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`delegator: true` for one that coordinates sub-chats of its own")
-    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("So does `set_schedule` with `newChat`.")
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("So does `set_schedule` with `newChat: true`.")
+    // set_schedule requires where the runs go, and one existing chat is the usual answer.
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("A new schedule needs `newChat`: `newChat: false` sends every run to one existing chat")
+    expect(KANNA_ORCHESTRATION_INSTRUCTIONS).toContain("`newChat: true` starts a new chat on each run, only for runs that are each independent")
     expect(KANNA_ORCHESTRATION_INSTRUCTIONS).not.toMatch(/ticket|checkpoint/i)
   })
 
@@ -73,8 +76,9 @@ describe("buildKannaSystemInstructions", () => {
     expect(told).toContain("Several unrelated tasks in one message go to several chats.")
     expect(told).toContain("Tell the user which chat each task went to, and link it.")
     expect(told).toContain("Do not redo")
-    expect(told).toContain("Almost always give each automation its own chat: a sub-chat from `create_chat`")
-    expect(told).toContain("with `set_schedule`'s `chatId` pointed at it")
+    expect(told).toContain("Almost always give each automation its own chat that every run reuses: a sub-chat from `create_chat`")
+    expect(told).toContain("with `set_schedule`'s `newChat: false` and `chatId` pointed at it")
+    expect(told).toContain("`newChat: true` (also needs `delegator:`) is only for independent runs;")
     expect(told).toContain("Schedule into this chat only if the user asks")
     const named = [...told.matchAll(/`([a-z_]+)`/g)].map((match) => match[1]!)
     expect(named).toEqual(expect.arrayContaining(["create_chat", "fork_chat", "send_message", "list_chats", "get_context"]))

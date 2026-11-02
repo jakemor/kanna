@@ -139,10 +139,12 @@ const setSchedule = z.strictObject({
   scheduleId: z.string().optional().describe("Change this schedule. Omit to create one."),
   name: z.string().optional(),
   message: z.string().optional().describe("What to send. Required for a new schedule."),
-  chatId: z.string().optional().describe("The chat to send it to. Defaults to this chat. A delegator points it at a sub-chat made for the automation."),
-  newChat: z.boolean().optional().describe("Send it to a new chat on each run, instead of to an existing one."),
-  delegator: z.boolean().optional().describe(`With newChat, required when the schedule is made: what each new chat is. ${DELEGATOR_DESCRIPTION}`),
-  projectId: z.string().optional().describe("With newChat: the project for the new chats. Defaults to this chat's."),
+  // Required to create a schedule, which the schema cannot say without making
+  // every change repeat it, so the orchestrator checks it.
+  newChat: z.boolean().optional().describe("Required to create a schedule: where its runs go. false, the usual choice: every run goes to one existing chat (chatId), so the automation's history stays together. true: each run starts a new chat, only for runs that are each independent and should start fresh. A change keeps the schedule's choice unless it gives a new one."),
+  chatId: z.string().optional().describe("With newChat false: the chat every run goes to. Defaults to this chat. For an automation, a sub-chat made for it and titled for it."),
+  delegator: z.boolean().optional().describe(`With newChat true, required when the schedule is made: what each new chat is. ${DELEGATOR_DESCRIPTION}`),
+  projectId: z.string().optional().describe("With newChat true: the project for the new chats. Defaults to this chat's."),
   inMinutes: z.number().min(0).optional().describe("Once, this many minutes from now."),
   runAt: z.string().optional().describe("Once, at this ISO 8601 time."),
   everyMinutes: z.number().min(1).optional().describe("Repeatedly, this often."),
@@ -243,7 +245,7 @@ export const ORCHESTRATION_TOOLS: readonly KannaToolDefinition[] = [
   },
   {
     name: "set_schedule",
-    description: "Send a message later, once or on a repeat, to this chat, another chat, or a new chat each time. Give exactly one of inMinutes, runAt, everyMinutes or dailyAt. Pass scheduleId to change or pause one.",
+    description: "Send a message later, once or on a repeat. A new schedule needs newChat, the choice of where its runs go. Prefer one existing chat (newChat false, with chatId): an automation normally gets a sub-chat of its own, made with create_chat and titled for it, that every run reuses, so its history stays together. A new chat per run (newChat true) is only for runs that are each independent and should start fresh. Give exactly one of inMinutes, runAt, everyMinutes or dailyAt. Pass scheduleId to change or pause one.",
     schema: setSchedule,
     async execute(input, context) {
       const parsed = setSchedule.parse(input)

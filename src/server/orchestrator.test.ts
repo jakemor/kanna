@@ -1044,7 +1044,7 @@ describe("schedules", () => {
     const { orchestrator, codex, store, userChat, setClock, prompts } = await setup()
     const root = await userChat()
     setClock(1_000_000)
-    const schedule = await orchestrator.setSchedule(root, { message: "check the deploy", inMinutes: 10 })
+    const schedule = await orchestrator.setSchedule(root, { message: "check the deploy", newChat: false, inMinutes: 10 })
     expect(schedule).toMatchObject({ target: { kind: "chat", chatId: root }, enabled: true, runCount: 0 })
 
     await orchestrator.runDueSchedules()
@@ -1067,7 +1067,7 @@ describe("schedules", () => {
     const { orchestrator, store, userChat, setClock } = await setup()
     const root = await userChat()
     setClock(0)
-    const schedule = await orchestrator.setSchedule(root, { message: "status?", everyMinutes: 5 })
+    const schedule = await orchestrator.setSchedule(root, { message: "status?", newChat: false, everyMinutes: 5 })
     setClock(5 * 60_000)
     await orchestrator.runDueSchedules()
     setClock(10 * 60_000)
@@ -1094,12 +1094,34 @@ describe("schedules", () => {
     expect(store.getSchedule(schedule.scheduleId)).toMatchObject({ runCount: 1, lastRunChatId: created })
   })
 
+  test("a new schedule must say where its runs go, and a change keeps or switches that", async () => {
+    const { orchestrator, store, userChat, setClock } = await setup()
+    const root = await userChat()
+    const other = await userChat()
+    setClock(0)
+    await expect(orchestrator.setSchedule(root, { message: "sweep", everyMinutes: 60 }))
+      .rejects.toThrow("set_schedule needs newChat to create a schedule: false sends every run to one existing chat")
+    await expect(orchestrator.setSchedule(root, { message: "sweep", newChat: true, delegator: false, chatId: other, everyMinutes: 60 }))
+      .rejects.toThrow("chatId is for newChat: false")
+    // A chatId is a choice too, as callers made it before newChat was required.
+    const named = await orchestrator.setSchedule(root, { message: "sweep", chatId: other, everyMinutes: 60 })
+    expect(store.getSchedule(named.scheduleId)?.target).toEqual({ kind: "chat", chatId: other })
+
+    const fresh = await orchestrator.setSchedule(root, { message: "sweep", newChat: true, delegator: false, everyMinutes: 60 })
+    // A change that does not say keeps the choice.
+    await orchestrator.setSchedule(root, { scheduleId: fresh.scheduleId, name: "Sweep" })
+    expect(store.getSchedule(fresh.scheduleId)?.target).toMatchObject({ kind: "new_chat" })
+    // false moves it to one chat: chatId, or the chat that changes it.
+    await orchestrator.setSchedule(root, { scheduleId: fresh.scheduleId, newChat: false })
+    expect(store.getSchedule(fresh.scheduleId)?.target).toEqual({ kind: "chat", chatId: root })
+  })
+
   test("a newChat schedule needs delegator, keeps it through changes, and makes its chats that", async () => {
     const { orchestrator, store, userChat, setClock } = await setup({ delegatorMode: true })
     const root = await userChat()
     setClock(0)
     await expect(orchestrator.setSchedule(root, { message: "sweep", newChat: true, everyMinutes: 60 }))
-      .rejects.toThrow("set_schedule with newChat needs delegator: false for a chat that does the work itself, true for one that coordinates")
+      .rejects.toThrow("set_schedule with newChat: true needs delegator: false for a chat that does the work itself, true for one that coordinates")
     const worker = await orchestrator.setSchedule(root, { name: "Sweep", message: "sweep", newChat: true, delegator: false, everyMinutes: 60 })
     expect(store.getSchedule(worker.scheduleId)?.target).toMatchObject({ kind: "new_chat", delegator: false })
     // A change that does not say keeps the answer.
@@ -1121,7 +1143,7 @@ describe("schedules", () => {
     const { orchestrator, store, userChat, setClock } = await setup()
     const root = await userChat()
     setClock(0)
-    const schedule = await orchestrator.setSchedule(root, { message: "ping", everyMinutes: 5 })
+    const schedule = await orchestrator.setSchedule(root, { message: "ping", newChat: false, everyMinutes: 5 })
     const paused = await orchestrator.setSchedule(root, { scheduleId: schedule.scheduleId, enabled: false })
     expect(paused).toMatchObject({ enabled: false, message: "ping" })
     setClock(60 * 60_000)
@@ -1152,7 +1174,7 @@ describe("schedules", () => {
     const { orchestrator, store, agent, userChat, setClock } = await setup()
     const root = await userChat()
     setClock(0)
-    const schedule = await orchestrator.setSchedule(root, { message: "status?", everyMinutes: 5 })
+    const schedule = await orchestrator.setSchedule(root, { message: "status?", newChat: false, everyMinutes: 5 })
     setClock(5 * 60_000)
     await orchestrator.runDueSchedules()
     setClock(10 * 60_000)
@@ -1177,7 +1199,7 @@ describe("schedules", () => {
     const { orchestrator, store, userChat } = await setup()
     const root = await userChat()
     const child = await orchestrator.createChat(root, { message: "work" })
-    const schedule = await orchestrator.setSchedule(root, { message: "ping", dailyAt: "09:00", weekdays: [1, 3] })
+    const schedule = await orchestrator.setSchedule(root, { message: "ping", newChat: false, dailyAt: "09:00", weekdays: [1, 3] })
 
     for (const compacted of [false, true]) {
       if (compacted) await store.compact()
@@ -1514,10 +1536,10 @@ describe("reporting when a turn ends", () => {
     const other = await userChat("something else")
     const child = await orchestrator.createChat(root, { message: "watch the deploy" })
     setClock(1_000_000)
-    const schedule = await orchestrator.setSchedule(child.chatId, { message: "check the deploy", inMinutes: 10, name: "Deploy check" })
+    const schedule = await orchestrator.setSchedule(child.chatId, { message: "check the deploy", newChat: false, inMinutes: 10, name: "Deploy check" })
     expect(store.getSchedule(schedule.scheduleId)).toMatchObject({ reportsToParent: true })
     // Not for a chat nobody is waiting to hear from, nor for a message to another chat.
-    expect(store.getSchedule((await orchestrator.setSchedule(other, { message: "ping", inMinutes: 10 })).scheduleId)).not.toHaveProperty("reportsToParent")
+    expect(store.getSchedule((await orchestrator.setSchedule(other, { message: "ping", newChat: false, inMinutes: 10 })).scheduleId)).not.toHaveProperty("reportsToParent")
     expect(store.getSchedule((await orchestrator.setSchedule(child.chatId, { chatId: other, message: "ping", inMinutes: 10 })).scheduleId)).not.toHaveProperty("reportsToParent")
 
     codex.finish(child.chatId, "I will look again in ten minutes.")
@@ -1582,7 +1604,7 @@ describe("reporting when a turn ends", () => {
     const root = await userChat()
     const child = await orchestrator.createChat(root, { message: "coordinate" })
     await orchestrator.createChat(child.chatId, { message: "legwork" })
-    const schedule = await orchestrator.setSchedule(child.chatId, { message: "check", everyMinutes: 30 })
+    const schedule = await orchestrator.setSchedule(child.chatId, { message: "check", newChat: false, everyMinutes: 30 })
     codex.finish(child.chatId, "Handed off.")
     await until(() => store.getQueuedMessages(root).length === 1, "the interim report")
     const through = store.getChat(child.chatId)!.lastTurnEndedAt
@@ -1723,9 +1745,9 @@ describe("messages between agents", () => {
     const other = await userChat("something else")
     const child = await orchestrator.createChat(root, { message: "watch the deploy" })
     setClock(1_000_000)
-    await orchestrator.setSchedule(root, { message: "mine", inMinutes: 10 })
+    await orchestrator.setSchedule(root, { message: "mine", newChat: false, inMinutes: 10 })
     await orchestrator.setSchedule(root, { chatId: other, message: "for another chat", inMinutes: 10 })
-    await orchestrator.setSchedule(child.chatId, { message: "for the parent's work", inMinutes: 10 })
+    await orchestrator.setSchedule(child.chatId, { message: "for the parent's work", newChat: false, inMinutes: 10 })
     for (const chatId of [root, other, child.chatId]) codex.finish(chatId, "done")
     await until(() => codex.turnsFor(root).length === 2, "the sub-chat's report")
     codex.finish(root, "noted")
@@ -2438,7 +2460,7 @@ describe("the tools", () => {
     expect(await call("wait_for_chats", { chatIds: [created.value.chatId] })).toMatchObject({ isError: true })
     expect((await call("list_chats", { parentChatId: root })).value.total).toBe(1)
     expect((await call("read_chat", { chatId: created.value.chatId })).value.entries).toHaveLength(2)
-    expect((await call("set_schedule", { message: "ping", inMinutes: 5 })).value.target).toEqual({ kind: "chat", chatId: root })
+    expect((await call("set_schedule", { message: "ping", newChat: false, inMinutes: 5 })).value.target).toEqual({ kind: "chat", chatId: root })
     // A schedule's card is drawn from the same two things a chat's is.
     const scheduleCall = emitted.find((entry) => entry.kind === "tool_call" && entry.tool.toolName === "set_schedule")!
     expect(scheduleCall).toMatchObject({ tool: { toolKind: "schedule", input: { payload: { message: "ping", inMinutes: 5 } } } })

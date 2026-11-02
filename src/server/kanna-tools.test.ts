@@ -259,7 +259,15 @@ describe("shared Kanna display tools", () => {
     expect(schemaOf("fork_chat").properties.delegator!.description).toContain("Pass it to change the role")
     // Required with newChat only, which the schema cannot say, so the orchestrator checks it.
     expect(schemaOf("set_schedule").required ?? []).not.toContain("delegator")
-    expect(schemaOf("set_schedule").properties.delegator!.description).toContain("With newChat, required")
+    expect(schemaOf("set_schedule").properties.delegator!.description).toContain("With newChat true, required")
+    // Where a schedule's runs go is required to create one, not to change it, so the orchestrator checks it too.
+    expect(schemaOf("set_schedule").required ?? []).not.toContain("newChat")
+    expect(schemaOf("set_schedule").properties.newChat!.type).toBe("boolean")
+    expect(schemaOf("set_schedule").properties.newChat!.description).toContain("Required to create a schedule")
+    expect(schemaOf("set_schedule").properties.newChat!.description).toContain("false, the usual choice: every run goes to one existing chat")
+    const scheduleTool = kannaToolSpecs().find((tool) => tool.name === "set_schedule")!
+    expect(scheduleTool.description).toContain("Prefer one existing chat (newChat false, with chatId)")
+    expect(scheduleTool.description).toContain("only for runs that are each independent and should start fresh")
 
     const { runtime } = setup()
     try {

@@ -63,6 +63,9 @@ import {
 export const DELEGATOR_DESCRIPTION = "Required. false for a chat that does the work itself, almost always the right choice. true for a chat that coordinates sub-chats of its own and does none of the work."
 export const DELEGATOR_REQUIRED = (tool: string) => `${tool} needs delegator: false for a chat that does the work itself, true for one that coordinates sub-chats of its own and does none of the work.`
 
+/** Where a new schedule's runs go, which `setSchedule` asks for outright. */
+export const NEW_CHAT_REQUIRED = "set_schedule needs newChat to create a schedule: false sends every run to one existing chat (chatId, or this chat), which suits almost every automation; true starts a new chat on each run, only for runs that are each independent."
+
 /** A chat with no parent is in no task log, so a list is the only place it is shown. */
 const UNLISTED_ORPHAN_ERROR = "A chat that is not a sub-chat of this one has to be in the sidebar: nothing else would show it. Leave showInSidebar unset, or keep the chat a sub-chat."
 
@@ -1383,6 +1386,7 @@ export class ChatOrchestrator {
     name?: string
     message?: string
     chatId?: string
+    /** Required to create one, unless `chatId` names the chat: false sends every run to one chat, true makes a chat per run. */
     newChat?: boolean
     /** With `newChat`: what each chat it makes is. Required when the target becomes a new chat. */
     delegator?: boolean
@@ -1407,6 +1411,15 @@ export class ChatOrchestrator {
     const content = input.message ?? existing?.content
     if (!content?.trim()) throw new Error("A schedule needs a message to send.")
 
+    // Where the runs go is asked for outright, so it is a choice and not a
+    // default: one chat keeps an automation's history together, and a chat
+    // per run is a different thing that is easy to fall into. A chatId says
+    // it too, so a caller from before the choice was required still works.
+    if (!existing && input.newChat === undefined && !input.chatId) throw new Error(NEW_CHAT_REQUIRED)
+    if (input.newChat && input.chatId) {
+      throw new Error("chatId is for newChat: false. With newChat: true each run makes its own chat.")
+    }
+
     let target = existing?.target
     if (input.newChat) {
       const projectId = input.projectId ?? caller.projectId
@@ -1414,10 +1427,10 @@ export class ChatOrchestrator {
       // Asked once, when the schedule starts making chats; a change to it
       // keeps the answer unless it gives a new one.
       const delegator = input.delegator ?? (target?.kind === "new_chat" ? target.delegator : undefined)
-      if (delegator === undefined) throw new Error(DELEGATOR_REQUIRED("set_schedule with newChat"))
+      if (delegator === undefined) throw new Error(DELEGATOR_REQUIRED("set_schedule with newChat: true"))
       if (delegator) this.checkCanDelegate(input.provider ?? existing?.provider ?? caller.provider)
       target = { kind: "new_chat", projectId, delegator }
-    } else if (input.chatId || !target) {
+    } else if (input.chatId || !target || (input.newChat === false && target.kind === "new_chat")) {
       target = { kind: "chat", chatId: this.requireChat(input.chatId ?? actorChatId).id }
     } else if (input.delegator !== undefined && target.kind === "new_chat") {
       if (input.delegator) this.checkCanDelegate(input.provider ?? existing?.provider ?? caller.provider)

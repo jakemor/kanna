@@ -5,7 +5,7 @@ import { buildKannaSystemInstructions, buildKannaSystemMessage, buildKannaToolCl
 import { kannaCliCommand } from "./secrets"
 import { KANNA_TOOL_DESCRIPTION_LIMIT, KANNA_TOOL_NAMES, kannaToolSpecs } from "./kanna-tools"
 import { SHOW_VISUALIZATION_TOOL } from "./kanna-visualization-tool"
-import { KANNA_VISUALIZATION_CONTRACT, KANNA_VISUALIZATION_SKILL_INSTRUCTIONS } from "./visualization-instructions"
+import { KANNA_VISUALIZATION_CONTRACT, KANNA_VISUALIZATION_SKILL_INSTRUCTIONS, VISUALIZATION_DESIGN_WIDTH } from "./visualization-instructions"
 import { VISUALIZATION_EXPAND_BUTTON, VISUALIZATION_MAX_HEIGHT } from "../shared/visualization"
 
 const AGENT_ID = "claude/claude-opus-5"
@@ -243,6 +243,27 @@ test("what holds for every kind is in the description and the session instructio
   const examples = [...KANNA_VISUALIZATION_CONTRACT.matchAll(/<div class="kanna-segmented"[^>]*>(.*?)<\/div>/g)]
   expect(examples.length).toBeGreaterThanOrEqual(2)
   for (const [, options] of examples) expect(options!.match(/<button/g)!.length).toBe(3)
+})
+
+// Told to "use the available width", agents built dashboards for a wide
+// window, and they overflowed the transcript's column.
+test("a visualization is designed for the chat column, not a wide window, in both places", () => {
+  const instructions = buildKannaSystemInstructions(AGENT_ID)
+  const description = SHOW_VISUALIZATION_TOOL.description
+  const widest = `${VISUALIZATION_DESIGN_WIDTH}px`
+  expect(VISUALIZATION_DESIGN_WIDTH).toBe(700)
+  for (const text of [instructions, description]) {
+    expect(text).toContain("never full screen")
+    expect(text).toMatch(new RegExp(`design for ${widest}`, "i"))
+    expect(text).toContain("320px")
+    expect(text).toMatch(/2 columns at most|at most two columns/)
+    expect(text).toMatch(/scrolls (sideways )?in(side)? its own box/)
+    expect(text).not.toContain("available width")
+  }
+  // First in what holds for every kind, before anything about markup.
+  expect(KANNA_VISUALIZATION_CONTRACT.indexOf(`at most about ${widest} wide`)).toBeLessThan(KANNA_VISUALIZATION_CONTRACT.indexOf("Author self-contained HTML"))
+  expect(description.indexOf("never full screen")).toBeLessThan(description.indexOf("One subject per visualization"))
+  expect(instructions).toContain("the page itself never overflows or scrolls sideways")
 })
 
 // Claude Code cuts an MCP tool's description at this length and ends it

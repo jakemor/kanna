@@ -35,6 +35,16 @@ export const KANNA_VISUALIZATION_ROUTING = [
 
 const corner = `${VISUALIZATION_EXPAND_BUTTON.clear}px`
 
+/**
+ * The widest a visualization is designed for. It renders in the transcript's
+ * column: 800px on the web (`ChatTranscriptViewport`), the screen less about
+ * 48pt on an iPhone. Told only to "use the available width", agents built
+ * dashboards for a wide window that overflowed that column. 700, under the
+ * web's 800, so a layout made for it never reaches the edge.
+ */
+export const VISUALIZATION_DESIGN_WIDTH = 700
+const widest = `${VISUALIZATION_DESIGN_WIDTH}px`
+
 // Condensed from the prototype skill for the in-chat surface. URL persistence and
 // page-level picker placement need different rules inside an opaque, auto-sized iframe.
 const prototypeExample = `<div class="kanna-picker"><div class="kanna-segmented" role="radiogroup" aria-label="Direction"><button role="radio" onclick="mount('Direct')">Direct</button><button role="radio" onclick="mount('Confirm')">Confirm</button><button role="radio" onclick="mount('Undo')">Undo</button></div></div>
@@ -50,12 +60,13 @@ mount('Direct');
 
 const everyKind = [
   "## Every kind",
+  `It renders inside the chat transcript's column, at most about ${widest} wide, never full screen. Design for ${widest} as the maximum and make it work down to 320px. Never a dashboard laid out for a wide window: at most two columns at ${widest}, stacking into one when narrow. A table or chart that cannot fit the column wraps, reflows or scrolls sideways inside its own box; the page itself never overflows or scrolls sideways.`,
   "Author self-contained HTML with inline CSS, JavaScript, and data, and supply it as html or a local path. External scripts, stylesheets, fonts, images, fetches, local file access, storage APIs, and nested frames are unavailable, and a document that references an external script, stylesheet or image is rejected. Images and fonts work as data: URIs, and the whole document can be 2 MB. Plain SVG and JavaScript work well; bundle any library you need inline. The tool stores a snapshot, so publish again after changing a source file.",
   "One subject per visualization: one chart, one diagram, or one component's variants. When the request has several, publish several visualizations, with a line of text between them in the reply.",
   `Keep the top-right ${corner} by ${corner} clear: the host lays a ${VISUALIZATION_EXPAND_BUTTON.size}px expand button over that corner, on hover and always on touch screens, so nothing important or interactive goes there (no control, legend, key figure or close button).`,
   "Options and settings go on their own row above the content, in the host's styled controls, never an ad-hoc row of buttons. Two to four short options are a segmented control. Five to eight short options, or views to switch between, are a kanna-tabs row: it scrolls sideways when it does not fit, and the host fades the edge that has more beyond it, shows arrows for a mouse, and scrolls the selected tab to the centre. More than eight, or labels longer than about twenty characters, are a kanna-select dropdown. A segmented control: <div class=\"kanna-segmented\" role=\"radiogroup\" aria-label=\"Range\"><button role=\"radio\" aria-checked=\"true\">7d</button><button role=\"radio\" aria-checked=\"false\">30d</button><button role=\"radio\" aria-checked=\"false\">90d</button></div>. A tabs row: <div class=\"kanna-tabs\" role=\"tablist\" aria-label=\"View\"> holding <button role=\"tab\" aria-selected=\"true\"> buttons. A dropdown: <select class=\"kanna-select\" aria-label=\"State\"><option>One obvious</option><option>Several in production</option><option>Sandbox only</option><option>Live check running</option><option>Save failed</option></select>, read on change. Set the aria state on click and the host does the rest (the styling, the fades and arrows, centring the selection, the tabs' sliding underline and the arrow keys), so write no script or CSS of your own for them. A segmented control and a dropdown on one row are the same height and corners.",
   "The host supplies typography and live light/dark colors. Body text is 16px and inherited: prose, labels and controls stay at that size or larger, and only secondary labels go smaller, never under 12px. Use var(--font-sans) and var(--font-mono) only when an explicit font is needed. Use CSS variables directly as colors: --foreground, --background, --muted-foreground, --border, --surface, and --viz-red, --viz-green, --viz-blue, --viz-yellow, --viz-orange, --viz-purple, --viz-pink, --viz-teal (also --chart-1 through --chart-8). Do not wrap these in hsl(). Avoid hardcoded light or dark backgrounds. For canvas, read colors and fonts from computed styles, wait for document.fonts.ready, and redraw on the kanna:themechange event.",
-  `Make it feel like part of the reply: keep html, body and the outer wrapper transparent, with no outer card, border, shadow, page padding, or oversized headline. Use the available width, natural document height, and a layout that holds down to 320px; recompute on ResizeObserver, do not merely shrink an SVG full of text. Avoid 100vh and percentage page heights because the host sizes the frame to its contents. The frame fits the content up to ${VISUALIZATION_MAX_HEIGHT}px; anything taller scrolls inside the frame with no scrollbar showing, so split long content or put it behind tabs.`,
+  `Make it feel like part of the reply: keep html, body and the outer wrapper transparent, with no outer card, border, shadow, page padding, or oversized headline. Fill the column's width fluidly and take your natural document height; recompute on ResizeObserver, do not merely shrink an SVG full of text. Avoid 100vh and percentage page heights because the host sizes the frame to its contents. The frame fits the content up to ${VISUALIZATION_MAX_HEIGHT}px; anything taller scrolls inside the frame with no scrollbar showing, so split long content or put it behind tabs.`,
   "The page's height must never change after it first renders. No interaction may grow or shrink it: a tab, toggle, filter, opened row, added text, validation message or tooltip all have to fit in the height the page already has, because a frame that changes height moves the whole conversation under the reader. Size the page for its tallest state up front: give every area that swaps content one fixed height (the tallest view's), reserve the room for anything that appears later, lay tooltips and popovers over the content, and let a list that can grow scroll inside its own fixed-height box.",
   "Use touch-friendly controls, keyboard navigation, and reduced-motion support. On iOS the inline result is a live picture that opens full screen on a tap, so the first view must read before any interaction. A vertical drag scrolls the page unless the element under the finger sets touch-action: none; put that on the draggable element itself, never on the whole page.",
   "After the tool succeeds, the visualization is already visible. Do not also emit a provider marker, screenshot, raw HTML, or file link unless requested. Keep explanations in Markdown when Markdown says them better.",
@@ -95,15 +106,16 @@ export const KANNA_VISUALIZATION_CONTRACT = [...everyKind, ...charts, ...diagram
  * with a lower limit than Claude Code's would cut it from the end.
  */
 export const SHOW_VISUALIZATION_DESCRIPTION = [
-  "Show something inline in the conversation, on web and iOS, as live self-contained HTML with no card. Reach for it to explain how something works or flows (a diagram, in place of ASCII art or Mermaid in a code block), to show what a screen or component could look like or compare options (a prototype, in place of describing a layout), to show data (a chart or table, not an image), and for calculators and simulations. Rules for each kind are in your instructions under \"Kanna visualizations\". For all of them:",
-  "- Inline all CSS, JavaScript and data. Nothing external loads: no CDN script, stylesheet, font, image URL, fetch or storage.",
-  "- One subject per visualization: one chart, one diagram, or one component's variants.",
+  "Show something inline in the conversation, on web and iOS, as live self-contained HTML with no card. Reach for it to explain how something works or flows (a diagram, not ASCII art or Mermaid in a code block), to show what a screen or component could look like or compare options (a prototype, not a layout in prose), to show data (a chart or table, not an image), and for calculators and simulations. Rules for each kind are in your instructions under \"Kanna visualizations\". For all of them:",
+  "- Inline all CSS, JavaScript and data: no CDN script, stylesheet, font, image URL, fetch or storage.",
+  `- It sits in the chat column, never full screen: design for ${widest} at most, down to 320px. No wide dashboards: 2 columns at most, stacked when narrow. A wide table or chart scrolls in its own box, not the page.`,
+  "- One subject per visualization: one chart, diagram, or component's variants.",
   `- Keep the top-right ${corner} by ${corner} clear; the host lays an expand button there.`,
   "- A chart, table or diagram opens with an h3 title at the top left (charts add a p class=\"text-muted\" subtitle). A prototype has no heading; its version picker is centred (class=\"kanna-picker\" row).",
-  "- Options and settings go on their own row above the content: class=\"kanna-segmented\" (role=radiogroup; role=radio buttons with aria-checked) for 2 to 4 short options, a kanna-tabs row (role=tablist, role=tab, aria-selected) for 5 to 8 or for whole views, a <select class=\"kanna-select\"> dropdown beyond. No custom button rows.",
-  "- Colors are CSS variables, used directly: --foreground, --background, --muted-foreground, --border, --surface, --viz-red/green/blue/yellow/orange/purple/pink/teal, --chart-1 to --chart-8. Transparent page, no outer card.",
+  "- Options go on their own row above the content: class=\"kanna-segmented\" (role=radiogroup, role=radio + aria-checked) for 2 to 4 short options, a kanna-tabs row (role=tablist, role=tab, aria-selected) for 5 to 8 or for whole views, a <select class=\"kanna-select\"> dropdown beyond. No custom button rows.",
+  "- Colors are CSS variables, used directly: --foreground, --background, --muted-foreground, --border, --surface, --viz-red/green/blue/yellow/orange/purple/pink/teal, --chart-1 to --chart-8. Transparent page.",
   "- Body text is 16px, inherited. Only secondary labels go smaller, never under 12px.",
-  `- Fluid width from 320px, natural height, no 100vh. The frame fits the content up to ${VISUALIZATION_MAX_HEIGHT}px and scrolls inside past that.`,
-  "- The height must never change after load: no click, toggle or tab may grow or shrink the page. Size it for its tallest state; swap content inside fixed-height areas.",
-  "- On iOS it is a picture until tapped: the first view must read without interaction.",
+  `- Natural height, no 100vh. The frame fits the content up to ${VISUALIZATION_MAX_HEIGHT}px and scrolls past that.`,
+  "- The height must never change after load: no click or tab may resize the page. Size it for its tallest state.",
+  "- On iOS it is a picture until tapped: the first view must read untouched.",
 ].join("\n")

@@ -1,4 +1,5 @@
 import { CLIENT_PERFORMANCE_METRICS, type ClientPerformanceMetric } from "../../shared/performance"
+import { generateUUID } from "../lib/utils"
 
 const metrics = new Map<ClientPerformanceMetric, { count: number; total: number; max: number }>()
 
@@ -13,7 +14,11 @@ export function recordClientPerformance(name: ClientPerformanceMetric, value: nu
 
 /** Summaries contain counts and durations. Chat text and IDs never enter this log. */
 export function startClientPerformance(sample: () => Partial<Record<ClientPerformanceMetric, number>>) {
-  const clientId = crypto.randomUUID()
+  // Not crypto.randomUUID(): that is secure-context only, so it is undefined
+  // when Kanna is opened over plain http on a LAN/Tailscale hostname, and this
+  // runs in an effect right after the post-login UI mounts. It would throw and
+  // leave a blank page.
+  const clientId = generateUUID()
   let observer: PerformanceObserver | null = null
   try {
     if (typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes.includes("longtask")) {

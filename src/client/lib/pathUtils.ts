@@ -41,11 +41,21 @@ function toPositiveInteger(value: string | undefined) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
+function decodeLocalFilePath(filePath: string) {
+  // Keep separator and NUL escapes encoded while decoding the rest once.
+  const pathWithProtectedEscapes = filePath.replace(/%(2f|5c|00)/gi, "%25$1")
+  try {
+    return decodeURIComponent(pathWithProtectedEscapes)
+  } catch {
+    return filePath
+  }
+}
+
 function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
   const hashMatch = /^(?<path>\/.+?)#L(?<line>\d+)(?:C(?<column>\d+))?$/.exec(target)
   if (hashMatch?.groups?.path) {
     return {
-      path: hashMatch.groups.path,
+      path: decodeLocalFilePath(hashMatch.groups.path),
       line: toPositiveInteger(hashMatch.groups.line),
       column: toPositiveInteger(hashMatch.groups.column),
     }
@@ -54,14 +64,14 @@ function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
   const suffixMatch = /^(?<path>\/.+?):(?<line>\d+)(?::(?<column>\d+))?$/.exec(target)
   if (suffixMatch?.groups?.path) {
     return {
-      path: suffixMatch.groups.path,
+      path: decodeLocalFilePath(suffixMatch.groups.path),
       line: toPositiveInteger(suffixMatch.groups.line),
       column: toPositiveInteger(suffixMatch.groups.column),
     }
   }
 
   if (target.startsWith("/")) {
-    return { path: target }
+    return { path: decodeLocalFilePath(target) }
   }
 
   return null

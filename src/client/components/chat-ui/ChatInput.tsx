@@ -37,6 +37,7 @@ import { resolveModifiedEnter, shouldSteerSubmit } from "../../../shared/submit-
 import { SignInDialog } from "../auth/SignInDialog"
 import { ChatModePicker } from "./ChatPreferenceControls"
 import { ComposerHarnessMenu } from "./ComposerHarnessMenu"
+import { UsageLimitRings, useUsageLimitRingsVisible } from "./UsageLimitRings"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { getChatViewer, useViewerStore, viewerAttachmentFromChat } from "../../stores/viewerStore"
 import { activateAttachment } from "../viewer/attachmentActions"
@@ -337,6 +338,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const { composerChatId, selectedProvider } = composer
   const providerPrefs = composer.effectiveState
   const showModePicker = composer.supportsPlanMode
+  const showUsageLimitRings = useUsageLimitRingsVisible(selectedProvider)
   // What Enter does while a turn is running; ⌘/Ctrl+Enter does the other.
   const submitWhileRunning = useAppSettingsStore((store) => store.settings?.submitWhileRunning) ?? "queue"
   // Switching to a harness that isn't signed in is blocked: the pick is
@@ -1588,6 +1590,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             ) : null}
             <div style={{ gridArea: "right" }} className="flex shrink-0 items-center gap-1">
+              {showUsageLimitRings ? <UsageLimitRings provider={selectedProvider} model={providerPrefs.model} /> : null}
               {/* With a draft, send has the circle and the mic sits before it. */}
               {canSubmit && !phoneBusy ? (
                 <Button
@@ -1658,6 +1661,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 !stacked && cn("ml-1 mr-1.5 max-md:ml-2 max-md:mr-0 max-md:rounded-full max-md:p-1", PHONE_SURFACE),
               )}
             >
+            {showUsageLimitRings ? <UsageLimitRings provider={selectedProvider} model={providerPrefs.model} /> : null}
             {renderRightButtons(true)}
             </div>
             {wrapMeasure}

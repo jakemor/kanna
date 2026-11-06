@@ -2130,13 +2130,15 @@ export class AgentCoordinator {
   }
 
   private async dequeueAndStartQueuedMessage(chatId: string, queuedMessage: QueuedChatMessage, options?: { steered?: boolean }) {
-    await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     // Before the turn starts, as a send from the parent arms it: a stop since
     // the message was queued may have released the report it was owed.
     await this.orchestration?.armReportForQueuedMessage(chatId, queuedMessage.source)
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage, chatId)
+    // Keep the queued input if preparing its settings or report fails. From
+    // here, startTurnForChat persists the prompt even when startup fails.
+    await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     await this.startTurnForChat({
       chatId,
       provider,
@@ -2167,6 +2169,7 @@ export class AgentCoordinator {
       await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
     } finally {
       this.unmarkStarting(chatId)
+      this.emitStateChange(chatId)
     }
     return true
   }
@@ -2243,8 +2246,8 @@ export class AgentCoordinator {
    * - codex: the app-server reports a recoverable resume failure by falling
    *   back to a fresh thread, so we preflight `startSession` (which the turn's
    *   own call then reuses via its warm-session early return) and read the
-   *   flag. Errors are swallowed so the turn's own startSession surfaces them
-   *   with today's ordering.
+   *   flag. Startup failures propagate: retrying here doubles a stalled
+   *   resume and hides its first error from the user.
    * - pi: out of scope.
    */
   private async detectLostProviderSession(args: {
@@ -2272,19 +2275,15 @@ export class AgentCoordinator {
       case "codex": {
         // No token → nothing to resume; a fork in progress must not be disturbed.
         if (!args.sessionToken || args.pendingForkSessionToken) return false
-        try {
-          const started = await this.codexManager.startSession({
-            chatId: args.chatId,
-            cwd: args.cwd,
-            model: args.model,
-            serviceTier: args.serviceTier,
-            sessionToken: args.sessionToken,
-            pendingForkSessionToken: null,
-          })
-          return started?.resumeFellBack === true
-        } catch {
-          return false
-        }
+        const started = await this.codexManager.startSession({
+          chatId: args.chatId,
+          cwd: args.cwd,
+          model: args.model,
+          serviceTier: args.serviceTier,
+          sessionToken: args.sessionToken,
+          pendingForkSessionToken: null,
+        })
+        return started?.resumeFellBack === true
       }
       default:
         return false
@@ -2324,14 +2323,37 @@ export class AgentCoordinator {
 
   private async startTurnForChat(args: StartTurnArgs) {
     this.markStarting(args.chatId)
+    let promptSaved = false
+    const appendUserPrompt = async () => {
+      if (!args.appendUserPrompt || promptSaved) return
+      await this.store.appendMessage(args.chatId, timestamped({
+        kind: "user_prompt",
+        content: args.content,
+        attachments: args.attachments,
+        steered: args.steered,
+        ...(args.source ? { source: args.source } : {}),
+      }))
+      promptSaved = true
+    }
     try {
-      await this.startTurn(args)
+      await this.startTurn(args, appendUserPrompt)
+    } catch (error) {
+      // Recovery boundaries normally precede the prompt. If recovery fails,
+      // persist it here before the error so dequeued messages aren't lost.
+      await appendUserPrompt()
+      const message = error instanceof Error ? error.message : String(error)
+      await this.store.appendMessage(args.chatId, timestamped({
+        kind: "result", subtype: "error", isError: true, durationMs: 0, result: message,
+      }))
+      await this.store.recordTurnFailed(args.chatId, message)
+      throw error
     } finally {
       this.unmarkStarting(args.chatId)
+      this.emitStateChange(args.chatId)
     }
   }
 
-  private async startTurn(args: StartTurnArgs) {
+  private async startTurn(args: StartTurnArgs, appendUserPrompt: () => Promise<void>) {
 
     // Close any lingering draining stream before starting a new turn.
     const draining = this.drainingStreams.get(args.chatId)
@@ -2411,19 +2433,7 @@ export class AgentCoordinator {
       ? await this.prepareSessionRestore(args.chatId, args.provider, existingMessages())
       : null
 
-    if (args.appendUserPrompt) {
-      const userPromptEntry = timestamped(
-        {
-          kind: "user_prompt",
-          content: args.content,
-          attachments: args.attachments,
-          steered: args.steered,
-          ...(args.source ? { source: args.source } : {}),
-        },
-        Date.now()
-      )
-      await this.store.appendMessage(args.chatId, userPromptEntry)
-    }
+    await appendUserPrompt()
     await this.store.recordTurnStarted(args.chatId, args.model)
 
     if (shouldGenerateTitle) {
@@ -2917,6 +2927,11 @@ export class AgentCoordinator {
   }
 
   async steer(command: Extract<ClientCommand, { type: "message.steer" }>) {
+    // A startup has no active turn to cancel yet. Leave the queued prompt
+    // intact rather than racing another start against the same session.
+    if (this.startingTurns.has(command.chatId)) {
+      throw new Error("Chat is still starting; queued message has been kept")
+    }
     const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
     if (!queuedMessage) {
       throw new Error("Queued message not found")
@@ -2948,6 +2963,7 @@ export class AgentCoordinator {
       await this.dequeueAndStartQueuedMessage(command.chatId, queuedMessage, { steered: true })
     } finally {
       this.unmarkStarting(command.chatId)
+      this.emitStateChange(command.chatId)
     }
   }
 
@@ -3525,37 +3541,15 @@ export class AgentCoordinator {
             appendUserPrompt: false,
           })
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          await this.store.appendMessage(
-            active.chatId,
-            timestamped({
-              kind: "result",
-              subtype: "error",
-              isError: true,
-              durationMs: 0,
-              result: message,
-            })
-          )
-          await this.store.recordTurnFailed(active.chatId, message)
-          this.emitStateChange(active.chatId)
+          // startTurnForChat owns transcript failures and state updates.
+          this.reportBackgroundError?.(`Could not start the next turn: ${String(error)}`)
         }
       } else if (!active.cancelRequested) {
         try {
           await this.maybeStartNextQueuedMessage(active.chatId)
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          await this.store.appendMessage(
-            active.chatId,
-            timestamped({
-              kind: "result",
-              subtype: "error",
-              isError: true,
-              durationMs: 0,
-              result: message,
-            })
-          )
-          await this.store.recordTurnFailed(active.chatId, message)
-          this.emitStateChange(active.chatId)
+          // startTurnForChat owns transcript failures and state updates.
+          this.reportBackgroundError?.(`Could not start the next turn: ${String(error)}`)
         }
       }
       // Here rather than at the result: the stream is closed and any follow-up

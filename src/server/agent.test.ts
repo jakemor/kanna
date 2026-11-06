@@ -4235,12 +4235,12 @@ test("a failed Codex resume is reported once and publishes an idle state", async
     onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
     codexManager: {
       getSessionPids: () => new Map(),
-      startSession: async () => { starts++; throw new Error("Codex thread/resume timed out") },
+      startSession: async () => { starts++; throw new Error("Codex process exited during resume") },
       stopSession() {}, stopAll() {},
     } as never,
   })
   try {
-    await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "resume", model: "gpt-5.5" })).rejects.toThrow("timed out")
+    await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "resume", model: "gpt-5.5" })).rejects.toThrow("process exited during resume")
     await waitFor(() => busy.at(-1) === false)
     expect(starts).toBe(1)
     expect(coordinator.isBusy("chat-1")).toBe(false)

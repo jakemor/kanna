@@ -3184,9 +3184,9 @@ describe("Codex session readiness", () => {
     }
   })
 
-  test("a timed out resume releases the process and permits retry", async () => {
+  test("explicitly stopping a pending resume releases the process and permits retry", async () => {
     const children: FakeCodexProcess[] = []
-    const manager = new CodexAppServerManager({ requestTimeoutMs: 20, spawnProcess: () => {
+    const manager = new CodexAppServerManager({ spawnProcess: () => {
       const child = new FakeCodexProcess((message, process) => {
         if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
         if (message.method === "thread/resume" && children.length > 1) process.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
@@ -3195,7 +3195,11 @@ describe("Codex session readiness", () => {
       return child as never
     } })
     try {
-      const results = await Promise.allSettled([manager.startSession(args), manager.startSession(args)])
+      const pending = Promise.allSettled([manager.startSession(args), manager.startSession(args)])
+      await Bun.sleep(10)
+      expect(children[0]!.killed).toBe(false)
+      manager.stopSession(args.chatId)
+      const results = await pending
       expect(results.every((result) => result.status === "rejected")).toBe(true)
       expect(children[0]!.killed).toBe(true)
       expect(await manager.startSession(args)).toMatchObject({ sessionToken: "thread-1" })
@@ -3237,7 +3241,7 @@ test("resume preserves Unicode line separators and split UTF-8 in large JSON res
       setTimeout(() => process.stdout.write(response.subarray(unicode + 1)), 1)
     }
   })
-  const manager = new CodexAppServerManager({ spawnProcess: () => child as never, requestTimeoutMs: 1000 })
+  const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
   try {
     expect(await manager.startSession({ chatId: "unicode", cwd: "/tmp", model: "gpt-5.4", sessionToken: "thread-unicode" })).toMatchObject({ sessionToken: "thread-unicode", resumeFellBack: false })
   } finally {

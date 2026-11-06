@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
-import { createInterface } from "node:readline"
+import { readLfLines } from "./lf-lines"
 import type { Readable, Writable } from "node:stream"
 import type { ContextWindowUsageSnapshot, HarnessSkill, NormalizedToolCall, TodoItem } from "../shared/types"
 import { asNumber, asRecord, asString } from "../shared/json"
@@ -883,8 +883,7 @@ export class GrokCliManager {
     }
 
     if (child.stdout) {
-      const rl = createInterface({ input: child.stdout })
-      rl.on("line", (line) => {
+      readLfLines(child.stdout, (line) => {
         for (const event of coalescer.push(parseGrokLine(line, args.model))) emit(event)
       })
     }

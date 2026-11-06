@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
+import { readLfLines } from "./lf-lines"
 import type { Readable, Writable } from "node:stream"
 import type {
   AskUserQuestionItem,
@@ -163,6 +164,7 @@ interface SpawnedAgent {
 }
 
 interface SessionContext {
+  ready?: Promise<{ sessionToken: string; resumeFellBack: boolean }>
   customTools?: ReturnType<typeof createKannaMcpServer>
   chatId: string
   cwd: string
@@ -875,12 +877,14 @@ function itemToToolResults(item: ThreadItem): TranscriptEntry[] {
 
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
+  private readonly requestTimeoutMs: number
   private readonly spawnProcess: SpawnCodexAppServer
   private onRateLimits: ((snapshot: CodexRateLimitSnapshot) => void) | null = null
   private onTaskActivity: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
   private onProviderActivity: ((chatId: string) => void) | null = null
 
-  constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
+  constructor(args: { spawnProcess?: SpawnCodexAppServer; requestTimeoutMs?: number } = {}) {
+    this.requestTimeoutMs = args.requestTimeoutMs ?? 120_000
     this.spawnProcess = args.spawnProcess ?? ((cwd, env) =>
       spawn("codex", ["app-server"], {
         cwd,
@@ -1041,6 +1045,7 @@ export class CodexAppServerManager {
       && existing.disablePreconfiguredMcp === disablePreconfiguredMcp
       && !args.pendingForkSessionToken
     ) {
+      await existing.ready
       return
     }
 
@@ -1067,7 +1072,12 @@ export class CodexAppServerManager {
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
+    context.ready = this.initializeSession(context, args)
+    return await context.ready
+  }
 
+  private async initializeSession(context: SessionContext, args: StartCodexSessionArgs) {
+    const { disablePreconfiguredMcp, customTools } = context
     try {
       await this.sendRequest(context, "initialize", {
         clientInfo: {
@@ -1147,7 +1157,6 @@ export class CodexAppServerManager {
           } satisfies ThreadResumeParams)
         } catch (error) {
           if (!isRecoverableResumeError(error)) {
-            this.stopSession(args.chatId)
             throw error
           }
           response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
@@ -1157,16 +1166,19 @@ export class CodexAppServerManager {
         response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
       }
 
+      if (!response.thread?.id) throw new Error("Codex returned an empty thread id")
       context.sessionToken = response.thread.id
       return { sessionToken: context.sessionToken, resumeFellBack }
     } catch (error) {
-      this.stopSession(args.chatId)
+      this.failContext(context, errorMessage(error))
       throw error
     }
   }
 
   async startTurn(args: StartCodexTurnArgs): Promise<HarnessTurn> {
     const context = this.requireSession(args.chatId)
+    await context.ready
+    if (context.closed || !context.sessionToken) throw new Error("Codex session not ready")
     if (context.pendingTurn) {
       throw new Error("Codex turn is already running")
     }
@@ -1213,7 +1225,7 @@ export class CodexAppServerManager {
         input.push({ type: "skill", name: skill.name, path: skill.path })
       }
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
-        threadId: context.sessionToken ?? "",
+        threadId: context.sessionToken,
         input,
         approvalPolicy: "never",
         model: args.model,
@@ -1383,27 +1395,17 @@ export class CodexAppServerManager {
   }
 
   private attachListeners(context: SessionContext) {
-    const lines = createInterface({ input: context.child.stdout })
-    void (async () => {
-      for await (const line of lines) {
-        const parsed = parseJsonLine(line)
-        if (!parsed) continue
-
-        if (isJsonRpcResponse(parsed)) {
-          this.handleResponse(context, parsed)
-          continue
-        }
-
-        if (isServerRequest(parsed)) {
-          void this.handleServerRequest(context, parsed)
-          continue
-        }
-
-        if (isServerNotification(parsed)) {
-          void this.handleNotification(context, parsed)
-        }
+    readLfLines(context.child.stdout, (line) => {
+      const parsed = parseJsonLine(line)
+      if (!parsed) return
+      if (isJsonRpcResponse(parsed)) {
+        this.handleResponse(context, parsed)
+      } else if (isServerRequest(parsed)) {
+        void this.handleServerRequest(context, parsed)
+      } else if (isServerNotification(parsed)) {
+        void this.handleNotification(context, parsed)
       }
-    })()
+    })
 
     const stderr = createInterface({ input: context.child.stderr })
     void (async () => {
@@ -2153,19 +2155,33 @@ export class CodexAppServerManager {
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {
     const id = randomUUID()
-    const promise = new Promise<TResult>((resolve, reject) => {
-      context.pendingRequests.set(id, {
-        method,
-        resolve: resolve as (value: unknown) => void,
-        reject,
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await new Promise<TResult>((resolve, reject) => {
+        if (context.closed) {
+          reject(new Error("Codex session closed"))
+          return
+        }
+        context.pendingRequests.set(id, {
+          method,
+          resolve: resolve as (value: unknown) => void,
+          reject,
+        })
+        // A live process can stop answering during resume. Retire it too:
+        // otherwise it keeps the thread's writer lock and blocks a retry.
+        timer = setTimeout(() => {
+          this.failContext(context, `Codex ${method} timed out after ${this.requestTimeoutMs}ms`)
+        }, this.requestTimeoutMs)
+        try {
+          this.writeMessage(context, { id, method, params })
+        } catch (error) {
+          this.failContext(context, errorMessage(error))
+        }
       })
-    })
-    this.writeMessage(context, {
-      id,
-      method,
-      params,
-    })
-    return await promise
+    } finally {
+      if (timer) clearTimeout(timer)
+      context.pendingRequests.delete(id)
+    }
   }
 
   private writeMessage(context: SessionContext, message: Record<string, unknown>) {

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
-import { createInterface } from "node:readline"
+import { readLfLines } from "./lf-lines"
 import type { Readable, Writable } from "node:stream"
 import type { ContextWindowUsageSnapshot } from "../shared/types"
 import { asNumber, asRecord, asString } from "../shared/json"
@@ -426,8 +426,7 @@ export class CursorCliManager {
     }
 
     if (child.stdout) {
-      const rl = createInterface({ input: child.stdout })
-      rl.on("line", (line) => {
+      readLfLines(child.stdout, (line) => {
         for (const event of parseCursorLine(line, args.model)) {
           if (event.type === "transcript" && event.entry?.kind === "result") {
             sawResult = true

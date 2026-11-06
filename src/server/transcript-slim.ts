@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs"
 import { rename, rm, stat, writeFile } from "node:fs/promises"
-import { createInterface } from "node:readline"
+import { iterateLfLines } from "./lf-lines"
 import type { TranscriptEntry } from "../shared/types"
 import { STRUCTURED_RESULT_TOOL_KINDS, readStructuredResult } from "./events"
 
@@ -74,7 +74,7 @@ export async function slimTranscriptFile(
   const output: string[] = []
   let changed = false
 
-  const lines = createInterface({ input: createReadStream(transcriptPath, "utf8"), crlfDelay: Infinity })
+  const lines = iterateLfLines(createReadStream(transcriptPath))
   for await (const rawLine of lines) {
     const line = rawLine.trim()
     if (!line) continue

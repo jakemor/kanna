@@ -4188,3 +4188,64 @@ describe("disable pre-configured MCP servers", () => {
     coordinator.dispose()
   })
 })
+
+
+test("steering during startup leaves the queued prompt intact", async () => {
+  const store = createFakeStore()
+  const events = new AsyncEventQueue<any>()
+  let release!: () => void
+  let entered = false
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const coordinator = new AgentCoordinator({
+    store: store as never,
+    onStateChange: () => {},
+    startClaudeSession: async () => {
+      entered = true
+      await gate
+      return {
+        provider: "claude", stream: events, getAccountInfo: async () => null,
+        interrupt: async () => {}, close: () => {}, setModel: async () => {},
+        setPermissionMode: async () => {}, sendPrompt: async () => {},
+      }
+    },
+  })
+  const sending = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "first", model: "claude-opus-4-1" })
+  try {
+    await waitFor(() => entered)
+    await store.enqueueMessage("chat-1", { id: "queued-startup", content: "follow up", attachments: [], provider: "claude", model: "claude-opus-4-1", planMode: false })
+    await expect(coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: "queued-startup" })).rejects.toThrow("still starting")
+    expect(store.getQueuedMessage("chat-1", "queued-startup")?.content).toBe("follow up")
+  } finally {
+    release()
+    await sending
+    await coordinator.cancel("chat-1")
+    events.close()
+  }
+})
+
+test("a failed Codex resume is reported once and publishes an idle state", async () => {
+  const store = createFakeStore()
+  store.chat.provider = "codex"
+  store.chat.sessionToken = "thread-1"
+  ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => {}
+  let starts = 0
+  const busy: boolean[] = []
+  const coordinator = new AgentCoordinator({
+    store: store as never,
+    onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
+    codexManager: {
+      getSessionPids: () => new Map(),
+      startSession: async () => { starts++; throw new Error("Codex thread/resume timed out") },
+      stopSession() {}, stopAll() {},
+    } as never,
+  })
+  try {
+    await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "resume", model: "gpt-5.5" })).rejects.toThrow("timed out")
+    await waitFor(() => busy.at(-1) === false)
+    expect(starts).toBe(1)
+    expect(coordinator.isBusy("chat-1")).toBe(false)
+    expect(store.messages.filter((entry) => entry.kind === "result" && entry.isError)).toHaveLength(1)
+  } finally {
+    coordinator.dispose()
+  }
+})

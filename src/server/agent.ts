@@ -2243,8 +2243,8 @@ export class AgentCoordinator {
    * - codex: the app-server reports a recoverable resume failure by falling
    *   back to a fresh thread, so we preflight `startSession` (which the turn's
    *   own call then reuses via its warm-session early return) and read the
-   *   flag. Errors are swallowed so the turn's own startSession surfaces them
-   *   with today's ordering.
+   *   flag. Startup failures propagate: retrying here doubles a stalled
+   *   resume and hides its first error from the user.
    * - pi: out of scope.
    */
   private async detectLostProviderSession(args: {
@@ -2272,19 +2272,15 @@ export class AgentCoordinator {
       case "codex": {
         // No token → nothing to resume; a fork in progress must not be disturbed.
         if (!args.sessionToken || args.pendingForkSessionToken) return false
-        try {
-          const started = await this.codexManager.startSession({
-            chatId: args.chatId,
-            cwd: args.cwd,
-            model: args.model,
-            serviceTier: args.serviceTier,
-            sessionToken: args.sessionToken,
-            pendingForkSessionToken: null,
-          })
-          return started?.resumeFellBack === true
-        } catch {
-          return false
-        }
+        const started = await this.codexManager.startSession({
+          chatId: args.chatId,
+          cwd: args.cwd,
+          model: args.model,
+          serviceTier: args.serviceTier,
+          sessionToken: args.sessionToken,
+          pendingForkSessionToken: null,
+        })
+        return started?.resumeFellBack === true
       }
       default:
         return false
@@ -2326,8 +2322,16 @@ export class AgentCoordinator {
     this.markStarting(args.chatId)
     try {
       await this.startTurn(args)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await this.store.appendMessage(args.chatId, timestamped({
+        kind: "result", subtype: "error", isError: true, durationMs: 0, result: message,
+      }))
+      await this.store.recordTurnFailed(args.chatId, message)
+      throw error
     } finally {
       this.unmarkStarting(args.chatId)
+      this.emitStateChange(args.chatId)
     }
   }
 
@@ -2917,6 +2921,11 @@ export class AgentCoordinator {
   }
 
   async steer(command: Extract<ClientCommand, { type: "message.steer" }>) {
+    // A startup has no active turn to cancel yet. Leave the queued prompt
+    // intact rather than racing another start against the same session.
+    if (this.startingTurns.has(command.chatId)) {
+      throw new Error("Chat is still starting; queued message has been kept")
+    }
     const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
     if (!queuedMessage) {
       throw new Error("Queued message not found")

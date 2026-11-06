@@ -106,3 +106,14 @@ describe("slimTranscriptFile", () => {
     expect(await readFile(path, "utf8")).toBe(content)
   })
 })
+
+test("rewriting a transcript preserves Unicode separators in other entries", async () => {
+  const dir = await makeDir()
+  const file = join(dir, "unicode.jsonl")
+  const text = { _id: "unicode", createdAt: 1, kind: "assistant_text", text: "before\u2028between\u2029after" }
+  await writeFile(file, [line(text), line(readCall), line(readResult)].join("\n") + "\n")
+  expect((await slimTranscriptFile(file)).changed).toBe(true)
+  const entries = (await readFile(file, "utf8")).trim().split("\n").map((entry) => JSON.parse(entry))
+  expect(entries).toHaveLength(3)
+  expect(entries[0]).toEqual(text)
+})

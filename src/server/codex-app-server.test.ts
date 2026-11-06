@@ -3248,3 +3248,40 @@ test("resume preserves Unicode line separators and split UTF-8 in large JSON res
     manager.stopAll()
   }
 })
+
+test("slow MCP discovery is awaited without abandoning reads or killing the session", async () => {
+  const pending: any[] = []
+  const child = new FakeCodexProcess((message, process) => {
+    if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+    if (message.method === "config/read" || message.method === "mcpServerStatus/list") pending.push(message)
+    if (message.method === "thread/start") process.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+    if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1" } } })
+  })
+  const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+  let started = false
+  const starting = manager.startSession({ chatId: "slow", cwd: "/tmp", model: "gpt-5.4", sessionToken: null, disablePreconfiguredMcp: true })
+    .then((result) => { started = true; return result })
+  try {
+    // Beyond the old discovery timeout: slow discovery must not silently
+    // skip isolation or leave requests running behind an already-started turn.
+    await Bun.sleep(5100)
+    expect(started).toBe(false)
+    expect(child.killed).toBe(false)
+    expect(pending).toHaveLength(2)
+    for (const request of pending.splice(0)) {
+      child.writeServerMessage({ id: request.id, result: request.method === "config/read"
+        ? { config: { mcp_servers: { slow_server: {} } } }
+        : { data: [], nextCursor: "last" } })
+    }
+    await Bun.sleep(0)
+    expect(pending).toHaveLength(1)
+    child.writeServerMessage({ id: pending[0].id, result: { data: [], nextCursor: null } })
+    await starting
+    expect((child.messages.find((m: any) => m.method === "thread/start") as any).params.config["mcp_servers.slow_server.enabled"]).toBe(false)
+    await manager.startTurn({ chatId: "slow", content: "hello", model: "gpt-5.4", planMode: false, onToolRequest: async () => ({}) })
+    expect(child.killed).toBe(false)
+  } finally {
+    manager.stopAll()
+    await starting.catch(() => {})
+  }
+}, 10_000)

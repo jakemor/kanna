@@ -7,17 +7,29 @@ import { StringDecoder } from "node:string_decoder"
  */
 function lineDecoder() {
   const decoder = new StringDecoder("utf8")
-  let buffer = ""
+  let fragments: string[] = []
   return {
     push(chunk: Buffer | string): string[] {
-      buffer += typeof chunk === "string" ? chunk : decoder.write(chunk)
-      const lines = buffer.split("\n")
-      buffer = lines.pop()!
+      const text = typeof chunk === "string" ? chunk : decoder.write(chunk)
+      const lines: string[] = []
+      let start = 0
+      let newline: number
+      // Scan each chunk once; a large unfinished record is joined only when
+      // its delimiter arrives, rather than rescanned on every data event.
+      while ((newline = text.indexOf("\n", start)) !== -1) {
+        fragments.push(text.slice(start, newline))
+        lines.push(fragments.join(""))
+        fragments = []
+        start = newline + 1
+      }
+      if (start < text.length) fragments.push(text.slice(start))
       return lines
     },
     end(): string[] {
-      buffer += decoder.end()
-      return buffer.length ? [buffer] : []
+      fragments.push(decoder.end())
+      const last = fragments.join("")
+      fragments = []
+      return last.length ? [last] : []
     },
   }
 }

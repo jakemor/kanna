@@ -37,3 +37,24 @@ test("iterator closes the input when the consumer stops early", async () => {
   }
   expect(stream.destroyed).toBe(true)
 })
+
+for (const mode of ["events", "iterator"] as const) {
+  test(`${mode}: assembles large records from many small chunks`, async () => {
+    const record = "x\u2028é🙂".repeat(200_000)
+    const bytes = Buffer.from(`${record}\nshort\n${record}`)
+    const chunks = function* () {
+      for (let offset = 0; offset < bytes.length; offset += 127) yield bytes.subarray(offset, offset + 127)
+    }
+    const stream = Readable.from(chunks())
+    const lines: string[] = []
+    if (mode === "events") {
+      await new Promise<void>((resolve) => {
+        readLfLines(stream, (line) => lines.push(line))
+        stream.on("end", resolve)
+      })
+    } else {
+      for await (const line of iterateLfLines(stream)) lines.push(line)
+    }
+    expect(lines).toEqual([record, "short", record])
+  })
+}

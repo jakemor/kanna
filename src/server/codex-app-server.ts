@@ -276,10 +276,6 @@ export function buildCodexMcpIsolationConfig(args: {
   return config
 }
 
-// Long enough for the local reads behind both lists (about 300 ms measured);
-// past it the thread starts with whatever was found rather than not at all.
-const MCP_DISCOVERY_TIMEOUT_MS = 5_000
-
 function codexSystemInitEntry(model: string): TranscriptEntry {
   return timestamped({
     kind: "system_init",
@@ -2107,22 +2103,10 @@ export class CodexAppServerManager {
    * config.toml ones; `mcpServerStatus/list` without a thread lists the rest,
    * plugin servers with their plugin, without connecting to any. A remote
    * plugin syncs in later and is not listed yet, so its servers stay on. A
-   * list that fails or runs late counts as empty: apps still go off.
+   * list that fails counts as empty: apps still go off. Slow requests are
+   * awaited, so discovery never abandons pending reads or pagination.
    */
   private async discoverMcpIsolationConfig(context: SessionContext) {
-    const withTimeout = async <T,>(promise: Promise<T>) => {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        return await Promise.race([
-          promise,
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("timed out")), MCP_DISCOVERY_TIMEOUT_MS)
-          }),
-        ])
-      } finally {
-        clearTimeout(timer)
-      }
-    }
     const readConfigNames = async () => {
       const response = await this.sendRequest<ConfigReadResponse>(context, "config/read", {
         cwd: context.cwd,
@@ -2145,8 +2129,8 @@ export class CodexAppServerManager {
       return servers
     }
     const [configServerNames, servers] = await Promise.all([
-      withTimeout(readConfigNames()).catch(() => []),
-      withTimeout(listServers()).catch(() => []),
+      readConfigNames().catch(() => []),
+      listServers().catch(() => []),
     ])
     return buildCodexMcpIsolationConfig({ configServerNames, servers })
   }

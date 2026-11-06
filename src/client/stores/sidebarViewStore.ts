@@ -22,10 +22,17 @@ interface SidebarViewState {
   leaveArchived: () => void
 }
 
+/**
+ * Channels for anyone who hasn't picked. "recents" has to be read back as
+ * itself: it was the old default, and someone who chose it must keep it.
+ */
+export function parseStoredSidebarView(stored: string | null): ReturnView {
+  return stored === "recents" || stored === "projects" || stored === "channels" ? stored : "channels"
+}
+
 function readStoredSidebarView(): ReturnView {
-  if (typeof window === "undefined") return "recents"
-  const stored = window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY)
-  return stored === "projects" || stored === "channels" ? stored : "recents"
+  if (typeof window === "undefined") return "channels"
+  return parseStoredSidebarView(window.localStorage.getItem(SIDEBAR_VIEW_STORAGE_KEY))
 }
 
 export const useSidebarViewStore = create<SidebarViewState>()((set) => ({

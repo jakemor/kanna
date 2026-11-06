@@ -25,6 +25,7 @@ import type { SessionArtifactStatus } from "./session-artifacts"
 import { timestamped } from "./transcript"
 import { createKannaToolGateway } from "./kanna-tool-gateway"
 import { runKannaToolCli } from "./kanna-tool-cli"
+import { resetServerProvidersForTests } from "./provider-catalog"
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
   const start = Date.now()
@@ -4186,5 +4187,57 @@ describe("disable pre-configured MCP servers", () => {
     await waitFor(() => store.turnFinishedCount === 2)
     expect(sessionArgs).toEqual([{ disablePreconfiguredMcp: true }, { disablePreconfiguredMcp: false }])
     coordinator.dispose()
+  })
+})
+
+describe("AgentCoordinator cursor model catalog refresh", () => {
+  test("notifies onStateChange immediately when cursor-agent reports a changed catalog", async () => {
+    resetServerProvidersForTests()
+    const stateChanges: Array<{ chatId?: string; options?: { immediate?: boolean } }> = []
+    const fakeCursorManager = {
+      async listModels() {
+        return [
+          { id: "auto", label: "Auto", isDefault: true },
+          { id: "composer-2.5", label: "Composer 2.5", isDefault: false },
+        ]
+      },
+    }
+
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: (chatId, options) => {
+        stateChanges.push({ chatId, options })
+      },
+      cursorManager: fakeCursorManager as never,
+    })
+
+    // This is the exact production trigger server.ts's `onStateChange`
+    // wiring depends on: cursor-agent's discovered model list overlaying the
+    // static catalog. This covers the call that actually fires it.
+    await coordinator.refreshCursorModelCatalog()
+
+    expect(stateChanges).toContainEqual({ chatId: undefined, options: { immediate: true } })
+  })
+
+  test("stays quiet when cursor-agent is unavailable", async () => {
+    resetServerProvidersForTests()
+    const stateChanges: Array<{ chatId?: string; options?: { immediate?: boolean } }> = []
+    const fakeCursorManager = {
+      async listModels() {
+        throw new Error("cursor-agent not installed")
+      },
+    }
+
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: (chatId, options) => {
+        stateChanges.push({ chatId, options })
+      },
+      cursorManager: fakeCursorManager as never,
+    })
+
+    await coordinator.refreshCursorModelCatalog()
+
+    expect(stateChanges).toEqual([])
   })
 })

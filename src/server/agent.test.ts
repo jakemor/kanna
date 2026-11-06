@@ -4243,9 +4243,68 @@ test("a failed Codex resume is reported once and publishes an idle state", async
     await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "resume", model: "gpt-5.5" })).rejects.toThrow("process exited during resume")
     await waitFor(() => busy.at(-1) === false)
     expect(starts).toBe(1)
+    expect(store.messages.filter((entry) => entry.kind === "user_prompt")).toMatchObject([{ content: "resume" }])
     expect(coordinator.isBusy("chat-1")).toBe(false)
     expect(store.messages.filter((entry) => entry.kind === "result" && entry.isError)).toHaveLength(1)
   } finally {
     coordinator.dispose()
   }
 })
+
+for (const mode of ["queued", "steered", "follow-up"] as const) {
+  test(`a failed ${mode} start records one error and preserves user input`, async () => {
+    const store = createFakeStore()
+    store.chat.provider = "codex"
+    store.chat.sessionToken = "thread-1"
+    store.chat.title = "Existing chat"
+    let failures = 0
+    ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => { failures++ }
+    const events = new AsyncEventQueue<any>()
+    let failResume = false
+    const busy: boolean[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
+      codexManager: {
+        getSessionPids: () => new Map(),
+        startSession: async () => { if (failResume) throw new Error("resume failed") },
+        startTurn: async () => ({ provider: "codex", stream: events, interrupt: async () => {}, close() {} }),
+        stopSession() {}, stopAll() {},
+      } as never,
+    })
+    try {
+      await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "first", model: "gpt-5.5" })
+      const attachments: ChatAttachment[] = [{
+        id: "attachment-1", kind: "file", displayName: "report.pdf",
+        absolutePath: "/tmp/report.pdf", relativePath: "report.pdf",
+        contentUrl: "/media/report.pdf", mimeType: "application/pdf", size: 123,
+      }]
+      if (mode !== "follow-up") {
+        await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "queued input", attachments, model: "gpt-5.5" })
+        expect(store.queuedMessages).toHaveLength(1)
+      } else {
+        coordinator.activeTurns.get("chat-1")!.postToolFollowUp = { content: "hidden follow-up", planMode: false }
+      }
+      failResume = true
+      if (mode === "steered") {
+        await expect(coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: store.queuedMessages[0].id })).rejects.toThrow("resume failed")
+      } else {
+        events.push({ type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }) })
+      }
+      events.close()
+      await waitFor(() => failures > 0 && !coordinator.isBusy("chat-1"))
+      expect(failures).toBe(1)
+      expect(store.messages.filter((entry) => entry.kind === "result" && entry.isError)).toHaveLength(1)
+      expect(busy.at(-1)).toBe(false)
+      const prompts = store.messages.filter((entry) => entry.kind === "user_prompt")
+      expect(prompts).toHaveLength(mode !== "follow-up" ? 2 : 1)
+      if (mode !== "follow-up") {
+        expect(prompts[1]).toMatchObject({ content: "queued input", attachments })
+        expect(store.queuedMessages).toHaveLength(0)
+      }
+    } finally {
+      events.close()
+      coordinator.dispose()
+    }
+  })
+}

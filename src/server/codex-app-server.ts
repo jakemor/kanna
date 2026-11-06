@@ -877,14 +877,12 @@ function itemToToolResults(item: ThreadItem): TranscriptEntry[] {
 
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
-  private readonly requestTimeoutMs: number
   private readonly spawnProcess: SpawnCodexAppServer
   private onRateLimits: ((snapshot: CodexRateLimitSnapshot) => void) | null = null
   private onTaskActivity: ((chatId: string, update: SubagentActivityUpdate) => void) | null = null
   private onProviderActivity: ((chatId: string) => void) | null = null
 
-  constructor(args: { spawnProcess?: SpawnCodexAppServer; requestTimeoutMs?: number } = {}) {
-    this.requestTimeoutMs = args.requestTimeoutMs ?? 120_000
+  constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
     this.spawnProcess = args.spawnProcess ?? ((cwd, env) =>
       spawn("codex", ["app-server"], {
         cwd,
@@ -2155,7 +2153,6 @@ export class CodexAppServerManager {
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {
     const id = randomUUID()
-    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       return await new Promise<TResult>((resolve, reject) => {
         if (context.closed) {
@@ -2167,11 +2164,9 @@ export class CodexAppServerManager {
           resolve: resolve as (value: unknown) => void,
           reject,
         })
-        // A live process can stop answering during resume. Retire it too:
-        // otherwise it keeps the thread's writer lock and blocks a retry.
-        timer = setTimeout(() => {
-          this.failContext(context, `Codex ${method} timed out after ${this.requestTimeoutMs}ms`)
-        }, this.requestTimeoutMs)
+        // RPC latency is not evidence of a broken session. Wait for the
+        // response, process exit, or an explicit stop instead of killing
+        // legitimate work after an arbitrary deadline.
         try {
           this.writeMessage(context, { id, method, params })
         } catch (error) {
@@ -2179,7 +2174,6 @@ export class CodexAppServerManager {
         }
       })
     } finally {
-      if (timer) clearTimeout(timer)
       context.pendingRequests.delete(id)
     }
   }

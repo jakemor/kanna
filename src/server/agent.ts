@@ -113,8 +113,13 @@ export type { SubagentActivityUpdate } from "./background-tasks"
  * `ExitPlanMode` stays in the base set even in Full Access: the user can flip a
  * live session into plan mode via `setPermissionMode` without a restart, and
  * without the exit tool they would be stranded there.
+ *
+ * `ToolSearch` must stay in the set: without it Claude Code has no way to
+ * defer MCP tools, so it inlines every MCP server's full schemas into each
+ * request and again after each compaction.
  */
 const CLAUDE_BASE_TOOLSET = [
+  "ToolSearch",
   "Skill",
   "WebFetch",
   "WebSearch",

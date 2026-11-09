@@ -4313,12 +4313,15 @@ for (const mode of ["queued", "steered", "follow-up"] as const) {
 }
 
 describe("stopping Codex startup", () => {
-  for (const phase of ["before spawn", "initialize", "thread/start", "thread/resume", "thread/fork", "config/read", "mcpServerStatus/list", "turn/start", "thread/resume replied", "turn/start replied"] as const) {
+  for (const phase of ["before spawn", "initialize", "thread/start", "thread/resume", "thread/fork", "config/read", "mcpServerStatus/list", "turn/start", "thread/resume replied", "turn/start replied", "fork turn/start", "fork turn/start replied"] as const) {
     test(`Stop during ${phase} preserves input, settles once, and allows retry`, async () => {
       const store = createFakeStore()
       store.chat.provider = "codex"
-      store.chat.sessionToken = phase === "thread/start" || phase === "thread/fork" ? null : "thread-1"
-      if (phase === "thread/fork") store.chat.pendingForkSessionToken = "parent-thread"
+      const isFork = phase === "thread/fork" || phase.startsWith("fork ")
+      const rpcPhase = phase.replace(/^fork /, "")
+      const requests: any[] = []
+      store.chat.sessionToken = phase === "thread/start" || isFork ? null : "thread-1"
+      if (isFork) store.chat.pendingForkSessionToken = "parent-thread"
       store.chat.title = "Existing chat"
       let cancellations = 0
       let failures = 0
@@ -4353,13 +4356,14 @@ describe("stopping Codex startup", () => {
             const request = JSON.parse(buffer.slice(0, newline))
             buffer = buffer.slice(newline + 1)
             if (!request.id) continue
-            if (blocking && request.method === phase) { reached = true; continue }
+            requests.push(request)
+            if (blocking && request.method === rpcPhase) { reached = true; continue }
             const result = request.method.startsWith("thread/") ? { thread: { id: "thread-1" } }
               : request.method === "turn/start" ? { turn: { id: "turn-1" } }
               : request.method === "config/read" ? { config: {} }
               : { data: [], nextCursor: null }
             child.stdout.write(JSON.stringify({ id: request.id, result }) + "\n")
-            if (blocking && phase.endsWith(" replied") && request.method === phase.replace(" replied", "")) {
+            if (blocking && phase.endsWith(" replied") && request.method === rpcPhase.replace(" replied", "")) {
               reached = true
               void coordinator.cancel("chat-1")
             }
@@ -4399,10 +4403,20 @@ describe("stopping Codex startup", () => {
         expect(children.every((child) => child.killed)).toBe(true)
         if (phase === "before spawn") expect(children).toHaveLength(0)
         if (!phase.endsWith(" replied")) expect(store.queuedMessages).toHaveLength(1)
+        if (phase.startsWith("fork ")) {
+          expect(store.chat.sessionToken).toBe("thread-1")
+          expect(store.chat.pendingForkSessionToken).toBeNull()
+        }
         blocking = false
+        requests.length = 0
         await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "retry", provider: "codex", model: "gpt-5.5" })
         expect(coordinator.activeTurns.has("chat-1")).toBe(true)
         expect(children.at(-1)!.killed).toBe(false)
+        if (phase.startsWith("fork ")) {
+          const threadRequests = requests.filter((request) => request.method.startsWith("thread/"))
+          expect(threadRequests).toHaveLength(1)
+          expect(threadRequests[0]).toMatchObject({ method: "thread/resume", params: { threadId: "thread-1" } })
+        }
         await coordinator.cancel("chat-1")
       } finally {
         releaseSetup?.()
@@ -4412,3 +4426,46 @@ describe("stopping Codex startup", () => {
     })
   }
 })
+
+for (const failAt of ["save fork", "clear parent"] as const) {
+  test(`a failure to ${failAt} retains a resumable fork source`, async () => {
+    const store = createFakeStore()
+    store.chat.provider = "codex"
+    store.chat.title = "Forked chat"
+    store.chat.pendingForkSessionToken = "parent-thread"
+    store.chat.pendingForkAt = "parent-turn"
+    ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => {}
+    const writes: string[] = []
+    const saveToken = store.setSessionToken.bind(store)
+    store.setSessionToken = async (chatId, token) => {
+      writes.push("save fork")
+      if (failAt === "save fork") throw new Error("save fork failed")
+      await saveToken(chatId, token)
+    }
+    store.setPendingForkSessionToken = async () => {
+      writes.push("clear parent")
+      throw new Error("clear parent failed")
+    }
+    let turnStarted = false
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {},
+      codexManager: {
+        getSessionPids: () => new Map(),
+        startSession: async () => ({ sessionToken: "fork-thread", resumeFellBack: false }),
+        startTurn: async () => { turnStarted = true; throw new Error("Should not start a turn") },
+        stopSession() {}, stopAll() {},
+      } as never,
+    })
+    try {
+      await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "continue", model: "gpt-5.5" })).rejects.toThrow(`${failAt} failed`)
+      expect(writes).toEqual(failAt === "save fork" ? ["save fork"] : ["save fork", "clear parent"])
+      expect(store.chat.sessionToken).toBe(failAt === "save fork" ? null : "fork-thread")
+      expect(store.chat.pendingForkSessionToken).toBe("parent-thread")
+      expect(store.chat.pendingForkAt).toBe("parent-turn")
+      expect(turnStarted).toBe(false)
+      expect(coordinator.isBusy("chat-1")).toBe(false)
+    } finally {
+      coordinator.dispose()
+    }
+  })
+}

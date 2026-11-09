@@ -1298,6 +1298,8 @@ export class AgentCoordinator {
    * those, and a chat read as idle inside one would be reported finished.
    */
   private readonly startingTurns = new Map<string, number>()
+  /** Explicit Stop for a Codex turn that has not reached activeTurns yet. */
+  private readonly codexStartups = new Map<string, { controller: AbortController; hidden?: boolean }>()
   /** Per chat: the timer that closes its agent process once it has sat idle. */
   private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /**
@@ -2421,6 +2423,11 @@ export class AgentCoordinator {
 
   private async startTurnForChat(args: StartTurnArgs) {
     this.markStarting(args.chatId)
+    const startup: { controller: AbortController; hidden?: boolean } | undefined = args.provider === "codex"
+      ? { controller: new AbortController() }
+      : undefined
+    if (startup) this.codexStartups.set(args.chatId, startup)
+    const checkCancelled = () => startup?.controller.signal.throwIfAborted()
     let promptSaved = false
     const appendUserPrompt = async () => {
       if (!args.appendUserPrompt || promptSaved) return
@@ -2434,11 +2441,16 @@ export class AgentCoordinator {
       promptSaved = true
     }
     try {
-      await this.startTurn(args, appendUserPrompt)
+      await this.startTurn(args, appendUserPrompt, checkCancelled)
     } catch (error) {
       // Recovery boundaries normally precede the prompt. If recovery fails,
       // persist it here before the error so dequeued messages aren't lost.
       await appendUserPrompt()
+      if (startup?.controller.signal.aborted) {
+        await this.store.appendMessage(args.chatId, timestamped({ kind: "interrupted", hidden: startup.hidden }))
+        await this.store.recordTurnCancelled(args.chatId)
+        return
+      }
       const message = error instanceof Error ? error.message : String(error)
       await this.store.appendMessage(args.chatId, timestamped({
         kind: "result", subtype: "error", isError: true, durationMs: 0, result: message,
@@ -2446,12 +2458,15 @@ export class AgentCoordinator {
       await this.store.recordTurnFailed(args.chatId, message)
       throw error
     } finally {
+      if (this.codexStartups.get(args.chatId) === startup) this.codexStartups.delete(args.chatId)
       this.unmarkStarting(args.chatId)
       this.emitStateChange(args.chatId)
+      if (startup?.controller.signal.aborted) this.notifySettled(args.chatId)
     }
   }
 
-  private async startTurn(args: StartTurnArgs, appendUserPrompt: () => Promise<void>) {
+  private async startTurn(args: StartTurnArgs, appendUserPrompt: () => Promise<void>, checkCancelled: () => void) {
+    checkCancelled()
 
     // Close any lingering draining stream before starting a new turn.
     const draining = this.drainingStreams.get(args.chatId)
@@ -2511,6 +2526,7 @@ export class AgentCoordinator {
       ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages())
       : null
 
+    checkCancelled()
     // Same-provider session recovery: when we're NOT switching harnesses but
     // the provider's native session for this chat is gone (e.g. the CLI
     // garbage-collected its session file, or codex's resume fell back to a
@@ -2531,6 +2547,7 @@ export class AgentCoordinator {
       ? await this.prepareSessionRestore(args.chatId, args.provider, existingMessages())
       : null
 
+    checkCancelled()
     await appendUserPrompt()
     await this.store.recordTurnStarted(args.chatId, args.model)
 
@@ -2588,7 +2605,9 @@ export class AgentCoordinator {
     //   codex          — structured skill input item each + failsafe (added
     //                    by the codex manager, after attachments).
     //   cursor         — <system-message> failsafe only (no headless expansion).
+    checkCancelled()
     const skills = await this.resolvePromptSkills(args.provider, args.chatId, args.content)
+    checkCancelled()
     let wireContent = args.steered ? buildSteeredMessageContent(args.content) : args.content
     if (args.provider !== "codex" && skills.length > 0) {
       wireContent = appendSystemMessageBlock(wireContent, buildSkillSystemMessage(skills))
@@ -2702,6 +2721,7 @@ export class AgentCoordinator {
         delegator,
       })
     } else {
+      checkCancelled()
       const started = await this.codexManager.startSession({
         chatId: args.chatId,
         cwd: project.localPath,
@@ -2714,9 +2734,11 @@ export class AgentCoordinator {
         pendingForkAt: chat.pendingForkAt,
         disablePreconfiguredMcp,
       })
+      checkCancelled()
       if (chat.pendingForkSessionToken && started?.sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
       }
+      checkCancelled()
       // Off the turn's critical path; the session just started answers it.
       void this.refreshCodexModelCatalog()
       turn = await this.codexManager.startTurn({
@@ -2735,6 +2757,9 @@ export class AgentCoordinator {
       })
     }
 
+    // Stop may have arrived after the provider replied but before this
+    // continuation ran. Never register that cancelled turn as active.
+    checkCancelled()
     const active: ActiveTurn = {
       chatId: args.chatId,
       provider: args.provider,
@@ -3675,7 +3700,17 @@ export class AgentCoordinator {
     }
 
     const active = this.activeTurns.get(chatId)
-    if (!active) return
+    if (!active) {
+      const startup = this.codexStartups.get(chatId)
+      if (startup && !startup.controller.signal.aborted) {
+        startup.hidden = options?.hideInterrupted
+        startup.controller.abort()
+        // Reject pending initialize/resume/discovery/turn-start RPCs. The
+        // startup owner preserves the prompt and records one interruption.
+        this.codexManager.stopSession(chatId)
+      }
+      return
+    }
 
     logClaudeSteer("cancel_requested", {
       chatId,

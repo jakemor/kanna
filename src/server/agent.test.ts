@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
+import { CodexAppServerManager } from "./codex-app-server"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -4308,3 +4311,104 @@ for (const mode of ["queued", "steered", "follow-up"] as const) {
     }
   })
 }
+
+describe("stopping Codex startup", () => {
+  for (const phase of ["before spawn", "initialize", "thread/start", "thread/resume", "thread/fork", "config/read", "mcpServerStatus/list", "turn/start", "thread/resume replied", "turn/start replied"] as const) {
+    test(`Stop during ${phase} preserves input, settles once, and allows retry`, async () => {
+      const store = createFakeStore()
+      store.chat.provider = "codex"
+      store.chat.sessionToken = phase === "thread/start" || phase === "thread/fork" ? null : "thread-1"
+      if (phase === "thread/fork") store.chat.pendingForkSessionToken = "parent-thread"
+      store.chat.title = "Existing chat"
+      let cancellations = 0
+      let failures = 0
+      store.recordTurnCancelled = async () => { cancellations++ }
+      ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => { failures++ }
+      let reached = false
+      let blocking = true
+      let releaseSetup!: () => void
+      if (phase === "before spawn") {
+        const setPlanMode = store.setPlanMode.bind(store)
+        store.setPlanMode = async (chatId, mode) => {
+          if (blocking) {
+            reached = true
+            await new Promise<void>((resolve) => { releaseSetup = resolve })
+          }
+          await setPlanMode(chatId, mode)
+        }
+      }
+      const children: Array<EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; killed: boolean; kill: () => void }> = []
+      let coordinator!: AgentCoordinator
+      const manager = new CodexAppServerManager({ spawnProcess: () => {
+        const emitter = new EventEmitter()
+        const child = Object.assign(emitter, {
+          stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), killed: false,
+          kill() { this.killed = true; emitter.emit("close", 0) },
+        })
+        let buffer = ""
+        child.stdin.on("data", (chunk) => {
+          buffer += chunk.toString()
+          let newline: number
+          while ((newline = buffer.indexOf("\n")) >= 0) {
+            const request = JSON.parse(buffer.slice(0, newline))
+            buffer = buffer.slice(newline + 1)
+            if (!request.id) continue
+            if (blocking && request.method === phase) { reached = true; continue }
+            const result = request.method.startsWith("thread/") ? { thread: { id: "thread-1" } }
+              : request.method === "turn/start" ? { turn: { id: "turn-1" } }
+              : request.method === "config/read" ? { config: {} }
+              : { data: [], nextCursor: null }
+            child.stdout.write(JSON.stringify({ id: request.id, result }) + "\n")
+            if (blocking && phase.endsWith(" replied") && request.method === phase.replace(" replied", "")) {
+              reached = true
+              void coordinator.cancel("chat-1")
+            }
+          }
+        })
+        children.push(child)
+        return child as never
+      } })
+      const busy: boolean[] = []
+      coordinator = new AgentCoordinator({
+        store: store as never, codexManager: manager,
+        disablePreconfiguredMcp: () => phase === "config/read" || phase === "mcpServerStatus/list",
+        onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
+      })
+      const attachments: ChatAttachment[] = [{
+        id: "file", kind: "file", displayName: "notes.txt", absolutePath: "/tmp/notes.txt",
+        relativePath: "notes.txt", contentUrl: "/media/notes.txt", mimeType: "text/plain", size: 4,
+      }]
+      const sending = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "original", attachments, model: "gpt-5.5" })
+      try {
+        await waitFor(() => reached)
+        if (!phase.endsWith(" replied")) {
+          expect(coordinator.isBusy("chat-1")).toBe(true)
+          expect(coordinator.activeTurns.has("chat-1")).toBe(false)
+          await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "queued", provider: "codex", model: "gpt-5.5" })
+        }
+        await Promise.all([coordinator.cancel("chat-1"), coordinator.cancel("chat-1")])
+        releaseSetup?.()
+        await sending
+        expect(coordinator.isBusy("chat-1")).toBe(false)
+        expect(coordinator.activeTurns.has("chat-1")).toBe(false)
+        expect(busy.at(-1)).toBe(false)
+        expect(cancellations).toBe(1)
+        expect(failures).toBe(0)
+        expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+        expect(store.messages.filter((entry) => entry.kind === "user_prompt")).toMatchObject([{ content: "original", attachments }])
+        expect(children.every((child) => child.killed)).toBe(true)
+        if (phase === "before spawn") expect(children).toHaveLength(0)
+        if (!phase.endsWith(" replied")) expect(store.queuedMessages).toHaveLength(1)
+        blocking = false
+        await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "retry", provider: "codex", model: "gpt-5.5" })
+        expect(coordinator.activeTurns.has("chat-1")).toBe(true)
+        expect(children.at(-1)!.killed).toBe(false)
+        await coordinator.cancel("chat-1")
+      } finally {
+        releaseSetup?.()
+        coordinator.dispose()
+        await sending.catch(() => {})
+      }
+    })
+  }
+})

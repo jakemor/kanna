@@ -2736,6 +2736,10 @@ export class AgentCoordinator {
       })
       checkCancelled()
       if (chat.pendingForkSessionToken && started?.sessionToken) {
+        // The stream publishes this token only after turn/start responds.
+        // Persist it before dropping the parent so Stop or a startup failure
+        // cannot leave the fork without any native history to resume.
+        await this.store.setSessionToken(args.chatId, started.sessionToken)
         await this.store.setPendingForkSessionToken(args.chatId, null)
       }
       checkCancelled()

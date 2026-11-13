@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
+import { CodexAppServerManager } from "./codex-app-server"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -4188,3 +4191,281 @@ describe("disable pre-configured MCP servers", () => {
     coordinator.dispose()
   })
 })
+
+
+test("steering during startup leaves the queued prompt intact", async () => {
+  const store = createFakeStore()
+  const events = new AsyncEventQueue<any>()
+  let release!: () => void
+  let entered = false
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const coordinator = new AgentCoordinator({
+    store: store as never,
+    onStateChange: () => {},
+    startClaudeSession: async () => {
+      entered = true
+      await gate
+      return {
+        provider: "claude", stream: events, getAccountInfo: async () => null,
+        interrupt: async () => {}, close: () => {}, setModel: async () => {},
+        setPermissionMode: async () => {}, sendPrompt: async () => {},
+      }
+    },
+  })
+  const sending = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "first", model: "claude-opus-4-1" })
+  try {
+    await waitFor(() => entered)
+    await store.enqueueMessage("chat-1", { id: "queued-startup", content: "follow up", attachments: [], provider: "claude", model: "claude-opus-4-1", planMode: false })
+    await expect(coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: "queued-startup" })).rejects.toThrow("still starting")
+    expect(store.getQueuedMessage("chat-1", "queued-startup")?.content).toBe("follow up")
+  } finally {
+    release()
+    await sending
+    await coordinator.cancel("chat-1")
+    events.close()
+  }
+})
+
+test("a failed Codex resume is reported once and publishes an idle state", async () => {
+  const store = createFakeStore()
+  store.chat.provider = "codex"
+  store.chat.sessionToken = "thread-1"
+  ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => {}
+  let starts = 0
+  const busy: boolean[] = []
+  const coordinator = new AgentCoordinator({
+    store: store as never,
+    onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
+    codexManager: {
+      getSessionPids: () => new Map(),
+      startSession: async () => { starts++; throw new Error("Codex process exited during resume") },
+      stopSession() {}, stopAll() {},
+    } as never,
+  })
+  try {
+    await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "resume", model: "gpt-5.5" })).rejects.toThrow("process exited during resume")
+    await waitFor(() => busy.at(-1) === false)
+    expect(starts).toBe(1)
+    expect(store.messages.filter((entry) => entry.kind === "user_prompt")).toMatchObject([{ content: "resume" }])
+    expect(coordinator.isBusy("chat-1")).toBe(false)
+    expect(store.messages.filter((entry) => entry.kind === "result" && entry.isError)).toHaveLength(1)
+  } finally {
+    coordinator.dispose()
+  }
+})
+
+for (const mode of ["queued", "steered", "follow-up"] as const) {
+  test(`a failed ${mode} start records one error and preserves user input`, async () => {
+    const store = createFakeStore()
+    store.chat.provider = "codex"
+    store.chat.sessionToken = "thread-1"
+    store.chat.title = "Existing chat"
+    let failures = 0
+    ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => { failures++ }
+    const events = new AsyncEventQueue<any>()
+    let failResume = false
+    const busy: boolean[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
+      codexManager: {
+        getSessionPids: () => new Map(),
+        startSession: async () => { if (failResume) throw new Error("resume failed") },
+        startTurn: async () => ({ provider: "codex", stream: events, interrupt: async () => {}, close() {} }),
+        stopSession() {}, stopAll() {},
+      } as never,
+    })
+    try {
+      await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "first", model: "gpt-5.5" })
+      const attachments: ChatAttachment[] = [{
+        id: "attachment-1", kind: "file", displayName: "report.pdf",
+        absolutePath: "/tmp/report.pdf", relativePath: "report.pdf",
+        contentUrl: "/media/report.pdf", mimeType: "application/pdf", size: 123,
+      }]
+      if (mode !== "follow-up") {
+        await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "queued input", attachments, model: "gpt-5.5" })
+        expect(store.queuedMessages).toHaveLength(1)
+      } else {
+        coordinator.activeTurns.get("chat-1")!.postToolFollowUp = { content: "hidden follow-up", planMode: false }
+      }
+      failResume = true
+      if (mode === "steered") {
+        await expect(coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: store.queuedMessages[0].id })).rejects.toThrow("resume failed")
+      } else {
+        events.push({ type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }) })
+      }
+      events.close()
+      await waitFor(() => failures > 0 && !coordinator.isBusy("chat-1"))
+      expect(failures).toBe(1)
+      expect(store.messages.filter((entry) => entry.kind === "result" && entry.isError)).toHaveLength(1)
+      expect(busy.at(-1)).toBe(false)
+      const prompts = store.messages.filter((entry) => entry.kind === "user_prompt")
+      expect(prompts).toHaveLength(mode !== "follow-up" ? 2 : 1)
+      if (mode !== "follow-up") {
+        expect(prompts[1]).toMatchObject({ content: "queued input", attachments })
+        expect(store.queuedMessages).toHaveLength(0)
+      }
+    } finally {
+      events.close()
+      coordinator.dispose()
+    }
+  })
+}
+
+describe("stopping Codex startup", () => {
+  for (const phase of ["before spawn", "initialize", "thread/start", "thread/resume", "thread/fork", "config/read", "mcpServerStatus/list", "turn/start", "thread/resume replied", "turn/start replied", "fork turn/start", "fork turn/start replied"] as const) {
+    test(`Stop during ${phase} preserves input, settles once, and allows retry`, async () => {
+      const store = createFakeStore()
+      store.chat.provider = "codex"
+      const isFork = phase === "thread/fork" || phase.startsWith("fork ")
+      const rpcPhase = phase.replace(/^fork /, "")
+      const requests: any[] = []
+      store.chat.sessionToken = phase === "thread/start" || isFork ? null : "thread-1"
+      if (isFork) store.chat.pendingForkSessionToken = "parent-thread"
+      store.chat.title = "Existing chat"
+      let cancellations = 0
+      let failures = 0
+      store.recordTurnCancelled = async () => { cancellations++ }
+      ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => { failures++ }
+      let reached = false
+      let blocking = true
+      let releaseSetup!: () => void
+      if (phase === "before spawn") {
+        const setPlanMode = store.setPlanMode.bind(store)
+        store.setPlanMode = async (chatId, mode) => {
+          if (blocking) {
+            reached = true
+            await new Promise<void>((resolve) => { releaseSetup = resolve })
+          }
+          await setPlanMode(chatId, mode)
+        }
+      }
+      const children: Array<EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; killed: boolean; kill: () => void }> = []
+      let coordinator!: AgentCoordinator
+      const manager = new CodexAppServerManager({ spawnProcess: () => {
+        const emitter = new EventEmitter()
+        const child = Object.assign(emitter, {
+          stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), killed: false,
+          kill() { this.killed = true; emitter.emit("close", 0) },
+        })
+        let buffer = ""
+        child.stdin.on("data", (chunk) => {
+          buffer += chunk.toString()
+          let newline: number
+          while ((newline = buffer.indexOf("\n")) >= 0) {
+            const request = JSON.parse(buffer.slice(0, newline))
+            buffer = buffer.slice(newline + 1)
+            if (!request.id) continue
+            requests.push(request)
+            if (blocking && request.method === rpcPhase) { reached = true; continue }
+            const result = request.method.startsWith("thread/") ? { thread: { id: "thread-1" } }
+              : request.method === "turn/start" ? { turn: { id: "turn-1" } }
+              : request.method === "config/read" ? { config: {} }
+              : { data: [], nextCursor: null }
+            child.stdout.write(JSON.stringify({ id: request.id, result }) + "\n")
+            if (blocking && phase.endsWith(" replied") && request.method === rpcPhase.replace(" replied", "")) {
+              reached = true
+              void coordinator.cancel("chat-1")
+            }
+          }
+        })
+        children.push(child)
+        return child as never
+      } })
+      const busy: boolean[] = []
+      coordinator = new AgentCoordinator({
+        store: store as never, codexManager: manager,
+        disablePreconfiguredMcp: () => phase === "config/read" || phase === "mcpServerStatus/list",
+        onStateChange: () => { busy.push(coordinator.isBusy("chat-1")) },
+      })
+      const attachments: ChatAttachment[] = [{
+        id: "file", kind: "file", displayName: "notes.txt", absolutePath: "/tmp/notes.txt",
+        relativePath: "notes.txt", contentUrl: "/media/notes.txt", mimeType: "text/plain", size: 4,
+      }]
+      const sending = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "original", attachments, model: "gpt-5.5" })
+      try {
+        await waitFor(() => reached)
+        if (!phase.endsWith(" replied")) {
+          expect(coordinator.isBusy("chat-1")).toBe(true)
+          expect(coordinator.activeTurns.has("chat-1")).toBe(false)
+          await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "queued", provider: "codex", model: "gpt-5.5" })
+        }
+        await Promise.all([coordinator.cancel("chat-1"), coordinator.cancel("chat-1")])
+        releaseSetup?.()
+        await sending
+        expect(coordinator.isBusy("chat-1")).toBe(false)
+        expect(coordinator.activeTurns.has("chat-1")).toBe(false)
+        expect(busy.at(-1)).toBe(false)
+        expect(cancellations).toBe(1)
+        expect(failures).toBe(0)
+        expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+        expect(store.messages.filter((entry) => entry.kind === "user_prompt")).toMatchObject([{ content: "original", attachments }])
+        expect(children.every((child) => child.killed)).toBe(true)
+        if (phase === "before spawn") expect(children).toHaveLength(0)
+        if (!phase.endsWith(" replied")) expect(store.queuedMessages).toHaveLength(1)
+        if (phase.startsWith("fork ")) {
+          expect(store.chat.sessionToken).toBe("thread-1")
+          expect(store.chat.pendingForkSessionToken).toBeNull()
+        }
+        blocking = false
+        requests.length = 0
+        await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "retry", provider: "codex", model: "gpt-5.5" })
+        expect(coordinator.activeTurns.has("chat-1")).toBe(true)
+        expect(children.at(-1)!.killed).toBe(false)
+        if (phase.startsWith("fork ")) {
+          const threadRequests = requests.filter((request) => request.method.startsWith("thread/"))
+          expect(threadRequests).toHaveLength(1)
+          expect(threadRequests[0]).toMatchObject({ method: "thread/resume", params: { threadId: "thread-1" } })
+        }
+        await coordinator.cancel("chat-1")
+      } finally {
+        releaseSetup?.()
+        coordinator.dispose()
+        await sending.catch(() => {})
+      }
+    })
+  }
+})
+
+for (const failAt of ["save fork", "clear parent"] as const) {
+  test(`a failure to ${failAt} retains a resumable fork source`, async () => {
+    const store = createFakeStore()
+    store.chat.provider = "codex"
+    store.chat.title = "Forked chat"
+    store.chat.pendingForkSessionToken = "parent-thread"
+    store.chat.pendingForkAt = "parent-turn"
+    ;(store as { recordTurnFailed: () => Promise<void> }).recordTurnFailed = async () => {}
+    const writes: string[] = []
+    const saveToken = store.setSessionToken.bind(store)
+    store.setSessionToken = async (chatId, token) => {
+      writes.push("save fork")
+      if (failAt === "save fork") throw new Error("save fork failed")
+      await saveToken(chatId, token)
+    }
+    store.setPendingForkSessionToken = async () => {
+      writes.push("clear parent")
+      throw new Error("clear parent failed")
+    }
+    let turnStarted = false
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {},
+      codexManager: {
+        getSessionPids: () => new Map(),
+        startSession: async () => ({ sessionToken: "fork-thread", resumeFellBack: false }),
+        startTurn: async () => { turnStarted = true; throw new Error("Should not start a turn") },
+        stopSession() {}, stopAll() {},
+      } as never,
+    })
+    try {
+      await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "continue", model: "gpt-5.5" })).rejects.toThrow(`${failAt} failed`)
+      expect(writes).toEqual(failAt === "save fork" ? ["save fork"] : ["save fork", "clear parent"])
+      expect(store.chat.sessionToken).toBe(failAt === "save fork" ? null : "fork-thread")
+      expect(store.chat.pendingForkSessionToken).toBe("parent-thread")
+      expect(store.chat.pendingForkAt).toBe("parent-turn")
+      expect(turnStarted).toBe(false)
+      expect(coordinator.isBusy("chat-1")).toBe(false)
+    } finally {
+      coordinator.dispose()
+    }
+  })
+}

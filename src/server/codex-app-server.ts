@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
+import { readLfLines } from "./lf-lines"
 import type { Readable, Writable } from "node:stream"
 import type {
   AskUserQuestionItem,
@@ -163,6 +164,7 @@ interface SpawnedAgent {
 }
 
 interface SessionContext {
+  ready?: Promise<{ sessionToken: string; resumeFellBack: boolean }>
   customTools?: ReturnType<typeof createKannaMcpServer>
   chatId: string
   cwd: string
@@ -273,10 +275,6 @@ export function buildCodexMcpIsolationConfig(args: {
   }
   return config
 }
-
-// Long enough for the local reads behind both lists (about 300 ms measured);
-// past it the thread starts with whatever was found rather than not at all.
-const MCP_DISCOVERY_TIMEOUT_MS = 5_000
 
 function codexSystemInitEntry(model: string): TranscriptEntry {
   return timestamped({
@@ -1041,6 +1039,7 @@ export class CodexAppServerManager {
       && existing.disablePreconfiguredMcp === disablePreconfiguredMcp
       && !args.pendingForkSessionToken
     ) {
+      await existing.ready
       return
     }
 
@@ -1067,7 +1066,12 @@ export class CodexAppServerManager {
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
+    context.ready = this.initializeSession(context, args)
+    return await context.ready
+  }
 
+  private async initializeSession(context: SessionContext, args: StartCodexSessionArgs) {
+    const { disablePreconfiguredMcp, customTools } = context
     try {
       await this.sendRequest(context, "initialize", {
         clientInfo: {
@@ -1147,7 +1151,6 @@ export class CodexAppServerManager {
           } satisfies ThreadResumeParams)
         } catch (error) {
           if (!isRecoverableResumeError(error)) {
-            this.stopSession(args.chatId)
             throw error
           }
           response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
@@ -1157,16 +1160,19 @@ export class CodexAppServerManager {
         response = await this.sendRequest<ThreadStartResponse>(context, "thread/start", threadParams)
       }
 
+      if (!response.thread?.id) throw new Error("Codex returned an empty thread id")
       context.sessionToken = response.thread.id
       return { sessionToken: context.sessionToken, resumeFellBack }
     } catch (error) {
-      this.stopSession(args.chatId)
+      this.failContext(context, errorMessage(error))
       throw error
     }
   }
 
   async startTurn(args: StartCodexTurnArgs): Promise<HarnessTurn> {
     const context = this.requireSession(args.chatId)
+    await context.ready
+    if (context.closed || !context.sessionToken) throw new Error("Codex session not ready")
     if (context.pendingTurn) {
       throw new Error("Codex turn is already running")
     }
@@ -1213,7 +1219,7 @@ export class CodexAppServerManager {
         input.push({ type: "skill", name: skill.name, path: skill.path })
       }
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
-        threadId: context.sessionToken ?? "",
+        threadId: context.sessionToken,
         input,
         approvalPolicy: "never",
         model: args.model,
@@ -1383,27 +1389,17 @@ export class CodexAppServerManager {
   }
 
   private attachListeners(context: SessionContext) {
-    const lines = createInterface({ input: context.child.stdout })
-    void (async () => {
-      for await (const line of lines) {
-        const parsed = parseJsonLine(line)
-        if (!parsed) continue
-
-        if (isJsonRpcResponse(parsed)) {
-          this.handleResponse(context, parsed)
-          continue
-        }
-
-        if (isServerRequest(parsed)) {
-          void this.handleServerRequest(context, parsed)
-          continue
-        }
-
-        if (isServerNotification(parsed)) {
-          void this.handleNotification(context, parsed)
-        }
+    readLfLines(context.child.stdout, (line) => {
+      const parsed = parseJsonLine(line)
+      if (!parsed) return
+      if (isJsonRpcResponse(parsed)) {
+        this.handleResponse(context, parsed)
+      } else if (isServerRequest(parsed)) {
+        void this.handleServerRequest(context, parsed)
+      } else if (isServerNotification(parsed)) {
+        void this.handleNotification(context, parsed)
       }
-    })()
+    })
 
     const stderr = createInterface({ input: context.child.stderr })
     void (async () => {
@@ -2107,22 +2103,10 @@ export class CodexAppServerManager {
    * config.toml ones; `mcpServerStatus/list` without a thread lists the rest,
    * plugin servers with their plugin, without connecting to any. A remote
    * plugin syncs in later and is not listed yet, so its servers stay on. A
-   * list that fails or runs late counts as empty: apps still go off.
+   * list that fails counts as empty: apps still go off. Slow requests are
+   * awaited, so discovery never abandons pending reads or pagination.
    */
   private async discoverMcpIsolationConfig(context: SessionContext) {
-    const withTimeout = async <T,>(promise: Promise<T>) => {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        return await Promise.race([
-          promise,
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("timed out")), MCP_DISCOVERY_TIMEOUT_MS)
-          }),
-        ])
-      } finally {
-        clearTimeout(timer)
-      }
-    }
     const readConfigNames = async () => {
       const response = await this.sendRequest<ConfigReadResponse>(context, "config/read", {
         cwd: context.cwd,
@@ -2145,27 +2129,37 @@ export class CodexAppServerManager {
       return servers
     }
     const [configServerNames, servers] = await Promise.all([
-      withTimeout(readConfigNames()).catch(() => []),
-      withTimeout(listServers()).catch(() => []),
+      readConfigNames().catch(() => []),
+      listServers().catch(() => []),
     ])
     return buildCodexMcpIsolationConfig({ configServerNames, servers })
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {
     const id = randomUUID()
-    const promise = new Promise<TResult>((resolve, reject) => {
-      context.pendingRequests.set(id, {
-        method,
-        resolve: resolve as (value: unknown) => void,
-        reject,
+    try {
+      return await new Promise<TResult>((resolve, reject) => {
+        if (context.closed) {
+          reject(new Error("Codex session closed"))
+          return
+        }
+        context.pendingRequests.set(id, {
+          method,
+          resolve: resolve as (value: unknown) => void,
+          reject,
+        })
+        // RPC latency is not evidence of a broken session. Wait for the
+        // response, process exit, or an explicit stop instead of killing
+        // legitimate work after an arbitrary deadline.
+        try {
+          this.writeMessage(context, { id, method, params })
+        } catch (error) {
+          this.failContext(context, errorMessage(error))
+        }
       })
-    })
-    this.writeMessage(context, {
-      id,
-      method,
-      params,
-    })
-    return await promise
+    } finally {
+      context.pendingRequests.delete(id)
+    }
   }
 
   private writeMessage(context: SessionContext, message: Record<string, unknown>) {

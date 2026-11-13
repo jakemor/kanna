@@ -669,7 +669,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
                 return withOriginAgentCluster(auth.redirectToApp(req))
               }
               if (req.method === "POST") {
-                return withOriginAgentCluster(auth.handleLogin(req, "/"))
+                // Through a tunnel every request arrives from cloudflared on
+                // loopback, and the visitor's address is the one it reports.
+                const clientAddress = (options.trustProxy ? req.headers.get("cf-connecting-ip") : null)
+                  ?? serverInstance.requestIP(req)?.address
+                return withOriginAgentCluster(auth.handleLogin(req, "/", clientAddress))
               }
               return withOriginAgentCluster(new Response(null, { status: 405, headers: { Allow: "GET, POST" } }))
             }

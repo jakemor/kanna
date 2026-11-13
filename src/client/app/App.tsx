@@ -182,7 +182,9 @@ function useAppAuthState() {
     })
 
     if (!response.ok) {
-      setState({ status: "locked", error: "Incorrect password. Try again." })
+      // 429: too many wrong guesses from this address, and the server says how long to wait.
+      const waiting = response.status === 429 ? await response.json().then((body: { error?: unknown }) => body.error, () => null) : null
+      setState({ status: "locked", error: typeof waiting === "string" ? waiting : "Incorrect password. Try again." })
       return
     }
 

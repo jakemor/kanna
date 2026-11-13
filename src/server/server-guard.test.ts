@@ -360,3 +360,33 @@ describe("files from a project and its uploads", () => {
     expect(response.body).toBe("LINKED")
   })
 })
+
+describe("password login", () => {
+  test("wrong guesses are slowed per address, and the tunnel's visitor is the address", async () => {
+    const host = "x.trycloudflare.com"
+    const server = await start(4427, { password: "hunter2", trustProxy: true })
+    // What the CLI does when the tunnel comes up.
+    server.allowHost(`https://${host}`)
+    const attempt = (password: string, visitor: string) => send(server.port, "POST", host, "/auth/login", [
+      `cf-connecting-ip: ${visitor}`, "X-Forwarded-Proto: https", `Origin: https://${host}`, "Content-Type: application/json",
+    ], JSON.stringify({ password }))
+
+    const statuses = new Map<number, number>()
+    for (let index = 0; index < 300; index += 1) {
+      const { status } = await attempt(`guess-${index}`, "203.0.113.9")
+      statuses.set(status, (statuses.get(status) ?? 0) + 1)
+    }
+    // Five looked at, then one more each time a wait runs out; the rest refused unread.
+    expect(statuses.get(401)).toBeGreaterThanOrEqual(5)
+    expect(statuses.get(401)).toBeLessThan(12)
+    expect(statuses.get(429)).toBeGreaterThan(288)
+
+    const blocked = await attempt("hunter2", "203.0.113.9")
+    expect(blocked.status).toBe(429)
+    expect(Number(blocked.headers.get("retry-after"))).toBeGreaterThan(0)
+    // The owner, at another address, is not slowed by it.
+    const owner = await attempt("hunter2", "198.51.100.7")
+    expect(owner.status).toBe(200)
+    expect(owner.headers.get("set-cookie")).toContain("kanna_session=")
+  })
+})

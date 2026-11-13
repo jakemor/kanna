@@ -7,11 +7,87 @@ export interface AuthStatusPayload {
   authenticated: boolean
 }
 
+/**
+ * Wrong guesses from one address, slowed down. The password is one the user
+ * typed on a command line, often short, and without this a script tries
+ * thousands a second.
+ *
+ * Counted per address, never for everyone at once: a shared lock would let
+ * anyone who can reach the login keep the owner out of their own machine.
+ * The first few misses cost nothing (a person mistypes), each one after
+ * doubles the wait, and the wait stops at half a minute, which is the
+ * longest the owner can be kept out by someone guessing from their address.
+ * While an address waits its guesses are not looked at, so they tell it
+ * nothing and do not lengthen the wait.
+ */
+const FREE_LOGIN_FAILURES = 5
+const MAX_LOGIN_WAIT_MS = 30_000
+/** A quiet quarter of an hour and the count starts over. */
+const LOGIN_FAILURE_MEMORY_MS = 15 * 60_000
+const MAX_TRACKED_LOGIN_CLIENTS = 10_000
+
+/** One key per IPv4 address and per IPv6 /64, which is what one customer is handed. */
+export function loginClientKey(address: string | null | undefined) {
+  const lower = (address ?? "").trim().toLowerCase()
+  if (!lower) return "unknown"
+  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+  if (mapped) return mapped[1]!
+  if (!lower.includes(":")) return lower
+  const [head = "", tail] = lower.split("::")
+  const headGroups = head ? head.split(":") : []
+  const tailGroups = tail ? tail.split(":") : []
+  const filler = tail === undefined ? [] : new Array<string>(Math.max(0, 8 - headGroups.length - tailGroups.length)).fill("0")
+  return `${[...headGroups, ...filler, ...tailGroups].slice(0, 4).map((group) => group.replace(/^0+(?=.)/, "")).join(":")}::/64`
+}
+
+export interface LoginThrottle {
+  /** How long this client must still wait before a guess is looked at; 0 when it may try. */
+  waitMs(client: string): number
+  recordFailure(client: string): void
+  recordSuccess(client: string): void
+}
+
+export function createLoginThrottle(now: () => number = Date.now): LoginThrottle {
+  const clients = new Map<string, { failures: number; blockedUntil: number; lastFailureAt: number }>()
+
+  function current(client: string) {
+    const entry = clients.get(client)
+    if (entry && now() - entry.lastFailureAt >= LOGIN_FAILURE_MEMORY_MS) {
+      clients.delete(client)
+      return undefined
+    }
+    return entry
+  }
+
+  return {
+    waitMs(client) {
+      return Math.max(0, (current(client)?.blockedUntil ?? 0) - now())
+    },
+    recordFailure(client) {
+      const failures = (current(client)?.failures ?? 0) + 1
+      const wait = failures < FREE_LOGIN_FAILURES ? 0 : Math.min(1_000 * 2 ** (failures - FREE_LOGIN_FAILURES), MAX_LOGIN_WAIT_MS)
+      // Re-inserted so the map stays oldest-first for the trim below.
+      clients.delete(client)
+      clients.set(client, { failures, blockedUntil: now() + wait, lastFailureAt: now() })
+      if (clients.size > MAX_TRACKED_LOGIN_CLIENTS) {
+        for (const key of clients.keys()) {
+          if (clients.size <= MAX_TRACKED_LOGIN_CLIENTS) break
+          clients.delete(key)
+        }
+      }
+    },
+    recordSuccess(client) {
+      clients.delete(client)
+    },
+  }
+}
+
 export interface AuthManager {
   isAuthenticated(req: Request): boolean
   validateOrigin(req: Request): boolean
   redirectToApp(req: Request): Response
-  handleLogin(req: Request, nextPath: string): Promise<Response>
+  /** `clientAddress` is who is guessing, for the wrong-password backoff. */
+  handleLogin(req: Request, nextPath: string, clientAddress?: string | null): Promise<Response>
   handleLogout(req: Request): Response
   handleStatus(req: Request): Response
 }
@@ -109,12 +185,14 @@ export interface AuthManagerOptions {
    * proxy such as cloudflared.
    */
   trustProxy?: boolean
+  now?: () => number
 }
 
 export function createAuthManager(password: string, options: AuthManagerOptions = {}): AuthManager {
   const sessions = new Set<string>()
   const expectedPassword = Buffer.from(password)
   const trustProxy = options.trustProxy ?? false
+  const throttle = createLoginThrottle(options.now)
 
   function getSessionToken(req: Request) {
     return parseCookies(req.headers.get("cookie")).get(SESSION_COOKIE_NAME) ?? null
@@ -167,15 +245,27 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
     return Response.redirect(new URL(sanitizeNextPath(currentUrl.searchParams.get("next")), effectiveOrigin(req, trustProxy)), 302)
   }
 
-  async function handleLogin(req: Request, fallbackNextPath: string) {
+  async function handleLogin(req: Request, fallbackNextPath: string, clientAddress?: string | null) {
     if (!validateOrigin(req)) {
       return Response.json({ error: "Forbidden" }, { status: 403 })
     }
 
+    const client = loginClientKey(clientAddress)
+    const waitMs = throttle.waitMs(client)
+    if (waitMs > 0) {
+      const seconds = Math.ceil(waitMs / 1000)
+      return Response.json(
+        { error: `Too many wrong passwords. Try again in ${seconds} second${seconds === 1 ? "" : "s"}.`, retryAfterSeconds: seconds },
+        { status: 429, headers: { "Retry-After": String(seconds) } },
+      )
+    }
+
     const { password: candidate, nextPath } = await readLoginForm(req)
     if (!verifyPassword(candidate)) {
+      throttle.recordFailure(client)
       return Response.json({ error: "Invalid password" }, { status: 401 })
     }
+    throttle.recordSuccess(client)
 
     const response = Response.json({ ok: true, nextPath: sanitizeNextPath(nextPath || fallbackNextPath) })
 

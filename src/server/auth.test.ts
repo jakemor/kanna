@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { createAuthManager, createLoginThrottle, loginClientKey } from "./auth"
 import { persistProjectUpload } from "./uploads"
 import { startTestServer } from "./__fixtures__/test-server"
 
@@ -333,5 +334,103 @@ describe("password auth", () => {
     } finally {
       await server.stop()
     }
+  })
+})
+
+describe("wrong-password backoff", () => {
+  const login = (auth: ReturnType<typeof createAuthManager>, password: string, client: string) =>
+    auth.handleLogin(new Request("http://localhost:3210/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }), "/", client)
+
+  test("the first misses are free, then each one waits longer, up to half a minute", () => {
+    let time = 1_000_000
+    const throttle = createLoginThrottle(() => time)
+    const waits: number[] = []
+    for (let attempt = 0; attempt < 14; attempt += 1) {
+      throttle.recordFailure("203.0.113.9")
+      waits.push(throttle.waitMs("203.0.113.9"))
+      time += waits.at(-1)!
+    }
+    expect(waits).toEqual([0, 0, 0, 0, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000, 30_000, 30_000])
+  })
+
+  test("300 wrong guesses in a row get five looks, and the rest are turned away unread", async () => {
+    let time = 1_000_000
+    const auth = createAuthManager("secret", { now: () => time })
+    const statuses = new Map<number, number>()
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      // The 300th guess is the right one, and it is still not looked at.
+      const response = await login(auth, attempt === 299 ? "secret" : `guess-${attempt}`, "203.0.113.9")
+      statuses.set(response.status, (statuses.get(response.status) ?? 0) + 1)
+      time += 1
+    }
+    expect([...statuses]).toEqual([[401, 5], [429, 295]])
+  })
+
+  test("a refused guess says how long to wait", async () => {
+    const time = 1_000_000
+    const auth = createAuthManager("secret", { now: () => time })
+    for (let attempt = 0; attempt < 5; attempt += 1) await login(auth, "wrong", "203.0.113.9")
+    const response = await login(auth, "wrong", "203.0.113.9")
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("1")
+    expect(response.headers.get("set-cookie")).toBeNull()
+    expect(await response.json()).toEqual({ error: "Too many wrong passwords. Try again in 1 second.", retryAfterSeconds: 1 })
+  })
+
+  test("the owner is in again once the wait is over, and never waits more than half a minute", async () => {
+    let time = 1_000_000
+    const auth = createAuthManager("secret", { now: () => time })
+    // Someone hammers from the owner's own address for ten minutes.
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      await login(auth, "wrong", "203.0.113.9")
+      time += 1_000
+    }
+    expect((await login(auth, "secret", "203.0.113.9")).status).toBe(429)
+    time += 30_000
+    const response = await login(auth, "secret", "203.0.113.9")
+    expect(response.status).toBe(200)
+    expect(response.headers.get("set-cookie")).toContain("kanna_session=")
+  })
+
+  test("one address's misses do not slow another", async () => {
+    const time = 1_000_000
+    const auth = createAuthManager("secret", { now: () => time })
+    for (let attempt = 0; attempt < 50; attempt += 1) await login(auth, "wrong", "203.0.113.9")
+    expect((await login(auth, "wrong", "203.0.113.9")).status).toBe(429)
+    expect((await login(auth, "secret", "198.51.100.7")).status).toBe(200)
+  })
+
+  test("a right password clears the count, and so does a quiet quarter of an hour", async () => {
+    let time = 1_000_000
+    const auth = createAuthManager("secret", { now: () => time })
+    for (let attempt = 0; attempt < 4; attempt += 1) expect((await login(auth, "wrong", "c")).status).toBe(401)
+    expect((await login(auth, "secret", "c")).status).toBe(200)
+    for (let attempt = 0; attempt < 4; attempt += 1) expect((await login(auth, "wrong", "c")).status).toBe(401)
+    time += 15 * 60_000
+    for (let attempt = 0; attempt < 4; attempt += 1) expect((await login(auth, "wrong", "c")).status).toBe(401)
+  })
+
+  test("an IPv6 customer is one client, whichever of its addresses it uses", () => {
+    expect(loginClientKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe(loginClientKey("2001:db8:1:2::1"))
+    expect(loginClientKey("2001:db8:1:2::1")).not.toBe(loginClientKey("2001:db8:1:3::1"))
+    expect(loginClientKey("2001:0db8:0001:0002::1")).toBe(loginClientKey("2001:db8:1:2::1"))
+    expect(loginClientKey("::ffff:127.0.0.1")).toBe("127.0.0.1")
+    expect(loginClientKey("::1")).toBe(loginClientKey("0:0:0:0:0:0:0:1"))
+    expect(loginClientKey("203.0.113.9")).toBe("203.0.113.9")
+    expect(loginClientKey(null)).toBe("unknown")
+  })
+
+  test("the memory of who missed is bounded", () => {
+    const throttle = createLoginThrottle(() => 1_000_000)
+    for (let client = 0; client < 10_050; client += 1) {
+      for (let attempt = 0; attempt < 6; attempt += 1) throttle.recordFailure(`client-${client}`)
+    }
+    // The oldest were dropped to make room; the newest are still waiting.
+    expect(throttle.waitMs("client-0")).toBe(0)
+    expect(throttle.waitMs("client-10049")).toBeGreaterThan(0)
   })
 })

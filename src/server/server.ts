@@ -1,10 +1,11 @@
 import { homedir } from "node:os"
 import { PerformanceLog } from "./performance-log"
 import path from "node:path"
-import { readFile, stat } from "node:fs/promises"
+import { readFile, realpath, stat } from "node:fs/promises"
 import { APP_NAME, getDataDir, getDataRootDir, getDataRootDirDisplay, getRuntimeProfile, LOG_PREFIX } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import type { ShareMode } from "../shared/share"
+import { servedFileHeaders } from "../shared/served-files"
 import {
   CLOUD_BROWSER_PATH_PREFIX,
   CLOUD_FLEET_PATH,
@@ -1078,9 +1079,7 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
   if (zipResponse) return zipResponse
 
   return new Response(file, {
-    headers: {
-      "Content-Type": inferAttachmentContentType(storedName, file.type),
-    },
+    headers: servedFileHeaders(inferAttachmentContentType(storedName, file.type)),
   })
 }
 
@@ -1193,26 +1192,33 @@ async function handleProjectFileContent(req: Request, url: URL, store: EventStor
     return Response.json({ error: "Invalid project file path" }, { status: 400 })
   }
 
-  const filePath = path.resolve(project.localPath, relativePath)
-  const projectRoot = path.resolve(project.localPath)
-  if (filePath !== projectRoot && !filePath.startsWith(`${projectRoot}${path.sep}`)) {
+  const requestedPath = path.resolve(project.localPath, relativePath)
+  const requestedRoot = path.resolve(project.localPath)
+  if (requestedPath !== requestedRoot && !requestedPath.startsWith(`${requestedRoot}${path.sep}`)) {
     return Response.json({ error: "Invalid project file path" }, { status: 400 })
   }
 
-  const file = Bun.file(filePath)
+  // Again on the real paths: a symlink in a cloned repo can point anywhere
+  // on the machine, and this route answers for the project only. Both sides
+  // are resolved, so a project that is itself reached through a link (/tmp
+  // on macOS) still matches.
+  let filePath: string
   try {
-    const info = await stat(filePath)
-    if (!info.isFile()) {
+    const projectRoot = await realpath(requestedRoot)
+    filePath = await realpath(requestedPath)
+    if (filePath !== projectRoot && !filePath.startsWith(`${projectRoot}${path.sep}`)) {
+      return Response.json({ error: "Invalid project file path" }, { status: 400 })
+    }
+    if (!(await stat(filePath)).isFile()) {
       return Response.json({ error: "File not found" }, { status: 404 })
     }
   } catch {
     return Response.json({ error: "File not found" }, { status: 404 })
   }
+  const file = Bun.file(filePath)
 
   return new Response(file, {
-    headers: {
-      "Content-Type": inferProjectFileContentType(relativePath, file.type),
-    },
+    headers: servedFileHeaders(inferProjectFileContentType(relativePath, file.type)),
   })
 }
 

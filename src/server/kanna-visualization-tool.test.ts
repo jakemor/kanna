@@ -65,6 +65,12 @@ test("client accepts only saved or exported visualization artifacts and bounded 
   expect(visualizationHeight(99999)).toBe(2000)
   expect(visualizationLink('file:///etc/passwd')).toBeNull()
   expect(visualizationLink('https://example.com/report')).toBe('https://example.com/report')
+  // Never back to the app or onto this machine: a tab there can reach the server.
+  expect(visualizationLink('https://mac.kanna.sh/api/projects/p/files/x.svg/content', 'https://mac.kanna.sh')).toBeNull()
+  expect(visualizationLink('https://other.example/x', 'https://mac.kanna.sh')).toBe('https://other.example/x')
+  for (const local of ['http://localhost:3210/', 'http://LOCALHOST:5174/x', 'http://app.localhost/', 'http://127.0.0.1:3210/', 'http://127.1/', 'http://2130706433/', 'http://0x7f.0.0.1/', 'http://[::1]:3210/', 'http://[::ffff:127.0.0.1]/', 'http://0.0.0.0:3210/']) {
+    expect(visualizationLink(local, 'https://mac.kanna.sh')).toBeNull()
+  }
 })
 
 test("download bridge permits bounded text exports without letting widgets choose host paths", async () => {

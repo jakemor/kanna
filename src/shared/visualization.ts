@@ -43,11 +43,26 @@ export function visualizationHeight(value: unknown): number | null {
     ? Math.max(40, Math.min(VISUALIZATION_MAX_HEIGHT, Math.ceil(value))) : null
 }
 
-export function visualizationLink(value: unknown): string | null {
+/** `URL` has already put every spelling of an address into one form. */
+function isLoopbackHostname(hostname: string) {
+  return hostname === "localhost" || hostname.endsWith(".localhost")
+    || /^127\.\d+\.\d+\.\d+$/.test(hostname) || hostname === "0.0.0.0"
+    || hostname === "[::1]" || hostname === "[::]" || hostname.startsWith("[::ffff:7f")
+}
+
+/**
+ * A link a visualization asks its host to open. The document is an agent's
+ * and its script posts what it likes, so a link may not lead back to the
+ * app (`appOrigin`, the page showing it) or to anything on this machine: a
+ * tab there is on an origin that can reach the server.
+ */
+export function visualizationLink(value: unknown, appOrigin?: string): string | null {
   if (typeof value !== "string") return null
   try {
     const url = new URL(value)
-    return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : null
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null
+    if (isLoopbackHostname(url.hostname) || (appOrigin !== undefined && url.origin === appOrigin)) return null
+    return url.href
   } catch { return null }
 }
 

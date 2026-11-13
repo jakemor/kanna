@@ -1,6 +1,7 @@
 import type { ViewerAttachment } from "../../stores/viewerStore"
 import { classifyAttachmentPreview, CODE_OR_CONFIG_EXTENSIONS, getFileExtension } from "../messages/attachmentPreview"
 import { isZipAttachment, servesZipListing } from "../../../shared/zip-preview"
+import { servedFileMode } from "../../../shared/served-files"
 
 // Pure, with no store behind it, so the store that restores the viewer on
 // load can ask it too (`persistedChatViewers` in stores/rightSidebarStore.ts).
@@ -63,14 +64,19 @@ function canPreview(attachment: OpenableAttachment) {
  * kUnsupportedTextTypes). And the route: a file an agent sent this chat is
  * served from `/api/chats/<id>/media/` with `Content-Disposition: attachment`
  * for anything but a few image, video and PDF types (`handleTranscriptMediaContent`
- * in src/server/server.ts). Uploads have no disposition, and are served by
- * name: code and config as text/plain, the rest by extension
- * (`inferAttachmentContentType` in src/server/uploads.ts). Another site's
- * file is guessed by its type.
+ * in src/server/server.ts). Uploads and project files are served by name:
+ * code and config as text/plain, the rest by extension
+ * (`inferAttachmentContentType` in src/server/uploads.ts), and as a download
+ * unless the type is one with nothing to run (`servedFileMode` in
+ * src/shared/served-files.ts). Another site's file is guessed by its type.
  */
 export function opensInBrowser(attachment: Pick<ViewerAttachment, "url" | "name" | "mimeType">): boolean {
   if (isTranscriptMedia(attachment.url)) return TRANSCRIPT_MEDIA_INLINE.test(baseType(attachment.mimeType))
-  return browserShows(servedType(attachment))
+  const type = servedType(attachment)
+  // An upload or project file of a type that could run script (SVG, HTML)
+  // is served as a download, like anything the server cannot name.
+  if (isSameOrigin(attachment.url) && servedFileMode(type) === "download") return false
+  return browserShows(type)
 }
 
 /** Mirrors the inline list in `handleTranscriptMediaContent`. */

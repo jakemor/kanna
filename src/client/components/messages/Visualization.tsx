@@ -206,7 +206,7 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
         if (download) saveFile(new Blob([download.content], { type: download.mimeType }), download.filename)
       }
       if (event.data?.type === "kanna:link") {
-        const url = visualizationLink(event.data.url)
+        const url = visualizationLink(event.data.url, window.location.origin)
         if (url) window.open(url, "_blank", "noopener,noreferrer")
       }
     }

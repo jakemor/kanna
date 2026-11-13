@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import net from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -7,6 +7,7 @@ import { PROXY_AUTH_HEADER } from "../shared/cloud-api"
 import { createConnectTokenManager } from "./cloud/connect-token"
 import type { CloudIdentity } from "./cloud/identity"
 import type { CloudRuntime } from "./cloud"
+import { getProjectUploadDir } from "./paths"
 import { startTestServer } from "./__fixtures__/test-server"
 import type { StartKannaServerOptions } from "./server"
 
@@ -266,5 +267,96 @@ describe("a paired server", () => {
     const sibling = await send(port, "POST", IDENTITY.tunnelHost, "/api/projects/p1/uploads", [...proxied, "Origin: https://evil.kanna.sh", "Sec-Fetch-Site: same-site"])
     expect(sibling.status).toBe(403)
     expect((await upgrade(port, IDENTITY.tunnelHost, [...proxied, "Origin: https://evil.example"])).status).toBe(403)
+  })
+})
+
+describe("files from a project and its uploads", () => {
+  async function projectServer(port: number) {
+    const outside = await tempDir("kanna-guard-outside-")
+    const projectDir = path.join(outside, "project")
+    await mkdir(projectDir)
+    const server = await start(port)
+    const project = await server.store.openProject(projectDir, "Project")
+    const get = (target: string) => send(server.port, "GET", `localhost:${server.port}`, target)
+    return { server, outside, projectDir, project, get }
+  }
+
+  const SCRIPTED_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script></svg>'
+
+  test("a file that could run script is a sandboxed download, from either route", async () => {
+    const { projectDir, project, get } = await projectServer(4423)
+    const uploads = getProjectUploadDir(projectDir)
+    await mkdir(uploads, { recursive: true })
+    const files: Array<[string, string]> = [["x.svg", SCRIPTED_SVG], ["x.htm", "<script>alert(1)</script>"], ["x.xhtml", "<html xmlns='http://www.w3.org/1999/xhtml'/>"], ["x.bin", "?"]]
+    for (const [name, content] of files) {
+      await writeFile(path.join(projectDir, name), content)
+      await writeFile(path.join(uploads, name), content)
+      for (const target of [`/api/projects/${project.id}/files/${name}/content`, `/api/projects/${project.id}/uploads/${name}/content`]) {
+        const response = await get(target)
+        expect(response.status).toBe(200)
+        // Still the file, for an <img> or a fetch.
+        expect(response.body).toBe(content)
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff")
+        expect(response.headers.get("content-security-policy")).toStartWith("sandbox;")
+        expect(response.headers.get("content-disposition")).toBe("attachment")
+      }
+    }
+  })
+
+  test("images, video, audio and PDFs are shown as they are; text is shown in a sandbox", async () => {
+    const { projectDir, project, get } = await projectServer(4424)
+    for (const [name, type] of [["a.png", "image/png"], ["a.jpg", "image/jpeg"], ["a.mp4", "video/mp4"], ["a.mp3", "audio/mpeg"], ["a.pdf", "application/pdf"]]) {
+      await writeFile(path.join(projectDir, name!), "bytes")
+      const response = await get(`/api/projects/${project.id}/files/${name}/content`)
+      expect(response.headers.get("content-type")).toBe(type!)
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff")
+      expect(response.headers.has("content-security-policy")).toBe(false)
+      // Bun names the file here itself (`filename="a.png"`), which saves nothing.
+      expect(response.headers.get("content-disposition") ?? "").not.toContain("attachment")
+    }
+    for (const name of ["a.ts", "a.html", "a.md", "a.json", "a.txt", "a.csv"]) {
+      await writeFile(path.join(projectDir, name), "text")
+      const response = await get(`/api/projects/${project.id}/files/${name}/content`)
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff")
+      expect(response.headers.get("content-security-policy")).toStartWith("sandbox;")
+      // Not an attachment: "Open in new tab" still shows it.
+      expect(response.headers.get("content-disposition") ?? "").not.toContain("attachment")
+      expect(response.headers.get("content-type")).not.toContain("html")
+    }
+  })
+
+  test("a symlink out of the project is not followed; one inside it is", async () => {
+    const { outside, projectDir, project, get } = await projectServer(4425)
+    await writeFile(path.join(outside, "secret.txt"), "OUTSIDE")
+    await writeFile(path.join(projectDir, "real.txt"), "INSIDE")
+    await mkdir(path.join(outside, "elsewhere"))
+    await writeFile(path.join(outside, "elsewhere", "deep.txt"), "OUTSIDE")
+    await symlink(path.join(outside, "secret.txt"), path.join(projectDir, "out.txt"))
+    await symlink(path.join(outside, "elsewhere"), path.join(projectDir, "outdir"))
+    await symlink(path.join(projectDir, "real.txt"), path.join(projectDir, "in.txt"))
+
+    const escaped = await get(`/api/projects/${project.id}/files/out.txt/content`)
+    expect(escaped.status).toBe(400)
+    expect(escaped.body).not.toContain("OUTSIDE")
+    const escapedDir = await get(`/api/projects/${project.id}/files/${encodeURIComponent("outdir/deep.txt")}/content`)
+    expect(escapedDir.status).toBe(400)
+    expect(escapedDir.body).not.toContain("OUTSIDE")
+
+    expect((await get(`/api/projects/${project.id}/files/in.txt/content`)).body).toBe("INSIDE")
+    expect((await get(`/api/projects/${project.id}/files/real.txt/content`)).body).toBe("INSIDE")
+    expect((await get(`/api/projects/${project.id}/files/missing.txt/content`)).status).toBe(404)
+  })
+
+  test("a project that is itself reached through a symlink still serves its files", async () => {
+    const outside = await tempDir("kanna-guard-linked-")
+    const real = path.join(outside, "real-project")
+    await mkdir(real)
+    await writeFile(path.join(real, "note.txt"), "LINKED")
+    await symlink(real, path.join(outside, "link-project"))
+    const server = await start(4426)
+    const project = await server.store.openProject(path.join(outside, "link-project"), "Linked")
+    const response = await send(server.port, "GET", `localhost:${server.port}`, `/api/projects/${project.id}/files/note.txt/content`)
+    expect(response.status).toBe(200)
+    expect(response.body).toBe("LINKED")
   })
 })

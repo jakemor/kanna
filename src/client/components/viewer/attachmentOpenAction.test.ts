@@ -8,7 +8,6 @@ const remote = (name: string, mimeType: string) => ({ url: `https://example.com/
 describe("opensInBrowser", () => {
   test("an upload the browser shows opens in a tab", () => {
     expect(opensInBrowser(upload("report.pdf", "application/pdf"))).toBe(true)
-    expect(opensInBrowser(upload("logo.svg", "image/svg+xml"))).toBe(true)
     expect(opensInBrowser(upload("clip.mp4", "video/mp4"))).toBe(true)
     expect(opensInBrowser(upload("song.mp3", "audio/mpeg"))).toBe(true)
     expect(opensInBrowser(upload("notes.txt", "text/plain; charset=utf-8"))).toBe(true)
@@ -21,6 +20,17 @@ describe("opensInBrowser", () => {
     expect(opensInBrowser(upload("sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))).toBe(false)
     expect(opensInBrowser(upload("tool", "application/octet-stream"))).toBe(false)
     expect(opensInBrowser(upload("photo.heic", "image/heic"))).toBe(false)
+  })
+
+  test("an upload that could run script as a page of its own downloads", () => {
+    // The server sends these as attachments (src/shared/served-files.ts).
+    expect(opensInBrowser(upload("logo.svg", "image/svg+xml"))).toBe(false)
+    expect(opensInBrowser(upload("page.htm", "text/html"))).toBe(false)
+    expect(opensInBrowser(upload("feed.xhtml", "application/xhtml+xml"))).toBe(false)
+    // Another site's file is not ours to serve: guessed by type, as before.
+    expect(opensInBrowser(remote("logo.svg", "image/svg+xml"))).toBe(true)
+    // In the viewer an SVG is an <img>, which runs nothing.
+    expect(attachmentOpenAction(upload("logo.svg", "image/svg+xml"))).toBe("preview")
   })
 
   test("goes by the name the server types an upload by", () => {

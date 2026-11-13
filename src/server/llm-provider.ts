@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import OpenAI from "openai"
@@ -138,6 +138,8 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
 export async function readLlmProviderSnapshot(filePath = getLlmProviderFilePath(homedir())) {
   try {
     const text = await readFile(filePath, "utf8")
+    // Files written before the mode was set are readable by every user of the machine.
+    await chmod(filePath, 0o600).catch(() => {})
     if (!text.trim()) {
       return createDefaultSnapshot(filePath, "LLM provider file was empty. Using defaults.")
     }
@@ -166,7 +168,9 @@ export async function writeLlmProviderSnapshot(
     faveModels: snapshot.faveModels,
   }
   await mkdir(path.dirname(filePath), { recursive: true })
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
+  // Holds an API key. The mode only applies to a file this creates, so set it on an existing one too.
+  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
+  await chmod(filePath, 0o600).catch(() => {})
   return snapshot
 }
 

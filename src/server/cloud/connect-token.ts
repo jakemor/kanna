@@ -3,6 +3,10 @@
  * proxied requests; validated on the /ws upgrade that arrives directly on
  * the tunnel. In-memory only — a machine restart invalidates them, and the
  * client just re-fetches the endpoint on reconnect.
+ *
+ * Each opens one socket. The token rides in the URL's query, where a log or
+ * a proxy between the browser and the machine can keep it, and every client
+ * asks for a new one before each connect, so a second use is someone else's.
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto"
@@ -11,6 +15,7 @@ export const CONNECT_TOKEN_TTL_MS = 60_000
 
 export interface ConnectTokenManager {
   mint(): { token: string; expiresInMs: number }
+  /** True once per token: a token that validates is spent. */
   validate(token: string): boolean
 }
 
@@ -47,17 +52,18 @@ export function createConnectTokenManager(deps: ConnectTokenDeps = {}): ConnectT
       const candidateBuffer = Buffer.from(candidate)
       // Compare against every live token timing-safely so a miss and a hit
       // cost the same per entry (the map stays tiny: 60s TTL).
-      let matched = false
+      let matched: string | null = null
       for (const token of tokens.keys()) {
         const tokenBuffer = Buffer.from(token)
         if (
           tokenBuffer.length === candidateBuffer.length &&
           timingSafeEqual(tokenBuffer, candidateBuffer)
         ) {
-          matched = true
+          matched = token
         }
       }
-      return matched
+      if (matched !== null) tokens.delete(matched)
+      return matched !== null
     },
   }
 }

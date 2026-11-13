@@ -8,13 +8,23 @@ describe("connect tokens", () => {
 
     const { token, expiresInMs } = manager.mint()
     expect(expiresInMs).toBe(60_000)
-    expect(manager.validate(token)).toBe(true)
 
     currentTime += 59_999
     expect(manager.validate(token)).toBe(true)
 
-    currentTime += 2
+    const late = manager.mint().token
+    currentTime += 60_001
+    expect(manager.validate(late)).toBe(false)
+  })
+
+  test("a token opens one socket: the second use is refused", () => {
+    const manager = createConnectTokenManager()
+    const { token } = manager.mint()
+    expect(manager.validate(token)).toBe(true)
     expect(manager.validate(token)).toBe(false)
+    // Spending one leaves the others.
+    const other = manager.mint().token
+    expect(manager.validate(other)).toBe(true)
   })
 
   test("unknown and empty tokens are rejected", () => {

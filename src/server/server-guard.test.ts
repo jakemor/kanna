@@ -241,7 +241,7 @@ describe("a paired server", () => {
     expect((await send(port, "POST", `localhost:${port}`, "/api/cloud/pair-session", ["Origin: https://evil.example"])).status).toBe(403)
   })
 
-  test("the kanna.sh page: HTTP through the proxy, the socket straight to the tunnel with a token", async () => {
+  test("the kanna.sh page: HTTP through the proxy, the socket straight to the tunnel with a token used once", async () => {
     const cloud = paired()
     const { port } = await start(4422, { cloud, trustProxy: true })
     const proxied = [...TUNNEL, `${PROXY_AUTH_HEADER}: ${PROXY_SECRET}`, "X-Forwarded-Host: mac.kanna.sh", "X-Forwarded-Proto: https"]
@@ -252,6 +252,8 @@ describe("a paired server", () => {
 
     const page = [...TUNNEL, `Origin: ${IDENTITY.appOrigin}`]
     expect((await upgrade(port, IDENTITY.tunnelHost, page, `/ws?token=${connectToken}`)).status).toBe(101)
+    // The token rode in a URL; a second socket on it is someone else's.
+    expect((await upgrade(port, IDENTITY.tunnelHost, page, `/ws?token=${connectToken}`)).status).toBe(401)
 
     // A page elsewhere holding a fresh token does not spend it, and gets nothing.
     const fresh = cloud.connectTokens.mint().token

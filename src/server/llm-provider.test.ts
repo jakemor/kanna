@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { DEFAULT_OPENAI_SDK_MODEL, DEFAULT_OPENROUTER_SDK_MODEL, DEFAULT_PI_FAVE_MODELS } from "../shared/types"
@@ -64,6 +64,30 @@ describe("normalizeLlmProviderSnapshot", () => {
 
     expect(snapshot.enabled).toBe(false)
     expect(snapshot.warning).toContain("custom provider requires a baseUrl")
+  })
+})
+
+describe("the file's mode", () => {
+  const mode = async (filePath: string) => (await stat(filePath)).mode & 0o777
+
+  test("a new file holds an API key and is the owner's alone", async () => {
+    const filePath = await createTempFilePath()
+    await writeLlmProviderSnapshot({ provider: "openrouter", apiKey: "sk-test", model: "", baseUrl: "" }, filePath)
+    expect(await mode(filePath)).toBe(0o600)
+  })
+
+  test("a file from before the mode was set is closed when written or read", async () => {
+    const written = await createTempFilePath()
+    await writeFile(written, "{}", { mode: 0o644 })
+    await chmod(written, 0o644)
+    await writeLlmProviderSnapshot({ provider: "openrouter", apiKey: "sk-test", model: "", baseUrl: "" }, written)
+    expect(await mode(written)).toBe(0o600)
+
+    const read = await createTempFilePath()
+    await writeFile(read, JSON.stringify({ provider: "openrouter", apiKey: "sk-test" }), { mode: 0o644 })
+    await chmod(read, 0o644)
+    await readLlmProviderSnapshot(read)
+    expect(await mode(read)).toBe(0o600)
   })
 })
 

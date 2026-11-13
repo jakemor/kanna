@@ -1,8 +1,8 @@
 import { homedir } from "node:os"
 import { PerformanceLog } from "./performance-log"
 import path from "node:path"
-import { stat } from "node:fs/promises"
-import { APP_NAME, getDataDir, getRuntimeProfile, LOG_PREFIX } from "../shared/branding"
+import { readFile, stat } from "node:fs/promises"
+import { APP_NAME, getDataDir, getDataRootDir, getDataRootDirDisplay, getRuntimeProfile, LOG_PREFIX } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import type { ShareMode } from "../shared/share"
 import {
@@ -45,7 +45,8 @@ import { handleVisualizationHeights } from "./visualization-heights"
 import { applyPiFaveModels } from "./provider-catalog"
 import { createProcessAuthDeps, ProviderAuthManager } from "./provider-auth"
 import { fetchLatestPackageVersion } from "./cli-runtime"
-import { getMachineDisplayName } from "./machine-name"
+import { getMachineDisplayName, getMachineHostNames } from "./machine-name"
+import { checkRequest, createHostAllowlist, createRefusalLog, isLoopbackBind, parseAllowedHostsFile, refusalResponse } from "./request-guard"
 import { PortTunnelManager } from "./port-tunnels"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
@@ -134,6 +135,16 @@ export interface StartKannaServerOptions {
    */
   cloud?: CloudRuntime | null
   /**
+   * Names this server answers to beyond loopback names, IP addresses and the
+   * machine's own (`--allow-host`). See request-guard.ts.
+   */
+  allowedHosts?: string[]
+  /**
+   * The server is behind a Cloudflare tunnel whose public hostname it does
+   * not know. Requests the tunnel forwards are answered under any Host.
+   */
+  tunnelHostUnknown?: boolean
+  /**
    * Offer device-code pairing from the sidebar (`/api/cloud/pair-session`).
    * Set by the CLI when this run could host a cloud machine but isn't paired
    * yet; claiming attaches the runtime in place, with no restart.
@@ -155,6 +166,8 @@ export interface StartKannaServerOptions {
   machine?: Pick<AgentCoordinatorArgs, "codexManager" | "cursorManager" | "grokManager" | "piManager" | "startClaudeSession"> & {
     inheritShellPath?: () => Promise<void>
     llmProviderFile?: string
+    /** Defaults to `<data root>/allowed-hosts`. */
+    allowedHostsFile?: string
   }
   /** The built web client. Defaults to `dist/client`; tests point it at a fixture. */
   clientDistDir?: string
@@ -182,6 +195,20 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const writeLlmProvider = (value: Parameters<typeof writeLlmProviderSnapshot>[0]) =>
     writeLlmProviderSnapshot(value, machine.llmProviderFile)
   const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
+  // The names this server answers to (request-guard.ts). The file is for a
+  // server nobody passes flags to: the one Kanna for Mac starts.
+  const allowedHostsFile = machine.allowedHostsFile ?? path.join(getDataRootDir(homedir()), "allowed-hosts")
+  const allowedHostsFileDisplay = machine.allowedHostsFile ?? `${getDataRootDirDisplay()}/allowed-hosts`
+  const hosts = createHostAllowlist({
+    bindHost: hostname,
+    // Asking macOS for the Bonjour name runs a command, so only when it counts.
+    machineNames: isLoopbackBind(hostname) ? [] : getMachineHostNames(),
+    extra: [
+      ...(options.allowedHosts ?? []),
+      ...parseAllowedHostsFile(await readFile(allowedHostsFile, "utf8").catch(() => "")),
+    ],
+  })
+  const logRefusal = createRefusalLog((message) => console.warn(`${LOG_PREFIX} ${message}`))
   const diagnostics = new PerformanceLog(options.dataDir ?? getDataDir(homedir()), undefined, options.update?.version)
   const store = new EventStore(options.dataDir, diagnostics)
   const diffStore = new DiffStore(store.dataDir)
@@ -560,6 +587,21 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             ? classifyCloudRequest(req, cloud.identity.proxySecret)
             : "local"
 
+          // Before any route, so a new one cannot be reached around it: the
+          // Host and Origin rules that keep a web page on another site, or
+          // one whose DNS name was pointed here, from driving this server.
+          const refusal = checkRequest(req, {
+            requestClass,
+            hosts,
+            appOrigin: cloud?.identity.appOrigin,
+            tunnelHostUnknown: options.tunnelHostUnknown,
+            trustProxy: options.trustProxy,
+          })
+          if (refusal) {
+            logRefusal(refusal, allowedHostsFileDisplay)
+            return withOriginAgentCluster(refusalResponse(refusal, url.pathname, allowedHostsFileDisplay))
+          }
+
           // The proxy answers /__cloud/* itself and never forwards it; the
           // machine 404s the prefix explicitly so the client can
           // feature-detect cloud mode (the SPA fallback would otherwise
@@ -882,6 +924,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     updateManager,
     analytics,
     stop: shutdown,
+    /** A share tunnel's public hostname, known only once the tunnel is up. */
+    allowHost: (name: string) => hosts.add(name),
     /** For the single-instance lock's status (instance-socket.ts), which the
      *  Mac app's quit dialog shows. */
     state: () => ({ runningChats: agent.activeTurns.size, cloud: Boolean(options.cloud ?? selfPairedCloud) }),

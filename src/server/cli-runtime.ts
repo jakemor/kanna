@@ -9,6 +9,7 @@ import { repairBunGlobalManifest, type NightlyInstallResult } from "./nightly"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareTunnel } from "./share"
+import { ALLOW_HOST_FLAG, normalizeAllowedHost } from "./request-guard"
 import { probeExistingInstance, type ExistingInstance } from "./instance"
 import {
   claimInstance,
@@ -39,6 +40,14 @@ export interface CliOptions {
    * ingress can reach the server. Hook for future dev-box-only features.
    */
   directCloud: boolean
+  /** `--allow-host` values: names the server answers to (request-guard.ts). */
+  allowedHosts: string[]
+  /**
+   * `--allow-tunnel-hosts`: a Cloudflare tunnel this process does not run
+   * fronts the server (the dev script's `--share`), so its hostname is never
+   * learned here.
+   */
+  allowTunnelHosts: boolean
 }
 
 export interface CliUpdateOptions {
@@ -81,7 +90,14 @@ export interface CliRuntimeDeps {
     trustProxy?: boolean
     cloud?: CloudRuntime | null
     allowCloudPairing?: boolean
-  }) => Promise<{ port: number; stop: () => Promise<void>; analytics?: AnalyticsReporter; state?: AttachedServer["state"] }>
+    tunnelHostUnknown?: boolean
+  }) => Promise<{
+    port: number
+    stop: () => Promise<void>
+    analytics?: AnalyticsReporter
+    state?: AttachedServer["state"]
+    allowHost?: (name: string) => void
+  }>
   fetchLatestVersion: (packageName: string, options?: { timeoutMs?: number }) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   installNightly?: () => Promise<NightlyInstallResult>
@@ -97,7 +113,11 @@ export interface CliRuntimeDeps {
   log: (message: string) => void
   warn: (message: string) => void
   renderShareQr?: (url: string) => Promise<string>
-  startShareTunnel?: (localUrl: string, shareMode: Exclude<ShareMode, false>) => Promise<StartedShareTunnel>
+  startShareTunnel?: (
+    localUrl: string,
+    shareMode: Exclude<ShareMode, false>,
+    options?: { onPublicUrl?: (url: string) => void },
+  ) => Promise<StartedShareTunnel>
   runPairCommandImpl?: typeof runPairCommand
   readCloudIdentityImpl?: (warn: (message: string) => void) => Promise<CloudIdentity | null>
   createCloudRuntimeImpl?: (identity: CloudIdentity) => CloudRuntime
@@ -178,6 +198,9 @@ Options:
   --cloudflared <token>
                        Run a named Cloudflare tunnel from a token
   --password <secret>  Require a password before loading the app
+  --allow-host <name>  Also answer requests addressed to this hostname (a Tailscale or
+                       private DNS name, a reverse proxy's). Repeatable. localhost, IP
+                       addresses and this machine's own names are always answered
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
   --no-cloud           Skip bringing a paired machine online for this run
@@ -239,6 +262,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let strictPort = false
   let noCloud = false
   let directCloud = false
+  const allowedHosts: string[] = []
+  let allowTunnelHosts = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -299,6 +324,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
       directCloud = true
       continue
     }
+    if (arg === ALLOW_HOST_FLAG) {
+      const next = argv[index + 1]
+      const name = next && !next.startsWith("-") ? normalizeAllowedHost(next) : null
+      if (!name) throw new Error(`${ALLOW_HOST_FLAG} needs a hostname, such as ${ALLOW_HOST_FLAG} my-mac.tailnet.ts.net`)
+      allowedHosts.push(name)
+      index += 1
+      continue
+    }
+    if (arg === "--allow-tunnel-hosts") {
+      allowTunnelHosts = true
+      continue
+    }
     if (arg === "--password") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --password")
@@ -332,6 +369,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
       strictPort,
       noCloud,
       directCloud,
+      allowedHosts,
+      allowTunnelHosts,
     },
   }
 }
@@ -528,6 +567,11 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   const started = await deps.startServer({
     ...runOptions,
     trustProxy: isShareEnabled(runOptions.share) || cloudRuntime !== null,
+    // A quick tunnel's hostname is known once it is up, and is allowed then.
+    // A named tunnel's is the user's own: cloudflared reports it when it
+    // logs its config, and until it does the tunnel's requests are answered
+    // under whatever Host they name.
+    tunnelHostUnknown: runOptions.allowTunnelHosts || isTokenShareMode(runOptions.share),
     cloud: cloudRuntime,
     // Unpaired but cloud-capable: the sidebar can claim this machine in one
     // click and the server attaches the runtime without a restart.
@@ -562,9 +606,14 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 
   if (isShareEnabled(runOptions.share)) {
     try {
-      const shareTunnel = await (deps.startShareTunnel ?? ((localUrl, shareMode) => startShareTunnel(localUrl, shareMode, {
+      const shareTunnel = await (deps.startShareTunnel ?? ((localUrl, shareMode, options) => startShareTunnel(localUrl, shareMode, {
         log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
-      })))(launchUrl, runOptions.share)
+      }, options)))(launchUrl, runOptions.share, {
+        // The server answers only to names it knows (request-guard.ts), and
+        // this is when it learns the tunnel's.
+        onPublicUrl: (publicUrl) => started.allowHost?.(publicUrl),
+      })
+      if (shareTunnel.publicUrl) started.allowHost?.(shareTunnel.publicUrl)
       shareTunnelStop = shareTunnel.stop
       if (shareTunnel.publicUrl) {
         await logShareDetails(deps.log, shareTunnel.publicUrl, launchUrl, deps.renderShareQr ?? renderTerminalQr)

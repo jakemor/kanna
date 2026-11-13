@@ -159,6 +159,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -175,6 +177,8 @@ describe("parseArgs", () => {
         strictPort: true,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -191,6 +195,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -207,6 +213,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -223,6 +231,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -239,6 +249,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -265,6 +277,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -281,6 +295,8 @@ describe("parseArgs", () => {
         strictPort: false,
         noCloud: false,
         directCloud: false,
+        allowedHosts: [],
+        allowTunnelHosts: false,
       },
     })
   })
@@ -504,6 +520,68 @@ describe("runCli", () => {
     expect(serverStopped).toBe(true)
     expect(calls.warn).toContain("[kanna] failed to start Cloudflare share tunnel")
     expect(calls.warn).toContain("[kanna] cloudflared unavailable")
+  })
+
+  test("--allow-host names the hosts the server answers to", () => {
+    const parsed = parseArgs(["--allow-host", "Mac.Tailnet.ts.net", "--allow-host", "https://kanna.example.com/", "--remote"])
+    if (parsed.kind !== "run") throw new Error("expected a run")
+    expect(parsed.options.allowedHosts).toEqual(["mac.tailnet.ts.net", "kanna.example.com"])
+    expect(parsed.options.allowTunnelHosts).toBe(false)
+    expect(() => parseArgs(["--allow-host"])).toThrow("--allow-host needs a hostname")
+    expect(() => parseArgs(["--allow-host", "--remote"])).toThrow("--allow-host needs a hostname")
+    expect(() => parseArgs(["--allow-host", "*.example.com"])).toThrow("--allow-host needs a hostname")
+    expect(parseArgs(["--allow-tunnel-hosts"])).toMatchObject({ options: { allowTunnelHosts: true } })
+  })
+
+  test("a quick tunnel's hostname is allowed once it is known, and no other", async () => {
+    const allowed: string[] = []
+    const started: Array<{ allowedHosts?: string[]; tunnelHostUnknown?: boolean }> = []
+    const { deps } = createDeps({
+      startServer: async (options) => {
+        started.push(options)
+        return { port: options.port, stop: async () => {}, allowHost: (name) => allowed.push(name) }
+      },
+    })
+
+    await runCli(["--share", "--allow-host", "kanna.example.com"], deps)
+
+    expect(started[0]?.allowedHosts).toEqual(["kanna.example.com"])
+    expect(started[0]?.tunnelHostUnknown).toBe(false)
+    expect(allowed).toEqual(["https://kanna.trycloudflare.com"])
+  })
+
+  test("a named tunnel's hostnames are allowed as cloudflared reports them, and its requests answered until then", async () => {
+    const allowed: string[] = []
+    const started: Array<{ tunnelHostUnknown?: boolean }> = []
+    const { deps } = createDeps({
+      startServer: async (options) => {
+        started.push(options)
+        return { port: options.port, stop: async () => {}, allowHost: (name) => allowed.push(name) }
+      },
+      startShareTunnel: async (_localUrl, _shareMode, options) => {
+        options?.onPublicUrl?.("https://kanna.example.com")
+        options?.onPublicUrl?.("https://other.example.com")
+        return { publicUrl: null, stop: () => {} }
+      },
+    })
+
+    await runCli(["--cloudflared", "token"], deps)
+
+    expect(started[0]?.tunnelHostUnknown).toBe(true)
+    expect(allowed).toEqual(["https://kanna.example.com", "https://other.example.com"])
+  })
+
+  test("a plain run leaves both off", async () => {
+    const started: Array<{ allowedHosts?: string[]; tunnelHostUnknown?: boolean }> = []
+    const { deps } = createDeps({
+      startServer: async (options) => {
+        started.push(options)
+        return { port: options.port, stop: async () => {} }
+      },
+    })
+    await runCli(["--no-open"], deps)
+    expect(started[0]?.allowedHosts).toEqual([])
+    expect(started[0]?.tunnelHostUnknown).toBe(false)
   })
 
   test("keeps running when a named tunnel starts without a detected hostname", async () => {

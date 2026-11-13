@@ -43,6 +43,12 @@ export interface StartShareTunnelOptions {
    * must not wait forever (the cloud supervisor) pass a deadline here.
    */
   signal?: AbortSignal
+  /**
+   * Every public address the tunnel reports, for as long as it runs: a quick
+   * tunnel's one URL, or each hostname in a named tunnel's config, which
+   * cloudflared logs once connected and again when the config changes.
+   */
+  onPublicUrl?: (url: string) => void
 }
 
 /**
@@ -246,6 +252,15 @@ export async function startShareTunnel(
   const handleLateError = (error: Error) => {
     deps.log?.(`cloudflared error: ${error.message}`)
     tunnel.once("error", handleLateError)
+  }
+
+  if (options.onPublicUrl) {
+    const onPublicUrl = options.onPublicUrl
+    const handleUrl = (url: string) => {
+      onPublicUrl(normalizePublicUrl(url))
+      tunnel.once("url", handleUrl)
+    }
+    tunnel.once("url", handleUrl)
   }
 
   // Idempotent: a second SIGINT makes cloudflared skip its graceful drain.

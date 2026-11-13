@@ -136,6 +136,14 @@ kanna --host 100.64.x.x            # bind to a specific Tailscale IP
 
 When `--host <hostname>` is given, the browser opens `http://<hostname>:3210` automatically. Other machines on your network can connect to the same URL:
 
+Kanna answers requests addressed to `localhost`, to any IP address, and (with `--remote` or `--host`) to this machine's own hostname, its `.local` name and its Tailscale name (`<hostname>.<tailnet>.ts.net`). A request addressed to any other name is refused: a web page can point a DNS name at your machine to reach servers on it. If you reach Kanna by a private DNS name, a renamed Tailscale machine or a reverse proxy's hostname (Tailscale Serve, Caddy, nginx), allow it:
+
+```bash
+kanna --remote --allow-host my-mac.tailnet.ts.net   # repeatable
+```
+
+or put one name per line in `~/.kanna/allowed-hosts`, which also covers a server started by Kanna for Mac. A reverse proxy in front of Kanna must pass the `Host` header through (or send `X-Forwarded-Host`).
+
 ### Password protection
 
 Use `--password` to require a launch password before the app or websocket can connect:

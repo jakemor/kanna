@@ -122,6 +122,41 @@ describe("startShareTunnel", () => {
     expect(stopCalls).toBe(1)
   })
 
+  test("reports every hostname the tunnel names, for as long as it runs", async () => {
+    const listeners = new Map<string, Array<(...args: never[]) => void>>()
+    const emit = (event: string, ...args: unknown[]) => {
+      for (const listener of listeners.get(event)?.splice(0) ?? []) (listener as (...values: unknown[]) => void)(...args)
+    }
+    const fake = {
+      once(event: string, listener: (...args: never[]) => void) {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener])
+        return fake
+      },
+      off(event: string, listener: (...args: never[]) => void) {
+        listeners.set(event, (listeners.get(event) ?? []).filter((entry) => entry !== listener))
+        return fake
+      },
+      stop: () => true,
+    }
+    const reported: string[] = []
+
+    const starting = startShareTunnel("http://localhost:3333", { kind: "token", token: "secret-token" }, {
+      cloudflaredBin: "/tmp/cloudflared",
+      existsSync: () => true,
+      ensureMinimum: async () => null,
+      createNamedTunnel: () => fake as never,
+    }, { onPublicUrl: (url) => reported.push(url) })
+    await Bun.sleep(0)
+    // cloudflared logs its config after it connects, one hostname per ingress rule.
+    emit("connected")
+    const shareTunnel = await starting
+    emit("url", "kanna.example.com")
+    emit("url", "other.example.com")
+
+    expect(shareTunnel.publicUrl).toBeNull()
+    expect(reported).toEqual(["https://kanna.example.com", "https://other.example.com"])
+  })
+
   test("normalizes a discovered named tunnel hostname into https", async () => {
     const shareTunnel = await startShareTunnel("http://localhost:3333", { kind: "token", token: "secret-token" }, {
       cloudflaredBin: "/tmp/cloudflared",

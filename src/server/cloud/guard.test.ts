@@ -72,11 +72,18 @@ describe("isAllowedCloudWsUpgrade", () => {
     expect(isAllowedCloudWsUpgrade(req, context)).toBe(true)
   })
 
-  test("valid token + local origin → allowed", () => {
+  test("valid token + local origin → rejected: only the kanna.sh page holds a token", () => {
     const req = request("http://localhost:3210/ws?token=live-token", {
       origin: "http://localhost:5173",
     })
-    expect(isAllowedCloudWsUpgrade(req, context)).toBe(true)
+    expect(isAllowedCloudWsUpgrade(req, context)).toBe(false)
+  })
+
+  test("a refused origin does not spend the token", () => {
+    const spent: string[] = []
+    const spending = { ...context, validateToken: (token: string) => { spent.push(token); return true } }
+    expect(isAllowedCloudWsUpgrade(request("http://x/ws?token=live-token", { origin: "https://evil.example.com" }), spending)).toBe(false)
+    expect(spent).toEqual([])
   })
 
   test("valid token without origin (non-browser client) → allowed", () => {

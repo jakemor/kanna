@@ -23,6 +23,7 @@ export function offlineMachine(dataDir: string): NonNullable<StartKannaServerOpt
     startClaudeSession: async () => unavailable("claude"),
     inheritShellPath: async () => {},
     llmProviderFile: path.join(dataDir, "llm-provider.json"),
+    allowedHostsFile: path.join(dataDir, "allowed-hosts"),
   }
 }
 

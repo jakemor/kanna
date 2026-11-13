@@ -38,7 +38,12 @@ function spawnLabeledProcess(label: string, args: string[]) {
 }
 
 const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(clientPort), "--strictPort"])
-const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(serverPort), "--strict-port", ...serverArgs], {
+// A share tunnel here fronts Vite, which proxies to the server under the
+// tunnel's hostname. The server answers only to names it knows
+// (src/server/request-guard.ts) and never sees this tunnel start, so it is
+// told one exists.
+const tunnelArgs = isShareEnabled(share) ? ["--allow-tunnel-hosts"] : []
+const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(serverPort), "--strict-port", ...serverArgs, ...tunnelArgs], {
   cwd,
   stdio: "inherit",
   env: process.env,

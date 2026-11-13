@@ -63,27 +63,17 @@ export interface CloudWsUpgradeContext {
  * A cloud WebSocket upgrade arrives directly on the tunnel with a fresh
  * connect token minted through the proxied /api/cloud/ws-endpoint call.
  * Requires the token AND a sane Origin: the machine's public app origin
- * (the page lives on <sub>.kanna.sh), a local origin, or none at all
- * (non-browser clients — the token is the credential).
+ * (the page lives on <sub>.kanna.sh), or none at all (non-browser clients —
+ * the token is the credential). The server's request guard has already
+ * checked the Origin by then (request-guard.ts); this one stays so the
+ * token alone is never enough from a page elsewhere.
  */
 export function isAllowedCloudWsUpgrade(req: Request, context: CloudWsUpgradeContext): boolean {
-  const token = new URL(req.url).searchParams.get("token")
-  if (!token || !context.validateToken(token)) {
-    return false
-  }
-
   const origin = req.headers.get("origin")
-  if (!origin) {
-    return true
-  }
-
-  if (origin.toLowerCase() === context.appOrigin.toLowerCase()) {
-    return true
-  }
-
-  try {
-    return isLoopbackHost(new URL(origin).host)
-  } catch {
+  if (origin && origin.toLowerCase() !== context.appOrigin.toLowerCase()) {
     return false
   }
+
+  const token = new URL(req.url).searchParams.get("token")
+  return Boolean(token) && context.validateToken(token!)
 }

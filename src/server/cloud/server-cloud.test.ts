@@ -289,13 +289,15 @@ describe("server cloud integration", () => {
     expect(await response.json() as { status: string }).toEqual({ status: "unsupported" })
   })
 
-  test("without cloud, behavior is unchanged (no guard)", async () => {
+  test("without cloud there is no tunnel guard, and a name the server does not know is still refused", async () => {
     const server = await startCloudServer({ port: 4366 })
     const base = `http://127.0.0.1:${server.port}`
 
-    // Even a tunnel-looking Host serves the app when cloud is off.
+    expect((await fetch(`${base}/health`)).status).toBe(200)
+    // Nothing of ours forwards a tunnel hostname here, so this is a page
+    // whose DNS name was pointed at the machine (request-guard.ts).
     const response = await fetch(`${base}/health`, { headers: { host: "tun-m1.kanna.sh" } })
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(403)
 
     const wsEndpoint = await fetch(`${base}${CLOUD_WS_ENDPOINT_PATH}`)
     expect(await wsEndpoint.json() as CloudWsEndpointResponse).toEqual({ wsUrl: null })

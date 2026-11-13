@@ -4,6 +4,7 @@ import path from "node:path"
 import process from "node:process"
 import { spawnSync } from "node:child_process"
 import { getCloudFilePath } from "../shared/branding"
+import { machineHostNames } from "./request-guard"
 
 function runAndRead(command: string, args: string[]) {
   const result = spawnSync(command, args, { encoding: "utf8" })
@@ -68,4 +69,14 @@ export function getMachineDisplayName(identityPath?: string, overridePath?: stri
 
   const rawHostname = hostname().trim()
   return rawHostname.replace(/\.local$|\.lan$/i, "") || "This Machine"
+}
+
+/**
+ * The names this machine is reached by on its network, for the server's Host
+ * check (request-guard.ts). The Bonjour name is asked for on its own because
+ * a DHCP server can hand out a different hostname.
+ */
+export function getMachineHostNames() {
+  const bonjourName = process.platform === "darwin" ? runAndRead("scutil", ["--get", "LocalHostName"]) : null
+  return machineHostNames(hostname(), bonjourName)
 }

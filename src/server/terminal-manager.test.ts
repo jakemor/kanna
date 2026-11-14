@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { applyUtf8Locale, TerminalManager, TerminalOutputLog } from "./terminal-manager"
+import { applyUtf8Locale, resolveTerminalCommand, TerminalManager, TerminalOutputLog } from "./terminal-manager"
 
 const SHELL_START_TIMEOUT_MS = 5_000
 const COMMAND_TIMEOUT_MS = 5_000
@@ -137,6 +137,55 @@ describeIfSupported("TerminalManager", () => {
     }
   })
 
+  // Bun.spawn({ terminal }) alone never makes the PTY the shell's controlling
+  // terminal. Without one, fish refuses to start (issue #13) and other shells
+  // run without job control. `ps` shows "??" (macOS) or "?" (Linux) for a
+  // process with no controlling terminal.
+  test.skipIf(!Bun.which("ps") || !Bun.which("perl"))("the shell owns the PTY as its controlling terminal", async () => {
+    const terminalId = "terminal-controlling-tty"
+    const { manager, getOutput } = await createSession(terminalId)
+
+    try {
+      manager.write(terminalId, `echo "__TTY_$(ps -o tty= -p $$ | tr -d ' ')__"\r`)
+      await waitFor(() => /__TTY_[A-Za-z0-9/?]+__/.test(getOutput()), COMMAND_TIMEOUT_MS)
+
+      const tty = /__TTY_([A-Za-z0-9/?]+)__/.exec(getOutput())?.[1]
+      expect(tty).toMatch(/^(tty|pts)/)
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  test.skipIf(!Bun.which("perl"))("closing a terminal hangs up its background jobs", async () => {
+    const terminalId = "terminal-close-background-job"
+    const { manager, getOutput } = await createSession(terminalId)
+    let jobPid = 0
+
+    try {
+      // `$!` right before a space: zsh and bash history-expand `!` elsewhere.
+      manager.write(terminalId, `sleep 300 & jobpid=$! ; echo "__JOB_\${jobpid}__"\r`)
+      await waitFor(() => /__JOB_\d+__/.test(getOutput()), COMMAND_TIMEOUT_MS)
+      jobPid = Number(/__JOB_(\d+)__/.exec(getOutput())?.[1])
+      expect(jobPid).toBeGreaterThan(0)
+    } finally {
+      manager.close(terminalId)
+    }
+
+    const isAlive = () => {
+      try {
+        process.kill(jobPid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    try {
+      await waitFor(() => !isAlive(), COMMAND_TIMEOUT_MS)
+    } finally {
+      if (isAlive()) process.kill(jobPid, "SIGKILL")
+    }
+  }, 15_000)
+
   test("ctrl+d preserves eof behavior", async () => {
     const terminalId = "terminal-ctrl-d"
     const { manager } = await createSession(terminalId)
@@ -201,6 +250,88 @@ describeIfSupported("TerminalManager", () => {
     manager.write("terminal-focus-forwarded", FOCUS_IN_SEQUENCE)
 
     expect(writes).toEqual([FOCUS_IN_SEQUENCE])
+  })
+
+  function interceptCtrlC(controllingTty: boolean) {
+    const manager = new TerminalManager() as unknown as {
+      sessions: Map<
+        string,
+        {
+          status: "running" | "exited"
+          focusReportingEnabled: boolean
+          controllingTty: boolean
+          terminal: { write: (data: string) => void }
+          process: { pid: number; kill: () => void } | null
+        }
+      >
+      write: (terminalId: string, data: string) => void
+    }
+    const writes: string[] = []
+    const killCalls: Array<{ pid: number; signal: NodeJS.Signals | number | undefined }> = []
+    manager.sessions.set("terminal-ctrl-c-routing", {
+      status: "running",
+      focusReportingEnabled: false,
+      controllingTty,
+      terminal: { write: (data) => writes.push(data) },
+      process: { pid: 4321, kill: () => {} },
+    })
+
+    const originalKill = process.kill
+    ;(process as { kill: unknown }).kill = (pid: number, signal?: NodeJS.Signals | number) => {
+      killCalls.push({ pid, signal })
+      return true
+    }
+    try {
+      manager.write("terminal-ctrl-c-routing", "ab\x03cd")
+    } finally {
+      process.kill = originalKill
+    }
+    return { writes, killCalls }
+  }
+
+  test("with a controlling terminal, ctrl+c goes to the PTY for the line discipline", () => {
+    const { writes, killCalls } = interceptCtrlC(true)
+    expect(writes.join("")).toBe("ab\x03cd")
+    expect(killCalls).toEqual([])
+  })
+
+  test("without a controlling terminal, ctrl+c still signals the shell's process group", () => {
+    const { writes, killCalls } = interceptCtrlC(false)
+    expect(writes.join("")).toBe("abcd")
+    expect(killCalls).toEqual([{ pid: -4321, signal: "SIGINT" }])
+  })
+
+  // fish exits at once without a controlling terminal ("No TTY for
+  // interactive shell (tcgetpgrp failed)"), issue #13. The manager takes its
+  // shell from $SHELL as read at process start, so drive the same spawn here.
+  test.skipIf(!Bun.which("fish") || !Bun.which("perl"))("fish starts and keeps running", async () => {
+    const { command, controllingTty } = resolveTerminalCommand(Bun.which("fish")!, ["-l", "--no-config"])
+    expect(controllingTty).toBe(true)
+    let output = ""
+    const decoder = new TextDecoder()
+    // fish 4 waits for answers to its device-attributes and cursor-position
+    // queries. In Kanna the client's xterm answers them; here, do it by hand.
+    const terminal: Bun.Terminal = new Bun.Terminal({
+      cols: 80,
+      rows: 24,
+      data: (_terminal, data) => {
+        const chunk = decoder.decode(data, { stream: true })
+        output += chunk
+        for (const _ of chunk.matchAll(/\x1b\[0?c/g)) terminal.write("\x1b[?62;22c")
+        for (const _ of chunk.matchAll(/\x1b\[6n/g)) terminal.write("\x1b[1;1R")
+      },
+    })
+    const child = Bun.spawn(command, { cwd: tempProjectPath, env: { ...process.env, TERM: "xterm-256color" }, terminal })
+
+    try {
+      terminal.write("echo __FISH_''READY__ $fish_pid\r")
+      await waitFor(() => /__FISH_READY__ \d+/.test(output), SHELL_START_TIMEOUT_MS)
+      expect(child.exitCode).toBeNull()
+      expect(output).not.toContain("No TTY for interactive shell")
+    } finally {
+      child.kill("SIGKILL")
+      terminal.close()
+    }
   })
 
   test("resize signals the shell process group with SIGWINCH", () => {
@@ -376,6 +507,42 @@ describeIfSupported("TerminalManager", () => {
       manager.close(terminalId)
     }
   })
+})
+
+describe("resolveTerminalCommand", () => {
+  test("starts the shell through perl, which takes the PTY as controlling terminal", () => {
+    const { command, controllingTty } = resolveTerminalCommand("/bin/zsh", ["-l"], "/usr/bin/perl", 0x20007461)
+    expect(controllingTty).toBe(true)
+    expect(command[0]).toBe("/usr/bin/perl")
+    expect(command[1]).toBe("-e")
+    expect(command.slice(3)).toEqual(["--", String(0x20007461), "/bin/zsh", "-l"])
+  })
+
+  test("spawns the shell directly when perl is missing", () => {
+    expect(resolveTerminalCommand("/bin/zsh", ["-l"], null, 0x540e)).toEqual({
+      command: ["/bin/zsh", "-l"],
+      controllingTty: false,
+    })
+  })
+
+  test("spawns the shell directly where the ioctl number is unknown", () => {
+    expect(resolveTerminalCommand("/bin/sh", [], "/usr/bin/perl", null)).toEqual({
+      command: ["/bin/sh"],
+      controllingTty: false,
+    })
+  })
+
+  test.skipIf(!Bun.which("perl") || !["darwin", "linux"].includes(process.platform))(
+    "the wrapper passes arguments through and execs the target in place",
+    async () => {
+      const { command } = resolveTerminalCommand("/bin/sh", ["-c", 'echo "$0|$1|$$"', "argv0", "a b"])
+      const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" })
+      const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited])
+      expect(exitCode).toBe(0)
+      // Same pid: perl exec'd the shell rather than running it as a child.
+      expect(stdout.trim()).toBe(`argv0|a b|${child.pid}`)
+    },
+  )
 })
 
 describe("applyUtf8Locale", () => {

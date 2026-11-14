@@ -192,6 +192,7 @@ bun run dev
 ```
 
 The same `--remote` and `--host` flags can be used with `bun run dev` for remote development.
+The Vite client listens on `127.0.0.1` only. To open it from a phone on the same Wi-Fi, run `KANNA_DEV_LAN=1 bun run dev` (`--remote` and `--host` do the same). Anyone on that network can then reach the dev server and open a terminal on your machine, so turn it off when you're done.
 `--share` is also supported in dev mode and exposes the Vite client URL publicly:
 
 ```bash

@@ -12,8 +12,22 @@ export interface DevArgResolution {
   serverPort: number
   share: ShareMode
   backendTargetHost: string
+  /** `--remote` or a non-loopback `--host`: Vite listens on every interface too. */
+  lanBind: boolean
+  /**
+   * Names Vite answers to beyond localhost and IP literals, which it always
+   * accepts. vite.config.ts adds the machine's own names under a LAN bind.
+   */
   allowedHosts: true | string[]
   serverArgs: string[]
+}
+
+/** The env var that opens the dev client to the network (vite.config.ts). */
+export const DEV_LAN_ENV = "KANNA_DEV_LAN"
+
+function isLoopbackHost(host: string) {
+  const value = host.trim().toLowerCase()
+  return value === "localhost" || value === "::1" || value === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(value)
 }
 
 export function resolveDevPorts(args: string[]) {
@@ -76,15 +90,15 @@ export function stripShareArg(args: string[]) {
   return stripped
 }
 
-export function parseDevArgs(args: string[], localHostname: string): DevArgResolution {
+export function parseDevArgs(args: string[]): DevArgResolution {
   const { clientPort, serverPort } = resolveDevPorts(args)
   const serverArgs = stripShareArg(stripPortArg(args))
   let share: ShareMode = false
   let sawHost = false
   let sawRemote = false
   let backendTargetHost = "127.0.0.1"
-  let allowAllHosts = false
-  const hosts = new Set<string>(["localhost", "127.0.0.1", "0.0.0.0", localHostname])
+  let lanBind = false
+  const hosts = new Set<string>()
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
@@ -107,7 +121,16 @@ export function parseDevArgs(args: string[], localHostname: string): DevArgResol
       }
       sawRemote = true
       backendTargetHost = "127.0.0.1"
-      allowAllHosts = true
+      lanBind = true
+      continue
+    }
+    // The server takes --allow-host too (serverArgs); Vite proxies to it under the same name.
+    if (arg === "--allow-host") {
+      const next = args[index + 1]
+      if (next && !next.startsWith("-")) {
+        hosts.add(next.trim().toLowerCase())
+        index += 1
+      }
       continue
     }
     if (arg !== "--host") continue
@@ -118,7 +141,10 @@ export function parseDevArgs(args: string[], localHostname: string): DevArgResol
       throw new Error(`${getShareCliFlag(share)} cannot be used with --host`)
     }
     sawHost = true
-    hosts.add(next)
+    if (!isLoopbackHost(next)) {
+      lanBind = true
+      if (next !== "0.0.0.0") hosts.add(next.toLowerCase())
+    }
     backendTargetHost = next === "0.0.0.0" ? "127.0.0.1" : next
     index += 1
   }
@@ -128,7 +154,9 @@ export function parseDevArgs(args: string[], localHostname: string): DevArgResol
     serverPort,
     share,
     backendTargetHost,
-    allowedHosts: isShareEnabled(share) || allowAllHosts ? true : [...hosts],
+    lanBind,
+    // A share tunnel's hostname is only known once cloudflared prints it.
+    allowedHosts: isShareEnabled(share) ? true : [...hosts],
     serverArgs,
   }
 }

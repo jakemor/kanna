@@ -1,8 +1,7 @@
 import process from "node:process"
-import { hostname as getHostname } from "node:os"
 import { spawn, type ChildProcess } from "node:child_process"
 import { LOG_PREFIX } from "../src/shared/branding"
-import { parseDevArgs } from "../src/shared/dev-ports"
+import { DEV_LAN_ENV, parseDevArgs } from "../src/shared/dev-ports"
 import { isShareEnabled, isTokenShareMode } from "../src/shared/share"
 import { logShareDetails, startShareTunnel } from "../src/server/share"
 import { exitWithParent } from "../src/server/mac-app"
@@ -10,12 +9,12 @@ import { exitWithParent } from "../src/server/mac-app"
 const cwd = process.cwd()
 const forwardedArgs = process.argv.slice(2)
 const bunBin = process.execPath
-const localHostname = getHostname()
-const devArgs = parseDevArgs(forwardedArgs, localHostname)
+const devArgs = parseDevArgs(forwardedArgs)
 const { clientPort, serverPort, serverArgs, share } = devArgs
 
 const clientEnv = {
   ...process.env,
+  ...(devArgs.lanBind ? { [DEV_LAN_ENV]: "1" } : {}),
   KANNA_DEV_ALLOWED_HOSTS: typeof devArgs.allowedHosts === "boolean"
     ? String(devArgs.allowedHosts)
     : JSON.stringify(devArgs.allowedHosts),
@@ -37,7 +36,7 @@ function spawnLabeledProcess(label: string, args: string[]) {
   return child
 }
 
-const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(clientPort), "--strictPort"])
+const client = spawnLabeledProcess("client", ["x", "vite", "--port", String(clientPort), "--strictPort"])
 // A share tunnel here fronts Vite, which proxies to the server under the
 // tunnel's hostname. The server answers only to names it knows
 // (src/server/request-guard.ts) and never sees this tunnel start, so it is

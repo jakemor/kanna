@@ -65,49 +65,68 @@ describe("stripShareArg", () => {
 
 describe("parseDevArgs", () => {
   test("derives dev share options from the client port", () => {
-    expect(parseDevArgs(["--share", "--port", "3333"], "dev-machine")).toEqual({
+    expect(parseDevArgs(["--share", "--port", "3333"])).toEqual({
       clientPort: 3333,
       serverPort: 3334,
       share: "quick",
       backendTargetHost: "127.0.0.1",
+      lanBind: false,
       allowedHosts: true,
       serverArgs: [],
     })
   })
 
   test("accepts a token-bearing cloudflared dev mode", () => {
-    expect(parseDevArgs(["--cloudflared", "secret-token", "--port", "3333"], "dev-machine")).toEqual({
+    expect(parseDevArgs(["--cloudflared", "secret-token", "--port", "3333"])).toEqual({
       clientPort: 3333,
       serverPort: 3334,
       share: { kind: "token", token: "secret-token" },
       backendTargetHost: "127.0.0.1",
+      lanBind: false,
       allowedHosts: true,
       serverArgs: [],
     })
   })
 
   test("rejects combining --share with --host or --remote", () => {
-    expect(() => parseDevArgs(["--share", "--host", "dev-box"], "dev-machine")).toThrow("--share cannot be used with --host")
-    expect(() => parseDevArgs(["--host", "dev-box", "--share"], "dev-machine")).toThrow("--share cannot be used with --host")
-    expect(() => parseDevArgs(["--share", "--remote"], "dev-machine")).toThrow("--share cannot be used with --remote")
-    expect(() => parseDevArgs(["--remote", "--share"], "dev-machine")).toThrow("--share cannot be used with --remote")
+    expect(() => parseDevArgs(["--share", "--host", "dev-box"])).toThrow("--share cannot be used with --host")
+    expect(() => parseDevArgs(["--host", "dev-box", "--share"])).toThrow("--share cannot be used with --host")
+    expect(() => parseDevArgs(["--share", "--remote"])).toThrow("--share cannot be used with --remote")
+    expect(() => parseDevArgs(["--remote", "--share"])).toThrow("--share cannot be used with --remote")
   })
 
   test("rejects combining --cloudflared with --host or --remote", () => {
-    expect(() => parseDevArgs(["--cloudflared", "secret-token", "--host", "dev-box"], "dev-machine")).toThrow("--cloudflared cannot be used with --host")
-    expect(() => parseDevArgs(["--host", "dev-box", "--cloudflared", "secret-token"], "dev-machine")).toThrow("--cloudflared cannot be used with --host")
-    expect(() => parseDevArgs(["--cloudflared", "secret-token", "--remote"], "dev-machine")).toThrow("--cloudflared cannot be used with --remote")
-    expect(() => parseDevArgs(["--remote", "--cloudflared", "secret-token"], "dev-machine")).toThrow("--cloudflared cannot be used with --remote")
+    expect(() => parseDevArgs(["--cloudflared", "secret-token", "--host", "dev-box"])).toThrow("--cloudflared cannot be used with --host")
+    expect(() => parseDevArgs(["--host", "dev-box", "--cloudflared", "secret-token"])).toThrow("--cloudflared cannot be used with --host")
+    expect(() => parseDevArgs(["--cloudflared", "secret-token", "--remote"])).toThrow("--cloudflared cannot be used with --remote")
+    expect(() => parseDevArgs(["--remote", "--cloudflared", "secret-token"])).toThrow("--cloudflared cannot be used with --remote")
   })
 
-  test("preserves existing remote host behavior when share is off", () => {
-    expect(parseDevArgs(["--remote", "--port", "3333"], "dev-machine")).toEqual({
+  test("--remote opens the dev client to the network without allowing every name", () => {
+    expect(parseDevArgs(["--remote", "--port", "3333"])).toEqual({
       clientPort: 3333,
       serverPort: 3334,
       share: false,
       backendTargetHost: "127.0.0.1",
-      allowedHosts: true,
+      lanBind: true,
+      allowedHosts: [],
       serverArgs: ["--remote"],
     })
+  })
+
+  test("binds the dev client to loopback by default", () => {
+    expect(parseDevArgs([])).toMatchObject({ lanBind: false, allowedHosts: [] })
+    expect(parseDevArgs(["--host", "127.0.0.1"])).toMatchObject({ lanBind: false, allowedHosts: [] })
+    expect(parseDevArgs(["--host", "localhost"])).toMatchObject({ lanBind: false, allowedHosts: [] })
+  })
+
+  test("a named --host and --allow-host names are allowed through Vite", () => {
+    expect(parseDevArgs(["--host", "Dev-Box", "--allow-host", "mac.tailnet.ts.net"])).toMatchObject({
+      lanBind: true,
+      backendTargetHost: "Dev-Box",
+      allowedHosts: ["dev-box", "mac.tailnet.ts.net"],
+      serverArgs: ["--host", "Dev-Box", "--allow-host", "mac.tailnet.ts.net"],
+    })
+    expect(parseDevArgs(["--host", "0.0.0.0"])).toMatchObject({ lanBind: true, backendTargetHost: "127.0.0.1", allowedHosts: [] })
   })
 })

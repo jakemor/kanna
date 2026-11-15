@@ -338,6 +338,9 @@ interface ClaudeSessionState {
   cancelledPromptSeqs: Set<number>
 }
 
+/** A Claude model-list read: a list arrived, the last one was recent enough to skip, or none came. */
+export type ClaudeModelProbeOutcome = "read" | "fresh" | "failed"
+
 export interface AgentCoordinatorArgs {
   store: EventStore
   /** Where `request_secrets` answers are stored. Defaults to this machine's keychain under the store's data dir. */
@@ -1262,7 +1265,7 @@ export class AgentCoordinator {
   private cursorModelCatalogApplied = false
   private grokModelCatalogApplied = false
   private codexModelCatalogRefresh: Promise<void> | null = null
-  private claudeModelCatalogProbe: Promise<void> | null = null
+  private claudeModelCatalogProbe: Promise<ClaudeModelProbeOutcome> | null = null
   /** When a Claude model list last arrived, from a probe or a chat's session. */
   private claudeModelsReadAt = 0
   private readonly probeClaudeModelsFn: (cwd: string) => Promise<ClaudeSdkModelInfo[]>
@@ -1970,18 +1973,20 @@ export class AgentCoordinator {
     })
   }
 
-  private async applyClaudeModelsFrom(session: ClaudeSessionHandle) {
+  private async applyClaudeModelsFrom(session: ClaudeSessionHandle): Promise<boolean> {
     const models = await session.supportedModels?.()
-    if (models) await this.applyClaudeModels(models)
+    return models ? await this.applyClaudeModels(models) : false
   }
 
-  private async applyClaudeModels(models: ClaudeSdkModelInfo[]) {
-    if (models.length === 0) return
+  /** False for an empty list: nothing was learned, so the caller counts it a failure. */
+  private async applyClaudeModels(models: ClaudeSdkModelInfo[]): Promise<boolean> {
+    if (models.length === 0) return false
     this.claudeModelsReadAt = Date.now()
     if (applyClaudeSdkModels(models)) {
       this.emitStateChange(undefined, { immediate: true })
     }
     await this.modelCache?.record("claude", models)
+    return true
   }
 
   /**
@@ -1996,26 +2001,61 @@ export class AgentCoordinator {
    * `ifOlderThanMs` skips the probe when a list arrived more recently, so the
    * periodic refresh costs nothing while chats keep the list fresh.
    */
-  probeClaudeModelCatalog(options?: { ifOlderThanMs?: number }): Promise<void> {
+  probeClaudeModelCatalog(options?: { ifOlderThanMs?: number }): Promise<ClaudeModelProbeOutcome> {
     if (this.claudeModelCatalogProbe) return this.claudeModelCatalogProbe
     if (options?.ifOlderThanMs !== undefined && Date.now() - this.claudeModelsReadAt < options.ifOlderThanMs) {
-      return Promise.resolve()
+      return Promise.resolve("fresh")
     }
-    this.claudeModelCatalogProbe = (async () => {
+    this.claudeModelCatalogProbe = (async (): Promise<ClaudeModelProbeOutcome> => {
       const live = [...this.claudeSessions.values()].find((state) => state.session.supportedModels)
       try {
-        if (live) {
-          await this.applyClaudeModelsFrom(live.session)
-          return
-        }
-        await this.applyClaudeModels(await this.probeClaudeModelsFn(this.store.dataDir))
+        const read = live
+          ? await this.applyClaudeModelsFrom(live.session)
+          : await this.applyClaudeModels(await this.probeClaudeModelsFn(this.store.dataDir))
+        return read ? "read" : "failed"
       } catch {
-        // Keep the cached or static list; a turn's session refreshes it.
+        // Keep the cached or static list; the refresh loop retries.
+        return "failed"
       } finally {
         this.claudeModelCatalogProbe = null
       }
     })()
     return this.claudeModelCatalogProbe
+  }
+
+  /**
+   * Keep the Claude list current while Kanna runs, as T3 Code re-checks its
+   * providers (every 5 minutes, again 30 seconds after a failed check):
+   * Claude Code updates itself and accounts gain models in the meantime. The
+   * first probe runs now. A tick finds the list fresh when a chat's session
+   * brought one within the interval, and probes nothing. Returns a stop
+   * function for shutdown.
+   */
+  startClaudeModelRefresh(args: {
+    intervalMs: number
+    retryMs: number
+    /** Before the first probe, e.g. the login shell's PATH, where `claude` is found. */
+    ready?: Promise<unknown>
+    log?: (outcome: ClaudeModelProbeOutcome) => void
+  }): () => void {
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async (options?: { ifOlderThanMs: number }) => {
+      if (stopped) return
+      const outcome = await this.probeClaudeModelCatalog(options)
+      args.log?.(outcome)
+      if (stopped) return
+      timer = setTimeout(
+        () => void tick({ ifOlderThanMs: args.intervalMs }),
+        outcome === "failed" ? args.retryMs : args.intervalMs,
+      )
+      timer.unref?.()
+    }
+    void Promise.resolve(args.ready).then(() => tick(), () => tick())
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
   }
 
   /**

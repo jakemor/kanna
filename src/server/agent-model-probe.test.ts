@@ -88,6 +88,65 @@ describe("probeClaudeModelCatalog", () => {
   })
 })
 
+describe("startClaudeModelRefresh", () => {
+  afterEach(() => resetServerProvidersForTests())
+
+  const waitUntil = async (condition: () => boolean) => {
+    const start = Date.now()
+    while (!condition()) {
+      if (Date.now() - start > 2_000) throw new Error("timed out")
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  }
+
+  test("probes at once, then each interval, skipping while a list is fresh", async () => {
+    let probes = 0
+    const outcomes: string[] = []
+    const { coordinator } = coordinatorWith(async () => {
+      probes += 1
+      return ACCOUNT_MODELS
+    })
+    // Real cadence: 5 minutes. Scaled down so the test runs in milliseconds.
+    const stop = coordinator.startClaudeModelRefresh({ intervalMs: 40, retryMs: 10, log: (outcome) => outcomes.push(outcome) })
+    await waitUntil(() => outcomes.length >= 3)
+    stop()
+    expect(outcomes.slice(0, 3)).toEqual(["read", "read", "read"])
+    expect(probes).toBe(outcomes.filter((outcome) => outcome === "read").length)
+  })
+
+  test("a failed probe retries after the short delay, then returns to the interval", async () => {
+    let attempts = 0
+    const outcomes: string[] = []
+    const { coordinator } = coordinatorWith(async () => {
+      attempts += 1
+      if (attempts === 1) throw new Error("Claude Code did not list its models in time")
+      return ACCOUNT_MODELS
+    })
+    const startedAt = Date.now()
+    const stop = coordinator.startClaudeModelRefresh({ intervalMs: 10_000, retryMs: 20, log: (outcome) => outcomes.push(outcome) })
+    await waitUntil(() => outcomes.length >= 2)
+    stop()
+    // The retry came after ~20 ms, not the 10 s interval.
+    expect(outcomes).toEqual(["failed", "read"])
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    expect(SERVER_PROVIDERS.find((provider) => provider.id === "claude")?.defaultModel).toBe("claude-mythos-5-2")
+  })
+
+  test("stop ends the loop", async () => {
+    let probes = 0
+    const { coordinator } = coordinatorWith(async () => {
+      probes += 1
+      return ACCOUNT_MODELS
+    })
+    const stop = coordinator.startClaudeModelRefresh({ intervalMs: 5, retryMs: 5 })
+    await waitUntil(() => probes >= 1)
+    stop()
+    const after = probes
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(probes).toBe(after)
+  })
+})
+
 describe("claudeModelProbeOptions", () => {
   test("loads the settings that shape the list, and nothing that runs", () => {
     const options = claudeModelProbeOptions({

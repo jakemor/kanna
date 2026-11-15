@@ -11,7 +11,9 @@ import {
   normalizeCodexReasoningEffort,
   isCodexReasoningEffort,
   supportsClaudeMaxReasoningEffort,
+  normalizeClaudeFastMode,
 } from "./types"
+import { normalizeClaudePreference } from "./provider-preferences"
 
 describe("shared model normalization", () => {
   test("uses the full Claude Code harness label", () => {
@@ -180,5 +182,23 @@ describe("shared model normalization", () => {
     expect(resolveModelLabel(claudeModels, "claude-opus-4-8[1m]")).toBe("Opus 4.8")
     expect(resolveModelLabel(claudeModels, "some-new-model")).toBe("Some New Model")
     expect(resolveModelLabel(undefined, "gpt-5.6-sol")).toBe("GPT 5.6 Sol")
+  })
+})
+
+describe("Claude fast mode in stored preferences", () => {
+  test("a model the static catalog lacks keeps Fast as chosen", () => {
+    // The web composer runs every option change through this. Clearing Fast
+    // for "claude-mythos-5-2" made the toggle impossible to switch on.
+    expect(normalizeClaudeFastMode("claude-mythos-5-2", true)).toBe(true)
+    expect(normalizeClaudePreference({ model: "claude-mythos-5-2", modelOptions: { fastMode: true } }).modelOptions.fastMode).toBe(true)
+    expect(normalizeClaudeFastMode("claude-mythos-5-2", false)).toBe(false)
+    expect(normalizeClaudeFastMode("claude-mythos-5-2", "yes")).toBe(false)
+  })
+
+  test("a catalog family keeps Fast only where it runs fast", () => {
+    expect(normalizeClaudeFastMode("opus", true)).toBe(true)
+    expect(normalizeClaudeFastMode("fable", true)).toBe(true)
+    expect(normalizeClaudeFastMode("sonnet", true)).toBe(false)
+    expect(normalizeClaudeFastMode("haiku", true)).toBe(false)
   })
 })

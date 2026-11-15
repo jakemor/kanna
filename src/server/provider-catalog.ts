@@ -19,7 +19,7 @@ import {
   codexReasoningEffortLabel,
   deriveModelLabel,
   withPiFaveModels,
-  normalizeClaudeFastMode,
+  supportsClaudeFastMode,
   normalizeCodexReasoningEffort,
   normalizeGrokReasoningEffort,
   normalizePiReasoningEffort,
@@ -394,9 +394,9 @@ export function normalizeClaudeModelOptions(
     // for the picker's Fast toggle. The static catalog only knows the alias
     // families, so it would silently drop Fast on a full-id family (Mythos)
     // the picker offers it for.
-    fastMode: liveOption
-      ? Boolean(liveOption.supportsFastMode) && modelOptions?.claude?.fastMode === true
-      : normalizeClaudeFastMode(model, modelOptions?.claude?.fastMode),
+    // A model neither catalog lists runs without it.
+    fastMode: (liveOption ? Boolean(liveOption.supportsFastMode) : supportsClaudeFastMode(model))
+      && modelOptions?.claude?.fastMode === true,
   }
 }
 

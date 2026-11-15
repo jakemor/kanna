@@ -450,5 +450,8 @@ describe("provider catalog normalization", () => {
     // Mythos 5.2 supports fast mode, so Fast reaches the spawn.
     expect(normalizeClaudeModelOptions("claude-mythos-5-2", { claude: { reasoningEffort: "high", fastMode: true } }).fastMode).toBe(true)
     expect(normalizeClaudeModelOptions("sonnet", { claude: { reasoningEffort: "high", fastMode: true } }).fastMode).toBe(false)
+    // A model neither the live nor the static catalog lists never runs fast,
+    // though the stored preference keeps the choice (normalizeClaudeFastMode).
+    expect(normalizeClaudeModelOptions("claude-nova-9", { claude: { reasoningEffort: "high", fastMode: true } }).fastMode).toBe(false)
   })
 })

@@ -677,6 +677,8 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         // Fable runs at 1M without the "[1m]" id. The SDK reports a 2M window
         // for it, so pin the meter to the real 1M ceiling here.
         contextWindowTokens: 1_000_000,
+        // Fable 5.2 runs fast (the SDK reports supportsFastMode for it).
+        supportsFastMode: true,
       },
       {
         id: "opus",
@@ -991,8 +993,16 @@ export function supportsClaudeFastMode(modelId: string): boolean {
   return supportsProviderFastMode("claude", modelId)
 }
 
+/**
+ * The static catalog only knows the alias families. A model it doesn't list
+ * (Mythos, keyed "claude-mythos-5-2") keeps the choice as given: the picker
+ * offers Fast only where the live catalog says so, and the server checks the
+ * live catalog again at spawn (normalizeClaudeModelOptions). Clearing it here
+ * would switch Fast back off on every edit of the web composer.
+ */
 export function normalizeClaudeFastMode(modelId: string, fastMode?: unknown): boolean {
-  return supportsClaudeFastMode(modelId) && fastMode === true
+  if (fastMode !== true) return false
+  return getClaudeModelOption(modelId) ? supportsClaudeFastMode(modelId) : true
 }
 
 // A Claude model with a 1M window always runs at it.

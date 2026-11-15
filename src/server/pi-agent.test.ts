@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { normalizeToolCall } from "../shared/tools"
+import { DEFAULT_PI_MODEL, DEFAULT_REQUESTY_SDK_MODEL } from "../shared/types"
 import {
   buildRegistryModel,
   PiAgentManager,
@@ -172,6 +173,26 @@ describe("buildRegistryModel", () => {
       baseUrl: "https://api.openai.com/v1",
     })
     expect(model.compat?.thinkingFormat).toBe("openai")
+  })
+
+  test("sends the Requesty registry model for the default pi alias", () => {
+    const requesty: PiConnection = {
+      provider: "requesty",
+      baseUrl: "https://router.requesty.ai/v1",
+      apiKey: "k",
+      model: DEFAULT_REQUESTY_SDK_MODEL,
+    }
+    expect(buildRegistryModel(requesty, DEFAULT_PI_MODEL)).toMatchObject({
+      id: DEFAULT_REQUESTY_SDK_MODEL,
+      provider: "requesty",
+      baseUrl: "https://router.requesty.ai/v1",
+    })
+    expect(buildRegistryModel(requesty, "anthropic/claude-sonnet-5").id).toBe("anthropic/claude-sonnet-5")
+  })
+
+  test("keeps OpenRouter aliases unchanged", () => {
+    const model = buildRegistryModel({ ...openrouter, model: "moonshotai/kimi-k2.5:nitro" }, DEFAULT_PI_MODEL)
+    expect(model.id).toBe(DEFAULT_PI_MODEL)
   })
 
   test("targets custom endpoints verbatim", () => {

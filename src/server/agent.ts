@@ -82,6 +82,7 @@ import {
   serviceTierFromModelOptions,
 } from "./provider-catalog"
 import type { ProviderModelCache } from "./provider-model-cache"
+import { probeClaudeModels } from "./claude-model-probe"
 import { providerHasKannaTools, resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
@@ -349,6 +350,8 @@ export interface AgentCoordinatorArgs {
   piManager?: PiAgentManager
   /** Keeps each harness's last model list for the next boot. None in tests. */
   modelCache?: ProviderModelCache
+  /** Reads Claude Code's model list without a turn. Defaults to the real prompt-less probe. */
+  probeClaudeModels?: (cwd: string) => Promise<ClaudeSdkModelInfo[]>
   resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
@@ -407,8 +410,6 @@ function isClaudeSteerLoggingEnabled() {
 
 /** How long a new turn waits for an idle-closed `claude` to exit before resuming anyway. */
 const IDLE_CLOSE_WAIT_MS = 5_000
-/** How long the model-list probe waits for Claude Code to answer supportedModels(). */
-const CLAUDE_MODEL_PROBE_TIMEOUT_MS = 30_000
 /** How long a settled chat's agent process stays up with nothing to do: T3 Code's value, for parity. */
 export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 /**
@@ -1262,6 +1263,9 @@ export class AgentCoordinator {
   private grokModelCatalogApplied = false
   private codexModelCatalogRefresh: Promise<void> | null = null
   private claudeModelCatalogProbe: Promise<void> | null = null
+  /** When a Claude model list last arrived, from a probe or a chat's session. */
+  private claudeModelsReadAt = 0
+  private readonly probeClaudeModelsFn: (cwd: string) => Promise<ClaudeSdkModelInfo[]>
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   /**
@@ -1334,6 +1338,7 @@ export class AgentCoordinator {
     this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
+    this.probeClaudeModelsFn = args.probeClaudeModels ?? probeClaudeModels
     this.checkSessionArtifactFn = args.checkSessionArtifact ?? checkSessionArtifact
     this.disablePreconfiguredMcp = args.disablePreconfiguredMcp ?? (() => false)
     this.toolGateway = args.toolGateway ?? null
@@ -1967,7 +1972,12 @@ export class AgentCoordinator {
 
   private async applyClaudeModelsFrom(session: ClaudeSessionHandle) {
     const models = await session.supportedModels?.()
-    if (!models || models.length === 0) return
+    if (models) await this.applyClaudeModels(models)
+  }
+
+  private async applyClaudeModels(models: ClaudeSdkModelInfo[]) {
+    if (models.length === 0) return
+    this.claudeModelsReadAt = Date.now()
     if (applyClaudeSdkModels(models)) {
       this.emitStateChange(undefined, { immediate: true })
     }
@@ -1978,42 +1988,30 @@ export class AgentCoordinator {
    * Read the account's Claude model list without a turn — the Claude analog
    * of the Codex/Cursor/Grok startup probes. Otherwise the list only arrives
    * with a chat's first session, and the picker shows the static catalog
-   * until someone sends a message. The probe starts Claude Code with no
-   * prompt, asks supportedModels() over the control channel and closes it:
-   * no API call, no tokens, and Claude Code writes no session file for a
-   * session that never got a message. A live session answers instead when
-   * there is one. Failure (not installed, signed out, outdated) keeps the
-   * cached or static list. Concurrent callers share one probe.
+   * until someone sends a message. A live session answers when there is one;
+   * otherwise a prompt-less probe (claude-model-probe.ts) does, at no token
+   * cost. Failure (not installed, signed out, outdated) keeps the cached or
+   * static list. Concurrent callers share one probe.
+   *
+   * `ifOlderThanMs` skips the probe when a list arrived more recently, so the
+   * periodic refresh costs nothing while chats keep the list fresh.
    */
-  probeClaudeModelCatalog(): Promise<void> {
+  probeClaudeModelCatalog(options?: { ifOlderThanMs?: number }): Promise<void> {
     if (this.claudeModelCatalogProbe) return this.claudeModelCatalogProbe
+    if (options?.ifOlderThanMs !== undefined && Date.now() - this.claudeModelsReadAt < options.ifOlderThanMs) {
+      return Promise.resolve()
+    }
     this.claudeModelCatalogProbe = (async () => {
       const live = [...this.claudeSessions.values()].find((state) => state.session.supportedModels)
-      let probe: ClaudeSessionHandle | null = null
       try {
         if (live) {
           await this.applyClaudeModelsFrom(live.session)
           return
         }
-        probe = await this.startClaudeSessionFn({
-          localPath: homedir(),
-          // Any model the CLI accepts: the list doesn't depend on it.
-          model: "sonnet",
-          planMode: false,
-          autoPlan: false,
-          sessionToken: null,
-          forkSession: false,
-          onToolRequest: async () => ({}),
-        })
-        // A CLI that never answers is closed rather than left running.
-        await Promise.race([
-          this.applyClaudeModelsFrom(probe),
-          new Promise<void>((resolve) => setTimeout(resolve, CLAUDE_MODEL_PROBE_TIMEOUT_MS).unref?.()),
-        ])
+        await this.applyClaudeModels(await this.probeClaudeModelsFn(this.store.dataDir))
       } catch {
         // Keep the cached or static list; a turn's session refreshes it.
       } finally {
-        probe?.close()
         this.claudeModelCatalogProbe = null
       }
     })()

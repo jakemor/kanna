@@ -70,6 +70,10 @@ const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
 const STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS = 6 * 60 * 60 * 1000
 const STALE_CHAT_DELETE_INTERVAL_MS = 24 * 60 * 60 * 1000
+// T3 Code re-checks providers every 5 minutes, but that check also reads
+// usage and account status. Kanna's covers only the model list, which
+// changes far less often, so it waits longer between Claude starts.
+const CLAUDE_MODEL_REFRESH_INTERVAL_MS = 30 * 60 * 1000
 
 async function withOriginAgentCluster(response: Response | Promise<Response> | undefined) {
   const resolved = await response
@@ -161,11 +165,11 @@ export interface StartKannaServerOptions {
    * What the server reaches outside its data dir for: the agent CLIs and
    * Claude sessions it starts, the login shell it takes PATH from, and the
    * LLM provider file. Each defaults to this machine's real one. Booting
-   * runs `codex`, `cursor-agent` and `grok` for their model lists and seeds
+   * runs `claude`, `codex`, `cursor-agent` and `grok` for their model lists and seeds
    * Pi's picker from the file, all into the process-wide provider catalog, so
    * tests pass stand-ins (`__fixtures__/test-server.ts`).
    */
-  machine?: Pick<AgentCoordinatorArgs, "codexManager" | "cursorManager" | "grokManager" | "piManager" | "startClaudeSession"> & {
+  machine?: Pick<AgentCoordinatorArgs, "codexManager" | "cursorManager" | "grokManager" | "piManager" | "startClaudeSession" | "probeClaudeModels"> & {
     inheritShellPath?: () => Promise<void>
     llmProviderFile?: string
     /** Defaults to `<data root>/allowed-hosts`. */
@@ -335,6 +339,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     grokManager: machine.grokManager,
     piManager: machine.piManager,
     startClaudeSession: machine.startClaudeSession,
+    probeClaudeModels: machine.probeClaudeModels,
     disablePreconfiguredMcp: () => appSettings.getSnapshot().disablePreconfiguredMcp === true,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
@@ -526,6 +531,13 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const staleEmptyChatPruneInterval = setInterval(runPruneStaleEmptyChats, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
   const staleChatAutoArchiveInterval = setInterval(runAutoArchiveStaleChats, STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS)
   const staleChatDeleteInterval = setInterval(runDeleteStaleChats, STALE_CHAT_DELETE_INTERVAL_MS)
+  // Claude Code updates itself and accounts gain models while Kanna runs.
+  // A chat's session refreshes the list; this catches a quiet server, and
+  // skips the probe when a list arrived within the interval.
+  const claudeModelRefreshInterval = setInterval(
+    () => void agent.probeClaudeModelCatalog({ ifOlderThanMs: CLAUDE_MODEL_REFRESH_INTERVAL_MS }),
+    CLAUDE_MODEL_REFRESH_INTERVAL_MS,
+  )
   worktreeProbe.start()
   projectIcons.start()
   // Claims recorded before base blobs never expire on their own, so a chat
@@ -914,6 +926,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     clearInterval(staleEmptyChatPruneInterval)
     clearInterval(staleChatAutoArchiveInterval)
     clearInterval(staleChatDeleteInterval)
+    clearInterval(claudeModelRefreshInterval)
     worktreeProbe.stop()
     projectIcons.stop()
     // Cancels every in-flight turn *and* marks its chat, so the next boot

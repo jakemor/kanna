@@ -21,6 +21,7 @@ export function offlineMachine(dataDir: string): NonNullable<StartKannaServerOpt
     grokManager: new GrokCliManager({ spawnProcess: () => unavailable("grok") }),
     piManager: new PiAgentManager({ dataDir: path.join(dataDir, "pi") }),
     startClaudeSession: async () => unavailable("claude"),
+    probeClaudeModels: async () => unavailable("claude"),
     inheritShellPath: async () => {},
     llmProviderFile: path.join(dataDir, "llm-provider.json"),
     allowedHostsFile: path.join(dataDir, "allowed-hosts"),

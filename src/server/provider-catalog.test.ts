@@ -408,4 +408,47 @@ describe("provider catalog normalization", () => {
       { value: "nova", resolvedModel: "claude-nova-2", displayName: "Nova" },
     ])).toBe(false)
   })
+
+  test("a family the CLI has no alias for (Mythos) is stored and spawned by full id", () => {
+    // Trimmed from a real supportedModels() on an account with Mythos access
+    // (Claude Code 2.1.322). The CLI's aliases are sonnet/opus/haiku/fable, so
+    // Mythos is listed only by full id, and "mythos" fails the turn with
+    // "There's an issue with the selected model (mythos)".
+    expect(applyClaudeSdkModels([
+      { value: "default", resolvedModel: "claude-mythos-5-2", displayName: "Default (recommended)", supportsEffort: true, supportsFastMode: true },
+      { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", supportsEffort: true, supportsFastMode: true },
+      { value: "fable", resolvedModel: "claude-fable-5-2", displayName: "Fable 5.2", supportsEffort: true, supportsFastMode: true },
+      { value: "sonnet", resolvedModel: "claude-sonnet-5-5", displayName: "Sonnet 5.5", supportsEffort: true },
+      { value: "claude-fable-5-1", resolvedModel: "claude-fable-5-1", displayName: "Fable 5.1", supportsEffort: true },
+      { value: "claude-mythos-5-2", resolvedModel: "claude-mythos-5-2", displayName: "Mythos 5.2", supportsEffort: true, supportsFastMode: true },
+      { value: "claude-mythos-5-1", resolvedModel: "claude-mythos-5-1", displayName: "Mythos 5.1", supportsEffort: true },
+    ])).toBe(true)
+
+    const claude = SERVER_PROVIDERS.find((provider) => provider.id === "claude")
+    expect(claude?.models.map((model) => [model.id, model.label])).toEqual([
+      ["fable", "Fable 5.2"],
+      ["opus", "Opus 5.5"],
+      ["sonnet", "Sonnet 5.5"],
+      ["claude-mythos-5-2", "Mythos 5.2"],
+    ])
+    // The recommended row resolves to Mythos, so new chats default to its id.
+    expect(claude?.defaultModel).toBe("claude-mythos-5-2")
+    // The family word stays an alias, so clients holding "mythos" find the entry.
+    expect(claude?.models.find((model) => model.id === "claude-mythos-5-2")?.aliases).toEqual(["mythos"])
+    expect(claude?.models.find((model) => model.id === "opus")?.aliases).toBeUndefined()
+
+    // What the CLI is handed: the full id, with no "[1m]" (Mythos is natively 1M).
+    expect(normalizeServerModel("claude", "claude-mythos-5-2")).toBe("claude-mythos-5-2")
+    expect(resolveClaudeApiModelId(normalizeServerModel("claude", "claude-mythos-5-2"))).toBe("claude-mythos-5-2")
+    // A chat that stored the bare "mythos" heals to the family's entry.
+    expect(normalizeServerModel("claude", "mythos")).toBe("claude-mythos-5-2")
+    // An older pinned Mythos release is a valid id and passes through.
+    expect(normalizeServerModel("claude", "claude-mythos-5-1")).toBe("claude-mythos-5-1")
+    // Alias families are unchanged.
+    expect(normalizeServerModel("claude", "opus")).toBe("opus")
+
+    // Mythos 5.2 supports fast mode, so Fast reaches the spawn.
+    expect(normalizeClaudeModelOptions("claude-mythos-5-2", { claude: { reasoningEffort: "high", fastMode: true } }).fastMode).toBe(true)
+    expect(normalizeClaudeModelOptions("sonnet", { claude: { reasoningEffort: "high", fastMode: true } }).fastMode).toBe(false)
+  })
 })

@@ -54,14 +54,31 @@ export function resetServerProvidersForTests() {
   SERVER_PROVIDERS.splice(0, SERVER_PROVIDERS.length, ...createServerProviders())
 }
 
+const withoutContextMarker = (modelId: string) => modelId.replace(/\[1m\]$/i, "")
+
+/**
+ * The id a Claude family's picker entry is stored and spawned under. It has
+ * to be a value the CLI's --model accepts. Families the CLI has an alias for
+ * ("opus", listed as an "opus" row) keep the alias, so a new release applies
+ * without a Kanna update. The CLI's aliases are a fixed list (sonnet, opus,
+ * haiku, fable), and a family outside it, like Mythos, is listed only by full
+ * id ("claude-mythos-5-2"). Its bare family word is rejected as an unknown
+ * model, so such a family keeps the full id of its newest row.
+ */
+function claudeFamilyEntryId(family: string, rows: readonly ClaudeSdkModelInfo[], row: ClaudeSdkModelInfo): string {
+  if (rows.some((candidate) => withoutContextMarker(candidate.value) === family)) return family
+  return withoutContextMarker(row.resolvedModel ?? row.value)
+}
+
 /**
  * Rebuild the Claude picker from the SDK's supportedModels() list — the Claude
  * analog of applyCursorModels. Rows group by the family of the model they
  * resolve to, so role rows ("default" → claude-sonnet-5) and "[1m]" window
  * variants fold into their family's entry instead of appearing as their own.
  * One entry per family, keyed by the family alias (what Kanna stores and
- * spawns with) and labeled from the resolved wire id ("Sonnet 5") — the SDK's
- * display names ("Default (recommended)", versionless "Opus") are ignored.
+ * spawns with, see claudeFamilyEntryId) and labeled from the resolved wire id
+ * ("Sonnet 5") — the SDK's display names ("Default (recommended)", versionless
+ * "Opus") are ignored.
  * Static catalog entries seed per-family metadata the SDK doesn't report
  * (the 1M window and its "[1m]" id, max-effort support, fable's 1M window).
  * Returns true when the catalog changed (callers should broadcast).
@@ -95,8 +112,13 @@ export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
     // Prefer the row named after the family over role rows ("default").
     const row = group.rows.find((candidate) => modelIdFamily(candidate.value) === family) ?? group.rows[0]!
     const staticOption = staticModels.find((option) => option.id === family)
+    const id = claudeFamilyEntryId(family, group.rows, row)
     return {
-      id: family,
+      id,
+      // A full-id entry answers to its family word too, so a composer state or
+      // chat that stored "mythos" still finds the entry (on web and iOS, which
+      // match by id or alias) and moves to its id.
+      ...(id === family ? {} : { aliases: [family] }),
       label: deriveModelLabel(row.resolvedModel ?? row.value),
       supportsEffort: row.supportsEffort ?? staticOption?.supportsEffort ?? true,
       ...(group.has1m
@@ -115,9 +137,10 @@ export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
   // The "default" role row marks the harness's recommended model.
   const defaultRow = models.find((row) => row.value === "default")
   const defaultFamily = defaultRow ? modelIdFamily(defaultRow.resolvedModel ?? defaultRow.value) : undefined
-  const defaultModel = defaultFamily && familyGroups.has(defaultFamily) && defaultFamily !== "default"
-    ? defaultFamily
-    : claudeProvider.defaultModel
+  const defaultEntry = defaultFamily && defaultFamily !== "default"
+    ? nextModels[orderedFamilies.indexOf(defaultFamily)]
+    : undefined
+  const defaultModel = defaultEntry?.id ?? claudeProvider.defaultModel
 
   if (
     defaultModel === claudeProvider.defaultModel
@@ -346,7 +369,12 @@ export function normalizeServerModel(provider: AgentProvider, model?: string): s
   // whatever the harness reports at runtime (applyClaudeSdkModels /
   // applyCodexModels / applyCursorModels) — the catalog is only a picker, so
   // unknown ids pass through for the provider to validate.
-  return normalizeProviderModelId(provider, model, catalog.defaultModel)
+  const normalized = normalizeProviderModelId(provider, model, catalog.defaultModel)
+  if (provider !== "claude") return normalized
+  // A bare family word the CLI has no alias for ("mythos", which Kanna stored
+  // before such families were keyed by full id) runs as the live entry that
+  // lists it as an alias. Spawned as-is, the CLI rejects it as an unknown model.
+  return catalog.models.find((option) => option.aliases?.includes(normalized))?.id ?? normalized
 }
 
 export function normalizeClaudeModelOptions(
@@ -355,13 +383,20 @@ export function normalizeClaudeModelOptions(
   legacyEffort?: string
 ): ClaudeModelOptions {
   const reasoningEffort = modelOptions?.claude?.reasoningEffort
+  const liveOption = getServerProviderCatalog("claude").models.find((candidate) => candidate.id === model)
   return {
     reasoningEffort: isClaudeReasoningEffort(reasoningEffort)
       ? reasoningEffort
       : isClaudeReasoningEffort(legacyEffort)
         ? legacyEffort
         : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort,
-    fastMode: normalizeClaudeFastMode(model, modelOptions?.claude?.fastMode),
+    // The live catalog (applyClaudeSdkModels) decides fast mode, as it does
+    // for the picker's Fast toggle. The static catalog only knows the alias
+    // families, so it would silently drop Fast on a full-id family (Mythos)
+    // the picker offers it for.
+    fastMode: liveOption
+      ? Boolean(liveOption.supportsFastMode) && modelOptions?.claude?.fastMode === true
+      : normalizeClaudeFastMode(model, modelOptions?.claude?.fastMode),
   }
 }
 

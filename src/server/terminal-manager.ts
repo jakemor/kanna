@@ -306,23 +306,26 @@ const HANGUP_GRACE_MS = 1_000
  * PTY stays open until then (bash 3.2 loses its jobs if the PTY goes first),
  * and a shell still running after the grace period is killed with its group.
  */
-function hangUpTerminalProcess(subprocess: Bun.Subprocess | null, closeTerminal: () => void) {
+function hangUpTerminalProcess(subprocess: Bun.Subprocess | null, closeTerminal: () => void): Promise<void> {
   if (!subprocess || !signalTerminalProcessGroup(subprocess, "SIGHUP")) {
     killTerminalProcessTree(subprocess)
     closeTerminal()
-    return
+    return Promise.resolve()
   }
-  let finished = false
-  const finish = (exited: boolean) => {
-    if (finished) return
-    finished = true
-    clearTimeout(timer)
-    if (!exited) killTerminalProcessTree(subprocess)
-    closeTerminal()
-  }
-  const timer = setTimeout(() => finish(false), HANGUP_GRACE_MS)
-  timer.unref?.()
-  void subprocess.exited.then(() => finish(true), () => finish(true))
+  return new Promise((resolve) => {
+    let finished = false
+    const finish = (exited: boolean) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      if (!exited) killTerminalProcessTree(subprocess)
+      closeTerminal()
+      resolve()
+    }
+    const timer = setTimeout(() => finish(false), HANGUP_GRACE_MS)
+    timer.unref?.()
+    void subprocess.exited.then(() => finish(true), () => finish(true))
+  })
 }
 
 function signalTerminalProcessGroup(subprocess: Bun.Subprocess | null, signal: NodeJS.Signals) {
@@ -559,25 +562,32 @@ export class TerminalManager {
     signalTerminalProcessGroup(session.process, "SIGWINCH")
   }
 
-  close(terminalId: string) {
+  /**
+   * Close a terminal. The session is gone at once; the promise settles when
+   * its shell has exited or been killed, which for a shell with job control
+   * can take up to the hang-up grace period.
+   */
+  close(terminalId: string): Promise<void> {
     const session = this.sessions.get(terminalId)
-    if (!session) return
+    if (!session) return Promise.resolve()
 
     this.sessions.delete(terminalId)
+    let ended: Promise<void>
     if (session.controllingTty) {
-      hangUpTerminalProcess(session.process, () => session.terminal.close())
+      ended = hangUpTerminalProcess(session.process, () => session.terminal.close())
     } else {
       killTerminalProcessTree(session.process)
       session.terminal.close()
+      ended = Promise.resolve()
     }
     session.serializeAddon.dispose()
     session.headless.dispose()
+    return ended
   }
 
-  closeAll() {
-    for (const terminalId of this.sessions.keys()) {
-      this.close(terminalId)
-    }
+  /** Close every terminal, settling once every shell has exited or been killed. */
+  async closeAll(): Promise<void> {
+    await Promise.all([...this.sessions.keys()].map((terminalId) => this.close(terminalId)))
   }
 
   getRootPidsByCwd(cwd: string) {

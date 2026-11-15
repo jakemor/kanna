@@ -186,6 +186,25 @@ describeIfSupported("TerminalManager", () => {
     }
   }, 15_000)
 
+  test.skipIf(!Bun.which("perl") || !Bun.which("ps"))("closeAll waits until a shell that ignores SIGHUP is killed", async () => {
+    const terminalId = "terminal-close-all-ignores-hup"
+    const { manager, getOutput } = await createSession(terminalId)
+
+    manager.write(terminalId, `trap '' HUP ; echo "__SHELL_$$__"\r`)
+    await waitFor(() => /__SHELL_\d+__/.test(getOutput()), COMMAND_TIMEOUT_MS)
+    const shellPid = Number(/__SHELL_(\d+)__/.exec(getOutput())?.[1])
+    expect(shellPid).toBeGreaterThan(0)
+
+    try {
+      await manager.closeAll()
+      // Killed, so at most a zombie waiting to be reaped; never still running.
+      const state = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(shellPid)]).stdout.toString().trim()
+      expect(state === "" || state.startsWith("Z")).toBe(true)
+    } finally {
+      try { process.kill(shellPid, "SIGKILL") } catch {}
+    }
+  }, 15_000)
+
   test("ctrl+d preserves eof behavior", async () => {
     const terminalId = "terminal-ctrl-d"
     const { manager } = await createSession(terminalId)

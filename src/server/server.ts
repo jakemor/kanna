@@ -915,7 +915,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     usageLimits.dispose()
     appSettings.dispose()
     keybindings.dispose()
-    terminals.closeAll()
+    // Waits for shells that were sent SIGHUP to exit (or be killed after the
+    // grace period), so none outlive the process.exit() that follows.
+    await terminals.closeAll()
     portTunnels.stopAll()
     await store.compact()
     await diagnostics.stop()

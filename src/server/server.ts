@@ -44,6 +44,7 @@ import { handleTranscribe } from "./transcribe"
 import { handleChatWindow } from "./chat-window-route"
 import { handleVisualizationHeights } from "./visualization-heights"
 import { applyPiFaveModels } from "./provider-catalog"
+import { ProviderModelCache } from "./provider-model-cache"
 import { createProcessAuthDeps, ProviderAuthManager } from "./provider-auth"
 import { fetchLatestPackageVersion } from "./cli-runtime"
 import { getMachineDisplayName, getMachineHostNames } from "./machine-name"
@@ -320,10 +321,15 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const codexManager = machine.codexManager ?? new CodexAppServerManager()
   // `kanna <tool>` in an agent's shell reaches its chat's tools here.
   const toolGateway = createKannaToolGateway({ isLive: (chatId) => Boolean(store.getChat(chatId)) })
+  // Last boot's live model lists, applied before the first snapshot goes out;
+  // the probes below refresh them.
+  const modelCache = new ProviderModelCache(path.join(store.dataDir, "provider-models.json"))
+  await modelCache.load()
   const agent = new AgentCoordinator({
     store,
     toolGateway,
     analytics,
+    modelCache,
     codexManager,
     cursorManager: machine.cursorManager,
     grokManager: machine.grokManager,
@@ -383,6 +389,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       // A fresh sign-in unlocks usage limits (claude/codex empty-state cards
       // flip from auth → usage) and the live Cursor/Codex model catalogs.
       void usageLimits.refresh({ force: true }).catch(() => undefined)
+      if (service === "claude") {
+        void agent.probeClaudeModelCatalog()
+      }
       if (service === "cursor") {
         void agent.refreshCursorModelCatalog()
       }
@@ -429,11 +438,13 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     updateManager,
     providerAuth,
   })
-  // Overlay the account's live Cursor and Codex model lists on the static
-  // catalog (no-op when the CLI is missing or logged out); broadcasts on change.
+  // Overlay the account's live model lists on the cached or static catalog
+  // (no-op when the CLI is missing or logged out); broadcasts on change.
   void agent.refreshCursorModelCatalog()
   void agent.refreshCodexModelCatalog()
   void agent.refreshGrokModelCatalog()
+  // Claude waits for the login shell's PATH, which is where `claude` is found.
+  void shellPathReady.then(() => agent.probeClaudeModelCatalog(), () => undefined)
   // Seed the pi provider's model picker from saved fave models before the
   // first snapshots go out.
   void readLlmProvider()

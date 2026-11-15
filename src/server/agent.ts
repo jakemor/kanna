@@ -81,6 +81,7 @@ import {
   normalizeServerModel,
   serviceTierFromModelOptions,
 } from "./provider-catalog"
+import type { ProviderModelCache } from "./provider-model-cache"
 import { providerHasKannaTools, resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
@@ -346,6 +347,8 @@ export interface AgentCoordinatorArgs {
   cursorManager?: CursorCliManager
   grokManager?: GrokCliManager
   piManager?: PiAgentManager
+  /** Keeps each harness's last model list for the next boot. None in tests. */
+  modelCache?: ProviderModelCache
   resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
@@ -404,6 +407,8 @@ function isClaudeSteerLoggingEnabled() {
 
 /** How long a new turn waits for an idle-closed `claude` to exit before resuming anyway. */
 const IDLE_CLOSE_WAIT_MS = 5_000
+/** How long the model-list probe waits for Claude Code to answer supportedModels(). */
+const CLAUDE_MODEL_PROBE_TIMEOUT_MS = 30_000
 /** How long a settled chat's agent process stays up with nothing to do: T3 Code's value, for parity. */
 export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 /**
@@ -1252,9 +1257,11 @@ export class AgentCoordinator {
   private secretsService: SecretsService | null
   private reportBackgroundError: ((message: string) => void) | null = null
   private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
+  private readonly modelCache: ProviderModelCache | null
   private cursorModelCatalogApplied = false
   private grokModelCatalogApplied = false
   private codexModelCatalogRefresh: Promise<void> | null = null
+  private claudeModelCatalogProbe: Promise<void> | null = null
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   /**
@@ -1323,6 +1330,7 @@ export class AgentCoordinator {
     this.cursorManager = args.cursorManager ?? new CursorCliManager()
     this.grokManager = args.grokManager ?? new GrokCliManager()
     this.piManager = args.piManager ?? new PiAgentManager()
+    this.modelCache = args.modelCache ?? null
     this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
@@ -1393,6 +1401,7 @@ export class AgentCoordinator {
     try {
       const models = await this.grokManager.listModels()
       this.grokModelCatalogApplied = true
+      void this.modelCache?.record("grok", models)
       if (applyGrokModels(models)) {
         this.emitStateChange(undefined, { immediate: true })
       }
@@ -1950,16 +1959,65 @@ export class AgentCoordinator {
 
   private refreshClaudeModelCatalog(session: ClaudeSessionHandle) {
     if (!session.supportedModels) return
-    void session.supportedModels()
-      .then((models) => {
-        if (applyClaudeSdkModels(models)) {
-          this.emitStateChange(undefined, { immediate: true })
+    void this.applyClaudeModelsFrom(session).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error)
+      this.reportBackgroundError?.(`[claude-models] failed to refresh Claude model catalog: ${message}`)
+    })
+  }
+
+  private async applyClaudeModelsFrom(session: ClaudeSessionHandle) {
+    const models = await session.supportedModels?.()
+    if (!models || models.length === 0) return
+    if (applyClaudeSdkModels(models)) {
+      this.emitStateChange(undefined, { immediate: true })
+    }
+    await this.modelCache?.record("claude", models)
+  }
+
+  /**
+   * Read the account's Claude model list without a turn — the Claude analog
+   * of the Codex/Cursor/Grok startup probes. Otherwise the list only arrives
+   * with a chat's first session, and the picker shows the static catalog
+   * until someone sends a message. The probe starts Claude Code with no
+   * prompt, asks supportedModels() over the control channel and closes it:
+   * no API call, no tokens, and Claude Code writes no session file for a
+   * session that never got a message. A live session answers instead when
+   * there is one. Failure (not installed, signed out, outdated) keeps the
+   * cached or static list. Concurrent callers share one probe.
+   */
+  probeClaudeModelCatalog(): Promise<void> {
+    if (this.claudeModelCatalogProbe) return this.claudeModelCatalogProbe
+    this.claudeModelCatalogProbe = (async () => {
+      const live = [...this.claudeSessions.values()].find((state) => state.session.supportedModels)
+      let probe: ClaudeSessionHandle | null = null
+      try {
+        if (live) {
+          await this.applyClaudeModelsFrom(live.session)
+          return
         }
-      })
-      .catch((error) => {
-        const message = error instanceof Error ? error.message : String(error)
-        this.reportBackgroundError?.(`[claude-models] failed to refresh Claude model catalog: ${message}`)
-      })
+        probe = await this.startClaudeSessionFn({
+          localPath: homedir(),
+          // Any model the CLI accepts: the list doesn't depend on it.
+          model: "sonnet",
+          planMode: false,
+          autoPlan: false,
+          sessionToken: null,
+          forkSession: false,
+          onToolRequest: async () => ({}),
+        })
+        // A CLI that never answers is closed rather than left running.
+        await Promise.race([
+          this.applyClaudeModelsFrom(probe),
+          new Promise<void>((resolve) => setTimeout(resolve, CLAUDE_MODEL_PROBE_TIMEOUT_MS).unref?.()),
+        ])
+      } catch {
+        // Keep the cached or static list; a turn's session refreshes it.
+      } finally {
+        probe?.close()
+        this.claudeModelCatalogProbe = null
+      }
+    })()
+    return this.claudeModelCatalogProbe
   }
 
   /**
@@ -1975,6 +2033,7 @@ export class AgentCoordinator {
     try {
       const models = await this.cursorManager.listModels()
       this.cursorModelCatalogApplied = true
+      void this.modelCache?.record("cursor", models)
       if (applyCursorModels(models)) {
         this.emitStateChange(undefined, { immediate: true })
       }
@@ -1998,6 +2057,7 @@ export class AgentCoordinator {
     this.codexModelCatalogRefresh = (async () => {
       try {
         const models = await this.codexManager.listModels(homedir())
+        if (models) void this.modelCache?.record("codex", [...models])
         if (models && applyCodexModels(models)) {
           this.emitStateChange(undefined, { immediate: true })
         }

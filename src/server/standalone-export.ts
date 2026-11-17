@@ -124,7 +124,10 @@ export async function writeStandaloneTranscriptExport(
   let sourceOrigin: string | undefined
   try {
     const url = new URL(args.sourceOrigin ?? "")
-    if (url.protocol === "http:" || url.protocol === "https:") sourceOrigin = url.origin
+    // And never a quick tunnel's: that address is the only thing between a
+    // reader of the shared page and this machine.
+    const isQuickTunnel = /(^|\.)trycloudflare\.com$/i.test(url.hostname)
+    if ((url.protocol === "http:" || url.protocol === "https:") && !isQuickTunnel) sourceOrigin = url.origin
   } catch {
     // Older clients do not send an origin. Relative chat links still work.
   }

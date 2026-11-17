@@ -370,6 +370,28 @@ describe("wrong-password backoff", () => {
     expect([...statuses]).toEqual([[401, 5], [429, 295]])
   })
 
+  test("300 wrong guesses sent at once get five looks too", async () => {
+    const auth = createAuthManager("secret", { now: () => 1_000_000 })
+    // All in flight together: every one has passed whatever is checked before
+    // its body is read by the time the first of them is counted.
+    const responses = await Promise.all(
+      Array.from({ length: 300 }, (_, attempt) => login(auth, attempt === 299 ? "secret" : `guess-${attempt}`, "203.0.113.9")),
+    )
+    const statuses = new Map<number, number>()
+    for (const response of responses) statuses.set(response.status, (statuses.get(response.status) ?? 0) + 1)
+    expect([...statuses]).toEqual([[401, 5], [429, 295]])
+  })
+
+  test("a login body that is not a login is refused before it is read", async () => {
+    const auth = createAuthManager("secret")
+    const response = await auth.handleLogin(new Request("http://localhost:3210/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": String(64 * 1024) },
+      body: JSON.stringify({ password: "x".repeat(64 * 1024 - 15) }),
+    }), "/", "203.0.113.9")
+    expect(response.status).toBe(413)
+  })
+
   test("a refused guess says how long to wait", async () => {
     const time = 1_000_000
     const auth = createAuthManager("secret", { now: () => time })

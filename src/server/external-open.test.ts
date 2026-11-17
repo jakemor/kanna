@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildDefaultOpenCommand, buildEditorCommand, buildPreviewCommand, buildTerminalCommand, tokenizeCommandTemplate } from "./external-open"
+import { buildDefaultOpenCommand, buildEditorCommand, buildPreviewCommand, buildTerminalCommand, isLaunchablePath, tokenizeCommandTemplate } from "./external-open"
 
 describe("tokenizeCommandTemplate", () => {
   test("keeps quoted arguments together", () => {
@@ -74,6 +74,22 @@ describe("buildEditorCommand", () => {
     })
   })
 
+  test("a file name never becomes arguments of the custom editor command", () => {
+    expect(
+      buildEditorCommand({
+        localPath: '/repo/x --install-extension evil "y".ts',
+        isDirectory: false,
+        line: 3,
+        column: 1,
+        editor: { preset: "custom", commandTemplate: 'my-editor "{path}" --line {line}' },
+        platform: "linux",
+      })
+    ).toEqual({
+      command: "my-editor",
+      args: ['/repo/x --install-extension evil "y".ts', "--line", "3"],
+    })
+  })
+
   test("builds an Xcode line command with xed", () => {
     expect(
       buildEditorCommand({
@@ -124,6 +140,31 @@ describe("buildDefaultOpenCommand", () => {
       command: "xdg-open",
       args: ["/tmp/mock.png"],
     })
+  })
+})
+
+describe("isLaunchablePath", () => {
+  const file = { isFile: true, mode: 0o100644 }
+  const executable = { isFile: true, mode: 0o100755 }
+  const directory = { isFile: false, mode: 0o040755 }
+
+  test("what the opener would run is shown in the file manager instead", () => {
+    expect(isLaunchablePath("/repo/docs/overview.command", executable, "darwin")).toBe(true)
+    expect(isLaunchablePath("/repo/Tools/Setup.app", directory, "darwin")).toBe(true)
+    expect(isLaunchablePath("/repo/Tools/Setup.app/", directory, "darwin")).toBe(true)
+    expect(isLaunchablePath("/repo/bin/setup", executable, "darwin")).toBe(true)
+    expect(isLaunchablePath("C:\\repo\\run.BAT", file, "win32")).toBe(true)
+    expect(buildDefaultOpenCommand({ localPath: "/repo/docs/overview.command", platform: "darwin", reveal: true })).toEqual({
+      command: "open",
+      args: ["-R", "/repo/docs/overview.command"],
+    })
+  })
+
+  test("documents, pictures and folders still open", () => {
+    expect(isLaunchablePath("/repo/shot.png", executable, "darwin")).toBe(false)
+    expect(isLaunchablePath("/repo/report.pdf", file, "darwin")).toBe(false)
+    expect(isLaunchablePath("/repo/LICENSE", file, "darwin")).toBe(false)
+    expect(isLaunchablePath("/repo/src", directory, "darwin")).toBe(false)
   })
 })
 

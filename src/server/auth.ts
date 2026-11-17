@@ -25,6 +25,7 @@ const MAX_LOGIN_WAIT_MS = 30_000
 /** A quiet quarter of an hour and the count starts over. */
 const LOGIN_FAILURE_MEMORY_MS = 15 * 60_000
 const MAX_TRACKED_LOGIN_CLIENTS = 10_000
+const MAX_LOGIN_BODY_BYTES = 16 * 1024
 
 /** One key per IPv4 address and per IPv6 /64, which is what one customer is handed. */
 export function loginClientKey(address: string | null | undefined) {
@@ -84,6 +85,8 @@ export function createLoginThrottle(now: () => number = Date.now): LoginThrottle
 
 export interface AuthManager {
   isAuthenticated(req: Request): boolean
+  /** The signed-in session this request carries, or null. Names the session to its sockets. */
+  sessionOf(req: Request): string | null
   validateOrigin(req: Request): boolean
   redirectToApp(req: Request): Response
   /** `clientAddress` is who is guessing, for the wrong-password backoff. */
@@ -203,6 +206,11 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
     return Boolean(sessionToken && sessions.has(sessionToken))
   }
 
+  function sessionOf(req: Request) {
+    const sessionToken = getSessionToken(req)
+    return sessionToken && sessions.has(sessionToken) ? sessionToken : null
+  }
+
   function validateOrigin(req: Request) {
     const origin = req.headers.get("origin")
     if (!origin) return true
@@ -250,7 +258,21 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
       return Response.json({ error: "Forbidden" }, { status: 403 })
     }
 
+    // A login is a password and a path. Anything larger is not one, and this
+    // route is the one a stranger can post to.
+    if (Number(req.headers.get("content-length") ?? 0) > MAX_LOGIN_BODY_BYTES) {
+      return Response.json({ error: "Request too large" }, { status: 413 })
+    }
+
     const client = loginClientKey(clientAddress)
+    // The body is read before the wait is looked at, so that the check, the
+    // compare and the count below run with no await between them. Read after
+    // the check, any number of guesses sent at once all passed it before the
+    // first of them was counted, and the wait slowed nobody down.
+    const form = await readLoginForm(req).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    )
     const waitMs = throttle.waitMs(client)
     if (waitMs > 0) {
       const seconds = Math.ceil(waitMs / 1000)
@@ -259,8 +281,11 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
         { status: 429, headers: { "Retry-After": String(seconds) } },
       )
     }
+    if (!form.ok) {
+      return Response.json({ error: "Invalid login request" }, { status: 400 })
+    }
 
-    const { password: candidate, nextPath } = await readLoginForm(req)
+    const { password: candidate, nextPath } = form.value
     if (!verifyPassword(candidate)) {
       throttle.recordFailure(client)
       return Response.json({ error: "Invalid password" }, { status: 401 })
@@ -285,6 +310,7 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
 
   return {
     isAuthenticated,
+    sessionOf,
     validateOrigin,
     redirectToApp,
     handleLogin,

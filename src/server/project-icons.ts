@@ -242,7 +242,10 @@ export function rankIconCandidates(relativePaths: readonly string[]): IconCandid
 /** Candidate paths git tracks under `root`, or null when `root` is not in a repo. */
 async function listTrackedPaths(root: string): Promise<string[] | null> {
   try {
-    const child = Bun.spawn(["git", "ls-files", "-z", "--", ...GIT_PATHSPECS], {
+    // This runs for every saved project, with nobody having asked for it,
+    // and `core.fsmonitor` in a repository's config names a program for git
+    // to run. Listing the index needs no file monitor.
+    const child = Bun.spawn(["git", "-c", "core.fsmonitor=false", "ls-files", "-z", "--", ...GIT_PATHSPECS], {
       cwd: root,
       stdin: "ignore",
       stdout: "pipe",
@@ -309,10 +312,24 @@ function resolveInside(root: string, baseDir: string, target: string) {
  * 1024px source. Since Xcode 14 that is the only one a set has to hold, and
  * in older sets it is the one the rest were cut from.
  */
+/**
+ * A manifest from the project, read whole. These are a few kilobytes when
+ * honest, and the scan that reads them runs on its own for every saved
+ * project: a clone can make one a link to a device that never ends, or a
+ * gigabyte of JSON.
+ */
+const MAX_MANIFEST_BYTES = 1024 * 1024
+
+async function readManifest(file: string) {
+  const info = await stat(file)
+  if (!info.isFile() || info.size > MAX_MANIFEST_BYTES) throw new Error("not a manifest")
+  return await readFile(file, "utf8")
+}
+
 async function resolveAppIconSet(setDir: string): Promise<string | null> {
   let best: { filename: string; pixels: number } | null = null
   try {
-    const contents = JSON.parse(await readFile(path.join(setDir, "Contents.json"), "utf8")) as {
+    const contents = JSON.parse(await readManifest(path.join(setDir, "Contents.json"))) as {
       images?: Array<{ filename?: unknown; size?: unknown; scale?: unknown; appearances?: unknown }>
     }
     for (const image of contents.images ?? []) {
@@ -353,7 +370,7 @@ function parseIconComposerColor(value: unknown): Background | null {
 async function resolveIconComposer(bundleDir: string): Promise<{ path: string; background: Background | null } | null> {
   let icon: { fill?: unknown; groups?: Array<{ layers?: Array<{ "image-name"?: unknown }> }> }
   try {
-    icon = JSON.parse(await readFile(path.join(bundleDir, "icon.json"), "utf8"))
+    icon = JSON.parse(await readManifest(path.join(bundleDir, "icon.json")))
   } catch {
     return null
   }

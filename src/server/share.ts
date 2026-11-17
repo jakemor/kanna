@@ -21,6 +21,8 @@ export interface StartedShareTunnel {
   exited?: Promise<void>
   /** The cloudflared version this connector started from, when known. */
   binaryVersion?: string | null
+  /** The cloudflared child's pid, for finding it again after a crash (port-tunnels.ts). */
+  pid?: number
 }
 
 export interface ShareTunnelProcess {
@@ -34,7 +36,7 @@ export interface ShareTunnelProcess {
   off(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): ShareTunnelProcess
   stop(): boolean
   /** The cloudflared child, for escalating a stop that SIGINT didn't finish. */
-  readonly process?: { kill(signal?: NodeJS.Signals): boolean }
+  readonly process?: { kill(signal?: NodeJS.Signals): boolean; readonly pid?: number }
 }
 
 export interface StartShareTunnelOptions {
@@ -290,6 +292,7 @@ export async function startShareTunnel(
     stop,
     exited,
     binaryVersion,
+    pid: tunnel.process?.pid,
   }
 }
 

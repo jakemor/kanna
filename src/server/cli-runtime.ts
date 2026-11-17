@@ -198,6 +198,8 @@ Options:
   --cloudflared <token>
                        Run a named Cloudflare tunnel from a token
   --password <secret>  Require a password before loading the app
+                       (KANNA_PASSWORD in the environment does the same and stays
+                       out of ps, as does KANNA_CLOUDFLARED_TOKEN for --cloudflared)
   --allow-host <name>  Also answer requests addressed to this hostname (a Tailscale or
                        private DNS name, a reverse proxy's). Repeatable. localhost, IP
                        addresses and this machine's own names are always answered
@@ -239,7 +241,15 @@ function parsePairArgs(argv: string[]): ParsedArgs {
   return { kind: "pair", args: { action, pairingCode } }
 }
 
-export function parseArgs(argv: string[]): ParsedArgs {
+/**
+ * The same as `--password` and `--cloudflared`, for a launch that should not
+ * show them: a command line is readable by every user on the machine (`ps`),
+ * for as long as the process runs. A flag wins over its variable.
+ */
+export const PASSWORD_ENV_VAR = "KANNA_PASSWORD"
+export const CLOUDFLARED_TOKEN_ENV_VAR = "KANNA_CLOUDFLARED_TOKEN"
+
+export function parseArgs(argv: string[], env: Record<string, string | undefined> = {}): ParsedArgs {
   if (argv[0] === "pair") {
     return parsePairArgs(argv.slice(1))
   }
@@ -350,6 +360,13 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (!arg.startsWith("-")) throw new Error(`Unexpected positional argument: ${arg}`)
   }
 
+  const envToken = env[CLOUDFLARED_TOKEN_ENV_VAR]?.trim()
+  if (share === false && envToken) {
+    assertNoHostOverride("--cloudflared", sawHost, sawRemote)
+    share = { kind: "token", token: envToken }
+  }
+  password ??= env[PASSWORD_ENV_VAR] || null
+
   if (directCloud) {
     if (noCloud) throw new Error("--cloud cannot be used with --no-cloud")
     if (isShareEnabled(share)) throw new Error(`--cloud cannot be used with ${getShareCliFlag(share)}`)
@@ -437,8 +454,12 @@ async function maybeSelfUpdate(_argv: string[], deps: CliRuntimeDeps) {
   return "startup_update"
 }
 
-export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliRunResult> {
-  let parsedArgs = parseArgs(argv)
+export async function runCli(argv: string[], deps: CliRuntimeDeps, env: Record<string, string | undefined> = process.env): Promise<CliRunResult> {
+  let parsedArgs = parseArgs(argv, env)
+  // Read, and then gone: every agent, terminal and tunnel this process starts
+  // is handed its environment.
+  delete env[PASSWORD_ENV_VAR]
+  delete env[CLOUDFLARED_TOKEN_ENV_VAR]
   if (parsedArgs.kind === "version") {
     deps.log(deps.version)
     return { kind: "exited", code: 0 }
@@ -617,6 +638,9 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       shareTunnelStop = shareTunnel.stop
       if (shareTunnel.publicUrl) {
         await logShareDetails(deps.log, shareTunnel.publicUrl, launchUrl, deps.renderShareQr ?? renderTerminalQr)
+        if (!runOptions.password) {
+          deps.warn(`${LOG_PREFIX} anyone who has this URL can open a terminal on this machine. Treat it like a password, or add one: ${CLI_COMMAND} ${getShareCliFlag(runOptions.share)}${isTokenShareMode(runOptions.share) ? " <token>" : ""} --password <secret> (or ${PASSWORD_ENV_VAR})`)
+        }
       } else {
         deps.warn(`${LOG_PREFIX} named tunnel started but no public hostname was detected`)
         if (isTokenShareMode(runOptions.share)) {

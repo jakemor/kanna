@@ -25,6 +25,7 @@ export function offlineMachine(dataDir: string): NonNullable<StartKannaServerOpt
     inheritShellPath: async () => {},
     llmProviderFile: path.join(dataDir, "llm-provider.json"),
     allowedHostsFile: path.join(dataDir, "allowed-hosts"),
+    cloudIdentityFile: path.join(dataDir, "cloud.json"),
   }
 }
 

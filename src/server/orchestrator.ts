@@ -8,7 +8,7 @@ import type {
   SubagentActivity,
   TranscriptEntry,
 } from "../shared/types"
-import { stripSystemMessages } from "../shared/message-preview"
+import { defuseSystemMessages, stripSystemMessages } from "../shared/message-preview"
 import { getCodexReasoningOptions, providerHasKannaTools } from "../shared/types"
 import { buildAgentToAgentNote, type AgentToAgentTurn } from "./agent-to-agent"
 import type { ChatChange, ChatCommands } from "./chat-commands"
@@ -785,6 +785,19 @@ export class ChatOrchestrator {
    * What a chat runs with when a message to it names nothing: what an agent
    * staged for it with `update_chat`, or else what its last turn ran with.
    */
+  /**
+   * A read-only run has to go to a provider that can be held to read-only.
+   * One without plan mode is started with full access whatever it is asked
+   * for, so a plan-mode run sent there would be the way around the ceiling
+   * `resolveRun` keeps.
+   */
+  private requirePlanModeProvider(provider: RunDefaults["provider"] | undefined) {
+    const catalog = getServerProviderCatalog(provider ?? "claude")
+    if (!catalog.supportsPlanMode) {
+      throw new Error(`${catalog.label} has no read-only mode, so it cannot run in plan mode. Pick a provider with plan mode.`)
+    }
+  }
+
   private ownRun(chat: ChatRecord): RunDefaults {
     return chat.nextRun ?? {
       provider: chat.provider,
@@ -1271,6 +1284,8 @@ export class ChatOrchestrator {
     options: { report: boolean; steer?: boolean },
   ): Promise<{ queuedMessageId?: string }> {
     const source: MessageSource = { kind: "agent", chatId: actorChatId }
+    // An agent's words, never Kanna's: see `defuseSystemMessages`.
+    content = defuseSystemMessages(content)
     // Marked before the turn starts: a turn that fails at once still ends, and
     // that end is what sends the report.
     if (options.report) await this.store.setReportOwed(target.id, true)
@@ -1408,7 +1423,7 @@ export class ChatOrchestrator {
 
     const trigger = this.parseTrigger(input, now) ?? existing?.trigger
     if (!trigger) throw new Error("Say when it runs: inMinutes, runAt, everyMinutes or dailyAt.")
-    const content = input.message ?? existing?.content
+    const content = input.message === undefined ? existing?.content : defuseSystemMessages(input.message)
     if (!content?.trim()) throw new Error("A schedule needs a message to send.")
 
     // Where the runs go is asked for outright, so it is a choice and not a
@@ -1452,6 +1467,12 @@ export class ChatOrchestrator {
     }
     const model = input.model ?? existing?.model ?? (inherit && provider === caller.provider ? caller.lastModel : undefined)
     const planMode = planning ? true : input.planMode ?? existing?.planMode
+    if (planMode) {
+      // The provider the run will be handed to: the schedule's own, or the
+      // target chat's when it names none.
+      const targetChat = target.kind === "chat" ? this.store.getChat(target.chatId) : null
+      this.requirePlanModeProvider(provider ?? (targetChat ? this.ownRun(targetChat).provider : undefined))
+    }
     const triggerChanged = this.parseTrigger(input, now) !== null
     const enabled = input.enabled ?? existing?.enabled ?? true
     // A sub-chat timing its own next step, in a turn its parent will hear
@@ -1460,7 +1481,7 @@ export class ChatOrchestrator {
     const reportsToParent = ownFollowUp && (existing ? Boolean(existing.reportsToParent) : Boolean(caller.parentChatId && caller.reportOwed))
     const schedule: ChatSchedule = {
       id: existing?.id ?? crypto.randomUUID(),
-      name: input.name?.trim() || existing?.name || clip(content.trim().split("\n")[0]!, 60).text,
+      name: (input.name ? defuseSystemMessages(input.name).trim() : "") || existing?.name || clip(content.trim().split("\n")[0]!, 60).text,
       content,
       target,
       trigger,
@@ -1592,6 +1613,9 @@ export class ChatOrchestrator {
       if (pending) return { outcome: "skipped" }
       const own = this.ownRun(chat)
       const provider = schedule.provider ?? own.provider ?? undefined
+      // Checked again at the run: the chat may have moved to another provider
+      // since the schedule was made.
+      if (schedule.planMode) this.requirePlanModeProvider(provider)
       const sameProvider = provider === own.provider
       // Before the turn starts, like a parent's own message (`send`).
       const arms = Boolean(schedule.reportsToParent && chat.parentChatId && !chat.reportOwed)
@@ -1616,6 +1640,7 @@ export class ChatOrchestrator {
 
     if (!this.store.getProject(schedule.target.projectId)) return { outcome: "gone" }
     if (schedule.lastRunChatId && this.isLive(schedule.lastRunChatId)) return { outcome: "skipped" }
+    if (schedule.planMode) this.requirePlanModeProvider(schedule.provider)
     // A schedule from before the choice was asked follows Delegator mode, as the user's own chats do.
     const chatId = (await this.commands.create(schedule.target.projectId, undefined, schedule.target.delegator === undefined ? undefined : { delegator: schedule.target.delegator })).result.chatId
     await this.commands.rename(chatId, schedule.name)
@@ -1913,7 +1938,8 @@ export class ChatOrchestrator {
     }
     const header = `<system-message>\n${lines.join("\n")}\n</system-message>`
     if (!outcome.finalMessage || options?.replyReported) return { header }
-    return { header, reply: outcome.finalMessage }
+    // The sub-chat's own words, under a header that is Kanna's.
+    return { header, reply: defuseSystemMessages(outcome.finalMessage) }
   }
 
   /**

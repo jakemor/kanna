@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { PortTunnelManager } from "./port-tunnels"
 import type { StartedShareTunnel } from "./share"
 
@@ -117,5 +120,29 @@ describe("PortTunnelManager", () => {
     expect(a.stopCalls).toBe(1)
     expect(b.stopCalls).toBe(1)
     expect(manager.list()).toEqual([])
+  })
+
+  test("a tunnel the last server left running is stopped when the next one starts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "kanna-port-tunnels-"))
+    try {
+      const stateFile = path.join(dir, "port-tunnels.json")
+      // 4242 is still cloudflared; 4343's pid now belongs to something else.
+      await writeFile(stateFile, JSON.stringify([{ port: 5173, pid: 4242 }, { port: 3000, pid: 4343 }]))
+      const killed: number[] = []
+      const manager = new PortTunnelManager({
+        startTunnel: async () => createFakeTunnel("https://one.trycloudflare.com").tunnel,
+        stateFile,
+        isTunnelProcess: async (pid) => pid === 4242,
+        killProcess: (pid) => {
+          killed.push(pid)
+        },
+      })
+
+      await manager.reapOrphans()
+
+      expect(killed).toEqual([4242])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

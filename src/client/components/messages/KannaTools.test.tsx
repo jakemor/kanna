@@ -8,7 +8,7 @@ import type { TranscriptEntry } from "../../../shared/types"
 import { AttachmentsCard, DisplayToolMessage } from "./DisplayToolMessage"
 import { ToolPayloadProvider } from "./tool-payload-context"
 import { csvCell } from "./ChartTool"
-import { VisualizationExpandButton } from "./Visualization"
+import { Visualization, VisualizationExpandButton, VisualizationFullView } from "./Visualization"
 import { TooltipProvider } from "../ui/tooltip"
 import { VISUALIZATION_EXPAND_BUTTON } from "../../../shared/visualization"
 import { displayAttachments, resolveChartKeys, type ChartToolPayload } from "../../../shared/display-tools"
@@ -87,6 +87,18 @@ test("the expand button is a circle in the corner, named for assistive tech, wit
   expect(html).toContain("visualization-expand absolute")
   expect(html).toContain("rounded-full")
   expect(html).not.toContain(">Expand<")
+})
+
+test("a visualization fits its content inline and fills the pane at full size", () => {
+  const artifact = { url: "/api/chats/c/media/visualization-a.html", title: "Mockup", height: 360 }
+  // Inline: the box holds a height, so nothing under it moves while the page loads.
+  const inline = renderToStaticMarkup(<TooltipProvider><Visualization artifact={artifact} /></TooltipProvider>)
+  expect(inline).toContain('class="min-w-0" style="height:360px"')
+  // Full: the box takes the card body's height, and the body does not scroll around it.
+  const full = renderToStaticMarkup(<TooltipProvider><VisualizationFullView artifact={artifact} onClose={() => {}} /></TooltipProvider>)
+  expect(full).toContain('<div class="h-full p-4"><div class="h-full min-w-0">')
+  expect(full).not.toContain("height:360px")
+  expect(full).toContain(`data-viewer-body="true" class="min-h-0 flex-1 overflow-hidden"`)
 })
 
 test("visualizations stay inline between Markdown messages without a tool card", () => {

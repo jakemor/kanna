@@ -68,9 +68,15 @@ function backdropColor(element: Element | null): string | undefined {
  * this browser or another (`lib/visualization-heights`), and holds that box
  * while the document loads, so nothing under it moves when the page comes
  * in. With none measured it starts at the height the agent declared.
+ *
+ * `fill` is the full view's: the frame takes the height it is put in, and
+ * the page gets all of it (`VISUALIZATION_SHELL_FILL_CSS`). Heights are
+ * neither read nor recorded then: what a page reports there depends on the
+ * pane's height, and says nothing about the transcript's frame.
  */
-function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
+function VisualizationFrame({ artifact, fill = false, onLoaded, onEscape, captureRef }: {
   artifact: VisualizationArtifact
+  fill?: boolean
   onLoaded?: () => void
   /** Set to a way to draw the page as a PNG while the frame is mounted. */
   captureRef?: MutableRefObject<VisualizationCapture | null>
@@ -87,8 +93,8 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
   const [measured, setMeasured] = useState<number>()
   const [known, setKnown] = useState(() => rememberedVisualizationHeights(artifact.url))
   // What the message handler below reads: it is set up once, for the frame's life.
-  const live = useRef({ url: artifact.url, declared: artifact.height, width, measured, known, loadedAt: 0, recordedBucket: 0 })
-  Object.assign(live.current, { url: artifact.url, declared: artifact.height, width, measured, known })
+  const live = useRef({ url: artifact.url, declared: artifact.height, fill, width, measured, known, loadedAt: 0, recordedBucket: 0 })
+  Object.assign(live.current, { url: artifact.url, declared: artifact.height, fill, width, measured, known })
   const settleTimer = useRef<number | undefined>(undefined)
   const knownFor = useRef(artifact.url)
   const height = measured ?? (width === undefined ? null : pickVisualizationHeight(known, width)) ?? artifact.height
@@ -108,7 +114,7 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
   const widthKnown = width !== undefined
   useEffect(() => {
     const { width, known } = live.current
-    if (width === undefined || known.some(([measuredWidth]) => measuredWidth === visualizationWidthBucket(width))) return
+    if (fill || width === undefined || known.some(([measuredWidth]) => measuredWidth === visualizationWidthBucket(width))) return
     const controller = new AbortController()
     void fetchVisualizationHeights(artifact.url, controller.signal).then((fromServer) => {
       if (controller.signal.aborted || fromServer.length === 0) return
@@ -119,7 +125,7 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
       setKnown(merged)
     })
     return () => controller.abort()
-  }, [artifact.url, widthKnown])
+  }, [artifact.url, widthKnown, fill])
 
   useEffect(() => () => window.clearTimeout(settleTimer.current), [])
 
@@ -135,10 +141,10 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
     fetch(artifact.url, { signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error("Visualization unavailable")
       const [html, { visualizationFontCss }] = await Promise.all([response.text(), import("./visualization-fonts")])
-      if (!controller.signal.aborted) setDocument(prepareVisualizationDocument(html, visualizationTheme(), visualizationFontCss))
+      if (!controller.signal.aborted) setDocument(prepareVisualizationDocument(html, visualizationTheme(), visualizationFontCss, { fill }))
     }).catch(() => { if (!controller.signal.aborted) setFailed(true) })
     return () => controller.abort()
-  }, [artifact.url, artifact.height])
+  }, [artifact.url, artifact.height, fill])
 
   useEffect(() => {
     const syncTheme = () => {
@@ -180,7 +186,7 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
       }
       if (event.data?.type === "kanna:ready") syncTheme()
       if (event.data?.type === "kanna:escape") onEscapeRef.current?.(event.data.repeat === true)
-      if (event.data?.type === "kanna:resize") {
+      if (event.data?.type === "kanna:resize" && !live.current.fill) {
         const next = visualizationHeight(event.data.height)
         const state = live.current
         // The shell opens by reporting the declared height, before the page
@@ -227,7 +233,7 @@ function VisualizationFrame({ artifact, onLoaded, onEscape, captureRef }: {
 
   if (failed) return <p role="alert" className="text-sm text-muted-foreground">This visualization could not be loaded.</p>
   return (
-    <div ref={box} className="min-w-0" style={{ height }}>
+    <div ref={box} className={fill ? "h-full min-w-0" : "min-w-0"} style={fill ? undefined : { height }}>
       {document ? (
         <iframe
           ref={frame}
@@ -295,9 +301,9 @@ export function VisualizationExpandButton({ onClick }: { onClick: () => void }) 
  * what was set inline (a tab, a slider) starts over here, and what is set
  * here stays here.
  *
- * The frame keeps its content's height and the card scrolls, as inline. A
- * frame stretched to the card would tell the content nothing: it is written
- * to its own height, not the viewport's.
+ * The frame fills the card's body, and the page gets the whole of it: its
+ * viewport is the pane, so a page laid out to `100vh` fills it, and one
+ * taller than the pane scrolls inside the frame, not the card.
  */
 export function VisualizationFullView({ artifact, onClose }: { artifact: VisualizationArtifact; onClose: () => void }) {
   const capture = useRef<VisualizationCapture | null>(null)
@@ -321,6 +327,8 @@ export function VisualizationFullView({ artifact, onClose }: { artifact: Visuali
       icon={<Shapes />}
       title={artifact.title}
       onClose={onClose}
+      // The frame scrolls its page; the body has nothing past it to scroll.
+      bodyClassName="overflow-hidden"
       toolbar={(
         <>
           {hasComposer ? <ViewerIconButton label="Mark up and add to prompt" onClick={() => start("markup")}><PenLine /></ViewerIconButton> : null}
@@ -344,9 +352,10 @@ export function VisualizationFullView({ artifact, onClose }: { artifact: Visuali
           }}
         />
       ) : null}
-      <div className="p-4">
+      <div className="h-full p-4">
         <VisualizationFrame
           artifact={artifact}
+          fill
           captureRef={capture}
           // A key pressed in the frame is the frame's, and the card never
           // hears it. The frame hands Escape back when it has no use for it.

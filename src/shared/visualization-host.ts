@@ -25,6 +25,17 @@ export const VISUALIZATION_HIDDEN_SCROLLBAR_CSS = "html{scrollbar-width:none}htm
  */
 export const VISUALIZATION_SHELL_FIT_CSS = "#visualization{max-height:100vh}"
 
+/**
+ * For the shell at full size, in place of the fit rule: the page gets the
+ * whole pane, whatever height it reports. Sized to its content, as inline, a
+ * page laid out to its viewport (`100vh`, a full-height app mockup) only ever
+ * reports the height its frame started at, so it opened clipped at the
+ * declared height with the pane empty below. Held to the pane, `100vh` is the
+ * pane, and a page taller than it scrolls inside. Over the inline style the
+ * saved shell sets from each report.
+ */
+export const VISUALIZATION_SHELL_FILL_CSS = "#visualization{height:100vh!important;max-height:none}"
+
 const escapeAttribute = (value: string) => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 const decodeAttribute = (value: string) => value.replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&")
 
@@ -45,7 +56,7 @@ const withControlsScript = (inner: string) => {
 /** Adapt immutable saved shells at load time, including ones made before the host
  * forwarded fonts and appearance. Only the generated shell and its escaped srcdoc
  * are touched; authored markup stays inside the same opaque-origin sandbox. */
-export function prepareVisualizationDocument(html: string, theme: VisualizationTheme, fontCss: string): string {
+export function prepareVisualizationDocument(html: string, theme: VisualizationTheme, fontCss: string, options: { fill?: boolean } = {}): string {
   const variables = Object.entries(theme.variables)
     .filter(([key, value]) => /^--[a-z0-9-]+$/.test(key) && value.length < 300 && !/[;{}<>]|url\s*\(/i.test(value))
     .map(([key, value]) => `${key}:${value}`).join(";")
@@ -79,5 +90,5 @@ export function prepareVisualizationDocument(html: string, theme: VisualizationT
       if (frame && event.source === frame.contentWindow && parent !== window && event.data?.type === 'kanna:captured') parent.postMessage({type:'kanna:captured', id:event.data.id, png:event.data.png, error:event.data.error}, '*');
     });
   })();</script>`
-  return prepared.replace("</head>", `<style>${VISUALIZATION_SHELL_FIT_CSS}</style>${bootstrap}</head>`)
+  return prepared.replace("</head>", `<style>${options.fill ? VISUALIZATION_SHELL_FILL_CSS : VISUALIZATION_SHELL_FIT_CSS}</style>${bootstrap}</head>`)
 }

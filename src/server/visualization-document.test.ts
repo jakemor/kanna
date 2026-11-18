@@ -3,7 +3,7 @@ import { Script, runInNewContext } from "node:vm"
 import { buildVisualizationDocument, VISUALIZATION_CONTENT_CSP } from "./visualization-document"
 import { VISUALIZATION_EXPAND_BUTTON } from "../shared/visualization"
 import { VISUALIZATION_CONTROLS_CSS, VISUALIZATION_CONTROLS_SCRIPT } from "../shared/visualization-controls"
-import { prepareVisualizationDocument, VISUALIZATION_BASE_SIZE_CSS, VISUALIZATION_HIDDEN_SCROLLBAR_CSS, VISUALIZATION_SHELL_FIT_CSS } from "../shared/visualization-host"
+import { prepareVisualizationDocument, VISUALIZATION_BASE_SIZE_CSS, VISUALIZATION_HIDDEN_SCROLLBAR_CSS, VISUALIZATION_SHELL_FILL_CSS, VISUALIZATION_SHELL_FIT_CSS } from "../shared/visualization-host"
 
 async function parse(html: string) {
   const frames: Array<Record<string, string | null>> = []
@@ -162,6 +162,20 @@ describe("visualization document isolation", () => {
     expect(loaded.slice(0, loaded.indexOf("<iframe"))).toContain(`<style>${VISUALIZATION_SHELL_FIT_CSS}</style>`)
     // Scrolling itself is untouched: nothing sets overflow on the authored page.
     expect(VISUALIZATION_HIDDEN_SCROLLBAR_CSS).not.toContain("overflow")
+  })
+
+  test("at full size the page gets the whole frame, whatever height it reports", async () => {
+    const saved = buildVisualizationDocument('<main style="height:100vh">App</main>', 'Example', 360)
+    const filled = prepareVisualizationDocument(saved, { appearance: 'light', variables: {} }, '', { fill: true })
+    const head = filled.slice(0, filled.indexOf("<iframe"))
+    expect(head).toContain(`<style>${VISUALIZATION_SHELL_FILL_CSS}</style>`)
+    expect(head).not.toContain(VISUALIZATION_SHELL_FIT_CSS)
+    // Over the inline height the shell sets from the page's reports, and with no cap under the pane's.
+    expect(filled).toContain('style="height:360px"')
+    expect(VISUALIZATION_SHELL_FILL_CSS).toBe("#visualization{height:100vh!important;max-height:none}")
+    // The authored page is the same document inline and full.
+    const inline = prepareVisualizationDocument(saved, { appearance: 'light', variables: {} }, '')
+    expect((await parse(filled)).frames[0]!.srcdoc).toBe((await parse(inline)).frames[0]!.srcdoc)
   })
 
   test("a segmented control keeps fixed, concentric corners and one line, in new documents and old", async () => {

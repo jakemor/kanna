@@ -2206,6 +2206,8 @@ describe("CodexAppServerManager", () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "turn/interrupt") {
+        child.writeServerMessage({ id: message.id, result: {} })
       } else if (message.method === "thread/start") {
         child.writeServerMessage({
           id: message.id,
@@ -3154,3 +3156,132 @@ describe("disable pre-configured MCP servers", () => {
     manager.stopAll()
   })
 })
+
+
+describe("Codex session readiness", () => {
+  const args = { chatId: "chat-starting", cwd: "/tmp", model: "gpt-5.4", sessionToken: "thread-1" }
+
+  test("concurrent session and turn starts wait for resume", async () => {
+    let resume: any
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/resume") resume = message
+      if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1" } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      const first = manager.startSession(args)
+      const second = manager.startSession(args)
+      const turn = manager.startTurn({ chatId: args.chatId, content: "hello", model: args.model, planMode: false, onToolRequest: async () => ({}) })
+      await Bun.sleep(10)
+      expect(resume).toBeDefined()
+      expect(child.messages.some((message: any) => message.method === "turn/start")).toBe(false)
+      child.writeServerMessage({ id: resume.id, result: { thread: { id: "thread-1" } } })
+      await Promise.all([first, second, turn])
+      expect(child.messages.find((message: any) => message.method === "turn/start")).toMatchObject({ params: { threadId: "thread-1" } })
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("explicitly stopping a pending resume releases the process and permits retry", async () => {
+    const children: FakeCodexProcess[] = []
+    const manager = new CodexAppServerManager({ spawnProcess: () => {
+      const child = new FakeCodexProcess((message, process) => {
+        if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+        if (message.method === "thread/resume" && children.length > 1) process.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+      })
+      children.push(child)
+      return child as never
+    } })
+    try {
+      const pending = Promise.allSettled([manager.startSession(args), manager.startSession(args)])
+      await Bun.sleep(10)
+      expect(children[0]!.killed).toBe(false)
+      manager.stopSession(args.chatId)
+      const results = await pending
+      expect(results.every((result) => result.status === "rejected")).toBe(true)
+      expect(children[0]!.killed).toBe(true)
+      expect(await manager.startSession(args)).toMatchObject({ sessionToken: "thread-1" })
+      expect(children[1]!.killed).toBe(false)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("failed initialization cannot retire its replacement", async () => {
+    const children: FakeCodexProcess[] = []
+    const manager = new CodexAppServerManager({ spawnProcess: () => {
+      const child = new FakeCodexProcess((message, process) => {
+        if (children.length > 1) process.writeServerMessage({ id: message.id, result: message.method === "thread/resume" ? { thread: { id: "thread-1" } } : {} })
+      })
+      children.push(child)
+      return child as never
+    } })
+    try {
+      const first = manager.startSession(args).catch(() => null)
+      const replacement = manager.startSession({ ...args, cwd: "/tmp/other" })
+      await first
+      expect(await replacement).toMatchObject({ sessionToken: "thread-1" })
+      expect(children[1]!.killed).toBe(false)
+    } finally {
+      manager.stopAll()
+    }
+  })
+})
+
+test("resume preserves Unicode line separators and split UTF-8 in large JSON responses", async () => {
+  const history = "x".repeat(260_000) + "before\u2028between\u2029after\né🙂"
+  const child = new FakeCodexProcess((message, process) => {
+    if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+    if (message.method === "thread/resume") {
+      const response = Buffer.from(JSON.stringify({ id: message.id, result: { thread: { id: "thread-unicode", preview: history } } }) + "\n")
+      const unicode = response.indexOf(Buffer.from("é"))
+      process.stdout.write(response.subarray(0, unicode + 1))
+      setTimeout(() => process.stdout.write(response.subarray(unicode + 1)), 1)
+    }
+  })
+  const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+  try {
+    expect(await manager.startSession({ chatId: "unicode", cwd: "/tmp", model: "gpt-5.4", sessionToken: "thread-unicode" })).toMatchObject({ sessionToken: "thread-unicode", resumeFellBack: false })
+  } finally {
+    manager.stopAll()
+  }
+})
+
+test("slow MCP discovery is awaited without abandoning reads or killing the session", async () => {
+  const pending: any[] = []
+  const child = new FakeCodexProcess((message, process) => {
+    if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+    if (message.method === "config/read" || message.method === "mcpServerStatus/list") pending.push(message)
+    if (message.method === "thread/start") process.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+    if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1" } } })
+  })
+  const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+  let started = false
+  const starting = manager.startSession({ chatId: "slow", cwd: "/tmp", model: "gpt-5.4", sessionToken: null, disablePreconfiguredMcp: true })
+    .then((result) => { started = true; return result })
+  try {
+    // Beyond the old discovery timeout: slow discovery must not silently
+    // skip isolation or leave requests running behind an already-started turn.
+    await Bun.sleep(5100)
+    expect(started).toBe(false)
+    expect(child.killed).toBe(false)
+    expect(pending).toHaveLength(2)
+    for (const request of pending.splice(0)) {
+      child.writeServerMessage({ id: request.id, result: request.method === "config/read"
+        ? { config: { mcp_servers: { slow_server: {} } } }
+        : { data: [], nextCursor: "last" } })
+    }
+    await Bun.sleep(0)
+    expect(pending).toHaveLength(1)
+    child.writeServerMessage({ id: pending[0].id, result: { data: [], nextCursor: null } })
+    await starting
+    expect((child.messages.find((m: any) => m.method === "thread/start") as any).params.config["mcp_servers.slow_server.enabled"]).toBe(false)
+    await manager.startTurn({ chatId: "slow", content: "hello", model: "gpt-5.4", planMode: false, onToolRequest: async () => ({}) })
+    expect(child.killed).toBe(false)
+  } finally {
+    manager.stopAll()
+    await starting.catch(() => {})
+  }
+}, 10_000)

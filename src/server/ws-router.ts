@@ -2096,7 +2096,7 @@ export function createWsRouter({
           return
         }
         case "terminal.close": {
-          terminals.close(command.terminalId)
+          void terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           pushTerminalSnapshot(command.terminalId, { force: true })
           return

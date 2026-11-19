@@ -57,6 +57,13 @@ interface TerminalSession {
   output: TerminalOutputLog
   focusReportingEnabled: boolean
   modeSequenceTail: string
+  /**
+   * Whether the shell was started with the PTY as its controlling terminal.
+   * When it was, the kernel turns Ctrl-C into SIGINT for the foreground job
+   * and the shell has job control; when it was not, `write` fakes Ctrl-C by
+   * signalling the shell's process group.
+   */
+  controllingTty: boolean
 }
 
 /**
@@ -154,6 +161,58 @@ function resolveShellArgs(shellPath: string) {
   return []
 }
 
+/**
+ * The `TIOCSCTTY` ioctl request ("make this terminal my controlling
+ * terminal"), or null where we don't know it. BSD-derived systems share one
+ * value; Linux uses the generic one on the architectures Bun ships for.
+ */
+function controllingTtyRequest(): number | null {
+  if (process.platform === "darwin" || process.platform === "freebsd") return 0x20007461
+  if (process.platform === "linux" && (process.arch === "x64" || process.arch === "arm64")) return 0x540e
+  return null
+}
+
+/**
+ * Runs in place of the shell, then execs it. Arguments: the ioctl request,
+ * then the shell and its arguments. `setsid` starts a new session (Bun leaves
+ * the child in our process group) and `TIOCSCTTY` on stdin, which is the PTY,
+ * makes the PTY its controlling terminal. A failure of either leaves things as
+ * they would have been without the wrapper, so it is not fatal.
+ */
+const CONTROLLING_TTY_SCRIPT = [
+  "use POSIX ();",
+  "my $request = 0 + shift @ARGV;",
+  "POSIX::setsid();",
+  "ioctl(STDIN, $request, 0);",
+  "exec { $ARGV[0] } @ARGV;",
+  "print STDERR \"kanna: cannot start $ARGV[0]: $!\\n\";",
+  "exit 127;",
+].join(" ")
+
+/**
+ * The command that starts `shell` with the PTY as its controlling terminal.
+ *
+ * `Bun.spawn({ terminal })` wires the PTY to stdio but never makes it the
+ * child's controlling terminal. Shells that insist on one for interactive use
+ * (fish, nushell) refuse to start, and the rest run without job control. Bun
+ * has no pre-exec hook, so a one-line perl wrapper does the two syscalls. With
+ * no perl, the shell is spawned directly as before.
+ */
+export function resolveTerminalCommand(
+  shell: string,
+  args: string[],
+  perlPath: string | null = Bun.which("perl"),
+  request: number | null = controllingTtyRequest(),
+): { command: string[]; controllingTty: boolean } {
+  if (!perlPath || request === null) {
+    return { command: [shell, ...args], controllingTty: false }
+  }
+  return {
+    command: [perlPath, "-e", CONTROLLING_TTY_SCRIPT, "--", String(request), shell, ...args],
+    controllingTty: true,
+  }
+}
+
 // Matches the locale suffixes that imply a multi-byte-capable charmap. Same
 // test VS Code uses for `terminal.integrated.detectLocale`.
 const UTF8_LOCALE_PATTERN = /(\.utf-?8|\.euc.+)$/i
@@ -237,6 +296,38 @@ function killTerminalProcessTree(subprocess: Bun.Subprocess | null) {
   }
 }
 
+/** How long a hung-up shell gets to pass SIGHUP to its jobs and exit. */
+const HANGUP_GRACE_MS = 1_000
+
+/**
+ * Close a shell that has job control the way closing a terminal window does.
+ * Its jobs run in process groups of their own, so killing the shell's group
+ * would miss them; SIGHUP makes the shell hang them up before it exits. The
+ * PTY stays open until then (bash 3.2 loses its jobs if the PTY goes first),
+ * and a shell still running after the grace period is killed with its group.
+ */
+function hangUpTerminalProcess(subprocess: Bun.Subprocess | null, closeTerminal: () => void): Promise<void> {
+  if (!subprocess || !signalTerminalProcessGroup(subprocess, "SIGHUP")) {
+    killTerminalProcessTree(subprocess)
+    closeTerminal()
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => {
+    let finished = false
+    const finish = (exited: boolean) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      if (!exited) killTerminalProcessTree(subprocess)
+      closeTerminal()
+      resolve()
+    }
+    const timer = setTimeout(() => finish(false), HANGUP_GRACE_MS)
+    timer.unref?.()
+    void subprocess.exited.then(() => finish(true), () => finish(true))
+  })
+}
+
 function signalTerminalProcessGroup(subprocess: Bun.Subprocess | null, signal: NodeJS.Signals) {
   if (!subprocess) return false
 
@@ -290,6 +381,8 @@ export class TerminalManager {
    * string, so xterm only ever sees one decoder's output.
    */
   private handlePtyOutput(session: TerminalSession, data: Uint8Array) {
+    // A closed session's PTY can stay open while its shell hangs up.
+    if (this.sessions.get(session.terminalId) !== session) return
     const chunk = session.decoder.write(Buffer.from(data))
     if (!chunk) return
     updateFocusReportingState(session, chunk)
@@ -346,6 +439,7 @@ export class TerminalManager {
     headless.loadAddon(new Unicode11Addon())
     headless.unicode.activeVersion = "11"
     const decoder = new StringDecoder("utf8")
+    const { command, controllingTty } = resolveTerminalCommand(shell, resolveShellArgs(shell))
 
     const session: TerminalSession = {
       terminalId: args.terminalId,
@@ -372,10 +466,11 @@ export class TerminalManager {
       output: new TerminalOutputLog(),
       focusReportingEnabled: false,
       modeSequenceTail: "",
+      controllingTty,
     }
 
     try {
-      session.process = Bun.spawn([shell, ...resolveShellArgs(shell)], {
+      session.process = Bun.spawn(command, {
         cwd: args.projectPath,
         env: createTerminalEnv(),
         terminal: session.terminal,
@@ -388,7 +483,7 @@ export class TerminalManager {
     }
     void session.process.exited.then((exitCode) => {
       const active = this.sessions.get(args.terminalId)
-      if (!active) return
+      if (active !== session) return
       active.status = "exited"
       active.exitCode = exitCode
       this.emit({
@@ -398,7 +493,7 @@ export class TerminalManager {
       })
     }).catch((error) => {
       const active = this.sessions.get(args.terminalId)
-      if (!active) return
+      if (active !== session) return
       active.status = "exited"
       active.exitCode = 1
       this.emit({
@@ -429,6 +524,15 @@ export class TerminalManager {
     const filteredData = filterFocusReportInput(data, session.focusReportingEnabled)
     if (!filteredData) return
 
+    // With a controlling terminal, Ctrl-C goes to the PTY like any other key:
+    // the line discipline signals the foreground job, or a raw-mode program
+    // reads it as a byte. Signalling the shell's group here would hit the
+    // shell instead of the job, which job control puts in its own group.
+    if (session.controllingTty) {
+      session.terminal.write(filteredData)
+      return
+    }
+
     let cursor = 0
 
     while (cursor < filteredData.length) {
@@ -458,21 +562,32 @@ export class TerminalManager {
     signalTerminalProcessGroup(session.process, "SIGWINCH")
   }
 
-  close(terminalId: string) {
+  /**
+   * Close a terminal. The session is gone at once; the promise settles when
+   * its shell has exited or been killed, which for a shell with job control
+   * can take up to the hang-up grace period.
+   */
+  close(terminalId: string): Promise<void> {
     const session = this.sessions.get(terminalId)
-    if (!session) return
+    if (!session) return Promise.resolve()
 
     this.sessions.delete(terminalId)
-    killTerminalProcessTree(session.process)
-    session.terminal.close()
+    let ended: Promise<void>
+    if (session.controllingTty) {
+      ended = hangUpTerminalProcess(session.process, () => session.terminal.close())
+    } else {
+      killTerminalProcessTree(session.process)
+      session.terminal.close()
+      ended = Promise.resolve()
+    }
     session.serializeAddon.dispose()
     session.headless.dispose()
+    return ended
   }
 
-  closeAll() {
-    for (const terminalId of this.sessions.keys()) {
-      this.close(terminalId)
-    }
+  /** Close every terminal, settling once every shell has exited or been killed. */
+  async closeAll(): Promise<void> {
+    await Promise.all([...this.sessions.keys()].map((terminalId) => this.close(terminalId)))
   }
 
   getRootPidsByCwd(cwd: string) {

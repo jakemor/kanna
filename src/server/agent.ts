@@ -33,6 +33,7 @@ import type { ClientCommand } from "../shared/protocol"
 import type { RequestSecretsToolResult } from "../shared/secrets"
 import { AsyncQueue } from "./async-queue"
 import { resolveClaudeExecutable } from "./claude-executable"
+import { planModeRefusal } from "./plan-mode-guard"
 import { KannaToolRuntime, KannaToolEventFilter, type KannaToolHost } from "./kanna-tools"
 import type { KannaToolGateway } from "./kanna-tool-gateway"
 import { SecretsService } from "./secrets"
@@ -1039,6 +1040,17 @@ export function subagentHooks(
   }
 }
 
+/** Several sets of SDK hooks as one: every matcher of every set, in order. */
+function mergeHooks(...sets: Array<Partial<Record<HookEvent, HookCallbackMatcher[]>>>) {
+  const merged: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {}
+  for (const set of sets) {
+    for (const [event, matchers] of Object.entries(set) as Array<[HookEvent, HookCallbackMatcher[]]>) {
+      merged[event] = [...(merged[event] ?? []), ...matchers]
+    }
+  }
+  return merged
+}
+
 async function startClaudeSession(args: {
   localPath: string
   model: string
@@ -1072,8 +1084,43 @@ async function startClaudeSession(args: {
   /** A cron or wakeup made or removed, or the CLI's list of them at a Stop. */
   onScheduledJob?: (report: ClaudeScheduledJobReport) => void
 }): Promise<ClaudeSessionHandle> {
+  // Whether the session is read-only right now. It starts as the turn's mode
+  // and follows every change to it: a later turn's (`setPermissionMode`), an
+  // approved plan, and the model putting itself into plan mode.
+  let planActive = args.planMode
+  // Run by the CLI before every tool call, in every permission mode, which
+  // makes it the one place plan mode can be held: a shell command in plan
+  // mode never comes to `canUseTool` at all (plan-mode-guard.ts).
+  const planModeHooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {
+    PreToolUse: [{
+      hooks: [async (input) => {
+        if (input.hook_event_name !== "PreToolUse") return {}
+        if (input.tool_name === "EnterPlanMode") planActive = true
+        const refusal = planActive ? planModeRefusal(input.tool_name, input.tool_input) : null
+        if (!refusal) return {}
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: refusal,
+          },
+        }
+      }],
+    }],
+  }
   const canUseTool: CanUseTool = async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
+      if (toolName === "EnterPlanMode") planActive = true
+      // The same answer as the hook above, for whatever the CLI does bring
+      // here: saying yes to every ask is how a `Write` in plan mode used to
+      // go through.
+      const refusal = planActive ? planModeRefusal(toolName, input) : null
+      if (refusal) {
+        return {
+          behavior: "deny",
+          message: refusal,
+        }
+      }
       return {
         behavior: "allow",
         updatedInput: input,
@@ -1110,6 +1157,7 @@ async function startClaudeSession(args: {
     const record = result && typeof result === "object" ? result as Record<string, unknown> : {}
     const confirmed = Boolean(record.confirmed)
     if (confirmed) {
+      planActive = false
       return {
         behavior: "allow",
         updatedInput: {
@@ -1148,7 +1196,7 @@ async function startClaudeSession(args: {
         mcpServers: { kanna: createClaudeKannaTools(args.customTools) },
       } : {}),
       tools: claudeToolset(args.autoPlan),
-      ...(args.onSubagentActivity ? { hooks: subagentHooks(args.onSubagentActivity, args.onScheduledJob) } : {}),
+      hooks: mergeHooks(planModeHooks, args.onSubagentActivity ? subagentHooks(args.onSubagentActivity, args.onScheduledJob) : {}),
       // By default the SDK forwards only a subagent's tool calls. Its text
       // (what it is doing, and its final report) completes the nested view
       // under the Agent row; the normalizer stamps it with parent_tool_use_id
@@ -1230,6 +1278,7 @@ async function startClaudeSession(args: {
     },
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
+      planActive = planMode
     },
     setFastMode: async (fastMode: boolean) => {
       await q.applyFlagSettings({ fastMode })

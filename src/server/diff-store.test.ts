@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, parseStatusBranchHeader, probeWorkingTree, resolveWorkingTreeLocation } from "./diff-store"
+import { appendGitIgnoreEntry, DiffStore, escapeGitIgnorePattern, extractGitHubRepoSlug, fetchGitHubPullRequests, parseStatusBranchHeader, probeWorkingTree, resolveWorkingTreeLocation } from "./diff-store"
 import { KANNA_COMMIT_FOOTER, KANNA_COMMIT_TRAILER } from "./attribution"
 
 async function run(command: string[], cwd: string) {
@@ -787,6 +787,61 @@ describe("DiffStore", () => {
     })
 
     expect(await readFile(path.join(repoRoot, ".gitignore"), "utf8")).toBe("tmp/cache/\n")
+  })
+
+  test("a file's name is written to .gitignore as a pattern for that file alone", () => {
+    expect(escapeGitIgnorePattern("scratch.log")).toBe("scratch.log")
+    expect(escapeGitIgnorePattern("tmp/cache/")).toBe("tmp/cache/")
+    expect(escapeGitIgnorePattern("*")).toBe("\\*")
+    expect(escapeGitIgnorePattern("app/[slug]/page.tsx")).toBe("app/\\[slug\\]/page.tsx")
+    expect(escapeGitIgnorePattern("!src")).toBe("\\!src")
+    expect(escapeGitIgnorePattern("#notes")).toBe("\\#notes")
+  })
+
+  test("committing a file named like a pattern commits that file alone", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    // Read as a pattern, `*` is every file here: the edit nobody selected and
+    // the untracked file that was never meant to leave the machine.
+    await writeFile(path.join(repoRoot, "tracked.txt"), "edited\n", "utf8")
+    await writeFile(path.join(repoRoot, "*"), "new\n", "utf8")
+    await writeFile(path.join(repoRoot, ".env.local"), "TOKEN=secret\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+    await store.commitFiles({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      paths: ["*"],
+      summary: "Add the star file",
+      mode: "commit_only",
+    })
+
+    expect((await run(["git", "show", "--name-only", "--pretty=format:", "HEAD"], repoRoot)).trim()).toBe("*")
+    expect((await run(["git", "status", "--porcelain"], repoRoot)).split("\n").filter(Boolean).sort()).toEqual([" M tracked.txt", "?? .env.local"].sort())
+  })
+
+  test("discarding a file named like a pattern leaves the other changes alone", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "base\n", "utf8")
+    await writeFile(path.join(repoRoot, "*"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    await writeFile(path.join(repoRoot, "tracked.txt"), "edited\n", "utf8")
+    await writeFile(path.join(repoRoot, "*"), "edited\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+    await store.discardFile({ projectId: "project-1", projectPath: repoRoot, path: "*" })
+
+    expect(await readFile(path.join(repoRoot, "*"), "utf8")).toBe("base\n")
+    expect(await readFile(path.join(repoRoot, "tracked.txt"), "utf8")).toBe("edited\n")
   })
 
   test("appendGitIgnoreEntry does not duplicate an existing identical entry", () => {

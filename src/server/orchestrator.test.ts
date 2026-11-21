@@ -675,6 +675,17 @@ describe("limits", () => {
     expect(child.planMode).toBe(true)
     expect(codex.turn(child.chatId).planMode).toBe(true)
   })
+
+  test("a chat in plan mode cannot schedule work on a provider with no read-only mode", async () => {
+    const { orchestrator, userChat } = await setup()
+    const root = await userChat("plan the migration", { planMode: true })
+    // A schedule runs later with nobody to hold it to this chat's mode, and
+    // cursor is started with full access whatever mode it is asked for.
+    await expect(orchestrator.setSchedule(root, { message: "just do it", newChat: true, delegator: false, provider: "cursor", inMinutes: 1 }))
+      .rejects.toThrow("read-only")
+    await expect(orchestrator.setSchedule(root, { message: "look around", newChat: true, delegator: false, inMinutes: 1 }))
+      .resolves.toMatchObject({ planMode: true })
+  })
 })
 
 describe("messages between chats", () => {

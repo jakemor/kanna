@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises"
+import { realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import process from "node:process"
 import type { ClientCommand, EditorOpenSettings, EditorPreset } from "../shared/protocol"
@@ -44,11 +44,7 @@ export async function openExternal(command: OpenExternalCommand) {
 
   if (platform === "darwin") {
     if (command.action === "open_default") {
-      if (!info) {
-        throw new Error(`Path not found: ${resolvedPath}`)
-      }
-      const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
-      await spawnDetached(defaultCommand.command, defaultCommand.args)
+      await openWithDefault(resolvedPath, platform)
       return
     }
     if (command.action === "open_preview") {
@@ -87,11 +83,7 @@ export async function openExternal(command: OpenExternalCommand) {
 
   if (platform === "win32") {
     if (command.action === "open_default") {
-      if (!info) {
-        throw new Error(`Path not found: ${resolvedPath}`)
-      }
-      const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
-      await spawnDetached(defaultCommand.command, defaultCommand.args)
+      await openWithDefault(resolvedPath, platform)
       return
     }
     if (command.action === "open_finder") {
@@ -124,11 +116,7 @@ export async function openExternal(command: OpenExternalCommand) {
   }
 
   if (command.action === "open_default") {
-    if (!info) {
-      throw new Error(`Path not found: ${resolvedPath}`)
-    }
-    const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
-    await spawnDetached(defaultCommand.command, defaultCommand.args)
+    await openWithDefault(resolvedPath, platform)
     return
   }
 
@@ -254,17 +242,63 @@ export function buildPreviewCommand(args: {
   return { command: "open", args: ["-a", "Preview", args.localPath] }
 }
 
+/**
+ * What the system's opener would run rather than show: a script the Terminal
+ * takes, an application or installer, a shortcut to one. A click on a link in
+ * a transcript or a README ends here, and whoever wrote the link wrote its
+ * label too, so "open" must never mean "execute" for a file the user was only
+ * shown a name for.
+ */
+const LAUNCHABLE_EXTENSIONS: Partial<Record<NodeJS.Platform, Set<string>>> = {
+  darwin: new Set([
+    ".command", ".tool", ".app", ".terminal", ".inetloc", ".fileloc", ".workflow", ".action", ".shortcut",
+    ".jar", ".pkg", ".mpkg", ".dmg", ".prefpane", ".saver", ".scpt", ".scptd", ".applescript", ".osax",
+  ]),
+  win32: new Set([
+    ".exe", ".bat", ".cmd", ".com", ".scr", ".msi", ".msp", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf",
+    ".wsh", ".lnk", ".hta", ".cpl", ".reg", ".pif", ".url", ".appref-ms", ".jar",
+  ]),
+  linux: new Set([".desktop", ".run", ".appimage", ".sh", ".jar"]),
+}
+
+/** Whether opening `localPath` with the system default would launch it. */
+export function isLaunchablePath(localPath: string, info: { isFile: boolean; mode: number }, platform: NodeJS.Platform = process.platform) {
+  const extension = path.extname(localPath.replace(/[\\/]+$/, "")).toLowerCase()
+  if ((LAUNCHABLE_EXTENSIONS[platform] ?? LAUNCHABLE_EXTENSIONS.linux!).has(extension)) return true
+  // A file with no extension and an execute bit is a program: macOS hands it
+  // to Terminal. With an extension the type decides, and a PNG that happens
+  // to be mode 755 is still a picture.
+  return platform !== "win32" && info.isFile && extension === "" && (info.mode & 0o111) !== 0
+}
+
 export function buildDefaultOpenCommand(args: {
   localPath: string
   platform: NodeJS.Platform
+  /** Show the file in the file manager instead of opening it. */
+  reveal?: boolean
 }): CommandSpec {
   if (args.platform === "darwin") {
-    return { command: "open", args: [args.localPath] }
+    return { command: "open", args: args.reveal ? ["-R", args.localPath] : [args.localPath] }
   }
   if (args.platform === "win32") {
-    return { command: "cmd", args: ["/c", "start", "", args.localPath] }
+    // explorer, not `cmd /c start`: cmd reads `&` and `^` in a file name as
+    // its own syntax, and a repository chooses its file names.
+    return { command: "explorer", args: args.reveal ? ["/select,", args.localPath] : [args.localPath] }
   }
-  return { command: "xdg-open", args: [args.localPath] }
+  return { command: "xdg-open", args: [args.reveal ? path.dirname(args.localPath) : args.localPath] }
+}
+
+async function openWithDefault(resolvedPath: string, platform: NodeJS.Platform) {
+  // The real file: the opener follows a link, so a link's own name says
+  // nothing about what would run.
+  const target = await realpath(resolvedPath).catch(() => resolvedPath)
+  const info = await stat(target).catch(() => null)
+  if (!info) {
+    throw new Error(`Path not found: ${resolvedPath}`)
+  }
+  const reveal = isLaunchablePath(target, { isFile: info.isFile(), mode: info.mode }, platform)
+  const defaultCommand = buildDefaultOpenCommand({ localPath: reveal ? target : resolvedPath, platform, reveal })
+  await spawnDetached(defaultCommand.command, defaultCommand.args)
 }
 
 function buildPresetEditorCommand(
@@ -324,12 +358,13 @@ function buildCustomEditorCommand(args: {
 
   const line = String(args.line ?? 1)
   const column = String(args.column ?? 1)
-  const replaced = template
+  // Split first, fill in after: the template is the user's, the path is a
+  // file's name. Filled in first, a name with a space or a quote in it became
+  // arguments of its own to the editor.
+  const tokens = tokenizeCommandTemplate(template).map((token) => token
     .replaceAll("{path}", args.localPath)
     .replaceAll("{line}", line)
-    .replaceAll("{column}", column)
-
-  const tokens = tokenizeCommandTemplate(replaced)
+    .replaceAll("{column}", column))
   const [command, ...commandArgs] = tokens
   if (!command) {
     throw new Error("Custom editor command is empty")

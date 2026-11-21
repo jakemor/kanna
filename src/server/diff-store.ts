@@ -173,6 +173,30 @@ export async function runGit(args: string[], cwd: string, options?: { stdin?: st
   }
 }
 
+/**
+ * `runGit` for a command that is given file names. Git reads those as
+ * pathspecs, where `*`, `?`, `[x]` and a leading `:` are patterns, and a
+ * repository chooses its own file names: discarding the one file called `*`
+ * reverted every change in the tree, and committing `app/[slug]/page.tsx`
+ * took `app/s/page.tsx` with it. With this set a name is only ever itself.
+ * Not for a command that passes pathspec magic of its own (`:(exclude)`).
+ */
+function runGitWithLiteralPaths(args: string[], cwd: string, options?: { stdin?: string }) {
+  return runGit(args, cwd, { ...options, env: { ...process.env, GIT_LITERAL_PATHSPECS: "1" } })
+}
+
+/**
+ * A branch, ref or remote that is about to be handed to git as an argument.
+ * One that starts with `-` is read as an option (`git switch -Cmain` moves
+ * `main`), and these names come from other people: a pull request's head
+ * branch, a remote's refs.
+ */
+function assertNotGitOption(value: string | null | undefined, what: string) {
+  if (value?.startsWith("-")) {
+    throw new Error(`${what} cannot start with "-": ${value}`)
+  }
+}
+
 async function runCommand(args: string[]) {
   // Resolve gh through a login shell so servers launched without the user's
   // PATH (launchd/systemd) still find it — same treatment as github.ts and
@@ -1579,12 +1603,12 @@ async function findDirtyPath(repoRoot: string, relativePath: string) {
 
 async function discardAddedPath(repoRoot: string, repoHasHead: boolean, relativePath: string) {
   if (repoHasHead) {
-    const resetResult = await runGit(["reset", "--quiet", "HEAD", "--", relativePath], repoRoot)
+    const resetResult = await runGitWithLiteralPaths(["reset", "--quiet", "HEAD", "--", relativePath], repoRoot)
     if (resetResult.exitCode !== 0) {
       throw new Error(formatGitFailure(resetResult) || "Failed to unstage added file")
     }
   } else {
-    const rmCachedResult = await runGit(["rm", "--cached", "--force", "--", relativePath], repoRoot)
+    const rmCachedResult = await runGitWithLiteralPaths(["rm", "--cached", "--force", "--", relativePath], repoRoot)
     if (rmCachedResult.exitCode !== 0) {
       throw new Error(formatGitFailure(rmCachedResult) || "Failed to unstage added file")
     }
@@ -1596,17 +1620,32 @@ async function discardRenamedPath(repoRoot: string, entry: DirtyPathEntry) {
     throw new Error(`Missing previous path for renamed file: ${entry.path}`)
   }
 
-  const resetResult = await runGit(["reset", "--quiet", "HEAD", "--", entry.path], repoRoot)
+  const resetResult = await runGitWithLiteralPaths(["reset", "--quiet", "HEAD", "--", entry.path], repoRoot)
   if (resetResult.exitCode !== 0) {
     throw new Error(formatGitFailure(resetResult) || "Failed to unstage renamed file")
   }
 
-  const restoreResult = await runGit(["restore", "--staged", "--worktree", "--source=HEAD", "--", entry.previousPath], repoRoot)
+  const restoreResult = await runGitWithLiteralPaths(["restore", "--staged", "--worktree", "--source=HEAD", "--", entry.previousPath], repoRoot)
   if (restoreResult.exitCode !== 0) {
     throw new Error(formatGitFailure(restoreResult) || "Failed to restore renamed file")
   }
 
   await rm(path.join(repoRoot, entry.path), { recursive: true, force: true })
+}
+
+/**
+ * A path as the `.gitignore` line that matches it and nothing else. Written
+ * as is, a file named `*` ignored the whole tree and one named `!src` took an
+ * earlier rule back. An ordinary name comes out unchanged.
+ */
+export function escapeGitIgnorePattern(relativePath: string) {
+  const escaped = relativePath
+    .replace(/[\\*?[\]]/g, "\\$&")
+    .replace(/^[!#]/, "\\$&")
+    .replace(/ +$/, (spaces) => "\\ ".repeat(spaces.length))
+  // A line is one entry.
+  if (/[\r\n]/.test(escaped)) throw new Error("A file name with a line break in it cannot be written to .gitignore.")
+  return escaped
 }
 
 export function appendGitIgnoreEntry(currentContents: string | null, entry: string) {
@@ -2697,6 +2736,13 @@ export class DiffStore {
       }
     }
 
+    assertNotGitOption(args.branch.name, "Branch name")
+    if (args.branch.kind !== "local") assertNotGitOption(args.branch.remoteRef, "Remote branch")
+    if (args.branch.kind === "pull_request") {
+      assertNotGitOption(args.branch.headRefName, "Pull request branch")
+      assertNotGitOption(args.branch.headRepoCloneUrl, "Pull request repository")
+    }
+
     let switchResult: Awaited<ReturnType<typeof runGit>>
     if (args.branch.kind === "local") {
       switchResult = await runGit(["switch", args.branch.name], repo.repoRoot)
@@ -2799,6 +2845,7 @@ export class DiffStore {
     if (!baseBranchName) {
       throw new Error("Could not determine a base branch")
     }
+    assertNotGitOption(baseBranchName, "Base branch")
 
     const switchResult = await runGit(["switch", "-c", branchName, baseBranchName], repo.repoRoot)
     if (switchResult.exitCode !== 0) {
@@ -3080,7 +3127,7 @@ export class DiffStore {
       return entry ? !entry.isUntracked && entry.hasUnstagedChanges : false
     })
     if (trackedPaths.length > 0) {
-      const addTrackedResult = await runGit(
+      const addTrackedResult = await runGitWithLiteralPaths(
         ["add", "-u", "--pathspec-from-file=-", "--pathspec-file-nul"],
         repo.repoRoot,
         { stdin: toPathspecStdin(trackedPaths) }
@@ -3093,7 +3140,7 @@ export class DiffStore {
 
     const untrackedPaths = committablePaths.filter((relativePath) => currentDirtyPathsByPath.get(relativePath)?.isUntracked)
     if (untrackedPaths.length > 0) {
-      const addUntrackedResult = await runGit(
+      const addUntrackedResult = await runGitWithLiteralPaths(
         ["add", "--pathspec-from-file=-", "--pathspec-file-nul"],
         repo.repoRoot,
         { stdin: toPathspecStdin(untrackedPaths) }
@@ -3118,7 +3165,7 @@ export class DiffStore {
     }
     commitArgs.push("--pathspec-from-file=-", "--pathspec-file-nul")
 
-    const commitResult = await runGit(commitArgs, repo.repoRoot, { stdin: toPathspecStdin(committablePaths) })
+    const commitResult = await runGitWithLiteralPaths(commitArgs, repo.repoRoot, { stdin: toPathspecStdin(committablePaths) })
     if (commitResult.exitCode !== 0) {
       await this.refreshSnapshot(args.projectId, args.projectPath, { force: true })
       return createCommitFailure(args.mode, formatGitFailure(commitResult))
@@ -3199,7 +3246,7 @@ export class DiffStore {
       if (!repo.baseCommit) {
         throw new Error("Cannot discard tracked changes before the repository has an initial commit")
       }
-      const restoreResult = await runGit(["restore", "--staged", "--worktree", "--source=HEAD", "--", entry.path], repo.repoRoot)
+      const restoreResult = await runGitWithLiteralPaths(["restore", "--staged", "--worktree", "--source=HEAD", "--", entry.path], repo.repoRoot)
       if (restoreResult.exitCode !== 0) {
         throw new Error(formatGitFailure(restoreResult) || "Failed to discard file changes")
       }
@@ -3231,7 +3278,10 @@ export class DiffStore {
       throw new Error("Only new files can be ignored from the diff viewer. This file is already tracked by git.")
     }
 
-    const matchingEntries = dirtyPaths.filter((candidate) => isNewFile(candidate) && (candidate.path === ignoreEntry || candidate.path.startsWith(ignoreEntry)))
+    // A folder takes what is under it. A file takes itself: by prefix alone,
+    // ignoring `notes.txt` also unstaged `notes.txt.bak`.
+    const matchingEntries = dirtyPaths.filter((candidate) => isNewFile(candidate)
+      && (candidate.path === ignoreEntry || (ignoreEntry.endsWith("/") && candidate.path.startsWith(ignoreEntry))))
     if (matchingEntries.length === 0) {
       throw new Error(`File is no longer changed: ${ignoreEntry}`)
     }
@@ -3242,8 +3292,13 @@ export class DiffStore {
     }
 
     const gitignorePath = path.join(repo.repoRoot, ".gitignore")
+    // A repository can ship `.gitignore` as a link to anywhere, and writing
+    // through it would append to that file instead (a shell profile, say).
+    if ((await lstat(gitignorePath).catch(() => null))?.isSymbolicLink()) {
+      throw new Error(".gitignore is a symbolic link here, so Kanna will not write to it. Add the entry by hand.")
+    }
     const currentContents = await readFile(gitignorePath, "utf8").catch(() => null)
-    const nextContents = appendGitIgnoreEntry(currentContents, ignoreEntry)
+    const nextContents = appendGitIgnoreEntry(currentContents, escapeGitIgnorePattern(ignoreEntry))
     if (nextContents !== currentContents) {
       await writeFile(gitignorePath, nextContents, "utf8")
     }

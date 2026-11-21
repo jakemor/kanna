@@ -1,7 +1,8 @@
 import { homedir } from "node:os"
 import { PerformanceLog } from "./performance-log"
 import path from "node:path"
-import { readFile, realpath, stat } from "node:fs/promises"
+import { watch, type FSWatcher } from "node:fs"
+import { chmod, readFile, realpath, stat } from "node:fs/promises"
 import { APP_NAME, getDataDir, getDataRootDir, getDataRootDirDisplay, getRuntimeProfile, LOG_PREFIX } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import type { ShareMode } from "../shared/share"
@@ -17,7 +18,7 @@ import { createAuthManager } from "./auth"
 import { classifyCloudRequest, isAllowedCloudWsUpgrade, type CloudRequestClass } from "./cloud/guard"
 import { createCloudRuntime, type CloudRuntime } from "./cloud"
 import { createFleetCache } from "./cloud/fleet"
-import { writeCloudIdentity } from "./cloud/identity"
+import { getDefaultCloudIdentityPath, readCloudIdentity, writeCloudIdentity } from "./cloud/identity"
 import { createPairSessionManager, type PairSessionSnapshot } from "./cloud/pair-session"
 import { EventStore } from "./event-store"
 import { AgentCoordinator, type AgentCoordinatorArgs } from "./agent"
@@ -174,6 +175,8 @@ export interface StartKannaServerOptions {
     llmProviderFile?: string
     /** Defaults to `<data root>/allowed-hosts`. */
     allowedHostsFile?: string
+    /** Defaults to `<data root>/cloud.json`. Watched while the server is paired. */
+    cloudIdentityFile?: string
   }
   /** The built web client. Defaults to `dist/client`; tests point it at a fixture. */
   clientDistDir?: string
@@ -217,6 +220,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const logRefusal = createRefusalLog((message) => console.warn(`${LOG_PREFIX} ${message}`))
   const diagnostics = new PerformanceLog(options.dataDir ?? getDataDir(homedir()), undefined, options.update?.version)
   const store = new EventStore(options.dataDir, diagnostics)
+  // The data root holds more than the store's own directory (nightly builds,
+  // profiles, the allowed-hosts file), and is this user's alone too. Left
+  // alone when the caller chose the data dir: its parent is then theirs.
+  if (!options.dataDir) {
+    await chmod(getDataRootDir(homedir()), 0o700).catch(() => {})
+  }
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   // Mutable: device-code pairing can attach a cloud runtime mid-flight, and
@@ -224,6 +233,55 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   let cloud: CloudRuntime | null = options.cloud ?? null
   /** Only set when *this* process paired; the CLI owns a handed-in runtime. */
   let selfPairedCloud: CloudRuntime | null = null
+
+  // `kanna pair --disable` and `--remove` run as another process, and all
+  // they can do is change cloud.json. The server they are aimed at is this
+  // one, already running, and until it looked at the file again its tunnel
+  // stayed up: "disabled", and still reachable from anywhere. So the file is
+  // watched for as long as there is a runtime, and a pairing that is gone,
+  // switched off or replaced takes this machine offline at once.
+  const cloudIdentityFile = machine.cloudIdentityFile ?? getDefaultCloudIdentityPath()
+  let cloudIdentityWatcher: FSWatcher | null = null
+  let cloudIdentityCheck: Promise<void> = Promise.resolve()
+  async function dropCloudIfUnpaired() {
+    const runtime = cloud
+    if (!runtime) return
+    let identity: Awaited<ReturnType<typeof readCloudIdentity>>
+    try {
+      identity = await readCloudIdentity(cloudIdentityFile)
+    } catch {
+      // Unreadable just now (not missing, not malformed): nothing was learned.
+      return
+    }
+    const stillPaired = identity !== null
+      && identity.machineToken === runtime.identity.machineToken
+      // `--cloud` is this run's own instruction and overrides a sticky disable.
+      && (identity.enabled || Boolean(options.directCloud))
+    if (stillPaired || cloud !== runtime) return
+    cloud = null
+    if (selfPairedCloud === runtime) selfPairedCloud = null
+    cloudIdentityWatcher?.close()
+    cloudIdentityWatcher = null
+    console.warn(`${LOG_PREFIX} cloud: this machine's pairing was ${identity ? (identity.enabled ? "replaced" : "disabled") : "removed"}; taking it offline`)
+    await runtime.stop().catch(() => {})
+  }
+  async function watchCloudIdentity() {
+    const runtime = cloud
+    if (cloudIdentityWatcher || !runtime) return
+    // Only a pairing that is this file's. A runtime handed in from elsewhere
+    // (a test's, an embedder's) has nothing on disk to be removed from.
+    const onDisk = await readCloudIdentity(cloudIdentityFile).catch(() => null)
+    if (onDisk?.machineToken !== runtime.identity.machineToken || cloud !== runtime || cloudIdentityWatcher) return
+    try {
+      cloudIdentityWatcher = watch(path.dirname(cloudIdentityFile), { persistent: false }, (_eventType, filename) => {
+        if (filename && filename !== path.basename(cloudIdentityFile)) return
+        cloudIdentityCheck = cloudIdentityCheck.then(dropCloudIfUnpaired, dropCloudIfUnpaired)
+      })
+    } catch (error) {
+      console.warn(`${LOG_PREFIX} cloud: could not watch ${cloudIdentityFile}; restart ${APP_NAME} after \`kanna pair --disable\`:`, error)
+    }
+  }
+  void watchCloudIdentity()
   await store.initialize()
   await diffStore.initialize()
   await store.migrateLegacyTranscripts(options.onMigrationProgress)
@@ -289,7 +347,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const terminals = new TerminalManager()
   const portTunnels = new PortTunnelManager({
     log: (message) => console.log(`${LOG_PREFIX} ${message}`),
+    stateFile: path.join(store.dataDir, "port-tunnels.json"),
   })
+  // A server that was killed or crashed left its tunnels up, and public.
+  void portTunnels.reapOrphans()
   const keybindings = new KeybindingsManager()
   // Dev-box UI flag: the real thing is `kanna --cloud`; KANNA_DEVBOX_UI=1 is
   // the dev-mode override (`bun run dev:cloud`) so the UI is developable
@@ -574,6 +635,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             const runtime = createCloudRuntime(identity)
             cloud = runtime
             selfPairedCloud = runtime
+            void watchCloudIdentity()
             runtime.start({
               // Byte-identical to the CLI's launch URL for a paired machine
               // (cli-runtime builds `http://localhost:<port>`; pairing is only
@@ -640,6 +702,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
               data: {
                 subscriptions: new Map(),
                 snapshotSignatures: new Map(),
+                authSession: auth?.sessionOf(req) ?? undefined,
               },
             })
             return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
@@ -680,9 +743,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
               return withOriginAgentCluster(new Response(null, { status: 405, headers: { Allow: "POST" } }))
             }
 
-            return withOriginAgentCluster(auth
-              ? auth.handleLogout(req)
-              : Response.json({ ok: true }))
+            if (!auth) return withOriginAgentCluster(Response.json({ ok: true }))
+            const session = auth.sessionOf(req)
+            const response = auth.handleLogout(req)
+            if (session && response.ok) router.closeSocketsForSession(session)
+            return withOriginAgentCluster(response)
           }
 
           // Proxied requests skip password auth: the kanna.sh proxy already
@@ -920,6 +985,13 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   }))
 
   const shutdown = async () => {
+    cloudIdentityWatcher?.close()
+    cloudIdentityWatcher = null
+    // First, and before anything that can throw or hang: what this server
+    // has made public. The steps below wait on agents and disks, and a stop
+    // that gives up part-way (or is killed for taking too long) used to leave
+    // every exposed port on the internet.
+    portTunnels.stopAll()
     pairSession?.stop()
     // A runtime handed in by the CLI is stopped by the CLI; one this process
     // attached at pair time is ours to take down.
@@ -958,7 +1030,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     allowHost: (name: string) => hosts.add(name),
     /** For the single-instance lock's status (instance-socket.ts), which the
      *  Mac app's quit dialog shows. */
-    state: () => ({ runningChats: agent.activeTurns.size, cloud: Boolean(options.cloud ?? selfPairedCloud) }),
+    state: () => ({ runningChats: agent.activeTurns.size, cloud: Boolean(cloud) }),
   }
 }
 
@@ -1296,7 +1368,7 @@ async function serveStatic(distDir: string, pathname: string) {
     return new Response(indexFile, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
+        ...APP_SHELL_HEADERS,
       },
     })
   }
@@ -1307,11 +1379,22 @@ async function serveStatic(distDir: string, pathname: string) {
   )
 }
 
+/**
+ * For the page itself. It may be framed only by itself: the app in another
+ * site's frame is still the app, with its socket, and a click the visitor
+ * meant for that site lands on it. And it names its address to nobody else
+ * (the `referrer` meta in index.html says the same for a dev server).
+ */
+const APP_SHELL_HEADERS = {
+  "Cache-Control": "no-store",
+  "Content-Security-Policy": "frame-ancestors 'self'",
+  "X-Frame-Options": "SAMEORIGIN",
+  "Referrer-Policy": "same-origin",
+}
+
 function getStaticHeaders(requestedPath: string) {
   if (requestedPath.endsWith(".html")) {
-    return {
-      "Cache-Control": "no-store",
-    }
+    return APP_SHELL_HEADERS
   }
 
   // Vite emits content-hashed filenames under /assets/ — safe to cache

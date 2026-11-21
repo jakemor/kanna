@@ -190,7 +190,17 @@ export function QuickActionsWidget({
                       : <Play className="group-hover/row:text-foreground" />}
                   </SwapIn>
                 )}
-                title={<span className="font-mono text-[13px]">{action.label}</span>}
+                title={(
+                  <span className="font-mono text-[13px]">
+                    {action.label}
+                    {/* The file is the project's, so a clone brings its
+                        actions with it. A label that is not the command gets
+                        the command beside it: what runs is what is shown. */}
+                    {action.command.startsWith(action.label)
+                      ? null
+                      : <span className="text-muted-foreground"> · {action.command}</span>}
+                  </span>
+                )}
                 tooltip={action.command}
                 onActivate={() => runAction(action)}
                 menuLabel="Quick action options"

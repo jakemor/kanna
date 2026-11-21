@@ -131,9 +131,15 @@ export function normalizeSkillDescription(name: string, description: string): st
   return description
 }
 
+const MAX_SKILL_FILE_BYTES = 1024 * 1024
+
 function readSkillFile(skillFilePath: string, fallbackName: string): HarnessSkill | null {
   let markdown: string
   try {
+    // Read on the event loop, and a project's skills are the project's own
+    // files: only a regular file of a size a skill could be.
+    const info = statSync(skillFilePath)
+    if (!info.isFile() || info.size > MAX_SKILL_FILE_BYTES) return null
     markdown = readFileSync(skillFilePath, "utf8")
   } catch {
     return null

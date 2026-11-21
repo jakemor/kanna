@@ -315,6 +315,13 @@ export const markdownComponents = {
     <td className="text-left    p-2 pl-0 first:pl-3 [&_*]:font-normal " {...props}>{children}</td>
   ),
 
+  // An image in a message or a README is fetched the moment it is shown, from
+  // wherever its author pointed it. With a referrer that request names the
+  // address Kanna is served at, and behind a share tunnel that address is all
+  // it takes to open a terminal here.
+  img: (props: ComponentPropsWithoutRef<"img">) => (
+    <img {...props} referrerPolicy="no-referrer" />
+  ),
   p: ({ children, ...props }: ComponentPropsWithoutRef<"p">) => (
     <p className="break-words mt-5 mb-3 first:mt-0 last:mb-0" {...props}>{children}</p>
   ),

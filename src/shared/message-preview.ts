@@ -81,6 +81,20 @@ const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}_])_(?=[^\s_])([\s\S]*?[^\s_])_(?![\
 const SYSTEM_MESSAGE_BLOCK = /<system-message>[\s\S]*?<\/system-message>\s*/g
 
 /**
+ * Text one agent wrote for another (a message, a schedule, a report, a chat's
+ * title), with any `<system-message>` tag in it spelled out.
+ *
+ * The tag is Kanna's own voice to an agent, and `stripSystemMessages` takes
+ * those blocks out of what a person is shown. Left as written, an agent could
+ * wrap instructions in one: the chat that received them read them as Kanna's,
+ * and the user looking at the message saw none of it. Spelled out, the text
+ * is shown as it is, and to the agent it is only text.
+ */
+export function defuseSystemMessages(text: string): string {
+  return /<\/?system-message>/i.test(text) ? text.replace(/<(\/?)(system-message)>/gi, "&lt;$1$2&gt;") : text
+}
+
+/**
  * Take the `<system-message>` blocks out of a message, leaving what a person
  * should read.
  *

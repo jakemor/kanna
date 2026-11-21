@@ -1,11 +1,11 @@
 import { TurnFoldCache } from "./turn-folds"
 import type { PerformanceLog } from "./performance-log"
-import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
+import { appendFile, chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import { toMessagePreview } from "../shared/message-preview"
+import { defuseSystemMessages, toMessagePreview } from "../shared/message-preview"
 import { buildTranscriptOutline, findTranscriptWindowStart } from "../shared/transcript-window"
 import type { KannaStatus, TranscriptOutlineEntry } from "../shared/types"
 import type { AgentProvider, ChatNextRun, ChatSchedule, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
@@ -417,7 +417,12 @@ export class EventStore {
   }
 
   async initialize() {
-    await mkdir(this.dataDir, { recursive: true })
+    await mkdir(this.dataDir, { recursive: true, mode: 0o700 })
+    // Every prompt, tool result and file body Kanna has seen is under here,
+    // in files written with the default mode. The directory is what keeps
+    // them from the machine's other users, and `mode` above only covers one
+    // this call creates.
+    await chmod(this.dataDir, 0o700).catch(() => {})
     await this.ensureTranscriptsDir()
     await this.ensureFile(this.projectsLogPath)
     await this.ensureFile(this.chatsLogPath)
@@ -1666,7 +1671,9 @@ export class EventStore {
   }
 
   async renameChat(chatId: string, title: string) {
-    const trimmed = title.trim()
+    // A title is put into what Kanna tells other agents about this chat, and
+    // an agent can set one.
+    const trimmed = defuseSystemMessages(title).trim()
     if (!trimmed) return
     const chat = this.requireChat(chatId)
     if (chat.title === trimmed) return

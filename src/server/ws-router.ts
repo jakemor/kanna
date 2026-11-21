@@ -63,6 +63,13 @@ export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
   snapshotSignatures: Map<string, string>
   /**
+   * The password session this socket was let in on, when it was. Signing out
+   * ends the session, and with it every socket opened under it: a socket is
+   * checked once, at its handshake, and would otherwise outlive the sign-out
+   * for as long as its tab stayed open.
+   */
+  authSession?: string
+  /**
    * Absolute transcript span last sent per chat subscription, so the next push
    * can carry only the entries past it. Reset whenever the subscription is
    * (re)created, which is also what makes reconnect safe: a fresh id has no
@@ -2132,6 +2139,12 @@ export function createWsRouter({
     },
     handleOpen(ws: ServerWebSocket<ClientState>) {
       sockets.add(ws)
+    },
+    /** Closes every socket opened under a password session. See `ClientState.authSession`. */
+    closeSocketsForSession(authSession: string) {
+      for (const ws of [...sockets]) {
+        if (ws.data.authSession === authSession) ws.close(4001, "Signed out")
+      }
     },
     handleClose(ws: ServerWebSocket<ClientState>) {
       sockets.delete(ws)

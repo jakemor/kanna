@@ -180,6 +180,8 @@ function unfilterRow(filter: number, row: Uint8Array, above: Uint8Array, stride:
   }
 }
 
+const MAX_PNG_DIMENSION = 16_384
+
 /**
  * Receives inflated bytes, cuts them into rows, and box-averages each row into
  * the thumbnail. Colour is averaged weighted by alpha, so a transparent edge
@@ -220,6 +222,11 @@ class RowAverager extends Writable {
       || ((header.colorType === 0 || header.colorType === 3) && (bitDepth === 1 || bitDepth === 2 || bitDepth === 4))
     if (!channels || !depthOk || header.interlaced || width === 0 || height === 0) {
       throw new UnsupportedPngError("Unsupported PNG layout")
+    }
+    // The header is the file's own claim, and the buffers below are sized
+    // from it. No icon is anywhere near this.
+    if (width > MAX_PNG_DIMENSION || height > MAX_PNG_DIMENSION) {
+      throw new UnsupportedPngError("PNG is too large to thumbnail")
     }
     if (header.colorType === 3 && (bitDepth === 16 || !this.parts.palette)) {
       throw new UnsupportedPngError("Unsupported PNG palette")

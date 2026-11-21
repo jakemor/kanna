@@ -208,7 +208,7 @@ export async function runPairCommand(args: PairCommandArgs, deps: PairCommandDep
       }
       const enabled = args.action === "enable"
       await writeIdentity({ ...identity, enabled })
-      log(`${LOG_PREFIX} cloud ${enabled ? "enabled — run `kanna` to bring this machine online" : "disabled — `kanna` stays local-only"}`)
+      log(`${LOG_PREFIX} cloud ${enabled ? "enabled — run `kanna` to bring this machine online" : "disabled — `kanna` stays local-only (one that is running goes offline within a few seconds)"}`)
       return 0
     }
 
@@ -228,9 +228,11 @@ export async function runPairCommand(args: PairCommandArgs, deps: PairCommandDep
       } catch (error) {
         // Best effort — the machine may already be revoked server-side.
         warn(`${LOG_PREFIX} could not remove the machine on kanna.sh (${error instanceof Error ? error.message : String(error)}); deleting local credentials anyway`)
+        // Said plainly: "unpaired" below is this machine's half only.
+        warn(`${LOG_PREFIX} kanna.sh may still list this machine. Remove it there too: https://kanna.sh/fleet`)
       }
       await deleteIdentity()
-      log(`${LOG_PREFIX} unpaired — local credentials deleted`)
+      log(`${LOG_PREFIX} unpaired — local credentials deleted (a running kanna goes offline within a few seconds)`)
       return 0
     }
   }
